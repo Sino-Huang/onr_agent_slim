@@ -151,6 +151,15 @@ class InProcessTransport:
             raise ValueError("topic and mission ID must be non-empty strings")
         return max((event.sequence for event in self.state.events.get((topic, mission_id), ())), default=-1) + 1
 
+    def latest_event(
+        self, topic: str, mission_id: str, *, event_kind: str | None = None
+    ) -> TransportEvent | None:
+        events = self.state.events.get((topic, mission_id), ())
+        candidates = (
+            event for event in events if event_kind is None or event.event_kind == event_kind
+        )
+        return max(candidates, key=lambda event: (event.sequence, event.event_id), default=None)
+
     def get_dead_letters(self, subscription: Subscription) -> tuple[dict[str, object], ...]:
         return tuple(self.state.dead_letters.get((subscription.service_id, subscription.mission_id, subscription.topic), ()))
 
@@ -202,7 +211,9 @@ class InProcessConsumer:
             attempt = attempts.get(identity, 0) + 1
             attempts[identity] = attempt
             if attempt > self.subscription.max_retries:
-                state.dead_letters.setdefault(self._key[1:], []).append({"identity": identity, "attempt": attempt, "message": message.to_dict()})  # type: ignore[union-attr]
+                if not isinstance(message, (TransportEvent, Command, CommandOutcome)):
+                    raise TypeError("dead-letter message is not a transport message")
+                state.dead_letters.setdefault(self._key[1:], []).append({"identity": identity, "attempt": attempt, "message": message.to_dict()})
                 processed.add(identity)
                 self._active_delivery = None
                 self._save_cursor(sequence, source)

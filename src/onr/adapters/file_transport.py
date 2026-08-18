@@ -8,6 +8,7 @@ import fcntl
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 from urllib.parse import quote
 
 from onr.contracts.transport import (
@@ -270,6 +271,23 @@ class FileTransport:
                     pass
             return max(sequences, default=-1) + 1
 
+    def latest_event(
+        self, topic: str, mission_id: str, *, event_kind: str | None = None
+    ) -> TransportEvent | None:
+        stream = self.root / "topics" / _part(topic) / "missions" / _part(mission_id)
+        candidates: list[TransportEvent] = []
+        for path in stream.glob("*.json"):
+            value = _read_json(path, None)
+            if not isinstance(value, dict):
+                continue
+            try:
+                event = TransportEvent.from_dict(value)
+            except ValueError:
+                continue
+            if event_kind is None or event.event_kind == event_kind:
+                candidates.append(event)
+        return max(candidates, key=lambda event: (event.sequence, event.event_id), default=None)
+
     def get_dead_letters(self, subscription: Subscription) -> tuple[dict[str, object], ...]:
         state = self.root / "subscriptions" / _part(subscription.service_id) / _part(subscription.mission_id) / _part(subscription.topic) / "dead-letter"
         return tuple(
@@ -285,7 +303,7 @@ class FileTransport:
 
 
 class FileConsumer:
-    def __init__(self, transport: FileTransport, subscription: Subscription, state: Path, lock_handle: object) -> None:
+    def __init__(self, transport: FileTransport, subscription: Subscription, state: Path, lock_handle: TextIO) -> None:
         self._transport = transport
         self.subscription = subscription
         self._lock_handle = lock_handle
@@ -345,9 +363,9 @@ class FileConsumer:
         if not self._closed:
             self._closed = True
             try:
-                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
+                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
             finally:
-                self._lock_handle.close()  # type: ignore[union-attr]
+                self._lock_handle.close()
             if self in self._transport._consumers:
                 self._transport._consumers.remove(self)
 
@@ -375,7 +393,9 @@ class FileConsumer:
 
     def _dead_letter(self, message: object, identity: str, attempt: int) -> None:
         dead = self._state / "dead-letter" / f"{len(list((self._state / 'dead-letter').glob('*.json'))):020d}-{_part(identity)}.json"
-        _atomic_write(dead, json.dumps({"identity": identity, "attempt": attempt, "message": message.to_dict()}, sort_keys=True, separators=(",", ":")))  # type: ignore[union-attr]
+        if not isinstance(message, (TransportEvent, Command, CommandOutcome)):
+            raise TypeError("dead-letter message is not a transport message")
+        _atomic_write(dead, json.dumps({"identity": identity, "attempt": attempt, "message": message.to_dict()}, sort_keys=True, separators=(",", ":")))
 
     def _next_candidate(self, cursor: dict[str, int], processed: set[str]) -> tuple[object, str, int, str] | None:
         candidates: list[tuple[int, str, object, str]] = []
