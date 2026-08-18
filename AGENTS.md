@@ -6,7 +6,7 @@ We are using `onr` conda environment, please always activate this conda environm
 
 ### Issue tracker
 
-Issues are tracked in this repository's GitHub Issues using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked in this repository's GitHub Issues using the `gh` CLI on `Sino-Huang/onr_agent_slim`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
