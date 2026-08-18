@@ -208,6 +208,18 @@ class FileTransport:
             raise RuntimeError("stored command outcome is corrupt")
         return CommandOutcome.from_dict(value)
 
+    def get_event(self, event_id: str) -> TransportEvent | None:
+        """Return a previously published event by its durable identity."""
+
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("event ID must be a non-empty string")
+        value = _read_json(self.root / "identity" / f"event-{_part(event_id)}.json", None)
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise RuntimeError("stored transport event is corrupt")
+        return TransportEvent.from_dict(value)
+
     def open_consumer(
         self,
         subscription: Subscription,
