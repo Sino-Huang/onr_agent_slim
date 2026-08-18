@@ -131,3 +131,7 @@ _Avoid_: Operational authority, shared state
 **Role Skill**:
 Read-only role-specific guidance that shapes agent judgment without becoming mission authority.
 _Avoid_: Runtime state, writable policy
+
+**ONR Runtime Configuration**:
+The non-secret stable settings for this mission-control system, distinct from live Mission authority data.
+_Avoid_: Mission state, environment snapshot

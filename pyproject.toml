@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "onr-agent-slim"
+version = "0.1.0"
+description = "Autonomous mission-control agents and runtime composition."
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents",
+    "langchain-openai",
+    "python-statemachine",
+    "PyYAML>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/onr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

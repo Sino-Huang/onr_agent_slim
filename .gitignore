@@ -1,1 +1,12 @@
 modules/
+data/
+.onr/runtime/
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+build/
+dist/
+*.egg-info/
