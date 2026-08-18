@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.application.fsm import FSMRunner
+from onr.application.maneuver_control import ManeuverControl
 from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.transport import Command, CommandOutcome
+from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 
@@ -85,6 +87,23 @@ class RuntimeComposition:
             clock=clock,
             subscription=subscription,
         )
+
+    def create_maneuver_control(
+        self,
+        adapter: ManeuverAdapter,
+        decision_provider: object,
+        *,
+        target_service: str = "maneuver-adapter",
+    ) -> ManeuverControl:
+        """Compose Maneuver Control without introducing runtime authority state."""
+
+        return ManeuverControl(
+            cast(Any, self.transport),
+            adapter,
+            decision_provider,
+            target_service=target_service,
+        )
+
 
 
 def create_runtime(

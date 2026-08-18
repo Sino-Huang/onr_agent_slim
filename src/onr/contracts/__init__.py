@@ -11,6 +11,13 @@ from onr.contracts.fsm import (
     StatechartTransition,
     TransitionCandidate,
 )
+from onr.contracts.maneuver_control import (
+    InvocationOverlay,
+    ManeuverCommand,
+    ManeuverControlDecision,
+    NonPhysicalChoice,
+    PhysicalAction,
+)
 
 __all__ = [
     "MissionSnapshot",
@@ -22,4 +29,9 @@ __all__ = [
     "Statechart",
     "StatechartTransition",
     "TransitionCandidate",
+    "PhysicalAction",
+    "NonPhysicalChoice",
+    "ManeuverControlDecision",
+    "ManeuverCommand",
+    "InvocationOverlay",
 ]
