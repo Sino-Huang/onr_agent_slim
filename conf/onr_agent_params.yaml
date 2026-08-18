@@ -1,0 +1,27 @@
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  temperature: 0
+planners:
+  # These executable launch seams are intentionally no-op placeholders until
+  # the real planner adapters are composed; they only satisfy path validation.
+  temporal:
+    entrypoint: bin/onr-temporal-planner
+    timeout_seconds: 30
+  symbolic:
+    entrypoint: bin/onr-symbolic-planner
+    timeout_seconds: 30
+heartbeats:
+  hyper_seconds: 30
+  maneuver_seconds: 5
+transport:
+  backend: file
+  root: var/transport
+storage:
+  root: var/storage
+services:
+  hyper_agent: hyper-agent
+  maneuver_control: maneuver-control
+  context_coordination: context-coordination
+  fsm_runner: fsm-runner
+  planner: planner
