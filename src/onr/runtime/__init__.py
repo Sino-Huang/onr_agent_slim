@@ -12,11 +12,11 @@ from onr.runtime.config import (
     load_runtime_config,
     load_runtime_configuration,
 )
-from onr.runtime.composition import RuntimeComposition, create_runtime
+from onr.runtime.composition import RuntimeComposition, RuntimeRunResult, create_runtime
 
 __all__ = [
     "HeartbeatsConfig", "LLMConfig", "PlannerConfig", "PlannersConfig",
     "RuntimeConfig", "ServicesConfig", "StorageConfig", "TransportConfig",
     "load_runtime_config", "load_runtime_configuration",
-    "RuntimeComposition", "create_runtime",
+    "RuntimeComposition", "RuntimeRunResult", "create_runtime",
 ]
