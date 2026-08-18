@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from onr.contracts.fsm import FSMExecutionRecord, Statechart
+from onr.contracts.transport import NormalizedPlanTransportEvent, TransportEvent
 
 
 class FSMStateStore(Protocol):
@@ -17,3 +18,15 @@ class FSMStateStore(Protocol):
     def save_statechart(self, statechart: Statechart) -> None: ...
 
     def save_execution_record(self, record: FSMExecutionRecord) -> None: ...
+
+
+class FSMTransport(Protocol):
+    """Minimal transport surface required by the application FSM."""
+
+    def next_event_sequence(self, topic: str, mission_id: str) -> int: ...
+
+    def publish_event(
+        self,
+        topic: str,
+        event: TransportEvent | NormalizedPlanTransportEvent,
+    ) -> TransportEvent: ...

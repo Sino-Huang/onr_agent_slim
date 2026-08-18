@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
@@ -13,7 +13,6 @@ from onr.application.fsm import FSMRunner
 from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.transport import Command, CommandOutcome
 from onr.ports.transport import Subscription
-from onr.ports.transport import Transport
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 
 
@@ -74,10 +73,17 @@ class RuntimeComposition:
 
         if not isinstance(mission_id, str) or not mission_id.strip():
             raise ValueError("mission ID must be a non-empty string")
+        subscription = FSMRunner.subscription_for(
+            mission_id,
+            service_id=self.config.services.fsm_runner,
+        )
+        if subscription not in self.transport.subscriptions:
+            self.transport.subscriptions = self.transport.subscriptions + (subscription,)
         return FSMRunner(
-            cast(Transport, self.transport),
+            self.transport,
             store=JsonFSMStateStore(self.config.storage.root / "fsm" / mission_id),
             clock=clock,
+            subscription=subscription,
         )
 
 

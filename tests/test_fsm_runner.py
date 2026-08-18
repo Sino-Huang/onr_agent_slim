@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
+from onr.contracts.transport import (
+    TransportEvent,
+    create_normalized_plan_transport_event,
+    normalized_plan_transport_event_to_wire,
+)
 from onr.contracts.fsm import (
     FSMExecutionRecord,
     FSMEvent,
@@ -29,8 +35,18 @@ from onr.contracts.planning import (
     SymbolicPlanStep,
     TemporalManeuver,
 )
-from onr.contracts.transport import create_normalized_plan_transport_event
 from onr.ports.transport import Subscription
+from onr.runtime.composition import RuntimeComposition
+from onr.runtime.config import (
+    HeartbeatsConfig,
+    LLMConfig,
+    PlannerConfig,
+    PlannersConfig,
+    RuntimeConfig,
+    ServicesConfig,
+    StorageConfig,
+    TransportConfig,
+)
 
 
 def _temporal_plan(revision: int = 1) -> NormalizedPlan:
@@ -264,6 +280,59 @@ def test_timer_due_marker_remains_authoritative_after_clock_change_and_restart()
     assert applied.active_state == "state-1"
 
 
+@pytest.mark.parametrize("field", ("normalized_plan_document", "normalized_plan_sha256"))
+def test_generic_normalized_plan_event_validates_wire_provenance(field: str) -> None:
+    plan = _temporal_plan()
+    typed = create_normalized_plan_transport_event(plan, event_id="wire-plan", sequence=0)
+    wire = normalized_plan_transport_event_to_wire(typed)
+    payload = dict(wire.payload)
+    payload[field] = "tampered"
+    tampered = TransportEvent(
+        schema_version=wire.schema_version,
+        event_id=wire.event_id,
+        mission_id=wire.mission_id,
+        sequence=wire.sequence,
+        event_kind=wire.event_kind,
+        payload=payload,
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(FSMRunner(InProcessTransport()).activate(tampered))
+
+
+def test_inconsistent_persisted_execution_record_is_rejected() -> None:
+    plan = _temporal_plan()
+    store = InMemoryFSMStateStore()
+    runner = FSMRunner(InProcessTransport(), store=store, clock=lambda: 0)
+    asyncio.run(runner.activate(_event(plan)))
+    record = json.loads(store.execution_record_json)  # type: ignore[arg-type]
+    record["active_state"] = "undeclared"
+    record["active_configuration"] = ["undeclared"]
+    store.execution_record_json = json.dumps(record)
+    with pytest.raises(RuntimeError):
+        FSMRunner(InProcessTransport(), store=store)
+
+
+def test_runtime_registers_fsm_runner_subscription() -> None:
+    config = RuntimeConfig(
+        llm=LLMConfig("test", "model", 0),
+        planners=PlannersConfig(
+            PlannerConfig(Path(__file__), 1), PlannerConfig(Path(__file__), 1)
+        ),
+        heartbeats=HeartbeatsConfig(1, 1),
+        transport=TransportConfig("inprocess", Path(__file__).parent / "transport"),
+        storage=StorageConfig(Path(__file__).parent / "storage"),
+        services=ServicesConfig("hyper", "maneuver", "context", "fsm-service", "planner"),
+    )
+    transport = InProcessTransport()
+    runtime = RuntimeComposition(config, transport)
+    runner = runtime.create_fsm_runner(mission_id="mission-fsm")
+    assert runner.subscription is not None
+    assert runner.subscription.service_id == "fsm-service"
+    assert runner.subscription in transport.subscriptions
+    consumer = transport.open_consumer(runner.subscription)
+    consumer.close()
+
+
 def test_symbolic_progression_requires_feedback_and_decision() -> None:
     plan = _symbolic_plan()
     runner = FSMRunner(InProcessTransport(), store=InMemoryFSMStateStore(), clock=lambda: 0)
@@ -292,6 +361,8 @@ def test_symbolic_apply_requires_authoritative_feedback_and_matching_decision() 
     initial = asyncio.run(runner.activate(_event(plan)))
     candidate = initial.enabled_transition_candidates[0]
     feedback = ManeuverFeedback("feedback-1", plan.mission_spec.mission_id, "survey", "completed")
+    wrong_mission = ManeuverDecision("decision-wrong", "other-mission", transition_event=candidate.event)
+    assert asyncio.run(runner.apply(candidate, feedback, wrong_mission)).active_state == "state-0"
     decision = ManeuverDecision("decision-1", plan.mission_spec.mission_id, transition_event=candidate.event)
     assert asyncio.run(runner.apply(candidate, feedback)).active_state == "state-0"
     assert asyncio.run(runner.apply(candidate, ManeuverFeedback("feedback-2", plan.mission_spec.mission_id, "survey", "completed"), decision)).active_state == "state-1"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Callable, Protocol, cast
@@ -35,8 +36,8 @@ from onr.contracts.transport import (
     NormalizedPlanTransportEvent,
     TransportEvent,
 )
-from onr.ports.fsm import FSMStateStore
-from onr.ports.transport import Consumer, Delivery, Subscription, Transport
+from onr.ports.fsm import FSMStateStore, FSMTransport
+from onr.ports.transport import Consumer, Delivery, Subscription
 
 
 class _Receivable(Protocol):
@@ -192,7 +193,42 @@ def _plan_from_message(message: object) -> NormalizedPlan:
     if isinstance(message, TransportEvent):
         if message.event_kind != "normalized-plan":
             raise ValueError("FSM Runner requires a normalized-plan event")
-        return _normalized_plan(message.payload.get("normalized_plan"))
+        payload = _object(message.payload, "normalized-plan transport payload")
+        required = {
+            "mission_id",
+            "mission_snapshot_id",
+            "plan_revision",
+            "planner_choice",
+            "source_authority",
+            "outcome",
+            "normalized_plan",
+            "normalized_plan_document",
+            "normalized_plan_sha256",
+        }
+        if not required.issubset(payload):
+            raise ValueError("normalized-plan transport payload is missing provenance")
+        plan = _normalized_plan(payload["normalized_plan"])
+        document = payload["normalized_plan_document"]
+        digest = payload["normalized_plan_sha256"]
+        if not isinstance(document, str) or not isinstance(digest, str):
+            raise ValueError("normalized-plan transport provenance has invalid types")
+        if document != plan.to_canonical_json():
+            raise ValueError("normalized-plan transport document does not match the plan")
+        if digest != hashlib.sha256(document.encode("utf-8")).hexdigest():
+            raise ValueError("normalized-plan transport hash does not match the document")
+        if payload["mission_id"] != message.mission_id or plan.mission_spec.mission_id != message.mission_id:
+            raise ValueError("normalized-plan transport mission ID does not match")
+        if _int_field(payload, "plan_revision", "plan revision") != plan.plan_revision:
+            raise ValueError("normalized-plan transport plan revision does not match")
+        if _text_field(payload, "mission_snapshot_id", "mission snapshot ID") != plan.mission_snapshot_id:
+            raise ValueError("normalized-plan transport snapshot ID does not match")
+        if PlannerChoice.from_dict(_object(payload["planner_choice"], "transport planner choice")) != plan.planner_choice:
+            raise ValueError("normalized-plan transport planner choice does not match")
+        if _text_field(payload, "source_authority", "source authority") != plan.mission_spec.source_authority:
+            raise ValueError("normalized-plan transport source authority does not match")
+        if _text_field(payload, "outcome", "planning outcome") != str(plan.outcome):
+            raise ValueError("normalized-plan transport outcome does not match")
+        return plan
     if isinstance(message, NormalizedPlan):
         return message
     raise TypeError("FSM Runner requires a Normalized Plan transport event")
@@ -232,18 +268,48 @@ class FSMRunner:
 
     def __init__(
         self,
-        transport: Transport,
+        transport: FSMTransport,
         *,
         store: FSMStateStore | None = None,
         status_topic: str = "fsm-status",
         clock: Callable[[], int | float] | None = None,
+        subscription: Subscription | None = None,
     ) -> None:
         self.transport = transport
         self.store = store or InMemoryFSMStateStore()
         self.status_topic = status_topic
         self.clock = clock or (lambda: 0)
+        self.subscription = subscription
         self._chart = self.store.load_statechart()
         self._record = self.store.load_execution_record()
+        if (self._chart is None) != (self._record is None):
+            raise RuntimeError("FSM Statechart and Execution Record must be persisted together")
+        if self._chart is not None and self._record is not None:
+            if self._chart.mission_id != self._record.mission_id:
+                raise RuntimeError("persisted FSM mission IDs do not match")
+            if self._chart.plan_revision != self._record.plan_revision:
+                raise RuntimeError("persisted FSM plan revisions do not match")
+            if self._chart.statechart_revision != self._record.statechart_revision:
+                raise RuntimeError("persisted FSM Statechart revisions do not match")
+            configuration = self._record.active_configuration
+            if (
+                not configuration
+                or self._record.active_state not in configuration
+                or any(state not in self._chart.states for state in configuration)
+                or self._record.active_state not in self._chart.states
+            ):
+                raise RuntimeError("persisted FSM configuration references undeclared state")
+            if self._record.superseded_plan_revision is None:
+                if self._record.retained_maneuver_ids or self._record.superseded_maneuver_ids:
+                    raise RuntimeError("persisted FSM retained maneuvers lack a superseded revision")
+            elif self._record.superseded_plan_revision >= self._record.plan_revision:
+                raise RuntimeError("persisted FSM superseded revision is not older than active plan")
+            if self._record.retained_maneuver_ids != self._record.superseded_maneuver_ids:
+                raise RuntimeError("persisted FSM retained maneuver visibility is inconsistent")
+        if self.subscription is not None and self._chart is not None and self.subscription.mission_id != self._chart.mission_id:
+            raise ValueError("FSM subscription mission ID does not match persisted state")
+        if self.subscription is None and self._chart is not None:
+            self.subscription = self.subscription_for(self._chart.mission_id)
         self._superseded_plan_revision: int | None = (
             self._record.superseded_plan_revision if self._record else None
         )
@@ -267,6 +333,10 @@ class FSMRunner:
 
         async with self._lock:
             plan = _plan_from_message(message)
+            if self.subscription is None:
+                self.subscription = self.subscription_for(plan.mission_spec.mission_id)
+            elif self.subscription.mission_id != plan.mission_spec.mission_id:
+                raise ValueError("FSM subscription mission ID does not match plan")
             chart = Statechart.from_normalized_plan(plan)
             if self._chart is not None:
                 if chart.plan_revision < self._chart.plan_revision:
@@ -408,7 +478,7 @@ class FSMRunner:
             ):
                 return await self._publish_status("unchanged")
             if current.requires_decision and not self._decision_authorizes(
-                current.event, decision_input
+                current.event, decision_input, self._record.mission_id
             ):
                 return await self._publish_status("unchanged")
             facts = dict(self._record.lifecycle_facts)
@@ -572,11 +642,18 @@ class FSMRunner:
     def _decision_authorizes(
         event: str,
         decision: object,
+        mission_id: str,
     ) -> bool:
         if isinstance(decision, str):
             return decision == event
         if isinstance(decision, Mapping):
+            decision_mission = decision.get("mission_id")
+            if decision_mission is not None and decision_mission != mission_id:
+                return False
             return decision.get(
                 "event", decision.get("transition_event", decision.get("transition"))
             ) == event
+        decision_mission = getattr(decision, "mission_id", None)
+        if decision_mission is not None and decision_mission != mission_id:
+            return False
         return getattr(decision, "event", getattr(decision, "transition", None)) == event

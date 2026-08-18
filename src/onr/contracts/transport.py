@@ -394,6 +394,7 @@ def normalized_plan_transport_event_to_wire(
         raise TypeError("event must be a NormalizedPlanTransportEvent")
     payload = event.payload
     wire_payload: dict[str, object] = {
+        "mission_id": payload.mission_id,
         "mission_snapshot_id": payload.mission_snapshot_id,
         "plan_revision": payload.plan_revision,
         "planner_choice": payload.planner_choice.to_dict(),
