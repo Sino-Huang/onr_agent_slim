@@ -3,7 +3,10 @@
 from collections.abc import Mapping
 from typing import Protocol
 
-from onr.contracts.planning import PlannerExecutionResult
+from onr.contracts.planning import (
+    PlannerExecutionResult,
+    SymbolicPlannerExecutionResult,
+)
 
 
 class TemporalPlannerExecutor(Protocol):
@@ -11,4 +14,12 @@ class TemporalPlannerExecutor(Protocol):
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         """Return one terminal planner execution result."""
+        ...
+
+
+class SymbolicPlannerExecutor(Protocol):
+    """Executes symbolic planner assets and returns ordered action calls."""
+
+    def execute(self, assets: Mapping[str, bytes]) -> SymbolicPlannerExecutionResult:
+        """Return one terminal symbolic planner execution result."""
         ...

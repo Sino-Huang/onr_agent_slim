@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 
 JsonScalar = str | int | float | bool | None
@@ -19,6 +19,7 @@ class PlanningProfile(StrEnum):
     """Declared planning semantics for one plan revision."""
 
     TEMPORAL = "temporal"
+    SYMBOLIC = "symbolic"
 
 
 class PlanningOutcome(StrEnum):
@@ -29,6 +30,7 @@ class PlanningOutcome(StrEnum):
     INCOMPLETE = "incomplete"
     TIMEOUT = "timeout"
     ERROR = "error"
+    UNSUPPORTED = "unsupported"
 
 
 def _reject_non_finite(value: str) -> None:
@@ -51,19 +53,30 @@ def _require_json_scalar(value: object, label: str) -> JsonScalar:
 
 @dataclass(frozen=True, slots=True)
 class PlannerChoice:
-    """Semantic selection of temporal planning with MiniZinc."""
+    """Semantic planner selection without executable paths."""
 
     planning_profile: PlanningProfile | str
-    planner_id: str
+    planner_id: str | None
 
     def __post_init__(self) -> None:
         try:
             profile = PlanningProfile(self.planning_profile)
         except (TypeError, ValueError) as exc:
-            raise ValueError("planner choice must use temporal planning") from exc
-        if profile is not PlanningProfile.TEMPORAL or self.planner_id != "minizinc":
-            raise ValueError("planner choice must select temporal MiniZinc")
+            raise ValueError("planner choice has an unsupported planning profile") from exc
+        if profile is PlanningProfile.TEMPORAL and self.planner_id != "minizinc":
+            raise ValueError("temporal planner choice must select minizinc")
+        if profile is PlanningProfile.SYMBOLIC and self.planner_id not in (
+            "fast-downward",
+            None,
+        ):
+            raise ValueError("unsupported symbolic planner")
         object.__setattr__(self, "planning_profile", profile)
+
+    @classmethod
+    def unsupported_symbolic(cls) -> PlannerChoice:
+        """Return an explicit symbolic choice with no supported planner."""
+
+        return cls(PlanningProfile.SYMBOLIC, None)
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PlannerChoice:
@@ -75,8 +88,10 @@ class PlannerChoice:
             raise ValueError("planner choice contains unknown or missing fields")
         planner_id = value["planner_id"]
         planning_profile = value["planning_profile"]
-        if not isinstance(planner_id, str) or not isinstance(planning_profile, str):
-            raise ValueError("planner choice fields must be strings")
+        if not isinstance(planning_profile, str) or not (
+            planner_id is None or isinstance(planner_id, str)
+        ):
+            raise ValueError("planner choice fields have invalid types")
         return cls(planner_id=planner_id, planning_profile=planning_profile)
 
     @classmethod
@@ -87,7 +102,7 @@ class PlannerChoice:
             raise ValueError("planner choice must be valid JSON") from exc
         return cls.from_dict(decoded)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | None]:
         return {
             "planner_id": self.planner_id,
             "planning_profile": str(self.planning_profile),
@@ -188,6 +203,8 @@ class MissionSpec:
         _require_text(self.source_authority, "source authority")
         if not isinstance(self.planner_choice, PlannerChoice):
             raise ValueError("planner choice must be a PlannerChoice")
+        if self.planner_choice.planning_profile is not PlanningProfile.TEMPORAL:
+            raise ValueError("temporal Mission Specification requires temporal planning")
         if isinstance(self.horizon, bool) or not isinstance(self.horizon, int):
             raise ValueError("mission horizon must be an integer")
         if self.horizon <= 0:
@@ -230,7 +247,9 @@ class MissionSpec:
         return _canonical_json(self.to_dict())
 
 
-def _reject_dependency_cycles(maneuvers: tuple[TemporalManeuver, ...]) -> None:
+def _reject_dependency_cycles(
+    maneuvers: tuple[TemporalManeuver | SymbolicManeuver, ...],
+) -> None:
     dependencies = {item.maneuver_id: item.dependencies for item in maneuvers}
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -248,6 +267,110 @@ def _reject_dependency_cycles(maneuvers: tuple[TemporalManeuver, ...]) -> None:
 
     for maneuver_id in dependencies:
         visit(maneuver_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolicManeuver:
+    """Structured symbolic maneuver with an action cost, never a duration."""
+
+    maneuver_id: str
+    intent: ManeuverIntent
+    dependencies: tuple[str, ...]
+    cost: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.maneuver_id, str) or not _MANEUVER_ID.fullmatch(
+            self.maneuver_id
+        ):
+            raise ValueError("maneuver ID must be a portable semantic identifier")
+        if not isinstance(self.intent, ManeuverIntent):
+            raise ValueError("maneuver intent must be a ManeuverIntent")
+        dependencies = tuple(self.dependencies)
+        if not all(
+            isinstance(item, str) and _MANEUVER_ID.fullmatch(item)
+            for item in dependencies
+        ):
+            raise ValueError("dependencies must be semantic maneuver IDs")
+        if len(set(dependencies)) != len(dependencies):
+            raise ValueError("maneuver dependencies must be unique")
+        if self.maneuver_id in dependencies:
+            raise ValueError("a maneuver cannot depend on itself")
+        if isinstance(self.cost, bool) or not isinstance(self.cost, int) or self.cost <= 0:
+            raise ValueError("maneuver cost must be a positive integer")
+        object.__setattr__(self, "dependencies", tuple(sorted(dependencies)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "maneuver_id": self.maneuver_id,
+            "intent": self.intent.to_dict(),
+            "dependencies": self.dependencies,
+            "cost": self.cost,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolicMissionSpec:
+    """Immutable structured description of a symbolic Mission."""
+
+    mission_id: str
+    objective: str
+    planner_choice: PlannerChoice
+    maneuvers: tuple[SymbolicManeuver, ...]
+    source_authority: str
+    domain_revision: int = 1
+
+    def __post_init__(self) -> None:
+        _require_text(self.mission_id, "mission ID")
+        _require_text(self.objective, "mission objective")
+        _require_text(self.source_authority, "source authority")
+        if not isinstance(self.planner_choice, PlannerChoice):
+            raise ValueError("planner choice must be a PlannerChoice")
+        if self.planner_choice.planning_profile is not PlanningProfile.SYMBOLIC:
+            raise ValueError("symbolic Mission Specification requires symbolic planning")
+        if (
+            isinstance(self.domain_revision, bool)
+            or not isinstance(self.domain_revision, int)
+            or self.domain_revision <= 0
+        ):
+            raise ValueError("domain revision must be a positive integer")
+
+        maneuvers = tuple(self.maneuvers)
+        if not maneuvers or not all(isinstance(item, SymbolicManeuver) for item in maneuvers):
+            raise ValueError("Mission Specification requires symbolic maneuvers")
+        maneuver_ids = [item.maneuver_id for item in maneuvers]
+        if len(set(maneuver_ids)) != len(maneuver_ids):
+            raise ValueError("maneuver IDs must be unique")
+        normalized_ids = {
+            maneuver_id.lower().rstrip("-") for maneuver_id in maneuver_ids
+        }
+        if len(normalized_ids) != len(maneuver_ids):
+            raise ValueError(
+                "symbolic maneuver IDs must be unique after PDDL normalization"
+            )
+        declared_ids = set(maneuver_ids)
+        if any(
+            dependency not in declared_ids
+            for maneuver in maneuvers
+            for dependency in maneuver.dependencies
+        ):
+            raise ValueError("dependencies must identify Mission maneuvers")
+        _reject_dependency_cycles(maneuvers)
+        object.__setattr__(
+            self, "maneuvers", tuple(sorted(maneuvers, key=lambda item: item.maneuver_id))
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mission_id": self.mission_id,
+            "objective": self.objective,
+            "planner_choice": self.planner_choice.to_dict(),
+            "maneuvers": [item.to_dict() for item in self.maneuvers],
+            "source_authority": self.source_authority,
+            "domain_revision": self.domain_revision,
+        }
+
+    def to_canonical_json(self) -> str:
+        return _canonical_json(self.to_dict())
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +413,57 @@ class PlannerExecutionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SymbolicActionCall:
+    """One ordered action call emitted by a symbolic planner."""
+
+    action: str
+    arguments: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action, str) or not _MANEUVER_ID.fullmatch(self.action):
+            raise ValueError("symbolic action name is invalid")
+        arguments = tuple(self.arguments)
+        if not all(isinstance(item, str) and item for item in arguments):
+            raise ValueError("symbolic action arguments must be non-empty strings")
+        object.__setattr__(self, "arguments", arguments)
+
+    @property
+    def maneuver_id(self) -> str:
+        return self.action
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolicPlannerExecutionResult:
+    """Terminal result returned through the symbolic planner executor port."""
+
+    outcome: PlanningOutcome | str
+    action_calls: tuple[SymbolicActionCall, ...] = ()
+    total_plan_cost: int = 0
+
+    def __post_init__(self) -> None:
+        outcome = PlanningOutcome(self.outcome)
+        action_calls = tuple(self.action_calls)
+        if not all(isinstance(item, SymbolicActionCall) for item in action_calls):
+            raise ValueError("symbolic action calls must be SymbolicActionCall records")
+        if (
+            isinstance(self.total_plan_cost, bool)
+            or not isinstance(self.total_plan_cost, int)
+            or self.total_plan_cost < 0
+        ):
+            raise ValueError("total plan cost must be a non-negative integer")
+        if outcome is not PlanningOutcome.SOLVED and (
+            action_calls or self.total_plan_cost
+        ):
+            raise ValueError("only a solved symbolic result may contain a plan")
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "action_calls", action_calls)
+
+    @property
+    def actions(self) -> tuple[SymbolicActionCall, ...]:
+        return self.action_calls
+
+
+@dataclass(frozen=True, slots=True)
 class ScheduledManeuver:
     """Abstract maneuver intent placed on a normalized temporal schedule."""
 
@@ -328,15 +502,60 @@ class ScheduledManeuver:
 
 
 @dataclass(frozen=True, slots=True)
+class SymbolicPlanStep:
+    """One ordered normalized symbolic maneuver, with no timing fields."""
+
+    step_index: int
+    maneuver_id: str
+    intent: ManeuverIntent
+    dependencies: tuple[str, ...]
+    cost: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.step_index, bool) or not isinstance(self.step_index, int):
+            raise ValueError("symbolic step index must be an integer")
+        if self.step_index < 0:
+            raise ValueError("symbolic step index must be non-negative")
+        if not isinstance(self.maneuver_id, str) or not _MANEUVER_ID.fullmatch(
+            self.maneuver_id
+        ):
+            raise ValueError("symbolic step maneuver ID is invalid")
+        if not isinstance(self.intent, ManeuverIntent):
+            raise ValueError("symbolic step intent must be a ManeuverIntent")
+        dependencies = tuple(self.dependencies)
+        if not all(
+            isinstance(item, str) and _MANEUVER_ID.fullmatch(item)
+            for item in dependencies
+        ):
+            raise ValueError("symbolic step dependencies must be maneuver IDs")
+        if len(set(dependencies)) != len(dependencies):
+            raise ValueError("symbolic step dependencies must be unique")
+        if self.maneuver_id in dependencies:
+            raise ValueError("a symbolic step cannot depend on itself")
+        if isinstance(self.cost, bool) or not isinstance(self.cost, int) or self.cost <= 0:
+            raise ValueError("symbolic step cost must be a positive integer")
+        object.__setattr__(self, "dependencies", tuple(sorted(dependencies)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "step_index": self.step_index,
+            "maneuver_id": self.maneuver_id,
+            "intent": self.intent.to_dict(),
+            "dependencies": self.dependencies,
+            "cost": self.cost,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedPlan:
     """Canonical planner-independent plan outcome with provenance."""
 
-    mission_spec: MissionSpec
+    mission_spec: MissionSpec | SymbolicMissionSpec
     plan_revision: int
     mission_snapshot_id: str
     planner_choice: PlannerChoice
     outcome: PlanningOutcome | str
-    maneuvers: tuple[ScheduledManeuver, ...] = ()
+    maneuvers: tuple[ScheduledManeuver | SymbolicPlanStep, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.plan_revision, bool) or not isinstance(
@@ -350,16 +569,49 @@ class NormalizedPlan:
             raise ValueError("plan Planner Choice must match the Mission Specification")
         outcome = PlanningOutcome(self.outcome)
         maneuvers = tuple(self.maneuvers)
-        if not all(isinstance(item, ScheduledManeuver) for item in maneuvers):
-            raise ValueError("normalized maneuvers must be ScheduledManeuver records")
+        if isinstance(self.mission_spec, MissionSpec):
+            if not all(isinstance(item, ScheduledManeuver) for item in maneuvers):
+                raise ValueError("temporal normalized maneuvers must be ScheduledManeuver records")
+        elif isinstance(self.mission_spec, SymbolicMissionSpec):
+            if not all(isinstance(item, SymbolicPlanStep) for item in maneuvers):
+                raise ValueError("symbolic normalized maneuvers must be SymbolicPlanStep records")
+            symbolic_maneuvers = cast(tuple[SymbolicPlanStep, ...], maneuvers)
+            if outcome is PlanningOutcome.SOLVED:
+                declared = {item.maneuver_id: item for item in self.mission_spec.maneuvers}
+                if len(symbolic_maneuvers) != len(declared) or {
+                    item.maneuver_id for item in symbolic_maneuvers
+                } != set(declared):
+                    raise ValueError("symbolic normalized plan must contain each maneuver once")
+                if tuple(item.step_index for item in symbolic_maneuvers) != tuple(
+                    range(len(symbolic_maneuvers))
+                ):
+                    raise ValueError("symbolic normalized steps must have contiguous indices")
+                if any(
+                    item.dependencies != declared[item.maneuver_id].dependencies
+                    or item.cost != declared[item.maneuver_id].cost
+                    or item.intent != declared[item.maneuver_id].intent
+                    for item in symbolic_maneuvers
+                ):
+                    raise ValueError("symbolic normalized steps must match declared maneuvers")
+        else:
+            raise ValueError("normalized plan mission specification is invalid")
         if outcome is not PlanningOutcome.SOLVED and maneuvers:
             raise ValueError("only a solved Normalized Plan may contain maneuvers")
         object.__setattr__(self, "outcome", outcome)
-        object.__setattr__(
-            self,
-            "maneuvers",
-            tuple(sorted(maneuvers, key=lambda item: (item.start, item.maneuver_id))),
-        )
+        if isinstance(self.mission_spec, MissionSpec):
+            maneuvers = tuple(
+                sorted(
+                    cast(tuple[ScheduledManeuver, ...], maneuvers),
+                    key=lambda item: (item.start, item.maneuver_id),
+                )
+            )
+        object.__setattr__(self, "maneuvers", maneuvers)
+
+    @property
+    def symbolic_steps(self) -> tuple[SymbolicPlanStep, ...]:
+        if not all(isinstance(item, SymbolicPlanStep) for item in self.maneuvers):
+            return ()
+        return cast(tuple[SymbolicPlanStep, ...], self.maneuvers)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -378,6 +630,18 @@ class NormalizedPlan:
 @dataclass(frozen=True, slots=True)
 class TemporalPlanningResult:
     """Public result of one temporal planning attempt."""
+
+    outcome: PlanningOutcome
+    normalized_plan: NormalizedPlan
+
+    def __post_init__(self) -> None:
+        if self.outcome is not self.normalized_plan.outcome:
+            raise ValueError("planning result outcome must match its Normalized Plan")
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolicPlanningResult:
+    """Public result of one symbolic planning attempt."""
 
     outcome: PlanningOutcome
     normalized_plan: NormalizedPlan
