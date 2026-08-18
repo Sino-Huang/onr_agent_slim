@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, cast
 
 from onr.adapters.file_transport import FileTransport
+from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
+from onr.application.fsm import FSMRunner
 from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.transport import Command, CommandOutcome
 from onr.ports.transport import Subscription
+from onr.ports.transport import Transport
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 
 
@@ -59,6 +63,22 @@ class RuntimeComposition:
             return outcome
         finally:
             consumer.close()
+
+    def create_fsm_runner(
+        self,
+        *,
+        mission_id: str,
+        clock: Callable[[], int | float] | None = None,
+    ) -> FSMRunner:
+        """Compose the pure FSM service with the selected transport and JSON store."""
+
+        if not isinstance(mission_id, str) or not mission_id.strip():
+            raise ValueError("mission ID must be a non-empty string")
+        return FSMRunner(
+            cast(Transport, self.transport),
+            store=JsonFSMStateStore(self.config.storage.root / "fsm" / mission_id),
+            clock=clock,
+        )
 
 
 def create_runtime(
