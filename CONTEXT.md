@@ -32,6 +32,10 @@ _Avoid_: Command, notification
 A single-recipient request to an agent or service that produces an accepted, completed, or failed outcome.
 _Avoid_: Event, broadcast
 
+**Source Authority**:
+The identified authority from which a Mission Specification originates and whose intent its derived plans preserve.
+_Avoid_: Planner, executor
+
 **Mission Specification**:
 An immutable structured description of a Mission, its objective, constraints, and chosen planning profile.
 _Avoid_: Prompt, untyped mission
