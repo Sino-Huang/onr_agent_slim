@@ -51,6 +51,35 @@ def _require_json_scalar(value: object, label: str) -> JsonScalar:
     return value
 
 
+def _strict_object(value: object, expected: set[str], label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError(f"{label} contains unknown or missing fields")
+    return cast(Mapping[str, Any], value)
+
+
+def _decode_json(value: str, label: str) -> Any:
+    try:
+        return json.loads(value, parse_constant=_reject_non_finite)
+    except (TypeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"{label} must be valid JSON") from exc
+
+
+def _maneuver_intent_from_dict(value: object) -> ManeuverIntent:
+    data = _strict_object(value, {"action", "parameters"}, "maneuver intent")
+    action = data["action"]
+    parameters = data["parameters"]
+    if not isinstance(action, str) or not isinstance(parameters, Mapping):
+        raise ValueError("maneuver intent fields have invalid types")
+    parsed = tuple(
+        ManeuverParameter(name, _require_json_scalar(item, "maneuver parameter value"))
+        for name, item in parameters.items()
+        if isinstance(name, str)
+    )
+    if len(parsed) != len(parameters):
+        raise ValueError("maneuver parameter names must be strings")
+    return ManeuverIntent(action, parsed)
+
+
 @dataclass(frozen=True, slots=True)
 class PlannerChoice:
     """Semantic planner selection without executable paths."""
@@ -246,6 +275,45 @@ class MissionSpec:
     def to_canonical_json(self) -> str:
         return _canonical_json(self.to_dict())
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> MissionSpec:
+        data = _strict_object(
+            value,
+            {"mission_id", "objective", "planner_choice", "maneuvers", "horizon", "source_authority"},
+            "Mission Specification",
+        )
+        raw_maneuvers = data["maneuvers"]
+        if not isinstance(raw_maneuvers, (list, tuple)):
+            raise ValueError("Mission Specification maneuvers must be an array")
+        maneuvers = []
+        for raw in raw_maneuvers:
+            item = _strict_object(
+                raw, {"maneuver_id", "intent", "dependencies", "duration"}, "temporal maneuver"
+            )
+            dependencies = item["dependencies"]
+            if not isinstance(dependencies, (list, tuple)):
+                raise ValueError("temporal maneuver dependencies must be an array")
+            maneuvers.append(
+                TemporalManeuver(
+                    item["maneuver_id"],
+                    _maneuver_intent_from_dict(item["intent"]),
+                    tuple(dependencies),
+                    item["duration"],
+                )
+            )
+        return cls(
+            mission_id=data["mission_id"],
+            objective=data["objective"],
+            planner_choice=PlannerChoice.from_dict(data["planner_choice"]),
+            maneuvers=tuple(maneuvers),
+            horizon=data["horizon"],
+            source_authority=data["source_authority"],
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> MissionSpec:
+        return cls.from_dict(_decode_json(value, "Mission Specification"))
+
 
 def _reject_dependency_cycles(
     maneuvers: tuple[TemporalManeuver | SymbolicManeuver, ...],
@@ -371,6 +439,52 @@ class SymbolicMissionSpec:
 
     def to_canonical_json(self) -> str:
         return _canonical_json(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> SymbolicMissionSpec:
+        data = _strict_object(
+            value,
+            {
+                "mission_id",
+                "objective",
+                "planner_choice",
+                "maneuvers",
+                "source_authority",
+                "domain_revision",
+            },
+            "Symbolic Mission Specification",
+        )
+        raw_maneuvers = data["maneuvers"]
+        if not isinstance(raw_maneuvers, (list, tuple)):
+            raise ValueError("Symbolic Mission Specification maneuvers must be an array")
+        maneuvers = []
+        for raw in raw_maneuvers:
+            item = _strict_object(
+                raw, {"maneuver_id", "intent", "dependencies", "cost"}, "symbolic maneuver"
+            )
+            dependencies = item["dependencies"]
+            if not isinstance(dependencies, (list, tuple)):
+                raise ValueError("symbolic maneuver dependencies must be an array")
+            maneuvers.append(
+                SymbolicManeuver(
+                    item["maneuver_id"],
+                    _maneuver_intent_from_dict(item["intent"]),
+                    tuple(dependencies),
+                    item["cost"],
+                )
+            )
+        return cls(
+            mission_id=data["mission_id"],
+            objective=data["objective"],
+            planner_choice=PlannerChoice.from_dict(data["planner_choice"]),
+            maneuvers=tuple(maneuvers),
+            source_authority=data["source_authority"],
+            domain_revision=data["domain_revision"],
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> SymbolicMissionSpec:
+        return cls.from_dict(_decode_json(value, "Symbolic Mission Specification"))
 
 
 @dataclass(frozen=True, slots=True)

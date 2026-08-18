@@ -18,6 +18,13 @@ from onr.contracts.maneuver_control import (
     NonPhysicalChoice,
     PhysicalAction,
 )
+from onr.contracts.hyper_agent import (
+    FrozenMissionSpec,
+    HumanQuestion,
+    MissionAuthorityRecord,
+    MissionInput,
+    ReplanRequest,
+)
 
 __all__ = [
     "MissionSnapshot",
@@ -34,4 +41,9 @@ __all__ = [
     "ManeuverControlDecision",
     "ManeuverCommand",
     "InvocationOverlay",
+    "MissionInput",
+    "FrozenMissionSpec",
+    "MissionAuthorityRecord",
+    "ReplanRequest",
+    "HumanQuestion",
 ]

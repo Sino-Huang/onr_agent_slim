@@ -10,12 +10,17 @@ from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.application.fsm import FSMRunner
+from onr.application.hyper_agent import HyperAgent
 from onr.application.maneuver_control import ManeuverControl
 from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.transport import Command, CommandOutcome
 from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
+from onr.agents.hyper_agent import (
+    DeepAgentsMissionInterpreter,
+    create_hyper_agent as create_deep_hyper_agent,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +107,54 @@ class RuntimeComposition:
             adapter,
             decision_provider,
             target_service=target_service,
+        )
+
+    def create_hyper_agent(
+        self,
+        interpreter: object | None = None,
+        planner: object | None = None,
+        *,
+        planners: dict[object, object] | None = None,
+        temporal_planner: object | None = None,
+        symbolic_planner: object | None = None,
+        model: Any | None = None,
+        system_prompt: str | None = None,
+        mission_spec_topic: str = "mission-specifications",
+        normalized_plan_topic: str = "normalized-plans",
+        replan_topic: str = "replan-requests",
+        mission_id: str | None = None,
+    ) -> HyperAgent:
+        """Compose Hyper Agent with injected interpretation and planning seams."""
+
+        if interpreter is None:
+            if model is None:
+                raise ValueError("create_hyper_agent requires an interpreter or model")
+            interpreter = DeepAgentsMissionInterpreter(
+                create_deep_hyper_agent(model=model, system_prompt=system_prompt)
+            )
+        selected = planners
+        if selected is None and (temporal_planner is not None or symbolic_planner is not None):
+            selected = {}
+            if temporal_planner is not None:
+                selected["temporal"] = temporal_planner
+            if symbolic_planner is not None:
+                selected["symbolic"] = symbolic_planner
+        if mission_id is not None:
+            subscription = Subscription(
+                service_id=self.config.services.hyper_agent,
+                mission_id=mission_id,
+                topic=replan_topic,
+            )
+            if subscription not in self.transport.subscriptions:
+                self.transport.subscriptions = self.transport.subscriptions + (subscription,)
+        return HyperAgent(
+            interpreter=interpreter,
+            planner=planner,
+            planners=selected,
+            transport=self.transport,
+            mission_spec_topic=mission_spec_topic,
+            normalized_plan_topic=normalized_plan_topic,
+            replan_topic=replan_topic,
         )
 
 
