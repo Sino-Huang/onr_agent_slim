@@ -1,15 +1,15 @@
 llm:
-  provider: openai
-  model: gpt-4o-mini
+  provider: vllm
+  base_url: http://127.0.0.1:11411/v1
+  model: google/gemma-4-31B-it
+  api_key: EMPTY
   temperature: 0
 planners:
-  # These executable launch seams are intentionally no-op placeholders until
-  # the real planner adapters are composed; they only satisfy path validation.
   temporal:
-    entrypoint: bin/onr-temporal-planner
+    entrypoint: modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc
     timeout_seconds: 30
   symbolic:
-    entrypoint: bin/onr-symbolic-planner
+    entrypoint: modules/downward/fast-downward.py
     timeout_seconds: 30
 heartbeats:
   hyper_seconds: 30

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, cast
 
+from langchain_openai import ChatOpenAI
+
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
@@ -73,6 +75,17 @@ class RuntimeComposition:
         else:
             transport = InProcessTransport(subscriptions)
         return cls(config=config, transport=transport)
+
+    def create_chat_model(self) -> ChatOpenAI:
+        """Create the configured OpenAI-compatible chat model."""
+
+        llm = self.config.llm
+        return ChatOpenAI(
+            base_url=llm.base_url,
+            model=llm.model,
+            api_key=llm.api_key,
+            temperature=llm.temperature,
+        )
 
     def run_planning_command(
         self,
@@ -167,8 +180,10 @@ class RuntimeComposition:
         """Compose Maneuver Control without introducing runtime authority state."""
 
         if decision_provider is None:
-            if model is None or mission_id is None:
+            if mission_id is None:
                 raise ValueError("create_maneuver_control requires a provider or model and Mission ID")
+            if model is None:
+                model = self.create_chat_model()
             if memory_store is None:
                 memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
             context_backend_root = backend_root
@@ -215,7 +230,7 @@ class RuntimeComposition:
 
         if interpreter is None:
             if model is None:
-                raise ValueError("create_hyper_agent requires an interpreter or model")
+                model = self.create_chat_model()
             if mission_id is not None and memory_store is None:
                 memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
             context_backend_root = backend_root

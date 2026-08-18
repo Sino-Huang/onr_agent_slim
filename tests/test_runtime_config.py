@@ -14,7 +14,12 @@ from onr.ports.transport import Subscription
 def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     root = Path(__file__).parents[1]
     config = load_runtime_config(repo_root=root)
-    assert config.planners.temporal.entrypoint == root / "bin/onr-temporal-planner"
+    assert config.llm.provider == "vllm"
+    assert config.llm.base_url == "http://127.0.0.1:11411/v1"
+    assert config.llm.model == "google/gemma-4-31B-it"
+    assert config.llm.api_key == "EMPTY"
+    assert config.planners.temporal.entrypoint == root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
+    assert config.planners.symbolic.entrypoint == root / "modules/downward/fast-downward.py"
     assert config.transport.root == (root / "var/transport").resolve()
 
 
@@ -24,7 +29,7 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     executable.chmod(0o755)
     config = tmp_path / "config.yaml"
     config.write_text(
-        """llm:\n  provider: test\n  model: model\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
+        """llm:\n  provider: test\n  base_url: http://127.0.0.1:8000/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
         encoding="utf-8",
     )
     with pytest.raises(ValueError):
@@ -35,6 +40,31 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     config.write_text(config.read_text(encoding="utf-8").replace("hyper_seconds: true", "hyper_seconds: 1"), encoding="utf-8")
     runtime = create_runtime(repo_root=tmp_path, config_path=config)
     assert isinstance(runtime.transport, InProcessTransport)
+
+    valid_config = config.read_text(encoding="utf-8")
+    config.write_text(
+        valid_config.replace("timeout_seconds: 1", "timeout_seconds: 0", 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="planners.temporal.timeout_seconds must be a positive number",
+    ):
+        load_runtime_config(config, repo_root=tmp_path)
+
+    config.write_text(valid_config, encoding="utf-8")
+    config.write_text(valid_config.replace("base_url: http://127.0.0.1:8000/v1", "base_url: not-a-url"), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_runtime_config(config, repo_root=tmp_path)
+    config.write_text(
+        valid_config.replace("provider: test", "provider: vllm").replace(
+            "base_url: http://127.0.0.1:8000/v1", "base_url: http://127.0.0.1:8000/api"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_runtime_config(config, repo_root=tmp_path)
+    config.write_text(valid_config, encoding="utf-8")
 
     config.write_text(config.read_text(encoding="utf-8").replace("backend: inprocess", "backend: file"), encoding="utf-8")
     file_runtime = create_runtime(repo_root=tmp_path, config_path=config)

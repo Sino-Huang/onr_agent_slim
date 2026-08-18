@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -18,8 +19,24 @@ def _text(value: object, label: str) -> str:
 
 
 def _duration(value: object, label: str) -> int | float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
         raise ValueError(f"{label} must be a non-negative number")
+    return value
+
+
+def _positive_duration(value: object, label: str) -> int | float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{label} must be a positive number")
     return value
 
 
@@ -34,7 +51,9 @@ def _exact(value: object, expected: set[str], label: str) -> dict[str, Any]:
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     provider: str
+    base_url: str
     model: str
+    api_key: str
     temperature: int | float
 
 
@@ -109,6 +128,16 @@ def _config_path(value: object, label: str, repo_root: Path) -> Path:
     return (raw if raw.is_absolute() else repo_root / raw).resolve()
 
 
+def _url(value: object, label: str, *, require_v1: bool = False) -> str:
+    result = _text(value, label)
+    parsed = urlparse(result)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{label} must be a valid HTTP(S) URL")
+    if require_v1 and "v1" not in parsed.path.strip("/").split("/"):
+        raise ValueError(f"{label} must include /v1 for vLLM")
+    return result.rstrip("/")
+
+
 def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> RuntimeConfig:
     """Load a complete stable config; environment variables never overlay fields."""
 
@@ -121,18 +150,36 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"runtime configuration cannot be read: {selected}") from exc
     top = _exact(raw, {"llm", "planners", "heartbeats", "transport", "storage", "services"}, "runtime configuration")
-    llm = _exact(top["llm"], {"provider", "model", "temperature"}, "llm")
+    llm = _exact(
+        top["llm"],
+        {"provider", "base_url", "model", "api_key", "temperature"},
+        "llm",
+    )
     provider = _text(llm["provider"], "llm.provider")
+    base_url = _url(llm["base_url"], "llm.base_url", require_v1=provider == "vllm")
     model = _text(llm["model"], "llm.model")
+    api_key = _text(llm["api_key"], "llm.api_key")
     temperature = _duration(llm["temperature"], "llm.temperature")
 
     planner_values = _exact(top["planners"], {"temporal", "symbolic"}, "planners")
     planner_records: dict[str, PlannerConfig] = {}
     for name in ("temporal", "symbolic"):
-        values = _exact(planner_values[name], {"entrypoint", "timeout_seconds"}, f"planners.{name}")
+        values = _exact(
+            planner_values[name],
+            {"entrypoint", "timeout_seconds"},
+            f"planners.{name}",
+        )
         planner_records[name] = PlannerConfig(
-            entrypoint=_path(values["entrypoint"], f"planners.{name}.entrypoint", root, executable=True),
-            timeout_seconds=_duration(values["timeout_seconds"], f"planners.{name}.timeout_seconds"),
+            entrypoint=_path(
+                values["entrypoint"],
+                f"planners.{name}.entrypoint",
+                root,
+                executable=True,
+            ),
+            timeout_seconds=_positive_duration(
+                values["timeout_seconds"],
+                f"planners.{name}.timeout_seconds",
+            ),
         )
 
     heartbeat_values = _exact(top["heartbeats"], {"hyper_seconds", "maneuver_seconds"}, "heartbeats")
@@ -150,7 +197,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     service_values = _exact(top["services"], {"hyper_agent", "maneuver_control", "context_coordination", "fsm_runner", "planner"}, "services")
     services = ServicesConfig(**{key: _text(service_values[key], f"services.{key}") for key in service_values})
     return RuntimeConfig(
-        LLMConfig(provider, model, temperature),
+        LLMConfig(provider, base_url, model, api_key, temperature),
         PlannersConfig(planner_records["temporal"], planner_records["symbolic"]),
         heartbeats,
         transport,

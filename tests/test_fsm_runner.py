@@ -314,7 +314,7 @@ def test_inconsistent_persisted_execution_record_is_rejected() -> None:
 
 def test_runtime_registers_fsm_runner_subscription() -> None:
     config = RuntimeConfig(
-        llm=LLMConfig("test", "model", 0),
+        llm=LLMConfig("test", "http://127.0.0.1:8000/v1", "model", "test-key", 0),
         planners=PlannersConfig(
             PlannerConfig(Path(__file__), 1), PlannerConfig(Path(__file__), 1)
         ),

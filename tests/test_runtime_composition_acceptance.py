@@ -106,7 +106,9 @@ def _runtime_config(tmp_path: Path, planner_path: Path) -> Path:
     config.write_text(
         f"""llm:
   provider: test
+  base_url: http://127.0.0.1:8000/v1
   model: test-model
+  api_key: test-key
   temperature: 0
 planners:
   temporal:
