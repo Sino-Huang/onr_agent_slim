@@ -25,6 +25,11 @@ from onr.contracts.hyper_agent import (
     MissionInput,
     ReplanRequest,
 )
+from onr.contracts.role_context import (
+    HYPER_AGENT_ROLE,
+    MANEUVER_CONTROL_ROLE,
+    RoleSkill,
+)
 
 __all__ = [
     "MissionSnapshot",
@@ -46,4 +51,7 @@ __all__ = [
     "MissionAuthorityRecord",
     "ReplanRequest",
     "HumanQuestion",
+    "HYPER_AGENT_ROLE",
+    "MANEUVER_CONTROL_ROLE",
+    "RoleSkill",
 ]

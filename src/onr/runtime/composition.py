@@ -9,6 +9,7 @@ from typing import Any, Callable, cast
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
+from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.application.fsm import FSMRunner
 from onr.application.hyper_agent import HyperAgent
 from onr.application.maneuver_control import ManeuverControl
@@ -20,6 +21,10 @@ from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.agents.hyper_agent import (
     DeepAgentsMissionInterpreter,
     create_hyper_agent as create_deep_hyper_agent,
+)
+from onr.agents.maneuver_control import (
+    DeepAgentsDecisionProvider,
+    create_maneuver_control_agent as create_deep_maneuver_control_agent,
 )
 
 
@@ -96,11 +101,36 @@ class RuntimeComposition:
     def create_maneuver_control(
         self,
         adapter: ManeuverAdapter,
-        decision_provider: object,
+        decision_provider: object | None = None,
         *,
         target_service: str = "maneuver-adapter",
+        model: Any | None = None,
+        mission_id: str | None = None,
+        memory_store: object | None = None,
+        skill_catalog: object | None = None,
+        skill_version: str | None = None,
+        backend_root: Path | None = None,
     ) -> ManeuverControl:
         """Compose Maneuver Control without introducing runtime authority state."""
+
+        if decision_provider is None:
+            if model is None or mission_id is None:
+                raise ValueError("create_maneuver_control requires a provider or model and Mission ID")
+            if memory_store is None:
+                memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
+            context_backend_root = backend_root
+            if context_backend_root is None and skill_catalog is not None:
+                context_backend_root = self.config.storage.root
+            decision_provider = DeepAgentsDecisionProvider(
+                create_deep_maneuver_control_agent(
+                    model=model,
+                    mission_id=mission_id,
+                    memory_store=memory_store,
+                    skill_catalog=skill_catalog,
+                    skill_version=skill_version,
+                    backend_root=context_backend_root,
+                )
+            )
 
         return ManeuverControl(
             cast(Any, self.transport),
@@ -123,14 +153,31 @@ class RuntimeComposition:
         normalized_plan_topic: str = "normalized-plans",
         replan_topic: str = "replan-requests",
         mission_id: str | None = None,
+        memory_store: object | None = None,
+        skill_catalog: object | None = None,
+        skill_version: str | None = None,
+        backend_root: Path | None = None,
     ) -> HyperAgent:
         """Compose Hyper Agent with injected interpretation and planning seams."""
 
         if interpreter is None:
             if model is None:
                 raise ValueError("create_hyper_agent requires an interpreter or model")
+            if mission_id is not None and memory_store is None:
+                memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
+            context_backend_root = backend_root
+            if context_backend_root is None and skill_catalog is not None:
+                context_backend_root = self.config.storage.root
             interpreter = DeepAgentsMissionInterpreter(
-                create_deep_hyper_agent(model=model, system_prompt=system_prompt)
+                create_deep_hyper_agent(
+                    model=model,
+                    system_prompt=system_prompt,
+                    mission_id=mission_id,
+                    memory_store=memory_store,
+                    skill_catalog=skill_catalog,
+                    skill_version=skill_version,
+                    backend_root=context_backend_root,
+                )
             )
         selected = planners
         if selected is None and (temporal_planner is not None or symbolic_planner is not None):
