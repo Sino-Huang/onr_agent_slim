@@ -335,6 +335,51 @@ def test_interpreter_does_not_retry_semantic_bad_bound() -> None:
     assert len(agent.calls) == 1
 
 
+def test_freeze_structural_recovery_creates_one_authority_and_publication() -> None:
+    agent = _ResponseAgent(
+        [
+            {"structured_response": {"mission_id": "mission-1"}},
+            {"structured_response": _spec().to_dict()},
+        ]
+    )
+    transport = InProcessTransport()
+    service = HyperAgent(
+        DeepAgentsMissionInterpreter(agent, max_retries=1),
+        transport=transport,
+    )
+
+    frozen = service.freeze_mission(
+        MissionInput("mission-1", "Survey", "mission-control")
+    )
+
+    assert len(agent.calls) == 2
+    assert len(service.authorities) == 1
+    assert service.authority("mission-1") is frozen
+    event = transport.latest_event("mission-specifications", "mission-1")
+    assert event is not None and event.event_kind == "mission-specification"
+    assert transport.next_event_sequence("mission-specifications", "mission-1") == 1
+
+
+def test_freeze_recovery_exhaustion_leaves_no_authority_plan_or_publication() -> None:
+    agent = _ResponseAgent([{}, {"structured_response": None}])
+    transport = InProcessTransport()
+    service = HyperAgent(
+        DeepAgentsMissionInterpreter(agent, max_retries=1),
+        planner=Planner(),
+        transport=transport,
+    )
+
+    with pytest.raises(StructuredOutputRetriesExhausted):
+        service.freeze_mission(
+            MissionInput("mission-1", "Survey", "mission-control")
+        )
+
+    assert len(agent.calls) == 2
+    assert service.authority("mission-1") is None
+    assert service.active_plan("mission-1") is None
+    assert transport.latest_event("mission-specifications", "mission-1") is None
+
+
 def test_freeze_identity_mismatch_does_not_retry_or_publish() -> None:
     candidate = _spec(mission_id="wrong-mission")
     agent = _ResponseAgent([{"structured_response": candidate.to_dict()}])
