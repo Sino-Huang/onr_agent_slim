@@ -168,8 +168,15 @@ class DeepAgentsDecisionProvider:
             "fsm_status": status.to_dict(),
             "overlay": overlay.to_dict() if overlay is not None else None,
         }
+        callback = getattr(self.agent, "_onr_debug_callback", None)
+
+        def invoke_with_callback(state: Mapping[str, object]) -> object:
+            if callback is None:
+                return invoke(state)
+            return invoke(state, config={"callbacks": [callback]})
+
         return invoke_with_structured_output_recovery(
-            invoke,
+            invoke_with_callback,
             original_context,
             self.max_retries,
             _parse_decision_response,
@@ -410,8 +417,6 @@ def _is_json_value(value: object) -> bool:
     if isinstance(value, Mapping):
         return _is_json_object(value)
     return False
-
-
 __all__ = [
     "MANEUVER_CONTROL_DECISION_SCHEMA",
     "create_maneuver_control_agent",

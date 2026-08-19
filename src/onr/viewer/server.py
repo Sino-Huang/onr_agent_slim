@@ -31,6 +31,7 @@ from onr.ports.mission_log_summarizer import SummaryArtifact
 from onr.ports.operational_log import OperationalLogRecord
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
+from onr.viewer.debug import load_debug_artifacts
 from onr.viewer.trace import TraceProjection, sanitize_payload
 
 
@@ -580,45 +581,52 @@ class ViewerApplication:
         )
         self._projection = TraceProjection()
 
-    def _active_runtime(self) -> _RuntimeView | None:
+    def _runtime(self) -> _RuntimeView | None:
         try:
             config = load_runtime_config(self.config_path, repo_root=self.repo_root)
             store = RuntimeLeaseStore(config.storage.root / "runtime")
             lease = store.inspect()
         except Exception:
             return None
-        if lease is None or lease.status != "active":
+        if lease is None:
             return None
         return _RuntimeView(config, store, lease)
 
     @staticmethod
-    def _still_active(runtime: _RuntimeView) -> bool:
+    def _current_lease(runtime: _RuntimeView) -> RuntimeLease | None:
         lease = runtime.store.inspect()
-        return (
-            lease is not None
-            and lease.status == "active"
-            and lease.session_id == runtime.lease.session_id
-        )
+        if lease is None or (
+            lease.session_id,
+            lease.started_at,
+        ) != (
+            runtime.lease.session_id,
+            runtime.lease.started_at,
+        ):
+            return None
+        return lease
 
     def runtime_payload(self) -> dict[str, object]:
-        runtime = self._active_runtime()
+        runtime = self._runtime()
         if runtime is None:
-            return {"active": False}
+            return {"active": False, "available": False, "status": "unavailable"}
         artifacts = _load_public_artifacts(runtime.config)
-        if not self._still_active(runtime):
-            return {"active": False}
+        lease = self._current_lease(runtime)
+        if lease is None:
+            return {"active": False, "available": False, "status": "unavailable"}
         mission_ids = sorted({artifact.mission_id for artifact in artifacts})
         return {
-            "active": True,
-            "started_at": runtime.lease.started_at,
-            "last_seen": runtime.lease.last_seen,
+            "active": lease.status == "active",
+            "available": True,
+            "status": lease.status,
+            "started_at": lease.started_at,
+            "last_seen": lease.last_seen,
             "mission_ids": mission_ids,
         }
 
     def trace_payload(self, mission_id: str | None) -> dict[str, object]:
         if not _valid_mission_id(mission_id):
             return {"items": []}
-        runtime = self._active_runtime()
+        runtime = self._runtime()
         if runtime is None:
             return {"items": []}
         selected = cast(str, mission_id)
@@ -654,9 +662,34 @@ class ViewerApplication:
         selected_items = [
             item for item in projected if item["mission_id"] == selected
         ]
-        if not self._still_active(runtime):
+        if self._current_lease(runtime) is None:
             return {"items": []}
         return {"items": selected_items}
+
+    def debug_payload(self, mission_id: str | None) -> dict[str, object]:
+        empty: dict[str, object] = {
+            "enabled": False,
+            "profiles": [],
+            "invocations": [],
+        }
+        if not _valid_mission_id(mission_id):
+            return empty
+        runtime = self._runtime()
+        if runtime is None or not runtime.config.debug:
+            return empty
+        try:
+            profiles, invocations = load_debug_artifacts(
+                runtime.config.storage.root, cast(str, mission_id)
+            )
+        except Exception:
+            return empty
+        if self._current_lease(runtime) is None:
+            return empty
+        return {
+            "enabled": True,
+            "profiles": profiles,
+            "invocations": invocations,
+        }
 
     def static_file(self, request_path: str) -> Path | None:
         try:
@@ -682,7 +715,7 @@ class ViewerApplication:
 
 
 class ViewerRequestHandler(BaseHTTPRequestHandler):
-    """Serve the viewer UI and its two read-only JSON resources."""
+    """Serve the viewer UI and its read-only JSON resources."""
 
     server_version = "ONRViewer/1"
 
@@ -717,6 +750,14 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             mission_id = mission_values[0] if len(mission_values) == 1 else None
             self._send_json(
                 self.application.trace_payload(mission_id), head_only=head_only
+            )
+            return
+        if parsed.path == "/api/debug":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            mission_values = query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+            mission_id = mission_values[0] if len(mission_values) == 1 else None
+            self._send_json(
+                self.application.debug_payload(mission_id), head_only=head_only
             )
             return
         path = self.application.static_file(parsed.path)

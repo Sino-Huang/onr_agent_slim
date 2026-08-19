@@ -244,6 +244,7 @@ def _create_deep_agent(
         kwargs["memory"] = [memory_agent_path]
 
     selected_skills: list[str] = []
+    selected_skill_profiles: list[dict[str, str]] = []
     skill_sources: list[str] = []
     if mission_id is not None and skill_catalog is not None:
         select_all = getattr(skill_catalog, "select_all", None)
@@ -261,6 +262,17 @@ def _create_deep_agent(
             if not isinstance(selected_path, Path):
                 raise TypeError("Role Skill catalog returned an invalid selection")
             selected_skills.append(_skill_agent_path(selected_path, backend_root))
+            selected_role = getattr(selected, "role", None)
+            selected_version = getattr(selected, "version", None)
+            if not isinstance(selected_role, str) or not isinstance(selected_version, str):
+                raise TypeError("Role Skill catalog returned invalid metadata")
+            selected_skill_profiles.append(
+                {
+                    "name": selected_role,
+                    "version": selected_version,
+                    "path": str(selected_path),
+                }
+            )
             source_path = _skill_agent_path(selected_path.parent, backend_root)
             if source_path not in skill_sources:
                 skill_sources.append(source_path)
@@ -293,6 +305,14 @@ def _create_deep_agent(
         kwargs["permissions"] = hard_permissions
 
     agent = create_deep_agent(**kwargs)
+    recorder = getattr(model, "_agent_debug_recorder", None)
+    if recorder is not None:
+        record_profile = getattr(recorder, "record_profile", None)
+        callback_for = getattr(recorder, "callback_for", None)
+        if not callable(record_profile) or not callable(callback_for):
+            raise TypeError("agent debug recorder is invalid")
+        record_profile(role, selected_skill_profiles, [])
+        setattr(agent, "_onr_debug_callback", callback_for(role))
     return RoleEpisode(agent, context) if context is not None else agent
 
 
@@ -322,9 +342,15 @@ class DeepAgentsMissionInterpreter:
         invoke = getattr(self.agent, "invoke", None)
         if not callable(invoke):
             raise TypeError("Deep Hyper Agent must expose invoke")
+        callback = getattr(self.agent, "_onr_debug_callback", None)
+
+        def invoke_with_callback(state: Mapping[str, object]) -> object:
+            if callback is None:
+                return invoke(state)
+            return invoke(state, config={"callbacks": [callback]})
 
         return invoke_with_structured_output_recovery(
-            cast(Callable[[Mapping[str, object]], object], invoke),
+            invoke_with_callback,
             mission_input.to_dict(),
             self.max_retries,
             _parse_mission_response,

@@ -531,6 +531,34 @@ def test_structural_correction_then_typed_decision_has_one_decision_and_command_
     assert sum(isinstance(message, Command) for _, message in queued) == 1
     control.handle_command(result.command)
     assert len(adapter.commands) == 1
+def test_deep_agents_decision_provider_passes_attached_debug_callback() -> None:
+    expected = ManeuverControlDecision(
+        decision_id="decision-debug",
+        mission_id="mission-1",
+        plan_revision=1,
+        maneuver_id="survey",
+        physical_intent=ManeuverIntent(PhysicalAction.NAVIGATE),
+    )
+    callback = object()
+
+    class Agent:
+        _onr_debug_callback = callback
+
+        def __init__(self) -> None:
+            self.config: object = None
+
+        def invoke(self, _: object, *, config: object = None) -> object:
+            self.config = config
+            return expected
+
+    agent = Agent()
+    result = DeepAgentsDecisionProvider(agent).decide(
+        cast(MissionSnapshot, SimpleNamespace(to_dict=lambda: {})),
+        cast(FSMStatus, SimpleNamespace(to_dict=lambda: {})),
+    )
+
+    assert result == expected
+    assert agent.config == {"callbacks": [callback]}
 
 
 class AlternatingDecisionProvider:

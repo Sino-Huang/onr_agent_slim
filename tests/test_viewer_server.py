@@ -38,6 +38,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     config.write_text(
         "\n".join(
             (
+                "debug: true",
                 "llm:",
                 "  provider: openai",
                 "  base_url: http://127.0.0.1:1/v1",
@@ -122,7 +123,11 @@ def test_idle_get_inspection_is_non_mutating_and_returns_no_trace(tmp_path: Path
         assert not runtime_path.exists()
 
     assert runtime_response.status == 200
-    assert json.loads(runtime_body) == {"active": False}
+    assert json.loads(runtime_body) == {
+        "active": False,
+        "available": False,
+        "status": "unavailable",
+    }
     assert trace_response.status == 200
     assert json.loads(trace_body) == {"items": []}
     assert trace_response.getheader("Cache-Control") == "no-store"
@@ -167,6 +172,30 @@ def test_runtime_lists_missions_and_trace_never_merges_them(tmp_path: Path) -> N
     }
     assert invalid_response.status == absent_response.status == 200
     assert json.loads(invalid_body) == json.loads(absent_body) == {"items": []}
+
+
+def test_stopped_run_remains_available_and_replayable(tmp_path: Path) -> None:
+    with _running_server(tmp_path) as (server, storage, _):
+        store = _activate(storage)
+        FileOperationalLog(storage / "operational-log").emit(
+            "mission-complete", "runtime", "heartbeat", "completed"
+        )
+        stopped = store.stop()
+        runtime_response, runtime_body = _request(server, "GET", "/api/runtime")
+        trace_response, trace_body = _request(
+            server, "GET", "/api/trace?mission_id=mission-complete"
+        )
+
+    runtime = json.loads(runtime_body)
+    assert stopped is not None and stopped.status == "stopped"
+    assert runtime_response.status == trace_response.status == 200
+    assert runtime["active"] is False
+    assert runtime["available"] is True
+    assert runtime["status"] == "stopped"
+    assert runtime["mission_ids"] == ["mission-complete"]
+    assert {item["mission_id"] for item in json.loads(trace_body)["items"]} == {
+        "mission-complete"
+    }
 
 
 def test_colon_mission_loads_raw_storage_and_encoded_transport_paths(
@@ -453,7 +482,7 @@ def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path)
     assert '"token"' not in rendered
 
 
-def test_lease_expiry_during_collection_returns_empty(
+def test_lease_expiry_during_collection_keeps_trace_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _running_server(tmp_path) as (server, storage, _):
@@ -482,7 +511,38 @@ def test_lease_expiry_during_collection_returns_empty(
         )
 
     assert response.status == 200
-    assert json.loads(body) == {"items": []}
+    assert {item["mission_id"] for item in json.loads(body)["items"]} == {
+        "mission-one"
+    }
+
+
+def test_active_run_stopped_during_collection_keeps_trace_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _running_server(tmp_path) as (server, storage, _):
+        store = _activate(storage)
+        FileOperationalLog(storage / "operational-log").emit(
+            "mission-one", "runtime", "heartbeat", "completed"
+        )
+        original = viewer_server._load_public_artifacts
+
+        def stop_after_load(
+            config: RuntimeConfig, mission_id: str | None = None
+        ):
+            artifacts = original(config, mission_id)
+            stopped = store.stop()
+            assert stopped is not None and stopped.status == "stopped"
+            return artifacts
+
+        monkeypatch.setattr(viewer_server, "_load_public_artifacts", stop_after_load)
+        response, body = _request(
+            server, "GET", "/api/trace?mission_id=mission-one"
+        )
+
+    assert response.status == 200
+    assert {item["mission_id"] for item in json.loads(body)["items"]} == {
+        "mission-one"
+    }
 
 
 def test_lease_replacement_during_projection_returns_empty(

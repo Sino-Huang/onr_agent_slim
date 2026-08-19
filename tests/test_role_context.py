@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, cast
+from types import SimpleNamespace
+from typing import Any, Callable, cast
 
 import yaml
 
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
-from onr.agents.hyper_agent import create_hyper_agent
+from onr.agents.hyper_agent import DeepAgentsMissionInterpreter, create_hyper_agent
 from onr.agents.maneuver_control import create_maneuver_control_agent
 from onr.agents.role_context import RoleEpisode
 from onr.application.hyper_agent import HyperAgent
@@ -128,6 +129,75 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
         assert isinstance(skill_sources, list) and isinstance(permissions, list)
         assert [permission.paths[0] for permission in permissions[:-1]] == selected_skills
         assert all(permission.mode == "deny" for permission in permissions)
+
+
+def test_debug_agent_profile_uses_selected_skill_metadata_and_interpreter_callback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import deepagents
+
+    callback = object()
+    profiles: list[tuple[str, list[dict[str, str]], list[str]]] = []
+
+    class Recorder:
+        def record_profile(
+            self, role: str, skills: list[dict[str, str]], tools: list[str]
+        ) -> None:
+            profiles.append((role, skills, tools))
+
+        def callback_for(self, role: str) -> object:
+            assert role == "hyper-agent"
+            return callback
+
+    class Agent:
+        def __init__(self) -> None:
+            self.config: object = None
+
+        def invoke(self, _: object, *, config: object = None) -> dict[str, object]:
+            self.config = config
+            return {
+                "structured_response": MissionSpec(
+                    "mission-1",
+                    "Survey",
+                    PlannerChoice("temporal", "minizinc"),
+                    (TemporalManeuver("survey", ManeuverIntent("survey"), (), 1),),
+                    3,
+                    "mission-control",
+                ).to_dict()
+            }
+
+    created = Agent()
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **_: created)
+    model = SimpleNamespace(_agent_debug_recorder=Recorder())
+    skills = _install_skills(tmp_path / "skills")
+    agent = create_hyper_agent(
+        model=model,
+        mission_id="mission-1",
+        skill_catalog=skills,
+        backend_root=tmp_path,
+    )
+
+    result = DeepAgentsMissionInterpreter(agent).interpret(
+        MissionInput("mission-1", "Survey", "mission-control")
+    )
+
+    selected_path = tmp_path / "skills/hyper-agent/2.0.0"
+    assert profiles == [
+        (
+            "hyper-agent",
+            [
+                {
+                    "name": "hyper-agent",
+                    "version": "2.0.0",
+                    "path": str(selected_path),
+                }
+            ],
+            [],
+        )
+    ]
+    assert result.mission_id == "mission-1"
+    assert created.config == {"callbacks": [callback]}
+    assert cast(Any, agent)._onr_debug_callback is callback
 
 
 def _make_role_agents(

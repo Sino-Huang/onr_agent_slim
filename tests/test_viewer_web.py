@@ -40,6 +40,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     config.write_text(
         "\n".join(
             (
+                "debug: true",
                 "llm:",
                 "  provider: openai",
                 "  base_url: http://127.0.0.1:1/v1",
@@ -371,6 +372,107 @@ def test_active_mission_shows_safe_flow_and_summary(
                 ):
                     assert forbidden not in body
                 _assert_no_global_overflow(page)
+        finally:
+            context.close()
+
+
+def test_available_completed_mission_keeps_replay_and_debug_activity(
+    chromium_browser: Browser, tmp_path: Path
+) -> None:
+    """The UI must retain a completed mission without scheduling live polling."""
+    with _viewer_server(tmp_path, active=False) as (url, _, _):
+        context, page = _page(chromium_browser, width=1280, height=900)
+        try:
+            page.route(
+                "**/api/runtime",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "available": True,
+                            "active": False,
+                            "mission_ids": ["mission-complete"],
+                        }
+                    ),
+                ),
+            )
+            page.route(
+                "**/api/trace?mission_id=mission-complete",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "items": [
+                                {
+                                    "mission_id": "mission-complete",
+                                    "trace_id": "trace-complete",
+                                    "event_id": "event-complete",
+                                    "component": "hyper-agent",
+                                    "authority": "observed",
+                                    "event_kind": "mission-completed",
+                                    "occurred_at": "2026-08-19T00:00:00Z",
+                                    "observation_sequence": 1,
+                                    "payload": {"status": "completed"},
+                                }
+                            ]
+                        }
+                    ),
+                ),
+            )
+            page.route(
+                "**/api/debug?mission_id=mission-complete",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "enabled": True,
+                            "profiles": [
+                                {
+                                    "agent_role": "navigator",
+                                    "skills": [
+                                        {
+                                            "name": "route-planning",
+                                            "version": "2.1",
+                                            "path": "/skills/route",
+                                        }
+                                    ],
+                                    "tools": ["map.lookup"],
+                                }
+                            ],
+                            "invocations": [
+                                {
+                                    "sequence": 4,
+                                    "agent_role": "navigator",
+                                    "kind": "tool",
+                                    "name": "map.lookup",
+                                    "input": {"zone": "A"},
+                                    "output": {"route": "clear"},
+                                    "started_at": "2026-08-19T00:00:01Z",
+                                    "finished_at": "2026-08-19T00:00:02Z",
+                                    "invocation_id": "tool-4",
+                                }
+                            ],
+                        }
+                    ),
+                ),
+            )
+            page.goto(url, wait_until="networkidle")
+            expect(page.locator("#runtimeLabel")).to_have_text("Runtime available")
+            expect(page.locator("#missionSelect")).to_have_value("mission-complete")
+            expect(page.locator("#replayControls")).to_be_visible()
+            expect(page.locator("#traceStrip")).to_be_visible()
+            expect(page.locator(".event", has_text="mission-completed")).to_have_count(1)
+
+            page.locator(".tab[data-view='debug']").click()
+            expect(page.locator("#debugProfiles")).to_be_visible()
+            expect(page.locator("#debugProfileList")).to_contain_text("route-planning 2.1")
+            expect(page.locator("#debugProfileList")).to_contain_text("map.lookup")
+            invocation = page.locator("#debugEventList .event", has_text="map.lookup")
+            expect(invocation).to_have_count(1)
+            invocation.click()
+            expect(page.locator("#inspectorTitle")).to_have_text("map.lookup")
+            expect(page.locator("#detailList")).to_contain_text('"route": "clear"')
+            assert page.evaluate("() => document.querySelectorAll('#debugEventList .event').length") == 1
         finally:
             context.close()
 

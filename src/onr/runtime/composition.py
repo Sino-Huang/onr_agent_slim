@@ -42,6 +42,7 @@ from onr.ports.operational_log import OperationalLog
 from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
+from onr.runtime.agent_debug import AgentDebugRecorder
 from onr.runtime.lease import RuntimeLeaseStore
 from onr.runtime.llm_debug import LLMResponseRecorder
 from onr.agents.hyper_agent import (
@@ -218,9 +219,14 @@ class RuntimeComposition:
         llm = self.config.llm
         options: dict[str, Any] = {}
         recorder: LLMResponseRecorder | None = None
+        agent_recorder: AgentDebugRecorder | None = None
         if self.config.debug and mission_id:
             recorder = LLMResponseRecorder(
                 self.config.storage.root.parent / "debug" / "llm",
+                mission_id,
+            )
+            agent_recorder = AgentDebugRecorder(
+                self.config.storage.root.parent / "debug" / "agent",
                 mission_id,
             )
             options["http_client"] = recorder.http_client
@@ -235,6 +241,8 @@ class RuntimeComposition:
         )
         if recorder is not None:
             object.__setattr__(model, "_llm_response_recorder", recorder)
+        if agent_recorder is not None:
+            object.__setattr__(model, "_agent_debug_recorder", agent_recorder)
         return model
 
     def verify_llm_reachability(self, *, timeout: float = 5.0) -> None:
@@ -396,7 +404,7 @@ class RuntimeComposition:
             if mission_id is None:
                 raise ValueError("create_maneuver_control requires a provider or model and Mission ID")
             if model is None:
-                model = self.create_chat_model()
+                model = self.create_chat_model(mission_id=mission_id)
             if memory_store is None:
                 memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
             context_backend_root = backend_root
@@ -446,7 +454,7 @@ class RuntimeComposition:
 
         if interpreter is None:
             if model is None:
-                model = self.create_chat_model()
+                model = self.create_chat_model(mission_id=mission_id)
             if mission_id is not None and memory_store is None:
                 memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
             context_backend_root = backend_root

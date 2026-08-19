@@ -27,6 +27,7 @@
           <button class="tab" data-view="skills" aria-selected="false">Skills &amp; advisory</button>
           <button class="tab" data-view="command" aria-selected="false">Command &amp; outcome</button>
           <button class="tab" data-view="feedback" aria-selected="false">Feedback paths</button>
+          <button class="tab" data-view="debug" aria-selected="false">Agent activity</button>
         </nav>
 
         <div class="architecture" id="architecture" aria-label="Component architecture map">
@@ -49,7 +50,7 @@
             <button class="node command" data-component="command"><span class="node-icon">CO</span><span>Command &amp; outcome</span><small>issued evidence</small></button>
             <button class="node feedback" data-component="feedback"><span class="node-icon">FB</span><span>Feedback paths</span><small>environment facts</small></button>
             <div class="mobile-flow" id="mobileFlow" aria-label="Observed data flows"></div>
-            <p class="idle-note" id="idleNote">Awaiting an active runtime. Architecture is available for review.</p>
+            <p class="idle-note" id="idleNote">Awaiting an available runtime. Architecture is ready for review.</p>
           </div>
 
           <aside class="inspector" aria-live="polite">
@@ -75,11 +76,20 @@
         <div class="summary-latest" id="summaryLatest"></div>
         <div class="summary-history" id="summaryHistory" aria-label="Prior mission summaries"></div>
       </section>
+      <section class="summaries" id="debugProfiles" aria-label="Agent capabilities" hidden>
+        <div class="summary-heading"><div><p class="eyebrow">Agent capabilities</p><h2>Skills and callable tools</h2></div><p class="quiet" id="debugStatus"></p></div>
+        <p class="summary-latest" id="debugEmpty"></p>
+        <dl class="detail-list" id="debugProfileList"></dl>
+      </section>
     </section>
 
     <section class="trace-strip" id="traceStrip" aria-label="Observed trace" hidden>
       <div class="trace-header"><p class="eyebrow">Observation order</p><button class="clear-button" id="clearSelection" type="button" hidden>Clear correlation</button></div>
       <div class="event-list" id="eventList"></div>
+    </section>
+    <section class="trace-strip" id="debugTimeline" aria-label="Agent activity timeline" hidden>
+      <div class="trace-header"><p class="eyebrow">Invocation timeline</p></div>
+      <div class="event-list" id="debugEventList"></div>
     </section>
   </main>
   <script src="app.js"></script>
