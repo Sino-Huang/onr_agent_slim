@@ -10,6 +10,150 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import MissionSpec, SymbolicMissionSpec
 
 
+MISSION_SPEC_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {
+            "title": "TemporalMissionSpec",
+            "type": "object",
+            "properties": {
+                "mission_id": {"type": "string"},
+                "objective": {"type": "string"},
+                "planner_choice": {
+                    "type": "object",
+                    "properties": {
+                        "planning_profile": {"enum": ["temporal"]},
+                        "planner_id": {"type": ["string", "null"]},
+                    },
+                    "required": ["planning_profile", "planner_id"],
+                    "additionalProperties": False,
+                },
+                "maneuvers": {
+                    "type": "array",
+                    "items": {
+                        "title": "TemporalManeuver",
+                        "type": "object",
+                        "properties": {
+                            "maneuver_id": {"type": "string"},
+                            "intent": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string"},
+                                    "parameters": {
+                                        "type": "object",
+                                        "additionalProperties": {
+                                            "type": [
+                                                "string",
+                                                "number",
+                                                "boolean",
+                                                "null",
+                                            ]
+                                        },
+                                    },
+                                },
+                                "required": ["action", "parameters"],
+                                "additionalProperties": False,
+                            },
+                            "dependencies": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "duration": {"type": "integer"},
+                        },
+                        "required": [
+                            "maneuver_id",
+                            "intent",
+                            "dependencies",
+                            "duration",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                "horizon": {"type": "integer"},
+                "source_authority": {"type": "string"},
+            },
+            "required": [
+                "mission_id",
+                "objective",
+                "planner_choice",
+                "maneuvers",
+                "horizon",
+                "source_authority",
+            ],
+            "additionalProperties": False,
+        },
+        {
+            "title": "SymbolicMissionSpec",
+            "type": "object",
+            "properties": {
+                "mission_id": {"type": "string"},
+                "objective": {"type": "string"},
+                "planner_choice": {
+                    "type": "object",
+                    "properties": {
+                        "planning_profile": {"enum": ["symbolic"]},
+                        "planner_id": {"type": ["string", "null"]},
+                    },
+                    "required": ["planning_profile", "planner_id"],
+                    "additionalProperties": False,
+                },
+                "maneuvers": {
+                    "type": "array",
+                    "items": {
+                        "title": "SymbolicManeuver",
+                        "type": "object",
+                        "properties": {
+                            "maneuver_id": {"type": "string"},
+                            "intent": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string"},
+                                    "parameters": {
+                                        "type": "object",
+                                        "additionalProperties": {
+                                            "type": [
+                                                "string",
+                                                "number",
+                                                "boolean",
+                                                "null",
+                                            ]
+                                        },
+                                    },
+                                },
+                                "required": ["action", "parameters"],
+                                "additionalProperties": False,
+                            },
+                            "dependencies": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "cost": {"type": "integer"},
+                        },
+                        "required": [
+                            "maneuver_id",
+                            "intent",
+                            "dependencies",
+                            "cost",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                "source_authority": {"type": "string"},
+                "domain_revision": {"type": "integer"},
+            },
+            "required": [
+                "mission_id",
+                "objective",
+                "planner_choice",
+                "maneuvers",
+                "source_authority",
+                "domain_revision",
+            ],
+            "additionalProperties": False,
+        },
+    ]
+}
+
+
 def create_hyper_agent(
     *,
     model: Any,
@@ -31,7 +175,7 @@ def create_hyper_agent(
     return _create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        response_format=dict,
+        response_format=MISSION_SPEC_SCHEMA,
         mission_id=mission_id,
         role="hyper-agent",
         memory_store=memory_store,
@@ -179,4 +323,4 @@ class DeepAgentsMissionInterpreter:
                 raise ValueError("structured response is not a valid MissionSpec") from symbolic_error
 
 
-__all__ = ["create_hyper_agent", "DeepAgentsMissionInterpreter"]
+__all__ = ["MISSION_SPEC_SCHEMA", "create_hyper_agent", "DeepAgentsMissionInterpreter"]

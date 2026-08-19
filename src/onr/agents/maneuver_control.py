@@ -7,6 +7,8 @@ deployments may instead provide a plain decision provider.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -64,12 +66,20 @@ class DeepAgentsDecisionProvider:
         )
         if isinstance(response, ManeuverControlDecision):
             return response
-        structured = response.get("structured_response") if isinstance(response, dict) else None
+        structured = response.get("structured_response") if isinstance(response, Mapping) else None
         if isinstance(structured, ManeuverControlDecision):
             return structured
         if isinstance(structured, dict):
             return ManeuverControlDecision.from_dict(structured)
-        if isinstance(response, dict):
+        if isinstance(response, Mapping):
+            messages = response.get("messages")
+            if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)) and messages:
+                content = getattr(messages[-1], "content", None)
+                if isinstance(content, str):
+                    decoded = json.loads(content)
+                    if not isinstance(decoded, Mapping):
+                        raise ValueError("Deep Maneuver Control message content must decode to an object")
+                    return ManeuverControlDecision.from_dict(decoded)
             return ManeuverControlDecision.from_dict(response)
         return response
 

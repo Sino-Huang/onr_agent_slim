@@ -1,10 +1,12 @@
 import asyncio
 
 import pytest
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.application.hyper_agent import HyperAgent
-from onr.agents.hyper_agent import DeepAgentsMissionInterpreter
+from onr.agents.hyper_agent import DeepAgentsMissionInterpreter, create_hyper_agent
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import HumanQuestion, MissionInput, ReplanRequest
@@ -163,6 +165,18 @@ def test_deep_agents_interpreter_uses_strict_domain_parser() -> None:
         MissionInput("mission-1", "Survey", "mission-control")
     )
     assert result == _spec()
+
+
+def test_deep_agent_accepts_mission_spec_response_schema() -> None:
+    model = ChatOpenAI(
+        model="test-model",
+        base_url="http://127.0.0.1:11411/v1",
+        api_key=SecretStr("EMPTY"),
+    )
+
+    agent = create_hyper_agent(model=model)
+
+    assert agent is not None
 
 
 def test_symbolic_heartbeat_uses_the_symbolic_planner_contract() -> None:

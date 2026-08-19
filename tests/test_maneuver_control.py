@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import FrozenInstanceError
 from collections.abc import Mapping, MutableMapping
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -12,6 +14,7 @@ from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
 from onr.application.planning_commands import PlanningCommandHandler
+from onr.agents.maneuver_control import DeepAgentsDecisionProvider
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.temporal_planning import TemporalPlanning
 from onr.contracts.context_coordination import MissionSnapshot
@@ -82,6 +85,31 @@ class FixedDecisionProvider:
     def decide(self, snapshot: MissionSnapshot, status: FSMStatus, overlay: InvocationOverlay | None = None) -> ManeuverControlDecision:
         self.calls += 1
         return self.decision
+
+
+def test_deep_agents_decision_provider_unwraps_message_state() -> None:
+    expected = ManeuverControlDecision(
+        decision_id="decision-1",
+        mission_id="mission-1",
+        plan_revision=1,
+        maneuver_id="survey",
+        physical_intent=ManeuverIntent(PhysicalAction.NAVIGATE),
+    )
+
+    class Agent:
+        def invoke(self, _: object) -> dict[str, object]:
+            return {
+                "messages": [SimpleNamespace(content=json.dumps(expected.to_dict()))],
+                "files": {},
+            }
+
+    provider = DeepAgentsDecisionProvider(Agent())
+    result = provider.decide(
+        cast(MissionSnapshot, SimpleNamespace(to_dict=lambda: {})),
+        cast(FSMStatus, SimpleNamespace(to_dict=lambda: {})),
+    )
+
+    assert result == expected
 
 
 class AlternatingDecisionProvider:

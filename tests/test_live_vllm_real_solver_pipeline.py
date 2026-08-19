@@ -42,36 +42,57 @@ def _runtime_with_temporary_roots(tmp_path: Path) -> RuntimeComposition:
     )
 
 
-def _hyper_prompt(profile: str, planner_id: str) -> str:
+def _hyper_prompt(
+    profile: str,
+    planner_id: str,
+    mission_id: str,
+    source_authority: str,
+) -> str:
     if profile == "temporal":
         plan_fields = (
             f'"planner_choice":{{"planning_profile":"{profile}","planner_id":"{planner_id}"}},'
-            '"maneuvers":[{"maneuver_id":"survey","intent":{"action":"survey",'
+            '"maneuvers":[{"maneuver_id":"survey","intent":{"action":"search_area",'
             '"parameters":{}},"dependencies":[],"duration":1}],"horizon":2'
         )
     else:
         plan_fields = (
             f'"planner_choice":{{"planning_profile":"{profile}","planner_id":"{planner_id}"}},'
-            '"maneuvers":[{"maneuver_id":"survey","intent":{"action":"survey",'
+            '"maneuvers":[{"maneuver_id":"survey","intent":{"action":"search_area",'
             '"parameters":{}},"dependencies":[],"cost":1}],"domain_revision":1'
         )
     return (
         "Return only one JSON Mission Specification object, with no markdown. "
         f"Use planner profile {profile!r} and planner ID {planner_id!r}. "
-        "Create exactly one maneuver with maneuver_id 'survey' and action 'survey'. "
-        "Use the mission input mission_id, mission_text as objective, and source_authority "
-        "from the input. The object must contain mission_id, objective, source_authority, "
+        "Create exactly one maneuver with maneuver_id 'survey' and action 'search_area'. "
+        f"Copy this exact mission_id literal into the output: {mission_id!r}. "
+        f"Copy this exact source_authority literal into the output: {source_authority!r}. "
+        "Never invent, paraphrase, or alter either value. Use mission_text as objective. "
+        "The object must contain mission_id, objective, source_authority, "
         f"{plan_fields}."
     )
 
 
 def _maneuver_prompt(mission_id: str) -> str:
+    template = json.dumps(
+        {
+            "schema_version": 1,
+            "decision_id": "decision-survey",
+            "mission_id": mission_id,
+            "plan_revision": 1,
+            "transition_event": None,
+            "maneuver_id": "survey",
+            "physical_intent": {"action": "search_area", "parameters": {}},
+            "choice": None,
+            "payload": {},
+        },
+        separators=(",", ":"),
+    )
     return (
-        "Return only one JSON ManeuverControlDecision object, with no markdown. "
-        f"Use mission_id {mission_id!r}, the plan_revision from fsm_status, and maneuver_id "
-        "'survey'. Select exactly one physical intent with action 'survey' and no parameters. "
-        "Set transition_event and choice to null, payload to {}, and schema_version to 1. "
-        "Use any non-empty decision_id."
+        "Output only this exact JSON object and no other text:\n"
+        f"{template}\n"
+        f"Copy the literal mission_id {mission_id!r} exactly. "
+        "Use numeric plan_revision 1 and keep physical_intent as the object shown "
+        "with action search_area."
     )
 
 
@@ -92,23 +113,28 @@ def test_live_vllm_real_solver_pipeline(
         selected_planner = planners[profile]
         assert selected_planner is not None
         model = runtime.create_chat_model()
+        mission_input = MissionInput(
+            mission_id=mission_id,
+            mission_text=f"Perform the {profile} survey maneuver.",
+            source_authority="live-phase-3-test",
+        )
         hyper_agent = runtime.create_hyper_agent(
             planner=selected_planner,
             model=model,
             planners=planners,
             mission_id=mission_id,
-            system_prompt=_hyper_prompt(profile, planner_id),
+            system_prompt=_hyper_prompt(
+                profile,
+                planner_id,
+                mission_input.mission_id,
+                mission_input.source_authority,
+            ),
         )
         maneuver_control = runtime.create_maneuver_control(
             _LiveManeuverAdapter(),
             model=model,
             mission_id=mission_id,
             system_prompt=_maneuver_prompt(mission_id),
-        )
-        mission_input = MissionInput(
-            mission_id=mission_id,
-            mission_text=f"Perform the {profile} survey maneuver.",
-            source_authority="live-phase-3-test",
         )
         context_coordination = runtime.create_context_coordination(
             mission_id=mission_id,
