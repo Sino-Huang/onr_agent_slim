@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -128,3 +129,36 @@ def test_fast_downward_executor_rejects_missing_or_malformed_plan_content(
     ).execute({"domain.pddl": b"domain", "problem.pddl": b"problem"})
 
     assert result.outcome is PlanningOutcome.ERROR
+
+
+
+def test_fast_downward_static_check_uses_real_pddl_translator(tmp_path) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    fast_downward = repository_root / "modules" / "downward" / "fast-downward.py"
+    benchmark = (
+        repository_root
+        / "modules"
+        / "downward"
+        / "misc"
+        / "tests"
+        / "benchmarks"
+        / "gripper"
+    )
+    executor = FastDownwardExecutor(
+        executable=fast_downward,
+        artifact_root=tmp_path / "artifacts",
+        timeout_seconds=10,
+    )
+
+    assert executor.check(
+        {
+            "domain.pddl": (benchmark / "domain.pddl").read_bytes(),
+            "problem.pddl": (benchmark / "prob01.pddl").read_bytes(),
+        }
+    )
+    assert not executor.check(
+        {
+            "domain.pddl": b"this is not PDDL",
+            "problem.pddl": b"(define (problem invalid))",
+        }
+    )

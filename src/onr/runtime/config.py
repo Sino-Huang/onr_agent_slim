@@ -73,6 +73,7 @@ class LLMConfig:
 class PlannerConfig:
     entrypoint: Path
     timeout_seconds: int | float
+    validator_entrypoint: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,10 +222,28 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     planner_values = _exact(top["planners"], {"temporal", "symbolic"}, "planners")
     planner_records: dict[str, PlannerConfig] = {}
     for name in ("temporal", "symbolic"):
+        required = {"entrypoint", "timeout_seconds"}
+        configured = planner_values[name]
+        if (
+            name == "symbolic"
+            and isinstance(configured, dict)
+            and "validator_entrypoint" in configured
+        ):
+            required.add("validator_entrypoint")
         values = _exact(
-            planner_values[name],
-            {"entrypoint", "timeout_seconds"},
+            configured,
+            required,
             f"planners.{name}",
+        )
+        validator_entrypoint = (
+            _path(
+                values["validator_entrypoint"],
+                "planners.symbolic.validator_entrypoint",
+                root,
+                executable=True,
+            )
+            if name == "symbolic" and "validator_entrypoint" in values
+            else None
         )
         planner_records[name] = PlannerConfig(
             entrypoint=_path(
@@ -237,6 +256,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
                 values["timeout_seconds"],
                 f"planners.{name}.timeout_seconds",
             ),
+            validator_entrypoint=validator_entrypoint,
         )
 
     heartbeat_values = _exact(

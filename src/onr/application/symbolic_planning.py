@@ -52,7 +52,7 @@ class SymbolicPlanning:
         outcome = PlanningOutcome(execution.outcome)
         steps: tuple[SymbolicPlanStep, ...] = ()
         if outcome is PlanningOutcome.SOLVED:
-            joined = _join_action_calls(
+            joined = normalize_symbolic_actions(
                 mission_spec,
                 execution.action_calls,
                 execution.total_plan_cost,
@@ -80,6 +80,8 @@ class SymbolicPlanning:
         sequence: int,
     ) -> NormalizedPlanTransportEvent:
         result = self.plan(mission_spec, plan_revision, mission_snapshot_id)
+        if result.normalized_plan is None:
+            raise ValueError("only a solved result can be published as a Normalized Plan")
         return create_normalized_plan_transport_event(
             result.normalized_plan,
             event_id=event_id,
@@ -96,14 +98,16 @@ def _terminal_result(
     *,
     evidence: PlannerExecutionEvidence | None = None,
 ) -> SymbolicPlanningResult:
-    normalized_plan = NormalizedPlan(
-        mission_spec=mission_spec,
-        plan_revision=plan_revision,
-        mission_snapshot_id=mission_snapshot_id,
-        planner_choice=mission_spec.planner_choice,
-        outcome=outcome,
-        maneuvers=maneuvers,
-    )
+    normalized_plan = None
+    if outcome is PlanningOutcome.SOLVED:
+        normalized_plan = NormalizedPlan(
+            mission_spec=mission_spec,
+            plan_revision=plan_revision,
+            mission_snapshot_id=mission_snapshot_id,
+            planner_choice=mission_spec.planner_choice,
+            outcome=outcome,
+            maneuvers=maneuvers,
+        )
     return SymbolicPlanningResult(
         outcome=outcome,
         normalized_plan=normalized_plan,
@@ -111,7 +115,7 @@ def _terminal_result(
     )
 
 
-def _join_action_calls(
+def normalize_symbolic_actions(
     mission_spec: SymbolicMissionSpec,
     action_calls: tuple[SymbolicActionCall, ...],
     total_plan_cost: int,

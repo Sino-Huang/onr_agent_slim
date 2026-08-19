@@ -1,0 +1,6 @@
+(define (problem survey-return-mission)
+  (:domain survey-return)
+  (:init (= (total-cost) 0))
+  (:goal (and (returned)))
+  (:metric minimize (total-cost))
+)

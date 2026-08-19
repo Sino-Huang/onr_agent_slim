@@ -52,6 +52,37 @@ class FastDownwardExecutor:
         object.__setattr__(self, "artifact_root", artifact_root)
         object.__setattr__(self, "arguments", arguments)
 
+    def check(self, assets: Mapping[str, bytes]) -> bool:
+        """Return whether Fast Downward translates the generated PDDL."""
+
+        if set(assets) != {"domain.pddl", "problem.pddl"}:
+            return False
+        try:
+            artifact_root = Path(self.artifact_root)
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="check-", dir=artifact_root
+            ) as temporary:
+                directory = Path(temporary).resolve()
+                paths = _materialize_assets(directory, assets)
+                completed = subprocess.run(
+                    [
+                        str(self.executable),
+                        *self.arguments,
+                        "--translate",
+                        str(paths["domain.pddl"]),
+                        str(paths["problem.pddl"]),
+                    ],
+                    capture_output=True,
+                    check=False,
+                    cwd=str(directory),
+                    text=True,
+                    timeout=self.timeout_seconds,
+                )
+        except (OSError, TypeError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+
     def execute(self, assets: Mapping[str, bytes]) -> SymbolicPlannerExecutionResult:
         try:
             artifact_root = Path(self.artifact_root)

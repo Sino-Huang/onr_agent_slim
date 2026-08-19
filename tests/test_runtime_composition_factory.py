@@ -11,6 +11,7 @@ from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.application.minizinc_translation import MiniZincTranslation
+from onr.application.pddl_translation import PDDLTranslation
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.temporal_planning import TemporalPlanning
 from onr.runtime import (
@@ -40,7 +41,8 @@ def _runtime(
     config = RuntimeConfig(
         llm=LLMConfig("vllm", "http://127.0.0.1:11411/v1", "model", "EMPTY", 0.2),
         planners=PlannersConfig(
-            PlannerConfig(Path(__file__), 1), PlannerConfig(Path(__file__), 1)
+            PlannerConfig(Path(__file__), 1),
+            PlannerConfig(Path(__file__), 1, Path(__file__)),
         ),
         heartbeats=HeartbeatsConfig(1, 1),
         transport=TransportConfig("inprocess", Path("transport")),
@@ -196,6 +198,16 @@ def test_create_minizinc_translation_uses_configured_correction_bound(tmp_path) 
 
     assert isinstance(translation, MiniZincTranslation)
     assert translation.max_corrections == 4
+
+
+def test_create_pddl_translation_uses_configured_val_and_correction_bound(
+    tmp_path,
+) -> None:
+    translation = _runtime(hyper_max_retries=5).create_pddl_translation(
+        tmp_path / "generated-pddl"
+    )
+
+    assert isinstance(translation, PDDLTranslation)
 
 
 def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> None:

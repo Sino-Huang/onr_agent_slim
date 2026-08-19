@@ -81,6 +81,7 @@ def test_symbolic_planning_normalizes_ordered_actions_and_emits_transport() -> N
     )
 
     assert result.outcome is PlanningOutcome.SOLVED
+    assert result.normalized_plan is not None
     assert result.evidence == executor.result.evidence
     assert tuple(
         (step.step_index, step.maneuver_id, step.cost)
@@ -106,7 +107,7 @@ def test_unsupported_symbolic_choice_does_not_call_executor() -> None:
     )
 
     assert result.outcome is PlanningOutcome.UNSUPPORTED
-    assert result.normalized_plan.maneuvers == ()
+    assert result.normalized_plan is None
     assert executor.calls == 0
 
 
@@ -148,4 +149,4 @@ def test_symbolic_planning_rejects_invalid_solved_plans(
     )
 
     assert result.outcome is PlanningOutcome.ERROR
-    assert result.normalized_plan.maneuvers == ()
+    assert result.normalized_plan is None

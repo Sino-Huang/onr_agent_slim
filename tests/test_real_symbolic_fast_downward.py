@@ -70,6 +70,7 @@ def test_real_symbolic_planning_emits_ordered_costed_actions_without_timing(tmp_
 
     assert result.outcome is PlanningOutcome.SOLVED
     assert result.evidence is not None
+    assert result.normalized_plan is not None
     assert result.evidence.stdout_path.exists()
     assert result.evidence.stderr_path.exists()
     assert tuple(

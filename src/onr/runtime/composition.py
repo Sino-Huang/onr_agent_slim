@@ -24,6 +24,7 @@ from onr.adapters.mission_log_summarizer import (
     FileMissionLogSummarizer,
     SummarizationError,
 )
+from onr.adapters.val import VALPlanValidator
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.application.context_coordination import ContextCoordination
 from onr.application.bayesian_belief import (
@@ -38,6 +39,7 @@ from onr.application.hyper_agent import (
     PlanningHeartbeatOutcome,
 )
 from onr.application.minizinc_translation import MiniZincTranslation
+from onr.application.pddl_translation import PDDLTranslation
 from onr.application.maneuver_control import ManeuverControl
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.planning_commands import PlanningCommandHandler
@@ -358,6 +360,28 @@ class RuntimeComposition:
             MiniZincExecutor(
                 executable=planner.entrypoint,
                 artifact_root=artifact_root,
+                timeout_seconds=planner.timeout_seconds,
+            ),
+            max_corrections=(
+                self.config.agents.hyper_agent.output_structure_retry.max_retries
+            ),
+        )
+
+    def create_pddl_translation(self, artifact_root: Path) -> PDDLTranslation:
+        """Compose generated PDDL correction with Fast Downward and VAL."""
+
+        planner = self.config.planners.symbolic
+        validator = planner.validator_entrypoint
+        if validator is None:
+            raise ValueError("symbolic planner VAL entrypoint is not configured")
+        return PDDLTranslation(
+            FastDownwardExecutor(
+                executable=planner.entrypoint,
+                artifact_root=artifact_root,
+                timeout_seconds=planner.timeout_seconds,
+            ),
+            VALPlanValidator(
+                executable=validator,
                 timeout_seconds=planner.timeout_seconds,
             ),
             max_corrections=(

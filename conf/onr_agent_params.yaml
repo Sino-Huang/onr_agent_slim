@@ -12,6 +12,7 @@ planners:
     timeout_seconds: 30
   symbolic:
     entrypoint: modules/downward/fast-downward.py
+    validator_entrypoint: modules/VAL/build/linux64/Release/bin/Validate
     timeout_seconds: 30
 heartbeats:
   hyper_seconds: 30

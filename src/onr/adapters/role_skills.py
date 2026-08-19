@@ -17,6 +17,7 @@ _ROLE_SKILL_ORDER = {
         "mission-parsing",
         "planner-selection",
         "creating-minizinc-problem-files",
+        "creating-pddl-problem-files",
         "detect-and-replan",
     ),
     "maneuver-control": (

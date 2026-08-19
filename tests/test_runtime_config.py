@@ -37,6 +37,9 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.llm.api_key == "EMPTY"
     assert config.planners.temporal.entrypoint == root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
     assert config.planners.symbolic.entrypoint == root / "modules/downward/fast-downward.py"
+    assert config.planners.symbolic.validator_entrypoint == (
+        root / "modules/VAL/build/linux64/Release/bin/Validate"
+    )
     assert config.transport.root == (root / "var/transport").resolve()
     assert config.heartbeats.summary_seconds == 30
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
