@@ -1,0 +1,5 @@
+[mcp_servers.docs-langchain]
+url = "https://docs.langchain.com/mcp"
+
+[mcp_servers.reference-langchain]
+url = "https://reference.langchain.com/mcp"
