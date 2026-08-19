@@ -157,8 +157,16 @@ A planner-independent revision of abstract maneuver intent and execution constra
 _Avoid_: Planner output, scene snapshot
 
 **Planner Translator**:
-The deterministic transformation from the selected planning representation, Planner Choice, and planning inputs into planner-native assets.
-_Avoid_: LLM code generation, planner runner
+A code-owned translation slice that validates generated planner assets, invokes the selected planner, independently checks its result, and normalizes only a verified result.
+_Avoid_: Planner Asset Generator, planner runner
+
+**Planner Asset Generator**:
+A non-authoritative Hyper capability that proposes planner-native assets and a normalization template from Mission Intent and snapshot-authorized evidence.
+_Avoid_: Planner Translator, mission authority
+
+**Planner Correction Feedback**:
+A bounded, sanitized notice from the Planner Translator that identifies whether static validation or independent solution checking rejected a generated asset set.
+_Avoid_: Raw solver diagnostic, private reasoning
 
 **Invocation Overlay**:
 A direct caller request considered for one agent invocation without becoming durable mission authority state.

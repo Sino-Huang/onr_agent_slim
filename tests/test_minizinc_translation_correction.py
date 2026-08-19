@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Mapping
+
+from onr.application.minizinc_translation import MiniZincProblem, MiniZincTranslation
+from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.planner_translation import (
+    PlannerCorrectionStage,
+    PlannerGenerationContext,
+    PlanningTranslationOutcome,
+)
+from onr.contracts.planning import (
+    ManeuverIntent,
+    PlannerChoice,
+    PlannerExecutionResult,
+    PlanningOutcome,
+    TemporalAssignment,
+    TemporalManeuver,
+)
+from onr.contracts.planning_evidence import PlannerChoiceRecord
+from onr.contracts.transport import TransportEvent
+
+
+class RecordingGenerator:
+    def __init__(self, problems: list[MiniZincProblem]) -> None:
+        self.problems = problems
+        self.requests: list[PlannerGenerationContext] = []
+
+    def generate(self, request: PlannerGenerationContext) -> MiniZincProblem:
+        self.requests.append(request)
+        return self.problems.pop(0)
+
+
+class FakeMiniZincPlanner:
+    def __init__(
+        self,
+        checks: list[bool],
+        executions: list[PlannerExecutionResult],
+    ) -> None:
+        self.checks = checks
+        self.executions = executions
+        self.executed_assets: list[Mapping[str, bytes]] = []
+
+    def check(self, assets: Mapping[str, bytes]) -> bool:
+        _ = assets
+        return self.checks.pop(0)
+
+    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
+        self.executed_assets.append(assets)
+        return self.executions.pop(0)
+
+
+def _planning_context() -> tuple[
+    MissionInput,
+    PlannerChoiceRecord,
+    MissionSnapshot,
+    TransportEvent,
+]:
+    mission_input = MissionInput(
+        "mission-1",
+        "Survey the harbor, then return.",
+        "mission-control",
+    )
+    choice = PlannerChoiceRecord(
+        decision_id="choice-1",
+        mission_id=mission_input.mission_id,
+        mission_input_sha256=hashlib.sha256(
+            mission_input.to_canonical_json().encode("utf-8")
+        ).hexdigest(),
+        planning_intent_sha256="b" * 64,
+        planner_choice=PlannerChoice("temporal", "minizinc"),
+        rationale="This Mission requires temporal optimization.",
+    )
+    scene = TransportEvent(
+        schema_version=1,
+        event_id="scene-1",
+        mission_id=mission_input.mission_id,
+        sequence=0,
+        event_kind="operational_scene_graph",
+        payload={"graph": {"entities": [{"entity_id": "drone-1"}]}},
+    )
+    snapshot = MissionSnapshot(
+        mission_id=mission_input.mission_id,
+        version=2,
+        created_at="time-2",
+        operational_scene_graph=scene.event_id,
+        source_revisions={"operational_scene_graph": 2},
+        source_health={"operational_scene_graph": "healthy"},
+        source_freshness={"operational_scene_graph": True},
+    )
+    return mission_input, choice, snapshot, scene
+
+
+def _problem(model: bytes = b"solve minimize 0;") -> MiniZincProblem:
+    return MiniZincProblem(
+        assets={"model.mzn": model, "data.dzn": b"horizon = 3;"},
+        maneuvers=(
+            TemporalManeuver(
+                "survey",
+                ManeuverIntent("survey"),
+                (),
+                2,
+            ),
+        ),
+        horizon=3,
+        translator_id="hyper-minizinc",
+        translator_version="1.0.0",
+    )
+
+
+def test_static_rejection_gets_sanitized_feedback_before_verified_plan() -> None:
+    mission_input, choice, snapshot, scene = _planning_context()
+    generator = RecordingGenerator([_problem(b"invalid"), _problem()])
+    planner = FakeMiniZincPlanner(
+        checks=[False, True],
+        executions=[
+            PlannerExecutionResult(
+                PlanningOutcome.SOLVED,
+                (TemporalAssignment("survey", 0, 2),),
+            )
+        ],
+    )
+
+    result = MiniZincTranslation(planner, max_corrections=1).plan(
+        mission_input,
+        choice,
+        snapshot,
+        scene,
+        generator,
+        plan_revision=1,
+    )
+
+    assert result.outcome is PlanningTranslationOutcome.VERIFIED
+    assert result.attempt_count == 2
+    assert result.normalized_plan is not None
+    assert result.normalized_plan.outcome is PlanningOutcome.SOLVED
+    assert result.normalized_plan.mission_snapshot_id == "mission-1:snapshot:2"
+    assert len(generator.requests) == 2
+    assert generator.requests[0].correction_feedback is None
+    feedback = generator.requests[1].correction_feedback
+    assert feedback is not None
+    assert feedback.stage is PlannerCorrectionStage.STATIC
+    assert feedback.message == "Generated planner assets failed static validation."
+    assert "invalid" not in feedback.message
+    assert len(planner.executed_assets) == 1
+
+
+def test_solution_checker_rejection_receives_sanitized_feedback_before_retry() -> None:
+    mission_input, choice, snapshot, scene = _planning_context()
+    generator = RecordingGenerator([_problem(), _problem()])
+    planner = FakeMiniZincPlanner(
+        checks=[True, True],
+        executions=[
+            PlannerExecutionResult(
+                PlanningOutcome.SOLVED,
+                (TemporalAssignment("survey", 0, 1),),
+            ),
+            PlannerExecutionResult(
+                PlanningOutcome.SOLVED,
+                (TemporalAssignment("survey", 0, 2),),
+            ),
+        ],
+    )
+
+    result = MiniZincTranslation(planner, max_corrections=1).plan(
+        mission_input,
+        choice,
+        snapshot,
+        scene,
+        generator,
+        plan_revision=1,
+    )
+
+    assert result.outcome is PlanningTranslationOutcome.VERIFIED
+    assert result.attempt_count == 2
+    assert result.normalized_plan is not None
+    feedback = generator.requests[1].correction_feedback
+    assert feedback is not None
+    assert feedback.stage is PlannerCorrectionStage.SOLUTION_CHECKER
+    assert feedback.message == "Planner output failed independent solution validation."
+    assert "duration" not in feedback.message
+    assert len(planner.executed_assets) == 2
+
+
+def test_static_correction_stops_at_configured_bound() -> None:
+    mission_input, choice, snapshot, scene = _planning_context()
+    generator = RecordingGenerator([_problem(), _problem(), _problem()])
+    planner = FakeMiniZincPlanner(
+        checks=[False, False, True],
+        executions=[],
+    )
+
+    result = MiniZincTranslation(planner, max_corrections=1).plan(
+        mission_input,
+        choice,
+        snapshot,
+        scene,
+        generator,
+        plan_revision=1,
+    )
+
+    assert result.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED
+    assert result.attempt_count == 2
+    assert result.normalized_plan is None
+    assert len(generator.requests) == 2
+    assert [item.stage for item in result.correction_feedback] == [
+        PlannerCorrectionStage.STATIC,
+        PlannerCorrectionStage.STATIC,
+    ]
+    assert planner.executed_assets == []
+
+
+def test_unsolvable_minizinc_result_never_becomes_a_normalized_plan() -> None:
+    mission_input, choice, snapshot, scene = _planning_context()
+    generator = RecordingGenerator([_problem()])
+    planner = FakeMiniZincPlanner(
+        checks=[True],
+        executions=[PlannerExecutionResult(PlanningOutcome.UNSOLVABLE)],
+    )
+
+    result = MiniZincTranslation(planner).plan(
+        mission_input,
+        choice,
+        snapshot,
+        scene,
+        generator,
+        plan_revision=1,
+    )
+
+    assert result.outcome is PlanningTranslationOutcome.UNSOLVABLE
+    assert result.attempt_count == 1
+    assert result.normalized_plan is None
+    assert result.correction_feedback == ()

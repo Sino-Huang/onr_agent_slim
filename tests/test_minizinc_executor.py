@@ -50,6 +50,19 @@ def _emit(*events: object) -> str:
             _EXPECTED_ASSIGNMENTS,
         ),
         (
+            _emit(
+                {
+                    "type": "solution",
+                    "output": {"default": json.dumps(_SOLVED_PAYLOAD)},
+                    "sections": ["default"],
+                },
+                {"type": "status", "status": "SATISFIED"},
+            ),
+            0.5,
+            PlanningOutcome.INCOMPLETE,
+            (),
+        ),
+        (
             _emit({"type": "status", "status": "UNSATISFIABLE"}),
             0.5,
             PlanningOutcome.UNSOLVABLE,
@@ -80,7 +93,14 @@ def _emit(*events: object) -> str:
             (),
         ),
     ),
-    ids=("solved", "unsolvable", "incomplete", "timeout", "error"),
+    ids=(
+        "optimal",
+        "satisfied-not-optimal",
+        "unsolvable",
+        "incomplete",
+        "timeout",
+        "error",
+    ),
 )
 def test_minizinc_executor_maps_json_stream_to_public_results(
     script: str,
@@ -154,3 +174,40 @@ def test_minizinc_executor_persists_relative_solver_artifacts_in_run_directory(
     artifact = result.evidence.artifact_directory / "relative-solver-artifact.txt"
     assert artifact.read_text(encoding="utf-8") == "artifact"
     assert artifact in result.evidence.artifact_paths
+
+
+
+def test_minizinc_executor_static_check_uses_real_model_and_data_parser(
+    tmp_path: Path,
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    minizinc = (
+        repository_root
+        / "modules"
+        / "MiniZincIDE-2.9.7-bundle-linux-x86_64"
+        / "bin"
+        / "minizinc"
+    )
+    example = (
+        repository_root
+        / "conf"
+        / "skills"
+        / "hyper"
+        / "creating-minizinc-problem-files"
+        / "examples"
+        / "risk-weighted-fov"
+    )
+    executor = MiniZincExecutor(minizinc, tmp_path / "artifacts")
+
+    assert executor.check(
+        {
+            "model.mzn": (example / "model.mzn").read_bytes(),
+            "data.dzn": (example / "data.dzn").read_bytes(),
+        }
+    )
+    assert not executor.check(
+        {
+            "model.mzn": b"this is not MiniZinc;",
+            "data.dzn": b"horizon = 3;",
+        }
+    )

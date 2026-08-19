@@ -10,6 +10,7 @@ from onr.agents import (
 from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.minizinc import MiniZincExecutor
+from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.temporal_planning import TemporalPlanning
 from onr.runtime import (
@@ -182,10 +183,19 @@ def test_create_planners_uses_configured_executables_and_artifact_roots(tmp_path
     symbolic_executor = planners["symbolic"]._executor
     assert isinstance(temporal_executor, MiniZincExecutor)
     assert isinstance(symbolic_executor, FastDownwardExecutor)
-    assert temporal_executor.executable == Path(__file__)
     assert symbolic_executor.executable == Path(__file__)
+    assert temporal_executor.executable == Path(__file__)
     assert temporal_executor.artifact_root == (tmp_path / "planner-artifacts" / "temporal").resolve()
     assert symbolic_executor.artifact_root == (tmp_path / "planner-artifacts" / "symbolic").resolve()
+
+
+def test_create_minizinc_translation_uses_configured_correction_bound(tmp_path) -> None:
+    translation = _runtime(hyper_max_retries=4).create_minizinc_translation(
+        tmp_path / "generated-minizinc"
+    )
+
+    assert isinstance(translation, MiniZincTranslation)
+    assert translation.max_corrections == 4
 
 
 def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> None:

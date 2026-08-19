@@ -769,11 +769,17 @@ class TemporalPlanningResult:
     """Public result of one temporal planning attempt."""
 
     outcome: PlanningOutcome
-    normalized_plan: NormalizedPlan
+    normalized_plan: NormalizedPlan | None
     evidence: PlannerExecutionEvidence | None = None
 
     def __post_init__(self) -> None:
-        if self.outcome is not self.normalized_plan.outcome:
+        if self.normalized_plan is None:
+            if self.outcome is PlanningOutcome.SOLVED:
+                raise ValueError("a solved planning result requires a Normalized Plan")
+            return
+        if self.outcome is not PlanningOutcome.SOLVED:
+            raise ValueError("only a solved planning result may contain a Normalized Plan")
+        if self.normalized_plan.outcome is not PlanningOutcome.SOLVED:
             raise ValueError("planning result outcome must match its Normalized Plan")
 
 

@@ -37,6 +37,7 @@ from onr.application.hyper_agent import (
     HyperPlanningHeartbeatResult,
     PlanningHeartbeatOutcome,
 )
+from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.maneuver_control import ManeuverControl
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.planning_commands import PlanningCommandHandler
@@ -346,6 +347,23 @@ class RuntimeComposition:
                 )
             ),
         }
+
+    def create_minizinc_translation(
+        self, artifact_root: Path
+    ) -> MiniZincTranslation:
+        """Compose generated MiniZinc correction with the configured real planner."""
+
+        planner = self.config.planners.temporal
+        return MiniZincTranslation(
+            MiniZincExecutor(
+                executable=planner.entrypoint,
+                artifact_root=artifact_root,
+                timeout_seconds=planner.timeout_seconds,
+            ),
+            max_corrections=(
+                self.config.agents.hyper_agent.output_structure_retry.max_retries
+            ),
+        )
 
     def run_planning_command(
         self,

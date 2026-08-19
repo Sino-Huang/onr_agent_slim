@@ -17,6 +17,14 @@ class TemporalPlannerExecutor(Protocol):
         ...
 
 
+class MiniZincPlannerExecutor(TemporalPlannerExecutor, Protocol):
+    """Statically validate and execute generated MiniZinc assets."""
+
+    def check(self, assets: Mapping[str, bytes]) -> bool:
+        """Return whether MiniZinc accepts the model instance."""
+        ...
+
+
 class SymbolicPlannerExecutor(Protocol):
     """Executes symbolic planner assets and returns ordered action calls."""
 

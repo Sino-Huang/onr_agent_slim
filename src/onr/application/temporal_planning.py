@@ -44,7 +44,7 @@ class TemporalPlanning:
         outcome = PlanningOutcome(execution.outcome)
         maneuvers: tuple[ScheduledManeuver, ...] = ()
         if outcome is PlanningOutcome.SOLVED:
-            joined = _join_assignments(mission_spec, execution.assignments)
+            joined = normalize_temporal_assignments(mission_spec, execution.assignments)
             if joined is None:
                 outcome = PlanningOutcome.ERROR
             else:
@@ -69,6 +69,8 @@ class TemporalPlanning:
         sequence: int,
     ) -> NormalizedPlanTransportEvent:
         result = self.plan(mission_spec, plan_revision, mission_snapshot_id)
+        if result.normalized_plan is None:
+            raise ValueError("only a solved result can be published as a Normalized Plan")
         return create_normalized_plan_transport_event(
             result.normalized_plan,
             event_id=event_id,
@@ -85,14 +87,16 @@ def _terminal_result(
     *,
     evidence: PlannerExecutionEvidence | None = None,
 ) -> TemporalPlanningResult:
-    normalized_plan = NormalizedPlan(
-        mission_spec=mission_spec,
-        plan_revision=plan_revision,
-        mission_snapshot_id=mission_snapshot_id,
-        planner_choice=mission_spec.planner_choice,
-        outcome=outcome,
-        maneuvers=maneuvers,
-    )
+    normalized_plan = None
+    if outcome is PlanningOutcome.SOLVED:
+        normalized_plan = NormalizedPlan(
+            mission_spec=mission_spec,
+            plan_revision=plan_revision,
+            mission_snapshot_id=mission_snapshot_id,
+            planner_choice=mission_spec.planner_choice,
+            outcome=outcome,
+            maneuvers=maneuvers,
+        )
     return TemporalPlanningResult(
         outcome=outcome,
         normalized_plan=normalized_plan,
@@ -100,7 +104,7 @@ def _terminal_result(
     )
 
 
-def _join_assignments(
+def normalize_temporal_assignments(
     mission_spec: MissionSpec,
     assignments: tuple[TemporalAssignment, ...],
 ) -> tuple[ScheduledManeuver, ...] | None:

@@ -102,15 +102,17 @@ def test_temporal_planning_preserves_provenance_and_terminal_outcomes(
     )
 
     assert result.outcome is terminal_outcome
+    assert result.evidence == executor_result.evidence
+    if terminal_outcome is not PlanningOutcome.SOLVED:
+        assert result.normalized_plan is None
+        return
+
+    assert result.normalized_plan is not None
     assert result.normalized_plan.outcome is terminal_outcome
     assert result.normalized_plan.mission_spec == mission_spec
     assert result.normalized_plan.plan_revision == 7
     assert result.normalized_plan.mission_snapshot_id == "snapshot-12"
     assert result.normalized_plan.planner_choice == planner_choice
-    assert result.evidence == executor_result.evidence
-    if terminal_outcome is not PlanningOutcome.SOLVED:
-        assert result.normalized_plan.maneuvers == ()
-        return
 
     assert result.normalized_plan.maneuvers == (
         ScheduledManeuver(

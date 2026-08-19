@@ -38,6 +38,7 @@ var int: covered_risk = sum(s in SHIPS)(
 solve maximize covered_risk;
 
 output [
-  "{\"covered_risk\":" ++ show(covered_risk)
-  ++ ",\"observed\":[" ++ join(",", [show(observed[s]) | s in SHIPS]) ++ "]}"
+  "{\"assignments\":[{\"maneuver_id\":\"risk-weighted-observation\","
+  ++ "\"start\":0,\"duration\":" ++ show(horizon)
+  ++ "}]}"
 ];

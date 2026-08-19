@@ -25,7 +25,7 @@ _MINIZINC_ARGUMENTS = (
     "--output-mode",
     "json",
 )
-_SOLVED_STATUSES = {"SATISFIED", "ALL_SOLUTIONS", "OPTIMAL_SOLUTION"}
+_OPTIMAL_STATUS = "OPTIMAL_SOLUTION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +55,36 @@ class MiniZincExecutor:
             raise ValueError("planner artifact root must be a directory")
         object.__setattr__(self, "artifact_root", artifact_root)
         object.__setattr__(self, "arguments", arguments)
+
+    def check(self, assets: Mapping[str, bytes]) -> bool:
+        """Return whether MiniZinc accepts the generated model instance."""
+
+        if set(assets) != {"model.mzn", "data.dzn"}:
+            return False
+        try:
+            artifact_root = Path(self.artifact_root)
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="check-", dir=artifact_root
+            ) as temporary:
+                directory = Path(temporary).resolve()
+                asset_paths = _materialize_assets(directory, assets)
+                completed = subprocess.run(
+                    [
+                        str(self.executable),
+                        *self.arguments,
+                        "--instance-check-only",
+                        *map(str, asset_paths),
+                    ],
+                    capture_output=True,
+                    check=False,
+                    cwd=str(directory),
+                    text=True,
+                    timeout=self.timeout_seconds,
+                )
+        except (OSError, TypeError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         try:
@@ -206,9 +236,9 @@ def _parse_json_stream(stream: str) -> PlannerExecutionResult:
 
     if terminal_status == "UNSATISFIABLE":
         return PlannerExecutionResult(outcome=PlanningOutcome.UNSOLVABLE)
-    if terminal_status in (None, "UNKNOWN"):
+    if terminal_status in (None, "UNKNOWN", "SATISFIED", "ALL_SOLUTIONS"):
         return PlannerExecutionResult(outcome=PlanningOutcome.INCOMPLETE)
-    if terminal_status not in _SOLVED_STATUSES or solution is None:
+    if terminal_status != _OPTIMAL_STATUS or solution is None:
         return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
 
     assignments = _parse_assignments(solution)
