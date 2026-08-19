@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from pathlib import Path
 from typing import Any, cast
 
@@ -684,15 +685,140 @@ class SymbolicPlanStep:
 
 
 @dataclass(frozen=True, slots=True)
+class VerifiableReference:
+    """One external planning artifact reference bound to its content digest."""
+
+    reference: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.reference, "planning evidence reference")
+        if not isinstance(self.sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", self.sha256
+        ):
+            raise ValueError("planning evidence SHA-256 must be a lowercase digest")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"reference": self.reference, "sha256": self.sha256}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "VerifiableReference":
+        data = _strict_object(
+            value, {"reference", "sha256"}, "verifiable reference"
+        )
+        return cls(data["reference"], data["sha256"])
+
+
+@dataclass(frozen=True, slots=True)
+class PlanProvenance:
+    """Reference-only authority and evidence for a provenance Normalized Plan."""
+
+    mission_id: str
+    source_authority: str
+    mission_intent: VerifiableReference
+    planning_decision: VerifiableReference
+    operational_scene_graph: VerifiableReference
+    generated_assets: Mapping[str, VerifiableReference]
+    solver_evidence: Mapping[str, VerifiableReference]
+
+    def __post_init__(self) -> None:
+        _require_text(self.mission_id, "provenance mission ID")
+        _require_text(self.source_authority, "provenance source authority")
+        for value, label in (
+            (self.mission_intent, "Mission Intent"),
+            (self.planning_decision, "Planning Decision"),
+            (self.operational_scene_graph, "Operational Scene Graph"),
+        ):
+            if not isinstance(value, VerifiableReference):
+                raise ValueError(f"{label} provenance must be verifiable")
+        for name in ("generated_assets", "solver_evidence"):
+            values = getattr(self, name)
+            if not isinstance(values, Mapping) or not values:
+                raise ValueError(f"{name} provenance must be a non-empty mapping")
+            copied = dict(values)
+            if not all(
+                isinstance(key, str)
+                and key.strip()
+                and isinstance(item, VerifiableReference)
+                for key, item in copied.items()
+            ):
+                raise ValueError(f"{name} provenance is invalid")
+            object.__setattr__(self, name, MappingProxyType(copied))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mission_id": self.mission_id,
+            "source_authority": self.source_authority,
+            "mission_intent": self.mission_intent.to_dict(),
+            "planning_decision": self.planning_decision.to_dict(),
+            "operational_scene_graph": self.operational_scene_graph.to_dict(),
+            "generated_assets": {
+                key: value.to_dict()
+                for key, value in sorted(self.generated_assets.items())
+            },
+            "solver_evidence": {
+                key: value.to_dict()
+                for key, value in sorted(self.solver_evidence.items())
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PlanProvenance":
+        data = _strict_object(
+            value,
+            {
+                "mission_id",
+                "source_authority",
+                "mission_intent",
+                "planning_decision",
+                "operational_scene_graph",
+                "generated_assets",
+                "solver_evidence",
+            },
+            "plan provenance",
+        )
+
+        def references(raw: object, label: str) -> dict[str, VerifiableReference]:
+            if not isinstance(raw, Mapping):
+                raise ValueError(f"{label} must be an object")
+            return {
+                key: VerifiableReference.from_dict(item)
+                for key, item in raw.items()
+                if isinstance(key, str) and isinstance(item, Mapping)
+            }
+
+        generated = references(data["generated_assets"], "generated assets")
+        solver = references(data["solver_evidence"], "solver evidence")
+        if len(generated) != len(data["generated_assets"]) or len(solver) != len(
+            data["solver_evidence"]
+        ):
+            raise ValueError("plan provenance reference mappings are invalid")
+        return cls(
+            mission_id=data["mission_id"],
+            source_authority=data["source_authority"],
+            mission_intent=VerifiableReference.from_dict(data["mission_intent"]),
+            planning_decision=VerifiableReference.from_dict(
+                data["planning_decision"]
+            ),
+            operational_scene_graph=VerifiableReference.from_dict(
+                data["operational_scene_graph"]
+            ),
+            generated_assets=generated,
+            solver_evidence=solver,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedPlan:
     """Canonical planner-independent plan outcome with provenance."""
 
-    mission_spec: MissionSpec | SymbolicMissionSpec
+    mission_spec: MissionSpec | SymbolicMissionSpec | None
     plan_revision: int
     mission_snapshot_id: str
     planner_choice: PlannerChoice
     outcome: PlanningOutcome | str
     maneuvers: tuple[ScheduledManeuver | SymbolicPlanStep, ...] = ()
+    provenance: PlanProvenance | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.plan_revision, bool) or not isinstance(
@@ -702,13 +828,39 @@ class NormalizedPlan:
         if self.plan_revision < 0:
             raise ValueError("plan revision must be non-negative")
         _require_text(self.mission_snapshot_id, "Mission Snapshot ID")
-        if self.planner_choice != self.mission_spec.planner_choice:
-            raise ValueError("plan Planner Choice must match the Mission Specification")
+        if (self.mission_spec is None) == (self.provenance is None):
+            raise ValueError(
+                "Normalized Plan requires exactly one legacy specification or provenance"
+            )
+        if self.mission_spec is not None:
+            if self.planner_choice != self.mission_spec.planner_choice:
+                raise ValueError(
+                    "plan Planner Choice must match the Mission Specification"
+                )
+        elif not isinstance(self.provenance, PlanProvenance):
+            raise ValueError("provenance-only Normalized Plan is invalid")
         outcome = PlanningOutcome(self.outcome)
         maneuvers = tuple(self.maneuvers)
-        if isinstance(self.mission_spec, MissionSpec):
+        temporal = isinstance(self.mission_spec, MissionSpec) or (
+            self.mission_spec is None
+            and self.planner_choice.planning_profile
+            is PlanningProfile.TEMPORAL
+        )
+        if temporal:
             if not all(isinstance(item, ScheduledManeuver) for item in maneuvers):
                 raise ValueError("temporal normalized maneuvers must be ScheduledManeuver records")
+        elif self.mission_spec is None:
+            if not all(isinstance(item, SymbolicPlanStep) for item in maneuvers):
+                raise ValueError(
+                    "symbolic normalized maneuvers must be SymbolicPlanStep records"
+                )
+            symbolic_maneuvers = cast(tuple[SymbolicPlanStep, ...], maneuvers)
+            if outcome is PlanningOutcome.SOLVED and tuple(
+                item.step_index for item in symbolic_maneuvers
+            ) != tuple(range(len(symbolic_maneuvers))):
+                raise ValueError(
+                    "symbolic normalized steps must have contiguous indices"
+                )
         elif isinstance(self.mission_spec, SymbolicMissionSpec):
             if not all(isinstance(item, SymbolicPlanStep) for item in maneuvers):
                 raise ValueError("symbolic normalized maneuvers must be SymbolicPlanStep records")
@@ -735,7 +887,7 @@ class NormalizedPlan:
         if outcome is not PlanningOutcome.SOLVED and maneuvers:
             raise ValueError("only a solved Normalized Plan may contain maneuvers")
         object.__setattr__(self, "outcome", outcome)
-        if isinstance(self.mission_spec, MissionSpec):
+        if temporal:
             maneuvers = tuple(
                 sorted(
                     cast(tuple[ScheduledManeuver, ...], maneuvers),
@@ -744,6 +896,19 @@ class NormalizedPlan:
             )
         object.__setattr__(self, "maneuvers", maneuvers)
 
+
+    @property
+    def mission_id(self) -> str:
+        if self.mission_spec is not None:
+            return self.mission_spec.mission_id
+        return cast(PlanProvenance, self.provenance).mission_id
+
+    @property
+    def source_authority(self) -> str:
+        if self.mission_spec is not None:
+            return self.mission_spec.source_authority
+        return cast(PlanProvenance, self.provenance).source_authority
+
     @property
     def symbolic_steps(self) -> tuple[SymbolicPlanStep, ...]:
         if not all(isinstance(item, SymbolicPlanStep) for item in self.maneuvers):
@@ -751,17 +916,127 @@ class NormalizedPlan:
         return cast(tuple[SymbolicPlanStep, ...], self.maneuvers)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "mission_spec": self.mission_spec.to_dict(),
+        result = {
             "plan_revision": self.plan_revision,
             "mission_snapshot_id": self.mission_snapshot_id,
             "planner_choice": self.planner_choice.to_dict(),
             "outcome": str(self.outcome),
             "maneuvers": [item.to_dict() for item in self.maneuvers],
         }
+        if self.mission_spec is not None:
+            result["mission_spec"] = self.mission_spec.to_dict()
+        else:
+            result["provenance"] = cast(PlanProvenance, self.provenance).to_dict()
+        return result
 
     def to_canonical_json(self) -> str:
         return _canonical_json(self.to_dict())
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "NormalizedPlan":
+        if not isinstance(value, Mapping):
+            raise ValueError("Normalized Plan must be an object")
+        common = {
+            "plan_revision",
+            "mission_snapshot_id",
+            "planner_choice",
+            "outcome",
+            "maneuvers",
+        }
+        authority = set(value) - common
+        if authority not in ({"mission_spec"}, {"provenance"}):
+            raise ValueError(
+                "Normalized Plan contains unknown or missing authority fields"
+            )
+        choice = PlannerChoice.from_dict(value["planner_choice"])
+        mission_spec: MissionSpec | SymbolicMissionSpec | None = None
+        provenance: PlanProvenance | None = None
+        if "mission_spec" in value:
+            if not isinstance(value["mission_spec"], Mapping):
+                raise ValueError("Mission Specification must be an object")
+            if choice.planning_profile is PlanningProfile.TEMPORAL:
+                mission_spec = MissionSpec.from_dict(value["mission_spec"])
+            else:
+                mission_spec = SymbolicMissionSpec.from_dict(value["mission_spec"])
+        else:
+            if not isinstance(value["provenance"], Mapping):
+                raise ValueError("Plan Provenance must be an object")
+            provenance = PlanProvenance.from_dict(value["provenance"])
+
+        raw_maneuvers = value["maneuvers"]
+        if not isinstance(raw_maneuvers, (list, tuple)):
+            raise ValueError("Normalized Plan maneuvers must be an array")
+
+        def dependencies(raw: object) -> tuple[str, ...]:
+            if not isinstance(raw, (list, tuple)) or not all(
+                isinstance(item, str) for item in raw
+            ):
+                raise ValueError("Normalized Plan dependencies are invalid")
+            return tuple(raw)
+
+        if choice.planning_profile is PlanningProfile.TEMPORAL:
+            maneuvers: tuple[ScheduledManeuver | SymbolicPlanStep, ...] = tuple(
+                ScheduledManeuver(
+                    item["maneuver_id"],
+                    _maneuver_intent_from_dict(item["intent"]),
+                    dependencies(item["dependencies"]),
+                    item["start"],
+                    item["duration"],
+                )
+                for raw in raw_maneuvers
+                for item in (
+                    _strict_object(
+                        raw,
+                        {
+                            "maneuver_id",
+                            "intent",
+                            "dependencies",
+                            "start",
+                            "duration",
+                        },
+                        "scheduled maneuver",
+                    ),
+                )
+            )
+        else:
+            maneuvers = tuple(
+                SymbolicPlanStep(
+                    item["step_index"],
+                    item["maneuver_id"],
+                    _maneuver_intent_from_dict(item["intent"]),
+                    dependencies(item["dependencies"]),
+                    item["cost"],
+                )
+                for raw in raw_maneuvers
+                for item in (
+                    _strict_object(
+                        raw,
+                        {
+                            "step_index",
+                            "maneuver_id",
+                            "intent",
+                            "dependencies",
+                            "cost",
+                        },
+                        "symbolic plan step",
+                    ),
+                )
+            )
+        return cls(
+            mission_spec=mission_spec,
+            plan_revision=value["plan_revision"],
+            mission_snapshot_id=value["mission_snapshot_id"],
+            planner_choice=choice,
+            outcome=value["outcome"],
+            maneuvers=maneuvers,
+            provenance=provenance,
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> "NormalizedPlan":
+        decoded = _decode_json(value, "Normalized Plan")
+        if not isinstance(decoded, Mapping):
+            raise ValueError("Normalized Plan JSON must be an object")
+        return cls.from_dict(decoded)
 
 
 @dataclass(frozen=True, slots=True)

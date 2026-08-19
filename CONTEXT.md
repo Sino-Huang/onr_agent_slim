@@ -144,6 +144,10 @@ _Avoid_: Planner result, hidden retry
 A future durable aggregate that binds Planner Choice and generation-attempt records to solver evidence, code-owned verification checks/outcome, and a NormalizedPlan reference/hash. Planner assets and solver evidence are Planning Record outputs, never PlanningIntent `details`.
 _Avoid_: Mission authority, planner-selection input
 
+**Plan Provenance**:
+A reference-only binding from one Normalized Plan to its Mission Intent, Planning Decision, Operational Scene Graph, generated assets, and solver evidence, with a content digest for every reference.
+_Avoid_: Embedded Mission Specification, PlanningIntent details
+
 **Operational Scene Graph**:
 The agent-visible representation of operational entities, attributes, predicates, and relationships used for planning.
 _Avoid_: Ground truth, sensor dump

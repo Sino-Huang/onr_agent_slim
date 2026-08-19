@@ -330,6 +330,11 @@ class NormalizedPlanTransportEvent:
     event_kind: str = field(default="normalized-plan", init=False)
     contract_revision: int = field(default=1, init=False)
 
+    def __post_init__(self) -> None:
+        if self.payload.normalized_plan.provenance is not None:
+            object.__setattr__(self, "contract_revision", 2)
+
+
     @property
     def mission_id(self) -> str:
         return self.payload.mission_id
@@ -366,11 +371,11 @@ def create_normalized_plan_transport_event(
 
     document = normalized_plan.to_canonical_json()
     payload = NormalizedPlanTransportPayload(
-        mission_id=normalized_plan.mission_spec.mission_id,
+        mission_id=normalized_plan.mission_id,
         plan_revision=normalized_plan.plan_revision,
         mission_snapshot_id=normalized_plan.mission_snapshot_id,
         planner_choice=normalized_plan.planner_choice,
-        source_authority=normalized_plan.mission_spec.source_authority,
+        source_authority=normalized_plan.source_authority,
         outcome=PlanningOutcome(normalized_plan.outcome),
         normalized_plan=normalized_plan,
         normalized_plan_document=document,
