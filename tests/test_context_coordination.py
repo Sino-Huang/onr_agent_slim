@@ -297,3 +297,104 @@ def test_context_coordination_restores_latest_snapshot_from_file_transport(tmp_p
     assert changed.version == 3
     assert changed.source_references["fsm_status"] == "fsm-4"
     restarted_consumer.close()
+
+
+def test_belief_updated_is_reference_only_and_publishes_only_changed_fact() -> None:
+    input_subscription = Subscription(
+        "context-coordination", "mission-context", "normalized-plans"
+    )
+    output_subscription = Subscription(
+        "snapshot-reader", "mission-context", "mission-snapshots"
+    )
+    transport = InProcessTransport((input_subscription, output_subscription))
+    coordination = ContextCoordination(transport, "mission-context", clock=lambda: "t-belief")
+    content_hash = "a" * 64
+    payload = {
+        "source": "bayesian_belief_snapshot",
+        "revision": 1,
+        "reference": (
+            "bayesian-beliefs/mission-context/belief-v1-current.json"
+            f"#sha256={content_hash}"
+        ),
+        "content_sha256": content_hash,
+        "health": "healthy",
+        "fresh": True,
+    }
+    for sequence in (0, 1):
+        transport.publish_event(
+            coordination.input_topic,
+            TransportEvent(
+                1,
+                f"belief-{sequence}",
+                "mission-context",
+                sequence,
+                "belief.updated",
+                payload,
+            ),
+        )
+
+    with transport.open_consumer(coordination.subscription) as consumer:
+        first = coordination.run_once(consumer)
+        unchanged = coordination.run_once(consumer)
+
+    assert first is not None
+    assert first.bayesian_belief_snapshot == payload["reference"]
+    assert first.source_revisions["bayesian_belief_snapshot"] == 1
+    assert first.source_hashes["bayesian_belief_snapshot"] == content_hash
+    assert first.source_health["bayesian_belief_snapshot"] == "healthy"
+    assert first.source_freshness["bayesian_belief_snapshot"] is True
+    assert unchanged is None
+    assert transport.next_event_sequence("mission-snapshots", "mission-context") == 1
+
+
+def test_equal_belief_revision_rejects_conflicting_provenance() -> None:
+    subscription = Subscription(
+        "context-coordination", "mission-context", "normalized-plans"
+    )
+    transport = InProcessTransport((subscription,))
+    coordination = ContextCoordination(transport, "mission-context")
+
+    def belief_event(
+        sequence: int, content_hash: str, health: str = "healthy"
+    ) -> TransportEvent:
+        return TransportEvent(
+            1,
+            f"belief-{sequence}",
+            "mission-context",
+            sequence,
+            "belief.updated",
+            {
+                "source": "bayesian_belief_snapshot",
+                "revision": 1,
+                "reference": (
+                    "bayesian-beliefs/mission-context/belief-v1-current.json"
+                    f"#sha256={content_hash}"
+                ),
+                "content_sha256": content_hash,
+                "health": health,
+                "fresh": True,
+            },
+        )
+
+    transport.publish_event(coordination.input_topic, belief_event(0, "a" * 64))
+    transport.publish_event(
+        coordination.input_topic, belief_event(1, "a" * 64, "degraded")
+    )
+    transport.publish_event(coordination.input_topic, belief_event(2, "b" * 64))
+    with transport.open_consumer(coordination.subscription) as consumer:
+        accepted = coordination.run_once(consumer)
+        health_changed = coordination.run_once(consumer)
+        rejected = coordination.run_once(consumer)
+
+    assert accepted is not None
+    assert health_changed is not None
+    assert health_changed.source_health["bayesian_belief_snapshot"] == "degraded"
+    assert rejected is None
+    latest = transport.latest_event(
+        coordination.snapshot_topic,
+        "mission-context",
+        event_kind="mission-snapshot",
+    )
+    assert latest is not None
+    assert mission_snapshot_from_transport_event(latest) == health_changed
+    assert transport.next_event_sequence("mission-snapshots", "mission-context") == 2

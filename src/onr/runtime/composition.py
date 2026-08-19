@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +13,7 @@ from typing import Any, Callable, cast
 from langchain_openai import ChatOpenAI
 
 from onr.adapters.fast_downward import FastDownwardExecutor
+from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
@@ -25,13 +26,22 @@ from onr.adapters.mission_log_summarizer import (
 )
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.application.context_coordination import ContextCoordination
+from onr.application.bayesian_belief import (
+    BayesianBeliefManager,
+    BayesianBeliefService,
+)
 from onr.application.fsm import FSMRunner
-from onr.application.hyper_agent import HyperAgent
+from onr.application.hyper_agent import HyperAgent, HyperHeartbeatResult
 from onr.application.maneuver_control import ManeuverControl
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.planning_commands import PlanningCommandHandler
 from onr.application.temporal_planning import TemporalPlanning
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.bayesian_belief import (
+    BayesianBeliefSnapshot,
+    BeliefKey,
+    ForbiddenBeliefCombination,
+)
 from onr.contracts.fsm import FSMStatus, ManeuverDecision, ManeuverFeedback
 from onr.contracts.hyper_agent import FrozenMissionSpec, MissionInput
 from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecision
@@ -68,6 +78,9 @@ class RuntimeRunResult:
     scene_graph: TransportEvent
     feedback: ManeuverFeedback
     final_status: FSMStatus
+    belief_snapshot: BayesianBeliefSnapshot | None = None
+    belief_context_snapshot: MissionSnapshot | None = None
+    belief_heartbeat: HyperHeartbeatResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +202,7 @@ class RuntimeComposition:
         fsm_runner: FSMRunner,
         maneuver_control: ManeuverControl,
         environment_step: Callable[[], object],
+        bayesian_belief_service: BayesianBeliefService | None = None,
         summarizer: MissionLogSummarizer | None = None,
         model: Any | None = None,
     ) -> RuntimeRunResult:
@@ -205,6 +219,7 @@ class RuntimeComposition:
                 fsm_runner=fsm_runner,
                 maneuver_control=maneuver_control,
                 environment_step=environment_step,
+                bayesian_belief_service=bayesian_belief_service,
             )
 
     def _logger(self) -> OperationalLog:
@@ -213,7 +228,12 @@ class RuntimeComposition:
             logger = FileOperationalLog(self.config.storage.root / "operational-log")
         return logger
 
-    def create_chat_model(self, *, mission_id: str | None = None) -> ChatOpenAI:
+    def create_chat_model(
+        self,
+        *,
+        mission_id: str | None = None,
+        debug_scope: str = "runtime",
+    ) -> ChatOpenAI:
         """Create the configured OpenAI-compatible chat model."""
 
         llm = self.config.llm
@@ -224,10 +244,12 @@ class RuntimeComposition:
             recorder = LLMResponseRecorder(
                 self.config.storage.root.parent / "debug" / "llm",
                 mission_id,
+                role=debug_scope,
             )
             agent_recorder = AgentDebugRecorder(
                 self.config.storage.root.parent / "debug" / "agent",
                 mission_id,
+                role=debug_scope,
             )
             options["http_client"] = recorder.http_client
         model = ChatOpenAI(
@@ -384,6 +406,75 @@ class RuntimeComposition:
             operational_log=self._logger(),
         )
 
+    def create_bayesian_belief_service(
+        self,
+        *,
+        mission_id: str,
+        keys: Iterable[BeliefKey] | None = None,
+        constraints: Iterable[ForbiddenBeliefCombination] | None = None,
+        particle_count: int | None = None,
+        transition_probability: float | None = None,
+        seed: int | None = None,
+        observation_topic: str = "belief-observations",
+        context_topic: str = "normalized-plans",
+        clock: Callable[[], str] | None = None,
+    ) -> BayesianBeliefService:
+        """Compose the durable event-driven Bayesian belief application service."""
+
+        selected_keys = None if keys is None else tuple(keys)
+        selected_constraints = None if constraints is None else tuple(constraints)
+        store = FileBayesianBeliefStore(self.config.storage.root)
+        checkpoint = store.load_checkpoint(mission_id)
+        if checkpoint is None:
+            if selected_keys is None:
+                raise ValueError("belief keys are required when no checkpoint exists")
+            manager = BayesianBeliefManager(
+                mission_id,
+                selected_keys,
+                constraints=selected_constraints or (),
+                particle_count=1024 if particle_count is None else particle_count,
+                transition_probability=(
+                    0.0 if transition_probability is None else transition_probability
+                ),
+                seed=0 if seed is None else seed,
+            )
+        else:
+            manager = BayesianBeliefManager.from_checkpoint(checkpoint)
+            if selected_keys is not None and tuple(sorted(selected_keys)) != manager.keys:
+                raise ValueError("configured belief keys do not match the durable checkpoint")
+            if selected_constraints is not None and tuple(
+                sorted(selected_constraints, key=lambda item: item.constraint_id)
+            ) != manager.constraints:
+                raise ValueError("configured belief constraints do not match the durable checkpoint")
+            if particle_count is not None and particle_count != manager.particle_count:
+                raise ValueError("configured particle count does not match the durable checkpoint")
+            if transition_probability is not None:
+                if isinstance(transition_probability, bool) or not isinstance(
+                    transition_probability, (int, float)
+                ):
+                    raise ValueError("configured transition probability must be numeric")
+                if float(transition_probability) != manager.transition_probability:
+                    raise ValueError(
+                        "configured transition probability does not match the durable checkpoint"
+                    )
+            if seed is not None:
+                raise ValueError("seed cannot be supplied when resuming a durable checkpoint")
+        subscription = BayesianBeliefService.subscription_for(
+            mission_id,
+            observation_topic=observation_topic,
+        )
+        if subscription not in self.transport.subscriptions:
+            self.transport.subscriptions = self.transport.subscriptions + (subscription,)
+        return BayesianBeliefService(
+            manager,
+            store,
+            self.transport,
+            observation_topic=observation_topic,
+            context_topic=context_topic,
+            subscription=subscription,
+            clock=clock,
+        )
+
     def create_maneuver_control(
         self,
         adapter: ManeuverAdapter,
@@ -404,7 +495,10 @@ class RuntimeComposition:
             if mission_id is None:
                 raise ValueError("create_maneuver_control requires a provider or model and Mission ID")
             if model is None:
-                model = self.create_chat_model(mission_id=mission_id)
+                model = self.create_chat_model(
+                    mission_id=mission_id,
+                    debug_scope="maneuver-control",
+                )
             if memory_store is None:
                 memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
             context_backend_root = backend_root
@@ -454,7 +548,10 @@ class RuntimeComposition:
 
         if interpreter is None:
             if model is None:
-                model = self.create_chat_model(mission_id=mission_id)
+                model = self.create_chat_model(
+                    mission_id=mission_id,
+                    debug_scope="hyper-agent",
+                )
             if mission_id is not None and memory_store is None:
                 memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
             context_backend_root = backend_root
@@ -507,6 +604,7 @@ class RuntimeComposition:
         fsm_runner: FSMRunner,
         maneuver_control: ManeuverControl,
         environment_step: Callable[[], object],
+        bayesian_belief_service: BayesianBeliefService | None = None,
     ) -> RuntimeRunResult:
         """Run one deterministic MissionInput-to-authoritative-feedback seam."""
 
@@ -531,6 +629,16 @@ class RuntimeComposition:
         )
         if fsm_subscription.mission_id != mission_id:
             raise ValueError("FSM Runner mission ID does not match MissionInput")
+        if (
+            bayesian_belief_service is not None
+            and bayesian_belief_service.manager.mission_id != mission_id
+        ):
+            raise ValueError("Bayesian belief service mission ID does not match MissionInput")
+        if (
+            bayesian_belief_service is not None
+            and bayesian_belief_service.context_topic != context_coordination.input_topic
+        ):
+            raise ValueError("Bayesian belief output topic must be Context Coordination input")
 
         required_subscriptions = (
             Subscription(
@@ -548,6 +656,13 @@ class RuntimeComposition:
         for subscription in required_subscriptions:
             if subscription not in self.transport.subscriptions:
                 self.transport.subscriptions = self.transport.subscriptions + (subscription,)
+        if (
+            bayesian_belief_service is not None
+            and bayesian_belief_service.subscription not in self.transport.subscriptions
+        ):
+            self.transport.subscriptions = self.transport.subscriptions + (
+                bayesian_belief_service.subscription,
+            )
 
         def consume_event(consumer: Any, event_kind: str) -> TransportEvent:
             delivery = consumer.receive()
@@ -608,6 +723,13 @@ class RuntimeComposition:
             )
             status_consumer = consumers.enter_context(
                 self.transport.open_consumer(required_subscriptions[6])
+            )
+            belief_consumer = (
+                consumers.enter_context(
+                    self.transport.open_consumer(bayesian_belief_service.subscription)
+                )
+                if bayesian_belief_service is not None
+                else None
             )
 
             authority = hyper_agent.freeze_mission(mission_input)
@@ -807,16 +929,65 @@ class RuntimeComposition:
                 details={"state": final_status.active_state, "status": final_status.status},
             )
 
+            belief_snapshot: BayesianBeliefSnapshot | None = None
+            belief_context_snapshot: MissionSnapshot | None = None
+            belief_heartbeat: HyperHeartbeatResult | None = None
+            if bayesian_belief_service is not None:
+                if belief_consumer is None:
+                    raise RuntimeError("Bayesian belief consumer was not composed")
+                belief_snapshot = bayesian_belief_service.run_once(belief_consumer)
+                if belief_snapshot is None:
+                    raise RuntimeError("Bayesian belief service did not consume an observation")
+                belief_context_snapshot = context_coordination.run_once(context_consumer)
+                if (
+                    belief_context_snapshot is None
+                    or belief_context_snapshot.source_revisions[
+                        "bayesian_belief_snapshot"
+                    ]
+                    != belief_snapshot.belief_revision
+                    or belief_context_snapshot.source_hashes[
+                        "bayesian_belief_snapshot"
+                    ]
+                    != belief_snapshot.content_sha256
+                ):
+                    raise RuntimeError("Context Coordination did not authorize the belief artifact")
+                reference = belief_context_snapshot.source_references[
+                    "bayesian_belief_snapshot"
+                ]
+                content_hash = belief_context_snapshot.source_hashes[
+                    "bayesian_belief_snapshot"
+                ]
+                if reference is None or content_hash is None:
+                    raise RuntimeError("belief artifact provenance is incomplete")
+                durable_belief = bayesian_belief_service.load_snapshot_reference(
+                    reference, content_hash
+                )
+                if durable_belief != belief_snapshot:
+                    raise RuntimeError("durable Bayesian belief artifact does not match the update")
+                belief_heartbeat = hyper_agent.heartbeat(
+                    belief_context_snapshot,
+                    mission_id=mission_id,
+                    snapshot_id=(
+                        f"{mission_id}:snapshot:{belief_context_snapshot.version}"
+                    ),
+                    belief_snapshot=durable_belief,
+                )
+                if belief_heartbeat.plan_revision != plan.plan_revision + 1:
+                    raise RuntimeError("belief-backed Hyper heartbeat did not replan normally")
+
             return RuntimeRunResult(
                 authority=authority,
                 plan=plan,
-                context_snapshot=context_snapshot,
+                context_snapshot=belief_context_snapshot or context_snapshot,
                 status_before_feedback=status_before_feedback,
                 decision=decision,
                 command=command,
                 scene_graph=scene_graph,
                 feedback=feedback,
                 final_status=final_status,
+                belief_snapshot=belief_snapshot,
+                belief_context_snapshot=belief_context_snapshot,
+                belief_heartbeat=belief_heartbeat,
             )
 
 

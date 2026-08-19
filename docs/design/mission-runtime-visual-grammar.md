@@ -1,115 +1,66 @@
 # Mission runtime visual grammar
 
-The operator console at `src/onr/viewer/web/index.html` is a read-only view of
-the public runtime evidence returned by `/api/runtime` and
-`/api/trace?mission_id=<id>`. Its visual grammar distinguishes observation from
-authority: a highlighted component means a validated public record was
-observed; it does not transfer authority to the Web or to the viewer projection.
+The operator console is a read-only view of the selected mission's public
+`/api/runtime`, `/api/trace`, and loopback `/api/debug` evidence. Highlighting
+means evidence was observed; it never grants authority to the browser.
 
-## Components and authority
+## Architecture
 
-The architecture map uses eight component nodes. Hyper Agent represents frozen
-mission authority and replan evaluation. Context Coordination represents public
-context assembly. Maneuver Control represents bounded decision authority. The
-Snapshot and FSM Runner nodes separate derived snapshot evidence from durable
-state-machine evidence. Skills is advisory only. Command and outcome records
-show issued and terminal command evidence. Feedback represents authoritative
-environment lifecycle facts and other validated feedback paths.
+The map shows real runtime modules: **Context Coordination**, **Bayesian Belief
+Manager**, **Hyper Agent**, **PDDL Planner**, **MiniZinc Planner**, **Maneuver
+Control**, **FSM Runner**, **Transport**, **Environment**, and **Mission
+Summary** when its public artifact exists. There is no Skills & Advisory node,
+tab, or edge. Advisory-shaped records remain trace records if present, but are
+not represented as a fictional runtime component.
 
-The event inspector always shows the projected `component` and `authority`
-through its component copy and Authority field. These identities are assigned
-by `TraceProjection`, not accepted from arbitrary source payloads. Green focus
-indicates observed evidence, amber indicates the current view or correlation,
-and red safety notes identify missing public evidence. None of these cues claim
-that a summary, advisory record, or viewer state is mission authority.
+The primary directed paths are context to belief, belief to Hyper Agent, Hyper
+Agent to the symbolic or temporal planner, planner to Maneuver Control,
+Maneuver Control to FSM Runner, FSM Runner to transport, transport to the
+environment, and environment back to context. A mission summary may feed Hyper
+Agent. They are declared architecture, not observed activity.
 
-## Observed flows
+Green flow lines require an explicit `parent_id` resolved to an observed source
+record in the current replay window; no default path activates an edge. Amber
+indicates the selected correlation. Every line is a keyboard-accessible button.
+Selecting one separates its observed traversal evidence from its static declared
+contract classes. An unlinked record remains visible on its mapped component but
+does not imply a flow. Evidence rows use exact projection component/event-kind
+mappings for declared types such as `TransportEvent`, `MissionSnapshot`,
+`NormalizedPlan`, `FSMStatus`, or `BayesianBeliefSnapshot`; unknown records keep
+their original event kind and are marked as unclassified rather than synthesized.
 
-Edges are hidden until the active mission has a public observation that maps to
-that flow. The browser derives an edge from validated parent relationships when
-possible and otherwise uses the component's documented default path. Green
-animated edges and mobile flow chips therefore mean "observed in the current
-replay window," never "configured," "expected," or "commanded." Amber edges
-show records related to the selected correlation. Idle architecture has no
-active edge, chip, replay animation, event strip, or summary section.
+## Inspection and debug evidence
 
-## Mission overview and drill-downs
+Selecting any component opens grouped durable input and output history from the
+current trace window. PDDL Planner is populated only by symbolic/PDDL planning
+evidence; MiniZinc Planner is populated only by temporal/MiniZinc evidence.
+Either shows “No observed history” when that evidence does not exist.
 
-Mission overview shows every projected public record for the selected mission,
-the architecture map, replay controls, event order, and the latest public
-non-authoritative summary with bounded history.
+Selecting Hyper Agent or Maneuver Control also adds its `/api/debug` API profile
+and conversation inspector. Profiles list only reported tools and skills.
+Conversations are ordered by debug role then sequence and visibly separate:
 
-The seven tabs have fixed semantics:
+1. input or request;
+2. provider reasoning;
+3. output, content, and tool calls.
 
-1. **Mission overview** shows the complete selected-mission observation stream.
-2. **Hyper Agent** shows Hyper Agent and coordinated public-context records,
-   including validated replan requests.
-3. **Maneuver Control** shows maneuver decisions and relevant FSM transition
-   evidence.
-4. **Snapshot & FSM** shows snapshots, coordinated context, statecharts,
-   execution records, and FSM status.
-5. **Skills & advisory** shows only advisory skill/context observations.
-6. **Command & outcome** shows commands, transport receipts, outcomes, and
-   command-routed operational evidence.
-7. **Feedback paths** shows validated environment and lifecycle feedback.
+These debug values are shown raw only because they came from the same-origin
+loopback debug endpoint. Missing debug evidence has an explicit empty state.
+The inspector and its conversation list scroll independently so a long
+reasoning record does not make the map unusable.
 
-Changing tabs filters the architecture focus and event strip together. A
-selection that does not belong to the next drill-down is cleared rather than
-shown out of context.
+## Replay, selection, and responsive use
 
-## Mission, replay, and correlation
+The mission selector is populated from public runtime mission IDs. Changing it
+clears local replay and selection state before loading the new mission. Replay
+controls change only the browser cursor. Selecting an event advances to that
+observation and synchronizes its card, correlation highlight, and event
+inspector. Mission records are never merged across missions.
 
-The mission selector is populated from the active runtime's public
-`mission_ids`. Selecting a mission clears the prior replay cursor, event
-selection, and correlation before requesting that mission's trace. Records from
-different missions are never merged.
+Desktop places the diagram beside the inspector. On small screens the inspector
+moves below the map and observed flow lines become compact clickable flow chips.
+The fixed mobile map and bounded scrollers avoid global horizontal overflow.
 
-The horizontal event strip is the projected observation order. Play/pause,
-restart, speed, and the scrubber change only the local replay cursor. Selecting
-an event advances the cursor to that observation and synchronizes the event
-card, component focus, inspector, and correlated edges. Correlation uses only
-public correlation and parent identifiers. "Clear correlation" removes the
-related highlight without altering runtime artifacts.
-
-## Idle and active states
-
-Idle mode retains the architecture for inspection but labels the runtime idle
-and hides observations, summaries, replay controls, and active flows. Active
-mode requires a current runtime lease, displays only missions discovered from
-validated public artifacts, and polls the same-origin read-only endpoints.
-Unavailable or stale runtime state does not preserve a previous mission trace
-as if it were live.
-
-## Summary lifecycle
-
-The runtime, not the Web, periodically creates one mission-level
-`SummaryArtifact` from incremental operational-log records. Atomic files under
-`storage.root/summaries/<mission>/` are non-authoritative digests. Mission
-overview displays the newest summary, its input range, and up to eight prior
-summary observations. Selecting history synchronizes it with replay and the
-inspector. Missing summary data displays an unavailable state without inventing
-content. A summary never replaces component source-of-truth records.
-
-## Safety and replay states
-
-The inspector renders only the browser allowlist of identity, status, bounded
-payload, and evidence fields. Redacted fields appear as amber safety notes;
-missing fields appear in red. Malformed evidence uses fixed viewer diagnostics
-without source strings. Replay disposition distinguishes normal, duplicate,
-replayed, stale, gap, resynchronized, conflict, and malformed observations.
-These states remain evidence about delivery and projection, separate from the
-business `status` and `outcome` fields.
-
-## Responsive behavior
-
-Desktop uses the architecture map beside the inspector. At narrower widths the
-inspector moves below the map and replay controls stack. Mobile keeps the same
-eight components in a fixed-height map, replaces hidden geometric edges with
-observed flow chips, wraps header and replay controls, and keeps tabs, events,
-and summary history as bounded horizontal scrollers. Global horizontal overflow
-is not part of the grammar; long public values wrap or truncate inside their
-owned surfaces.
-
-The Web cannot issue commands, mutate runtime state, start or stop leases,
-invoke an LLM, or request summarization. It can only poll the two same-origin
-GET endpoints and change local presentation state.
+Trace details remain allowlisted and bounded. Redacted fields are called out as
+warnings; missing public fields are errors. The console cannot issue commands,
+modify runtime state, invoke an LLM, or create summaries.

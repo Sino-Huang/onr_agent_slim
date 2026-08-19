@@ -31,12 +31,14 @@ class _Response:
 class _RecordingModel:
     def __init__(self, responses: list[str] | None = None) -> None:
         self.prompts: list[str] = []
+        self.invocation_kwargs: list[dict[str, object]] = []
         self.responses = responses or ["summary"]
         self.calls = 0
         self.error: Exception | None = None
 
-    def invoke(self, prompt: str) -> _Response:
+    def invoke(self, prompt: str, **kwargs: object) -> _Response:
         self.prompts.append(prompt)
+        self.invocation_kwargs.append(kwargs)
         if self.error is not None:
             raise self.error
         response = self.responses[min(self.calls, len(self.responses) - 1)]
@@ -65,6 +67,9 @@ def test_heartbeat_consumes_incrementally_and_persists_across_restart(tmp_path: 
     assert first.prior_summary_ids == ()
     assert (root / "summaries" / "mission-1" / "00000000000000000001.json").is_file()
     assert (root / "summaries" / "mission-1" / "cursor.json").is_file()
+    assert model.invocation_kwargs == [
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    ]
 
     assert summarizer.heartbeat("mission-1") is None
     assert len(model.prompts) == 1
@@ -76,6 +81,10 @@ def test_heartbeat_consumes_incrementally_and_persists_across_restart(tmp_path: 
     assert second.input_end_sequence == 3
     assert first.summary in model.prompts[1]
     assert '"sequence":1' not in model.prompts[1].split("NEW LOG RECORDS", 1)[1]
+    assert model.invocation_kwargs == [
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    ]
 
     restarted_model = _RecordingModel(["unused"])
     restarted = FileMissionLogSummarizer(logger, root, restarted_model)
@@ -138,6 +147,8 @@ def test_runtime_composes_and_drives_the_summarizer_heartbeat(tmp_path: Path) ->
             TransportConfig("inprocess", tmp_path / "transport"),
             StorageConfig(tmp_path / "storage"),
             ServicesConfig("hyper", "maneuver", "context", "fsm", "planner"),
+            debug=False,
+            agent_name="test-agent",
         ),
         InProcessTransport(),
         logger,

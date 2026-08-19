@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Callable, cast
 
+from onr.application.bayesian_belief import belief_artifact_reference
+from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import Statechart
 from onr.contracts.hyper_agent import (
@@ -50,6 +52,7 @@ class HyperHeartbeatResult:
     retained_maneuver_ids: tuple[str, ...] = ()
     superseded_plan_revision: int | None = None
     snapshot_id: str | None = None
+    belief_snapshot: BayesianBeliefSnapshot | None = None
 
     @property
     def normalized_plan(self) -> NormalizedPlan | None:
@@ -85,6 +88,7 @@ class _MissionState:
     active_snapshot_id: str | None = None
     pending: list[ReplanRequest] | None = None
     seen_request_ids: set[str] | None = None
+    latest_belief_snapshot: BayesianBeliefSnapshot | None = None
 
     def __post_init__(self) -> None:
         self.pending = []
@@ -249,6 +253,7 @@ class HyperAgent:
         *,
         mission_id: str | None = None,
         snapshot_id: str | None = None,
+        belief_snapshot: BayesianBeliefSnapshot | None = None,
     ) -> HyperHeartbeatResult:
         """Evaluate one authoritative snapshot and, when needed, publish a plan."""
 
@@ -258,6 +263,7 @@ class HyperAgent:
         state = self._states.get(mission)
         if state is None:
             raise ValueError("heartbeat received an unknown Mission")
+        validated_belief = self._validate_belief_provenance(snapshot, belief_snapshot)
         self._emit(
             mission,
             "heartbeat",
@@ -266,6 +272,7 @@ class HyperAgent:
         )
         lock = self._locks.setdefault(mission, RLock())
         with lock:
+            state.latest_belief_snapshot = validated_belief
             pending = self._coalesce(state, mission)
             source_changed = state.active_source_revisions != revisions
             initial = state.active_plan is None
@@ -367,6 +374,7 @@ class HyperAgent:
                     previous_plan.plan_revision if previous_plan is not None else None
                 ),
                 snapshot_id=current_snapshot_id,
+                belief_snapshot=validated_belief,
             )
 
     def ask_human(
@@ -453,6 +461,41 @@ class HyperAgent:
         return snapshot.mission_id, current_snapshot_id, dict(snapshot.source_revisions)
 
     @staticmethod
+    def _validate_belief_provenance(
+        snapshot: MissionSnapshot,
+        belief: BayesianBeliefSnapshot | None,
+    ) -> BayesianBeliefSnapshot | None:
+        source = "bayesian_belief_snapshot"
+        revision = snapshot.source_revisions[source]
+        reference = snapshot.source_references[source]
+        content_hash = snapshot.source_hashes[source]
+        manifest_has_belief = any(
+            value is not None for value in (revision, reference, content_hash)
+        )
+        if not manifest_has_belief:
+            if belief is not None:
+                raise ValueError("belief artifact is not authorized by the MissionSnapshot")
+            return None
+        if revision is None or reference is None or content_hash is None:
+            raise ValueError("MissionSnapshot belief provenance is incomplete")
+        if snapshot.source_health[source] != "healthy" or not snapshot.source_freshness[source]:
+            raise ValueError("MissionSnapshot belief provenance is not healthy and fresh")
+        if not isinstance(belief, BayesianBeliefSnapshot):
+            raise ValueError("MissionSnapshot belief reference requires a typed artifact")
+        if belief.mission_id != snapshot.mission_id:
+            raise ValueError("belief artifact mission does not match MissionSnapshot")
+        if belief.belief_revision != revision:
+            raise ValueError("belief artifact revision does not match MissionSnapshot")
+        if belief.content_sha256 != content_hash:
+            raise ValueError("belief artifact hash does not match MissionSnapshot")
+        expected_reference = belief_artifact_reference(
+            belief.mission_id, belief.content_sha256
+        )
+        if reference != expected_reference:
+            raise ValueError("belief artifact reference does not match MissionSnapshot")
+        return belief
+
+    @staticmethod
     def _coalesce(state: _MissionState, mission_id: str) -> ReplanRequest | None:
         assert state.pending is not None
         if not state.pending:
@@ -510,6 +553,7 @@ class HyperAgent:
             retained_maneuver_ids=(),
             superseded_plan_revision=None,
             snapshot_id=snapshot_id,
+            belief_snapshot=state.latest_belief_snapshot,
         )
 
 

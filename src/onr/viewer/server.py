@@ -9,12 +9,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import os
 from pathlib import Path, PurePosixPath
 import re
 import socket
+import stat
 from typing import Callable, Mapping, Sequence, cast
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
+from onr.application.bayesian_belief import belief_artifact_reference
 from onr.contracts.context_coordination import (
     MissionSnapshot,
     mission_snapshot_from_transport_event,
@@ -31,11 +35,16 @@ from onr.ports.mission_log_summarizer import SummaryArtifact
 from onr.ports.operational_log import OperationalLogRecord
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
-from onr.viewer.debug import load_debug_artifacts
+from onr.viewer.debug import (
+    KNOWN_DEBUG_ROLES,
+    load_debug_artifacts,
+    load_llm_conversations,
+)
 from onr.viewer.trace import TraceProjection, sanitize_payload
 
 
 _MAX_ARTIFACT_BYTES = 1024 * 1024
+_MAX_JSON_DEPTH = 64
 _EPOCH = "1970-01-01T00:00:00+00:00"
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _MISSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
@@ -57,6 +66,7 @@ _SOURCE_ORDER = {
     "summary": 9,
     "statechart": 10,
     "fsm-execution": 11,
+    "bayesian-belief": 12,
 }
 
 
@@ -142,13 +152,103 @@ def _safe_json_files(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(result, key=lambda item: item.name))
 
 
-def _read_mapping(path: Path) -> Mapping[str, object] | None:
+def _reject_constant(value: str) -> object:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _within_json_depth(value: object) -> bool:
+    """Validate parsed container depth without recursive Python calls."""
+
+    pending: list[tuple[object, int]] = [(value, 0)]
+    while pending:
+        current, depth = pending.pop()
+        if depth > _MAX_JSON_DEPTH:
+            return False
+        if isinstance(current, dict):
+            pending.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            pending.extend((item, depth + 1) for item in current)
+    return True
+
+
+def _open_confined(path: Path, root: Path) -> int:
+    """Open one file beneath a non-symlink root using directory descriptors."""
+
+    absolute_root = Path(os.path.abspath(root))
+    absolute_path = Path(os.path.abspath(path))
     try:
-        if path.stat().st_size > _MAX_ARTIFACT_BYTES:
+        relative = absolute_path.relative_to(absolute_root)
+    except ValueError as exc:
+        raise OSError("artifact path escapes configured root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise OSError("artifact path is not confined")
+
+    directory_fd = os.open(
+        absolute_root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        for component in relative.parts[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(
+            relative.parts[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+
+def _read_mapping(
+    path: Path, *, root: Path | None = None
+) -> Mapping[str, object] | None:
+    descriptor: int | None = None
+    try:
+        descriptor = _open_confined(path, root or path.parent)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_ARTIFACT_BYTES:
             return None
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        chunks: list[bytes] = []
+        size = 0
+        while size <= _MAX_ARTIFACT_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, _MAX_ARTIFACT_BYTES + 1 - size),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > _MAX_ARTIFACT_BYTES:
+            return None
+        data = b"".join(chunks)
+        value = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_constant,
+        )
+        if not _within_json_depth(value):
+            return None
+    except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
         return None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     return cast(Mapping[str, object], value) if isinstance(value, dict) else None
 
 
@@ -309,7 +409,7 @@ def _load_transport_events(
         ):
             for path in _safe_json_files(mission_dir):
                 prefix = path.name.split("-", 1)[0]
-                raw = _read_mapping(path)
+                raw = _read_mapping(path, root=transport_root)
                 if raw is None or not prefix.isdigit():
                     continue
                 try:
@@ -347,7 +447,7 @@ def _load_commands(
         for mission_dir in _mission_dirs(service_dir, mission_id, encoded=True):
             for path in _safe_json_files(mission_dir):
                 prefix = path.name.split("-", 1)[0]
-                envelope = _read_mapping(path)
+                envelope = _read_mapping(path, root=transport_root)
                 if envelope is None or not prefix.isdigit():
                     continue
                 sequence = int(prefix)
@@ -392,7 +492,7 @@ def _load_commands(
 
     for command_id, command in sorted(commands.items()):
         receipt_path = transport_root / "receipts" / f"{_encoded(command_id)}.json"
-        raw = _read_mapping(receipt_path)
+        raw = _read_mapping(receipt_path, root=transport_root)
         if raw is None:
             continue
         try:
@@ -437,22 +537,25 @@ def _load_commands(
 def _load_mission_tree(
     root: Path,
     mission_id: str | None,
-    loader: Callable[[str, Path], _PublicArtifact | None],
+    loader: Callable[[str, Path, Path], _PublicArtifact | None],
     *,
     events: bool = False,
+    public_root: Path | None = None,
 ) -> list[_PublicArtifact]:
     artifacts: list[_PublicArtifact] = []
     for mission_dir in _mission_dirs(root, mission_id, encoded=False):
         artifact_dir = mission_dir / "events" if events else mission_dir
         for path in _safe_json_files(artifact_dir):
-            artifact = loader(mission_dir.name, path)
+            artifact = loader(mission_dir.name, path, public_root or root)
             if artifact is not None:
                 artifacts.append(artifact)
     return artifacts
 
 
-def _load_log(mission_dir_name: str, path: Path) -> _PublicArtifact | None:
-    raw = _read_mapping(path)
+def _load_log(
+    mission_dir_name: str, path: Path, public_root: Path
+) -> _PublicArtifact | None:
+    raw = _read_mapping(path, root=public_root)
     if raw is None or not path.stem.isdigit():
         return None
     try:
@@ -471,8 +574,10 @@ def _load_log(mission_dir_name: str, path: Path) -> _PublicArtifact | None:
         return None
 
 
-def _load_summary(mission_dir_name: str, path: Path) -> _PublicArtifact | None:
-    raw = _read_mapping(path)
+def _load_summary(
+    mission_dir_name: str, path: Path, public_root: Path
+) -> _PublicArtifact | None:
+    raw = _read_mapping(path, root=public_root)
     if raw is None or not path.stem.isdigit():
         return None
     try:
@@ -491,10 +596,12 @@ def _load_summary(mission_dir_name: str, path: Path) -> _PublicArtifact | None:
         return None
 
 
-def _load_fsm(mission_dir_name: str, path: Path) -> _PublicArtifact | None:
+def _load_fsm(
+    mission_dir_name: str, path: Path, public_root: Path
+) -> _PublicArtifact | None:
     if path.name not in {"statechart.json", "execution-record.json"}:
         return None
-    raw = _read_mapping(path)
+    raw = _read_mapping(path, root=public_root)
     if raw is None:
         return None
     try:
@@ -533,13 +640,30 @@ def _load_public_artifacts(
     storage_root = config.storage.root
     artifacts.extend(
         _load_mission_tree(
-            storage_root / "operational-log", mission_id, _load_log, events=True
+            storage_root / "operational-log",
+            mission_id,
+            _load_log,
+            events=True,
+            public_root=storage_root,
         )
     )
     artifacts.extend(
-        _load_mission_tree(storage_root / "summaries", mission_id, _load_summary)
+        _load_mission_tree(
+            storage_root / "summaries",
+            mission_id,
+            _load_summary,
+            public_root=storage_root,
+        )
     )
-    artifacts.extend(_load_mission_tree(storage_root / "fsm", mission_id, _load_fsm))
+    artifacts.extend(
+        _load_mission_tree(
+            storage_root / "fsm",
+            mission_id,
+            _load_fsm,
+            public_root=storage_root,
+        )
+    )
+    artifacts.extend(_load_current_beliefs(storage_root, mission_id))
     return tuple(
         sorted(
             artifacts,
@@ -554,6 +678,70 @@ def _load_public_artifacts(
     )
 
 
+def _load_current_beliefs(
+    storage_root: Path, mission_id: str | None
+) -> list[_PublicArtifact]:
+    """Project only snapshots accepted by the confined committed-state loader."""
+
+    missions: list[str] = []
+    if mission_id is not None:
+        missions.append(mission_id)
+    else:
+        for mission_dir in _safe_dirs(storage_root / "bayesian-beliefs"):
+            try:
+                candidate = unquote(mission_dir.name, errors="strict")
+            except UnicodeError:
+                continue
+            if _encoded(candidate) == mission_dir.name and _valid_mission_id(candidate):
+                missions.append(candidate)
+
+    try:
+        store = FileBayesianBeliefStore(storage_root)
+    except Exception:
+        return []
+    artifacts: list[_PublicArtifact] = []
+    for selected in sorted(set(missions)):
+        try:
+            snapshot = store.load_current_read_only(selected)
+            if snapshot is None:
+                continue
+            reference = belief_artifact_reference(
+                snapshot.mission_id, snapshot.content_sha256
+            )
+        except Exception:
+            continue
+        event_id = (
+            f"bayesian-belief:{snapshot.mission_id}:{snapshot.belief_revision}"
+        )
+        record = {
+            "schema_version": 1,
+            "event_id": event_id,
+            "mission_id": snapshot.mission_id,
+            "sequence": snapshot.belief_revision,
+            "event_kind": "bayesian-belief",
+            "payload": {
+                "source": "bayesian_belief_snapshot",
+                "revision": snapshot.belief_revision,
+                "reference": reference,
+                "content_sha256": snapshot.content_sha256,
+                "input_event_id": snapshot.input_event_id,
+                "input_revision": snapshot.input_revision,
+                "marginals": [item.to_dict() for item in snapshot.marginals],
+            },
+        }
+        artifacts.append(
+            _artifact(
+                snapshot.mission_id,
+                snapshot.belief_revision,
+                event_id,
+                "bayesian-belief",
+                record,
+                _aware_timestamp(snapshot.created_at),
+            )
+        )
+    return artifacts
+
+
 def _valid_mission_id(value: str | None) -> bool:
     return value is not None and _MISSION_ID.fullmatch(value) is not None
 
@@ -562,6 +750,36 @@ def _validate_host(host: str) -> str:
     if host not in _LOOPBACK_HOSTS:
         raise ValueError("viewer host must be 127.0.0.1, ::1, or localhost")
     return "127.0.0.1" if host == "localhost" else host
+
+
+def _loopback_authority(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _authority_variants(host: str, port: int) -> frozenset[str]:
+    authority = _loopback_authority(host, port)
+    if port != 80:
+        return frozenset({authority})
+    host_only = f"[{host}]" if ":" in host else host
+    return frozenset({host_only, authority})
+
+
+def _same_loopback_origin(value: str, host: str, port: int) -> bool:
+    try:
+        parsed = urlsplit(value)
+        selected_port = parsed.port if parsed.port is not None else 80
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname == host
+        and selected_port == port
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 class ViewerApplication:
@@ -666,20 +884,28 @@ class ViewerApplication:
             return {"items": []}
         return {"items": selected_items}
 
-    def debug_payload(self, mission_id: str | None) -> dict[str, object]:
+    def debug_payload(
+        self, mission_id: str | None, role: str | None = None
+    ) -> dict[str, object]:
         empty: dict[str, object] = {
             "enabled": False,
             "profiles": [],
             "invocations": [],
+            "conversations": [],
         }
-        if not _valid_mission_id(mission_id):
+        if not _valid_mission_id(mission_id) or (
+            role is not None and role not in KNOWN_DEBUG_ROLES
+        ):
             return empty
         runtime = self._runtime()
         if runtime is None or not runtime.config.debug:
             return empty
         try:
             profiles, invocations = load_debug_artifacts(
-                runtime.config.storage.root, cast(str, mission_id)
+                runtime.config.storage.root, cast(str, mission_id), role=role
+            )
+            conversations = load_llm_conversations(
+                runtime.config.storage.root, cast(str, mission_id), role=role
             )
         except Exception:
             return empty
@@ -689,6 +915,7 @@ class ViewerApplication:
             "enabled": True,
             "profiles": profiles,
             "invocations": invocations,
+            "conversations": conversations,
         }
 
     def static_file(self, request_path: str) -> Path | None:
@@ -740,6 +967,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     do_TRACE = do_POST
 
     def _serve(self, *, head_only: bool) -> None:
+        if not self._request_boundary_valid():
+            self._send_error(HTTPStatus.FORBIDDEN, head_only=head_only)
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/api/runtime":
             self._send_json(self.application.runtime_payload(), head_only=head_only)
@@ -754,10 +984,17 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/debug":
             query = parse_qs(parsed.query, keep_blank_values=True)
-            mission_values = query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+            valid_keys = set(query) <= {"mission_id", "role"}
+            mission_values = query.get("mission_id", []) if valid_keys else []
+            role_values = query.get("role", []) if valid_keys else []
             mission_id = mission_values[0] if len(mission_values) == 1 else None
+            role = role_values[0] if len(role_values) == 1 else None
+            if len(role_values) > 1 or (
+                role is not None and role not in KNOWN_DEBUG_ROLES
+            ):
+                mission_id = None
             self._send_json(
-                self.application.debug_payload(mission_id), head_only=head_only
+                self.application.debug_payload(mission_id, role), head_only=head_only
             )
             return
         path = self.application.static_file(parsed.path)
@@ -786,6 +1023,22 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", _CSP)
 
+    def _request_boundary_valid(self) -> bool:
+        viewer_server = cast("ViewerHTTPServer", self.server)
+        hosts = self.headers.get_all("Host", failobj=[])
+        if len(hosts) != 1 or hosts[0] not in viewer_server.allowed_authorities:
+            return False
+        origins = self.headers.get_all("Origin", failobj=[])
+        return not origins or (
+            len(origins) == 1
+            and any(
+                _same_loopback_origin(
+                    origins[0], host, viewer_server.listener_port
+                )
+                for host in viewer_server.allowed_hosts
+            )
+        )
+
     def _send_json(
         self,
         payload: Mapping[str, object],
@@ -811,6 +1064,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _method_not_allowed(self) -> None:
+        if not self._request_boundary_valid():
+            self._send_error(HTTPStatus.FORBIDDEN)
+            return
         content = b'{"error":"method_not_allowed"}'
         self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
         self.send_header("Allow", "GET, HEAD")
@@ -827,10 +1083,31 @@ class ViewerHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], application: ViewerApplication) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        application: ViewerApplication,
+        *,
+        requested_host: str,
+    ) -> None:
         self.application = application
         self.address_family = socket.AF_INET6 if address[0] == "::1" else socket.AF_INET
         super().__init__(address, ViewerRequestHandler)
+        bound = cast(tuple[object, ...], self.server_address)
+        self.listener_host = str(bound[0])
+        self.listener_port = cast(int, bound[1])
+        self.listener_authority = _loopback_authority(
+            self.listener_host, self.listener_port
+        )
+        hosts = {self.listener_host}
+        if requested_host == "localhost":
+            hosts.add("localhost")
+        self.allowed_hosts = frozenset(hosts)
+        self.allowed_authorities = frozenset(
+            authority
+            for host in self.allowed_hosts
+            for authority in _authority_variants(host, self.listener_port)
+        )
 
 
 def create_server(
@@ -849,7 +1126,9 @@ def create_server(
         config_path=Path(config_path) if config_path is not None else None,
         static_root=Path(static_root) if static_root is not None else None,
     )
-    return ViewerHTTPServer((bind_host, port), application)
+    return ViewerHTTPServer(
+        (bind_host, port), application, requested_host=host
+    )
 
 
 def _host_argument(value: str) -> str:

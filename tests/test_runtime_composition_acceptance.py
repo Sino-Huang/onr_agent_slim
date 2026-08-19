@@ -4,10 +4,13 @@ import hashlib
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.operational_log import FileOperationalLog
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.fsm import FSMStatus
 from onr.contracts.hyper_agent import FrozenMissionSpec, MissionInput
 from onr.contracts.maneuver_control import (
@@ -103,15 +106,20 @@ class FixedDecisionProvider:
 
 
 class FixedSummaryModel:
-    def invoke(self, prompt: str) -> str:
+    def __init__(self) -> None:
+        self.invocation_kwargs: list[dict[str, object]] = []
+
+    def invoke(self, prompt: str, **kwargs: object) -> str:
         assert "NEW LOG RECORDS" in prompt
+        self.invocation_kwargs.append(kwargs)
         return "Mission runtime completed one maneuver."
 
 
 def _runtime_config(tmp_path: Path, planner_path: Path) -> Path:
     config = tmp_path / "runtime.yaml"
     config.write_text(
-        f"""debug: false
+        f"""agent_name: test-agent
+debug: false
 llm:
   provider: test
   base_url: http://127.0.0.1:14398/v1
@@ -193,12 +201,20 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
     environment = FakeEnvironment(
         cast(FileTransport, runtime.transport), mission_input.mission_id
     )
+    belief_service = runtime.create_bayesian_belief_service(
+        mission_id=mission_input.mission_id,
+        keys=tuple(BeliefKey(f"ship-{index}", "collision") for index in range(1, 4)),
+        particle_count=128,
+        seed=2,
+        clock=lambda: "2026-08-19T12:00:00+00:00",
+    )
     environment_steps: list[bool] = []
 
     def environment_step() -> object:
         environment_steps.append(True)
         return environment.run_once()
 
+    summary_model = FixedSummaryModel()
     result = runtime.run_mission(
         mission_input,
         hyper_agent=hyper_agent,
@@ -206,7 +222,8 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
         fsm_runner=fsm_runner,
         maneuver_control=maneuver_control,
         environment_step=environment_step,
-        model=FixedSummaryModel(),
+        bayesian_belief_service=belief_service,
+        model=summary_model,
     )
 
     assert isinstance(result.authority, FrozenMissionSpec)
@@ -220,6 +237,14 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
     assert isinstance(result.context_snapshot, MissionSnapshot)
     assert result.context_snapshot.plan_revision == result.plan.plan_revision
     assert result.context_snapshot.operational_scene_graph == result.scene_graph.event_id
+    assert result.belief_snapshot is not None
+    assert result.belief_context_snapshot == result.context_snapshot
+    assert result.context_snapshot.source_hashes["bayesian_belief_snapshot"] == (
+        result.belief_snapshot.content_sha256
+    )
+    assert result.belief_heartbeat is not None
+    assert result.belief_heartbeat.belief_snapshot == result.belief_snapshot
+    assert result.belief_heartbeat.plan_revision == result.plan.plan_revision + 1
     assert result.scene_graph.event_kind == "operational_scene_graph"
     assert result.feedback.event_kind == "maneuver-feedback"
     assert result.feedback.payload["command_id"] == result.command.command_id
@@ -233,6 +258,9 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
     assert result.final_status.active_state == "state-1"
     assert result.final_status.last_applied_event == "advance:survey"
     assert environment_steps == [True]
+    assert summary_model.invocation_kwargs == [
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    ]
     command_files = (
         tmp_path
         / "transport"
@@ -271,3 +299,17 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
         / mission_input.mission_id
         / "00000000000000000001.json"
     ).is_file()
+
+    with pytest.raises(ValueError, match="particle count"):
+        runtime.create_bayesian_belief_service(
+            mission_id=mission_input.mission_id,
+            keys=tuple(
+                BeliefKey(f"ship-{index}", "collision") for index in range(1, 4)
+            ),
+            particle_count=129,
+        )
+    with pytest.raises(ValueError, match="seed cannot be supplied"):
+        runtime.create_bayesian_belief_service(
+            mission_id=mission_input.mission_id,
+            seed=2,
+        )

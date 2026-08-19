@@ -27,6 +27,7 @@ from onr.ports.operational_log import OperationalLog
 class _SourceFact:
     revision: int | None
     reference: str | None
+    content_hash: str | None
     health: str
     fresh: bool
 
@@ -96,6 +97,7 @@ class ContextCoordination:
             next_fact = _SourceFact(
                 previous.revision,
                 previous.reference if next_fact.reference is None else next_fact.reference,
+                previous.content_hash if next_fact.content_hash is None else next_fact.content_hash,
                 next_fact.health,
                 next_fact.fresh,
             )
@@ -103,10 +105,28 @@ class ContextCoordination:
             if previous is not None and previous.revision is not None:
                 if next_fact.revision < previous.revision:
                     return None
-                if next_fact.reference is None:
+                if (
+                    source == "bayesian_belief_snapshot"
+                    and next_fact.revision == previous.revision
+                    and (
+                        (
+                            next_fact.reference is not None
+                            and next_fact.reference != previous.reference
+                        )
+                        or (
+                            next_fact.content_hash is not None
+                            and next_fact.content_hash != previous.content_hash
+                        )
+                    )
+                ):
+                    raise _MalformedContextEvent(
+                        "belief revision cannot change reference or hash provenance"
+                    )
+                if next_fact.reference is None or next_fact.content_hash is None:
                     next_fact = _SourceFact(
                         next_fact.revision,
-                        previous.reference,
+                        previous.reference if next_fact.reference is None else next_fact.reference,
+                        previous.content_hash if next_fact.content_hash is None else next_fact.content_hash,
                         next_fact.health,
                         next_fact.fresh,
                     )
@@ -214,7 +234,42 @@ class ContextCoordination:
             reference = payload.get("normalized_plan_sha256", event.event_id)
             if reference is not None and not isinstance(reference, str):
                 raise _MalformedContextEvent("normalized-plan event has an invalid reference")
-            return "plan", _SourceFact(revision, reference, "healthy", True)
+            content_hash = payload.get("normalized_plan_sha256")
+            if not isinstance(content_hash, str):
+                raise _MalformedContextEvent("normalized-plan event has an invalid content hash")
+            return "plan", _SourceFact(revision, reference, content_hash, "healthy", True)
+        if event.event_kind == "belief.updated":
+            required = {
+                "source",
+                "revision",
+                "reference",
+                "content_sha256",
+                "health",
+                "fresh",
+            }
+            if set(payload) != required or payload.get("source") != "bayesian_belief_snapshot":
+                raise _MalformedContextEvent("belief.updated event has invalid public fields")
+            revision = payload.get("revision")
+            reference = payload.get("reference")
+            content_hash = payload.get("content_sha256")
+            health = payload.get("health")
+            fresh = payload.get("fresh")
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                raise _MalformedContextEvent("belief.updated event has an invalid revision")
+            if not isinstance(reference, str) or not reference.strip():
+                raise _MalformedContextEvent("belief.updated event has an invalid reference")
+            if (
+                not isinstance(content_hash, str)
+                or len(content_hash) != 64
+                or any(character not in "0123456789abcdef" for character in content_hash)
+                or not reference.endswith(f"#sha256={content_hash}")
+            ):
+                raise _MalformedContextEvent("belief.updated event has an invalid content hash")
+            if not isinstance(health, str) or not health.strip() or not isinstance(fresh, bool):
+                raise _MalformedContextEvent("belief.updated event has invalid health or freshness")
+            return "bayesian_belief_snapshot", _SourceFact(
+                revision, reference, content_hash, health, fresh
+            )
         if event.event_kind not in {
             "source-fact",
             "source-revision",
@@ -242,6 +297,13 @@ class ContextCoordination:
         reference = payload.get("reference", payload.get("source_reference"))
         if reference is not None and not isinstance(reference, str):
             raise _MalformedContextEvent("source fact has an invalid reference")
+        content_hash = payload.get("content_sha256", payload.get("source_hash"))
+        if content_hash is not None and (
+            not isinstance(content_hash, str)
+            or len(content_hash) != 64
+            or any(character not in "0123456789abcdef" for character in content_hash)
+        ):
+            raise _MalformedContextEvent("source fact has an invalid content hash")
         raw_health = payload.get("health", "healthy")
         if isinstance(raw_health, bool):
             health = "healthy" if raw_health else "unhealthy"
@@ -252,7 +314,7 @@ class ContextCoordination:
         fresh = payload.get("fresh", payload.get("freshness", True))
         if not isinstance(fresh, bool):
             raise _MalformedContextEvent("source fact has invalid freshness")
-        return source, _SourceFact(raw_revision, reference, health, fresh)
+        return source, _SourceFact(raw_revision, reference, content_hash, health, fresh)
 
     def _restore_latest_snapshot(self) -> None:
         latest_event = getattr(self._transport, "latest_event", None)
@@ -278,6 +340,7 @@ class ContextCoordination:
                 self._facts[source] = _SourceFact(
                     revision,
                     snapshot.source_references[source],
+                    snapshot.source_hashes[source],
                     snapshot.source_health[source],
                     snapshot.source_freshness[source],
                 )
@@ -289,6 +352,10 @@ class ContextCoordination:
         }
         references = {
             source: self._facts[source].reference if source in self._facts else None
+            for source in MISSION_SNAPSHOT_SOURCES
+        }
+        hashes = {
+            source: self._facts[source].content_hash if source in self._facts else None
             for source in MISSION_SNAPSHOT_SOURCES
         }
         health = {
@@ -312,6 +379,7 @@ class ContextCoordination:
             active_maneuver=references["active_maneuver"],
             source_revisions=revisions,
             source_references=references,
+            source_hashes=hashes,
             source_health=health,
             source_freshness=freshness,
         )

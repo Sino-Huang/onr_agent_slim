@@ -90,6 +90,7 @@ class MissionSnapshot:
     active_maneuver: str | None = None
     source_revisions: Mapping[str, int | None] = field(default_factory=dict)
     source_references: Mapping[str, str | None] = field(default_factory=dict)
+    source_hashes: Mapping[str, str | None] = field(default_factory=dict)
     source_health: Mapping[str, str] = field(default_factory=dict)
     source_freshness: Mapping[str, bool] = field(default_factory=dict)
     missing_sources: tuple[str, ...] = ()
@@ -147,6 +148,21 @@ class MissionSnapshot:
             object.__setattr__(self, "plan_revision", revisions["plan"])
         object.__setattr__(self, "source_revisions", MappingProxyType(revisions))
 
+        hashes: dict[str, str | None] = {
+            source: None for source in MISSION_SNAPSHOT_SOURCES
+        }
+        for source, content_hash in self.source_hashes.items():
+            if source not in hashes:
+                raise ValueError("source hashes contain an unknown source")
+            if content_hash is not None and (
+                not isinstance(content_hash, str)
+                or len(content_hash) != 64
+                or any(character not in "0123456789abcdef" for character in content_hash)
+            ):
+                raise ValueError("source hashes must be lowercase SHA-256 digests or null")
+            hashes[source] = content_hash
+        object.__setattr__(self, "source_hashes", MappingProxyType(hashes))
+
         health: dict[str, str] = {source: "missing" for source in MISSION_SNAPSHOT_SOURCES}
         for source, value in self.source_health.items():
             if source not in health:
@@ -188,6 +204,7 @@ class MissionSnapshot:
                     {
                         "revision": self.source_revisions[source],
                         "reference": self.source_references[source],
+                        "hash": self.source_hashes[source],
                         "health": self.source_health[source],
                         "fresh": self.source_freshness[source],
                         "missing": source in self.missing_sources,
@@ -215,6 +232,7 @@ class MissionSnapshot:
             "active_maneuver": self.active_maneuver,
             "source_revisions": _json_value(self.source_revisions),
             "source_references": _json_value(self.source_references),
+            "source_hashes": _json_value(self.source_hashes),
             "source_health": _json_value(self.source_health),
             "source_freshness": _json_value(self.source_freshness),
             "missing_sources": list(self.missing_sources),
@@ -226,13 +244,18 @@ class MissionSnapshot:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "MissionSnapshot":
         expected = set(cls("m", 1, "t").to_dict())
-        if not isinstance(value, Mapping) or set(value) != expected:
+        legacy_expected = expected - {"source_hashes"}
+        if not isinstance(value, Mapping) or frozenset(value) not in {
+            frozenset(expected),
+            frozenset(legacy_expected),
+        }:
             raise ValueError("mission snapshot contains unknown or missing fields")
         if value["schema_version"] != 1:
             raise ValueError("unsupported mission snapshot schema version")
         fields = dict(value)
         fields.pop("schema_version")
         fields.pop("missing_sources")
+        fields.setdefault("source_hashes", {})
         return cls(**fields)
 
     @classmethod

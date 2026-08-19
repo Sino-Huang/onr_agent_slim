@@ -1,4 +1,4 @@
-"""Mission-scoped capture of completed agent model and tool invocations."""
+"""Role- and mission-scoped capture of completed agent and tool invocations."""
 
 from __future__ import annotations
 
@@ -18,11 +18,8 @@ from uuid import UUID
 from langchain_core.callbacks import BaseCallbackHandler
 
 
-_PRIVATE_REASONING_KEYS = {"reasoning", "reasoning_content", "reasoning_details"}
-
-
 def _json_safe(value: Any) -> Any:
-    """Convert callback values to JSON data while dropping private reasoning."""
+    """Convert callback values to JSON data."""
 
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -35,11 +32,7 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, BaseException):
         return {"type": type(value).__name__, "message": str(value)}
     if isinstance(value, Mapping):
-        return {
-            str(key): _json_safe(item)
-            for key, item in value.items()
-            if str(key) not in _PRIVATE_REASONING_KEYS
-        }
+        return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_json_safe(item) for item in value]
     model_dump = getattr(value, "model_dump", None)
@@ -97,8 +90,14 @@ def _invocation_name(serialized: object, invocation_params: object, fallback: st
 class AgentDebugRecorder:
     """Persist durable v1 profiles and completed callback invocations."""
 
-    def __init__(self, root: Path, mission_id: str) -> None:
-        self._directory = Path(root) / quote(mission_id, safe="._-")
+    def __init__(
+        self, root: Path, mission_id: str, *, role: str = "runtime"
+    ) -> None:
+        self._directory = (
+            Path(root)
+            / quote(role, safe="._-")
+            / quote(mission_id, safe="._-")
+        )
         self._lock = Lock()
         self._sequence = max(
             (

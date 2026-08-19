@@ -10,8 +10,19 @@ from typing import Iterator
 
 import pytest
 
+from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.operational_log import FileOperationalLog
+from onr.application.bayesian_belief import (
+    BayesianBeliefManager,
+    belief_artifact_reference,
+)
+from onr.contracts.bayesian_belief import (
+    BayesianBeliefSnapshot,
+    BeliefKey,
+    EntityAssociation,
+    RiskObservation,
+)
 from onr.contracts.context_coordination import MissionSnapshot, mission_snapshot_to_transport_event
 from onr.contracts.fsm import (
     FSMExecutionRecord,
@@ -38,6 +49,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     config.write_text(
         "\n".join(
             (
+                "agent_name: test-agent",
                 "debug: true",
                 "llm:",
                 "  provider: openai",
@@ -83,13 +95,15 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 @contextmanager
-def _running_server(tmp_path: Path) -> Iterator[tuple[ViewerHTTPServer, Path, Path]]:
+def _running_server(
+    tmp_path: Path, *, host: str = "127.0.0.1"
+) -> Iterator[tuple[ViewerHTTPServer, Path, Path]]:
     config, storage, transport = _config(tmp_path)
     static_root = tmp_path / "web"
     static_root.mkdir()
     (static_root / "index.html").write_text("viewer", encoding="utf-8")
     server = create_server(
-        host="127.0.0.1",
+        host=host,
         port=0,
         repo_root=tmp_path,
         config_path=config,
@@ -105,9 +119,15 @@ def _running_server(tmp_path: Path) -> Iterator[tuple[ViewerHTTPServer, Path, Pa
         server.server_close()
 
 
-def _request(server: ViewerHTTPServer, method: str, path: str) -> tuple[HTTPResponse, bytes]:
+def _request(
+    server: ViewerHTTPServer,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[HTTPResponse, bytes]:
     connection = HTTPConnection("127.0.0.1", server.server_port, timeout=2)
-    connection.request(method, path)
+    connection.request(method, path, headers=headers or {})
     response = connection.getresponse()
     body = response.read()
     connection.close()
@@ -118,6 +138,31 @@ def _activate(storage: Path) -> RuntimeLeaseStore:
     store = RuntimeLeaseStore(storage / "runtime")
     store.start(session_id="private-session")
     return store
+
+
+def _store_belief(
+    storage: Path, mission_id: str
+) -> tuple[FileBayesianBeliefStore, BayesianBeliefSnapshot]:
+    manager = BayesianBeliefManager(
+        mission_id,
+        (BeliefKey("contact-1", "collision"),),
+        particle_count=32,
+        seed=7,
+    )
+    snapshot = manager.update(
+        RiskObservation(
+            event_id="risk-1",
+            input_revision=1,
+            risk_type="collision",
+            associations=(EntityAssociation("contact-1", 1.0),),
+            likelihood_given_risk=0.9,
+            likelihood_given_safe=0.1,
+        ),
+        created_at="2026-08-19T12:00:00+00:00",
+    )
+    store = FileBayesianBeliefStore(storage)
+    store.save(snapshot, manager.checkpoint())
+    return store, snapshot
 
 
 def test_idle_get_inspection_is_non_mutating_and_returns_no_trace(tmp_path: Path) -> None:
@@ -154,6 +199,206 @@ def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:
         assert localhost.server_address[0] == "127.0.0.1"
     finally:
         localhost.server_close()
+
+
+def test_request_boundary_rejects_foreign_host_and_origin_before_routes(
+    tmp_path: Path,
+) -> None:
+    with _running_server(tmp_path) as (server, storage, _):
+        _activate(storage)
+        valid_origin = f"http://{server.listener_authority}"
+        valid_response, _ = _request(
+            server,
+            "GET",
+            "/api/runtime",
+            headers={"Origin": valid_origin},
+        )
+        rejected = [
+            _request(
+                server,
+                "GET",
+                path,
+                headers=headers,
+            )
+            for path, headers in (
+                ("/api/runtime", {"Host": "attacker.example"}),
+                ("/", {"Host": "127.0.0.1"}),
+                ("/api/trace?mission_id=mission-one", {"Origin": "http://attacker.example"}),
+                ("/", {"Origin": f"https://{server.listener_authority}"}),
+            )
+        ]
+
+    assert valid_response.status == 200
+    assert viewer_server._loopback_authority("::1", 14398) == "[::1]:14398"
+    assert viewer_server._same_loopback_origin(
+        "http://[::1]:14398", "::1", 14398
+    )
+    for response, body in rejected:
+        assert response.status == 403
+        assert json.loads(body) == {"error": "forbidden"}
+
+
+def test_localhost_listener_accepts_only_its_explicit_alias(tmp_path: Path) -> None:
+    with _running_server(tmp_path, host="localhost") as (server, storage, _):
+        _activate(storage)
+        localhost_authority = f"localhost:{server.server_port}"
+        accepted, _ = _request(
+            server,
+            "GET",
+            "/api/runtime",
+            headers={
+                "Host": localhost_authority,
+                "Origin": f"http://{localhost_authority}",
+            },
+        )
+        hostile_host, _ = _request(
+            server,
+            "GET",
+            "/api/runtime",
+            headers={"Host": f"attacker.example:{server.server_port}"},
+        )
+        hostile_origin, _ = _request(
+            server,
+            "GET",
+            "/api/runtime",
+            headers={
+                "Host": localhost_authority,
+                "Origin": f"http://attacker.example:{server.server_port}",
+            },
+        )
+
+    assert accepted.status == 200
+    assert hostile_host.status == hostile_origin.status == 403
+    assert viewer_server._authority_variants("localhost", 80) == frozenset(
+        {"localhost", "localhost:80"}
+    )
+    assert viewer_server._authority_variants("::1", 80) == frozenset(
+        {"[::1]", "[::1]:80"}
+    )
+
+
+def test_public_mapping_reader_rejects_hostile_files_without_following_links(
+    tmp_path: Path,
+) -> None:
+    valid = tmp_path / "valid.json"
+    valid.write_text('{"schema_version":1}', encoding="utf-8")
+    shallow = tmp_path / "shallow.json"
+    shallow.write_text(
+        '{"payload":{"items":[{"status":"ready"}]}}', encoding="utf-8"
+    )
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text(
+        '{"schema_version":1,"schema_version":1}', encoding="utf-8"
+    )
+    non_finite = tmp_path / "non-finite.json"
+    non_finite.write_text('{"value":NaN}', encoding="utf-8")
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b" " * (1024 * 1024 + 1))
+    recursive = tmp_path / "recursive.json"
+    recursive.write_text(
+        '{"value":' + "[" * 1100 + "0" + "]" * 1100 + "}",
+        encoding="utf-8",
+    )
+    linked = tmp_path / "linked-receipt.json"
+    linked.symlink_to(valid)
+    outside_root = tmp_path / "outside-root"
+    outside_root.mkdir()
+    (outside_root / "outside.json").write_text(
+        '{"schema_version":1}', encoding="utf-8"
+    )
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(outside_root, target_is_directory=True)
+
+    assert viewer_server._read_mapping(valid) == {"schema_version": 1}
+    assert viewer_server._read_mapping(shallow) == {
+        "payload": {"items": [{"status": "ready"}]}
+    }
+    assert all(
+        viewer_server._read_mapping(path) is None
+        for path in (duplicate, non_finite, oversized, recursive, linked)
+    )
+    assert viewer_server._read_mapping(
+        linked_root / "outside.json", root=linked_root
+    ) is None
+
+
+def test_symlinked_receipts_directory_is_not_projected(tmp_path: Path) -> None:
+    mission_id = "mission-receipt"
+    with _running_server(tmp_path) as (server, storage, transport_root):
+        _activate(storage)
+        transport = FileTransport(transport_root)
+        command = Command(
+            1,
+            "command-linked-receipt",
+            "correlation-linked-receipt",
+            mission_id,
+            "planner",
+            "plan",
+            {"action": "navigate"},
+        )
+        transport.send_command(command)
+        receipts = transport_root / "receipts"
+        outside = tmp_path / "outside-receipts"
+        receipts.rename(outside)
+        receipts.symlink_to(outside, target_is_directory=True)
+
+        response, body = _request(
+            server, "GET", f"/api/trace?mission_id={mission_id}"
+        )
+
+    assert response.status == 200
+    kinds = {item["event_kind"] for item in json.loads(body)["items"]}
+    assert "command" in kinds
+    assert "command-receipt" not in kinds
+
+
+def test_symlinked_transport_and_storage_parent_trees_are_not_projected(
+    tmp_path: Path,
+) -> None:
+    topic_mission = "mission-outside-topic"
+    storage_mission = "mission-outside-storage"
+    outside_transport = tmp_path / "outside-transport"
+    FileTransport(outside_transport).publish_event(
+        "advisory",
+        TransportEvent(
+            1,
+            "outside-topic-event",
+            topic_mission,
+            0,
+            "role-skills-advisory",
+            {"operation": "outside-topic"},
+        ),
+    )
+    outside_log = tmp_path / "outside-operational-log"
+    FileOperationalLog(outside_log).emit(
+        storage_mission,
+        "runtime",
+        "heartbeat",
+        "completed",
+        details={"operation": "outside-storage"},
+    )
+
+    with _running_server(tmp_path) as (server, storage, transport_root):
+        _activate(storage)
+        transport_root.mkdir(parents=True, exist_ok=True)
+        (transport_root / "topics").symlink_to(
+            outside_transport / "topics", target_is_directory=True
+        )
+        (storage / "operational-log").symlink_to(
+            outside_log, target_is_directory=True
+        )
+
+        topic_response, topic_body = _request(
+            server, "GET", f"/api/trace?mission_id={topic_mission}"
+        )
+        storage_response, storage_body = _request(
+            server, "GET", f"/api/trace?mission_id={storage_mission}"
+        )
+
+    assert topic_response.status == storage_response.status == 200
+    assert json.loads(topic_body) == json.loads(storage_body) == {"items": []}
+    assert b"outside-topic" not in topic_body
+    assert b"outside-storage" not in storage_body
 
 
 def test_runtime_lists_missions_and_trace_never_merges_them(tmp_path: Path) -> None:
@@ -284,6 +529,47 @@ def test_colon_mission_loads_raw_storage_and_encoded_transport_paths(
     assert (storage / "summaries" / mission_id).is_dir()
     assert (storage / "fsm" / mission_id).is_dir()
     assert (transport_root / "topics" / "advisory" / "missions" / "mission%3Aalpha").is_dir()
+
+
+def test_current_snapshot_hashes_project_without_raw_typed_identity_conflict(
+    tmp_path: Path,
+) -> None:
+    mission_id = "mission-current-snapshot"
+    content_hash = "a" * 64
+    with _running_server(tmp_path) as (server, storage, transport_root):
+        _activate(storage)
+        snapshot = MissionSnapshot(
+            mission_id,
+            1,
+            "2026-08-19T03:00:00+00:00",
+            source_hashes={"plan": content_hash},
+        )
+        canonical_id = f"mission-snapshot:{mission_id}:1"
+        FileTransport(transport_root).publish_event(
+            "mission-snapshots",
+            mission_snapshot_to_transport_event(
+                snapshot,
+                event_id=canonical_id,
+                sequence=0,
+            ),
+        )
+
+        response, body = _request(
+            server, "GET", f"/api/trace?mission_id={mission_id}"
+        )
+
+    assert response.status == 200
+    items = json.loads(body)["items"]
+    snapshots = [item for item in items if item["event_kind"] == "mission-snapshot"]
+    assert {item["event_id"] for item in snapshots} == {
+        canonical_id,
+        f"transport:{canonical_id}",
+    }
+    assert all(item["replay_disposition"] == "normal" for item in snapshots)
+    assert all(item["payload"]["source_hashes"]["plan"] == content_hash for item in snapshots)
+    assert not any(
+        item["replay_disposition"] in {"duplicate", "conflict"} for item in items
+    )
 
 
 def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path) -> None:
@@ -487,6 +773,99 @@ def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path)
     assert "private reasoning" not in rendered
     assert "private feedback reasoning" not in rendered
     assert '"token"' not in rendered
+
+
+def test_current_belief_snapshot_is_hash_bound_public_evidence(tmp_path: Path) -> None:
+    mission_id = "mission-belief"
+    with _running_server(tmp_path) as (server, storage, _):
+        _activate(storage)
+        store, snapshot = _store_belief(storage, mission_id)
+        committed = json.loads(
+            store.current_path(mission_id).read_text(encoding="utf-8")
+        )["generation"]
+        partial = (
+            store.mission_root(mission_id)
+            / "generations"
+            / f"{committed + 1:020d}"
+        )
+        partial.mkdir()
+        (partial / "private-partial.json").write_text(
+            '{"private":"unfinished"}', encoding="utf-8"
+        )
+        mission_root = store.mission_root(mission_id)
+
+        def tree() -> dict[str, tuple[str, bytes | None]]:
+            return {
+                str(path.relative_to(mission_root)): (
+                    "directory" if path.is_dir() else "file",
+                    None if path.is_dir() else path.read_bytes(),
+                )
+                for path in sorted(mission_root.rglob("*"))
+            }
+
+        before = tree()
+
+        response, body = _request(
+            server, "GET", f"/api/trace?mission_id={mission_id}"
+        )
+        after = tree()
+
+    payload = json.loads(body)
+    assert response.status == 200
+    assert before == after
+    assert (partial / "private-partial.json").is_file()
+    [belief] = [
+        item for item in payload["items"] if item["event_kind"] == "bayesian-belief"
+    ]
+    assert belief["component"] == "environment"
+    assert belief["authority"] == "bayesian-belief-source"
+    assert belief["payload"] == {
+        "content_sha256": snapshot.content_sha256,
+        "input_event_id": "risk-1",
+        "input_revision": 1,
+        "marginals": [item.to_dict() for item in snapshot.marginals],
+        "reference": belief_artifact_reference(mission_id, snapshot.content_sha256),
+        "revision": 1,
+        "source": "bayesian_belief_snapshot",
+    }
+    rendered = json.dumps(payload)
+    assert "checkpoint" not in rendered
+    assert "pending-output" not in rendered
+    assert "committed-state" not in rendered
+    assert "particles" not in rendered
+
+
+@pytest.mark.parametrize("corruption", ["pointer-binding", "snapshot-content"])
+def test_corrupt_or_unbound_current_belief_is_omitted(
+    tmp_path: Path, corruption: str
+) -> None:
+    mission_id = "mission-corrupt-belief"
+    with _running_server(tmp_path) as (server, storage, _):
+        _activate(storage)
+        store, snapshot = _store_belief(storage, mission_id)
+        if corruption == "pointer-binding":
+            pointer = json.loads(
+                store.current_path(mission_id).read_text(encoding="utf-8")
+            )
+            pointer["snapshot_sha256"] = "0" * 64
+            store.current_path(mission_id).write_text(
+                json.dumps(pointer), encoding="utf-8"
+            )
+        else:
+            relative = belief_artifact_reference(
+                mission_id, snapshot.content_sha256
+            ).partition("#")[0]
+            artifact_path = storage / relative
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            artifact["marginals"][0]["probability_risk"] = 0.0
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+        response, body = _request(
+            server, "GET", f"/api/trace?mission_id={mission_id}"
+        )
+
+    assert response.status == 200
+    assert json.loads(body) == {"items": []}
 
 
 def test_lease_expiry_during_collection_keeps_trace_available(

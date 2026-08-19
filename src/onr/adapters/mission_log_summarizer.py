@@ -129,7 +129,10 @@ class FileMissionLogSummarizer:
             if not callable(invoke):
                 raise SummarizationError("configured summarization model has no invoke method")
             try:
-                response = invoke(prompt)
+                response = invoke(
+                    prompt,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
                 summary = self._response_text(response)
             except SummarizationError:
                 raise

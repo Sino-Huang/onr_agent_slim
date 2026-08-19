@@ -322,6 +322,8 @@ def test_runtime_registers_fsm_runner_subscription() -> None:
         transport=TransportConfig("inprocess", Path(__file__).parent / "transport"),
         storage=StorageConfig(Path(__file__).parent / "storage"),
         services=ServicesConfig("hyper", "maneuver", "context", "fsm-service", "planner"),
+        debug=False,
+        agent_name="test-agent",
     )
     transport = InProcessTransport()
     runtime = RuntimeComposition(config, transport)

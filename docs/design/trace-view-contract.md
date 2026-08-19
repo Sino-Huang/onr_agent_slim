@@ -19,6 +19,7 @@ ingestion uses the exact v1 public observation envelope:
 | `SummaryArtifact` | summary identity and source-local sequence; component `mission-log-summarizer`, authority `non-authoritative-summary` | summary, prior IDs, and exact input range |
 | validated `ManeuverFeedback` | code-owned `feedback:<feedback_id>`; component `environment` and authority `environment-feedback`, or component `maneuver-control` for an explicit Maneuver Control source | feedback/maneuver IDs, lifecycle, source, command, plan, and snapshot references |
 | validated `ReplanRequest` | code-owned `replan-request:<request_id>`; component/authority `hyper-agent` | request ID, safe reason/status, observed/source revisions, and snapshot reference |
+| current `BayesianBeliefSnapshot` | code-owned belief identity; component `environment`, authority `bayesian-belief-source` | hash-bound immutable reference, belief/input revisions, and public marginals |
 | `MissionSnapshot` | mission/version identity; component `context-coordination`, authority `derived-snapshot` | immutable references, revisions, health, freshness, and missing sources |
 | `Statechart`, `FSMStatus`, `FSMExecutionRecord` | deterministic mission/revision identity; component `fsm-runner` | validated declarative or published FSM fields |
 
@@ -28,6 +29,11 @@ environment, transport, and advisory context. Caller `component` and `authority`
 values are not accepted. Source `status` remains business state;
 `replay_disposition` is limited to `normal`, `duplicate`, `replayed`, `stale`,
 `gap`, `resynchronized`, `conflict`, and `malformed`.
+Both legacy snapshots and the current schema are accepted. Current snapshots add
+the validated `source_hashes` map to the typed payload. If a transport snapshot
+uses the same canonical identity as its derived snapshot, the raw envelope is
+assigned a distinct `transport:` identity so the two valid views cannot create
+false duplicate or conflict evidence.
 
 ## Redaction and diagnostics
 
@@ -36,6 +42,11 @@ completion, reasoning, `analysis`, `text`, `messages`, credential, secret, and
 Mission Memory paths and redacts credential-shaped strings. The boolean
 `mission_memory_isolated` marker is public; Mission Memory content is not.
 Missing evidence uses type-specific `missing_fields`.
+The same Bayesian-belief identity applies to `risk.observed`,
+`belief.constraints`, and `belief.updated`; only their typed public observation,
+constraint, revision, reference, health, marginal, and `content_sha256` fields
+enter the common transport projection. Trace reasoning and secret redaction is
+unchanged.
 
 Error evidence never renders source strings. It contains only a fixed public
 error code/message/category (`malformed_json`, `non_mapping`,
@@ -121,6 +132,14 @@ The local server binds only to `127.0.0.1`, `::1`, or a `localhost` argument
 normalized to `127.0.0.1`. It accepts only `GET` and `HEAD`. Static content is
 contained below `src/onr/viewer/web/`, has no directory listing, and is served
 with a same-origin-only Content Security Policy.
+Every request is rejected before route or static-file handling unless exactly
+one `Host` header matches the bound loopback authority and port (`[::1]:port`
+for IPv6). If an `Origin` header is present, exactly one value must resolve to
+the same HTTP origin. This boundary also protects the raw local debug endpoint.
+When and only when the server was explicitly requested with `--host localhost`,
+the matching `localhost` authority is retained alongside the normalized
+`127.0.0.1` listener authority. Default HTTP port authorities may omit `:80`;
+IPv6 authorities remain bracketed. No other DNS host alias is accepted.
 
 While the lease is active, `GET /api/runtime` returns `active`, public lease
 timestamps, and a sorted `mission_ids` list derived only from validated public
@@ -154,6 +173,7 @@ ID, and typed record must agree before projection.
 | `config.storage.root` | `operational-log/<mission>/events/[0-9]*.json` as `OperationalLogRecord` |
 | `config.storage.root` | `summaries/<mission>/[0-9]*.json` as canonical `SummaryArtifact`; `cursor.json` is excluded |
 | `config.storage.root` | `fsm/<mission>/statechart.json` as untrusted `Statechart` and `fsm/<mission>/execution-record.json` as `FSMExecutionRecord` |
+| `config.storage.root` | the current `bayesian-beliefs/<mission>` snapshot returned by `FileBayesianBeliefStore.load_current_read_only()` |
 
 Known typed transport payloads are additionally validated with their existing
 contracts: `MissionSnapshot`, `FSMStatus`, `Statechart`, `FSMExecutionRecord`,
@@ -167,9 +187,26 @@ references, and code-owned correlation/parent links. Neither typed projection
 passes through the original nested payload. Other topic records remain validated public
 `TransportEvent` envelopes and pass through the projection allowlists.
 
+The belief row uses `load_current_read_only()`: it performs the same committed
+pointer, checkpoint, generation, artifact, revision, and hash binding validation
+without pruning partial generations, history, content-addressed artifacts, or
+any private file. Viewer `GET` therefore never performs belief recovery or
+storage maintenance; those remain writer responsibilities.
+
 No `identity/`, `subscriptions/`, dead-letter, planner scratch, Mission Memory,
-role context, arbitrary storage, symlinked directory, or raw artifact endpoint
-is part of the live artifact set. Invalid or unavailable files are omitted.
+role context, arbitrary storage, symlinked directory, private belief generation,
+checkpoint, pending-output, committed-pointer detail, or raw artifact endpoint is
+part of the live artifact set. Invalid, unbound, corrupt, or unavailable files
+are omitted.
+All viewer JSON mapping reads, including command receipts, open the selected file
+once beneath the configured transport or storage root using directory-file-
+descriptor traversal. The root, every intermediate component, and the final
+file are opened with no-follow semantics; symlinked topic, mission, event,
+receipt, or storage trees cannot redirect reads outside the configured root.
+The final descriptor must be a bounded regular file and only its bytes are
+parsed. Duplicate keys, non-finite constants, oversized files, malformed
+UTF-8/JSON, excessive recursion, and symlinks are omitted without a second
+path-based read.
 Typed absence is shown only when a supported public record, such as an
 operational `summary-missing` event or snapshot `missing_sources`, explicitly
 declares it.
@@ -178,3 +215,30 @@ Each selected mission is ordered deterministically by source class, source-local
 sequence, stable identity, and canonical public record. The server assigns the
 resulting contiguous order to the v1 `observation_sequence`; no filesystem time
 or directory enumeration order is authoritative.
+
+## Local debug projection
+
+`GET /api/debug?mission_id=<id>` remains gated by `config.debug` and the same
+runtime lease identity checks. It accepts an optional, single `role` selected
+from `hyper-agent`, `maneuver-control`, `mission-summary`, and `runtime`.
+Unknown, repeated, blank, or additional query parameters return the safe empty
+debug response. With no role, the response remains a cross-role view and adds
+`conversations` alongside `profiles` and `invocations`; with a role, all three
+collections are filtered to that scope.
+
+Agent artifacts are read from
+`debug/agent/<role>/<percent-encoded-mission>/`, with exact v1 profile and
+invocation validation. Legacy `debug/agent/<percent-encoded-mission>/` files are
+accepted as a deduplicated fallback and receive their validated `agent_role` as
+the explicit role. Raw LLM conversations are read only from
+`debug/llm/<role>/<percent-encoded-mission>/<sequence>.json`. Each file must have
+the exact 12-key `LLMResponseRecorder` schema and a numeric sequence filename.
+The projection exposes role/sequence, model and request messages, provider
+reasoning fields, content/function/tool output, and finish/status metadata. No
+invocation-to-response linkage is inferred; ordering is role then sequence.
+
+Debug files retain validated local values, including provider reasoning, and do
+not pass through trace payload redaction. This is an intentional trust boundary:
+the server is loopback-only, the endpoint is disabled unless runtime debug is
+enabled, request headers and credentials remain excluded by the recorders, and
+debug data is not part of the public trace artifact set.

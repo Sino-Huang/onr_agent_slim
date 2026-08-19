@@ -23,7 +23,7 @@ from onr.runtime.config import (
 from onr.runtime.llm_debug import LLMResponseRecorder
 
 
-def test_recorder_captures_raw_content_without_private_reasoning(tmp_path: Path) -> None:
+def test_recorder_captures_raw_content_and_provider_reasoning(tmp_path: Path) -> None:
     request_body = {
         "model": "reasoning-model",
         "messages": [
@@ -72,7 +72,10 @@ def test_recorder_captures_raw_content_without_private_reasoning(tmp_path: Path)
         lambda request: httpx.Response(200, json=response_body, request=request)
     )
     recorder = LLMResponseRecorder(
-        tmp_path / "debug" / "llm", "mission:demo", transport=transport
+        tmp_path / "debug" / "llm",
+        "mission:demo",
+        role="hyper-agent",
+        transport=transport,
     )
 
     response = recorder.http_client.post(
@@ -87,7 +90,9 @@ def test_recorder_captures_raw_content_without_private_reasoning(tmp_path: Path)
     recorder.close()
 
     assert response.json() == response_body
-    artifacts = list((tmp_path / "debug/llm/mission%3Ademo").glob("*.json"))
+    artifacts = list(
+        (tmp_path / "debug/llm/hyper-agent/mission%3Ademo").glob("*.json")
+    )
     assert len(artifacts) == 1
     assert json.loads(artifacts[0].read_text(encoding="utf-8")) == {
         "schema_version": 1,
@@ -95,7 +100,11 @@ def test_recorder_captures_raw_content_without_private_reasoning(tmp_path: Path)
             **request_body,
             "messages": [
                 {"role": "system", "content": "Follow the private system prompt."},
-                {"role": "user", "content": "private prompt"},
+                {
+                    "role": "user",
+                    "content": "private prompt",
+                    "reasoning_content": "prior private reasoning",
+                },
             ],
         },
         "response_id": "chatcmpl-debug",
@@ -104,19 +113,22 @@ def test_recorder_captures_raw_content_without_private_reasoning(tmp_path: Path)
         "finish_reason": "stop",
         "content": "final answer",
         "function_call": {"name": "interpret", "arguments": "{}"},
+        "reasoning": "raw reasoning",
+        "reasoning_content": "reasoning content",
+        "reasoning_details": [{"type": "summary", "text": "detail"}],
         "tool_calls": [{"id": "call-1", "type": "function"}],
     }
     serialized = artifacts[0].read_text(encoding="utf-8")
     assert "private prompt" in serialized
-    assert "raw reasoning" not in serialized
-    assert "prior private reasoning" not in serialized
-    assert "reasoning_content" not in serialized
+    assert "raw reasoning" in serialized
+    assert "prior private reasoning" in serialized
+    assert "reasoning_content" in serialized
     assert "test-secret-key" not in serialized
     assert "test-secret-cookie" not in serialized
     assert "test-secret-header" not in serialized
 
 
-def test_recorder_omits_reasoning_and_ignores_other_responses(
+def test_recorder_records_null_reasoning_and_ignores_other_responses(
     tmp_path: Path,
 ) -> None:
     def respond(request: httpx.Request) -> httpx.Response:
@@ -138,21 +150,26 @@ def test_recorder_omits_reasoning_and_ignores_other_responses(
         return httpx.Response(200, json={"data": []}, request=request)
 
     recorder = LLMResponseRecorder(
-        tmp_path / "llm", "mission/demo", transport=httpx.MockTransport(respond)
+        tmp_path / "llm",
+        "mission/demo",
+        role="maneuver-control",
+        transport=httpx.MockTransport(respond),
     )
     recorder.http_client.get("http://vllm.test/v1/models")
     recorder.http_client.post("http://vllm.test/v1/chat/completions", json={})
     recorder.close()
 
-    artifacts = list((tmp_path / "llm/mission%2Fdemo").glob("*.json"))
+    artifacts = list(
+        (tmp_path / "llm/maneuver-control/mission%2Fdemo").glob("*.json")
+    )
     assert len(artifacts) == 1
     artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert artifact["request"] == {}
     assert artifact["content"] == "plain answer"
     assert artifact["function_call"] is None
-    assert "reasoning" not in artifact
-    assert "reasoning_content" not in artifact
-    assert "reasoning_details" not in artifact
+    assert artifact["reasoning"] is None
+    assert artifact["reasoning_content"] is None
+    assert artifact["reasoning_details"] is None
     assert artifact["tool_calls"] is None
 
 
@@ -172,7 +189,7 @@ def test_recorder_writes_null_for_absent_or_malformed_request_body(
         )
     )
     recorder = LLMResponseRecorder(
-        tmp_path / "llm", "mission", transport=transport
+        tmp_path / "llm", "mission", role="mission-summary", transport=transport
     )
     request = recorder.http_client.build_request(
         "POST", "http://vllm.test/v1/chat/completions", content=content
@@ -181,14 +198,16 @@ def test_recorder_writes_null_for_absent_or_malformed_request_body(
     recorder.http_client.send(request)
     recorder.close()
 
-    artifact_path = tmp_path / "llm/mission/00000000000000000001.json"
+    artifact_path = (
+        tmp_path / "llm/mission-summary/mission/00000000000000000001.json"
+    )
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["request"] is None
     assert artifact["content"] == "answer"
 
 
 def test_recorder_continues_after_existing_artifacts(tmp_path: Path) -> None:
-    directory = tmp_path / "llm" / "mission"
+    directory = tmp_path / "llm" / "runtime" / "mission"
     directory.mkdir(parents=True)
     (directory / "00000000000000000001.json").write_text("{}\n", encoding="utf-8")
     recorder = LLMResponseRecorder(
@@ -235,7 +254,7 @@ def test_recorder_ignores_malformed_and_choice_free_completion_errors(
     recorder.http_client.post("http://vllm.test/v1/chat/completions")
     recorder.close()
 
-    assert not (tmp_path / "llm/mission").exists()
+    assert not (tmp_path / "llm/runtime/mission").exists()
 
 
 def _runtime_config(tmp_path: Path, *, debug: bool) -> RuntimeConfig:
@@ -248,6 +267,7 @@ def _runtime_config(tmp_path: Path, *, debug: bool) -> RuntimeConfig:
         storage=StorageConfig(tmp_path / "var/storage"),
         services=ServicesConfig("hyper", "maneuver", "context", "fsm", "planner"),
         debug=debug,
+        agent_name="test-agent",
     )
 
 
@@ -287,13 +307,13 @@ def test_debug_model_owns_mission_scoped_recorder(
     constructed: list[object] = []
 
     class FakeRecorder:
-        def __init__(self, root: Path, mission_id: str) -> None:
-            constructed.extend((root, mission_id))
+        def __init__(self, root: Path, mission_id: str, *, role: str) -> None:
+            constructed.append((root, role, mission_id))
             self.http_client = object()
 
     class FakeAgentRecorder:
-        def __init__(self, root: Path, mission_id: str) -> None:
-            constructed.extend((root, mission_id))
+        def __init__(self, root: Path, mission_id: str, *, role: str) -> None:
+            constructed.append((root, role, mission_id))
 
     class FakeChatModel:
         def __init__(self, **kwargs: object) -> None:
@@ -304,13 +324,16 @@ def test_debug_model_owns_mission_scoped_recorder(
     monkeypatch.setattr(composition, "AgentDebugRecorder", FakeAgentRecorder)
     runtime = composition.RuntimeComposition(config, InProcessTransport())
 
-    model = cast(Any, runtime.create_chat_model(mission_id="mission:demo"))
+    model = cast(
+        Any,
+        runtime.create_chat_model(
+            mission_id="mission:demo", debug_scope="hyper-agent"
+        ),
+    )
 
     assert constructed == [
-        tmp_path / "var/debug/llm",
-        "mission:demo",
-        tmp_path / "var/debug/agent",
-        "mission:demo",
+        (tmp_path / "var/debug/llm", "hyper-agent", "mission:demo"),
+        (tmp_path / "var/debug/agent", "hyper-agent", "mission:demo"),
     ]
     assert model.kwargs["http_client"] is model._llm_response_recorder.http_client
     assert isinstance(model._agent_debug_recorder, FakeAgentRecorder)

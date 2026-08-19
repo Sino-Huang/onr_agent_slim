@@ -23,74 +23,57 @@
           <button class="tab active" data-view="overview" aria-selected="true">Mission overview</button>
           <button class="tab" data-view="hyper" aria-selected="false">Hyper Agent</button>
           <button class="tab" data-view="maneuver" aria-selected="false">Maneuver Control</button>
-          <button class="tab" data-view="snapshot" aria-selected="false">Snapshot &amp; FSM</button>
-          <button class="tab" data-view="skills" aria-selected="false">Skills &amp; advisory</button>
-          <button class="tab" data-view="command" aria-selected="false">Command &amp; outcome</button>
-          <button class="tab" data-view="feedback" aria-selected="false">Feedback paths</button>
-          <button class="tab" data-view="debug" aria-selected="false">Agent activity</button>
+          <button class="tab" data-view="planning" aria-selected="false">Planning</button>
+          <button class="tab" data-view="runtime" aria-selected="false">Runtime flow</button>
         </nav>
 
-        <div class="architecture" id="architecture" aria-label="Component architecture map">
+        <div class="architecture" aria-label="Component architecture map">
           <div class="graph-stage" id="graphStage">
-            <div class="edge e-hyper-maneuver" data-edge="hyper|maneuver" aria-hidden="true"></div>
-            <div class="edge e-hyper-context" data-edge="context|hyper" aria-hidden="true"></div>
-            <div class="edge e-context-snapshot" data-edge="context|snapshot" aria-hidden="true"></div>
-            <div class="edge e-snapshot-fsm" data-edge="fsm|snapshot" aria-hidden="true"></div>
-            <div class="edge e-fsm-maneuver" data-edge="fsm|maneuver" aria-hidden="true"></div>
-            <div class="edge e-hyper-skills" data-edge="hyper|skills" aria-hidden="true"></div>
-            <div class="edge e-maneuver-command" data-edge="maneuver|command" aria-hidden="true"></div>
-            <div class="edge e-command-feedback" data-edge="command|feedback" aria-hidden="true"></div>
-            <div class="edge e-feedback-maneuver" data-edge="feedback|maneuver" aria-hidden="true"></div>
-            <button class="node hyper" data-component="hyper-agent"><span class="node-icon">HA</span><span>Hyper Agent</span><small>mission authority</small></button>
+            <button class="edge e-context-belief" data-edge="context|belief" aria-label="Inspect Context Coordination to Bayesian Belief Manager evidence"><span>Context → belief</span></button>
+            <button class="edge e-belief-hyper" data-edge="belief|hyper-agent" aria-label="Inspect Bayesian Belief Manager to Hyper Agent evidence"><span>Belief → Hyper</span></button>
+            <button class="edge e-hyper-pddl" data-edge="hyper-agent|pddl" aria-label="Inspect Hyper Agent to PDDL Planner evidence"><span>Hyper → PDDL</span></button>
+            <button class="edge e-hyper-minizinc" data-edge="hyper-agent|minizinc" aria-label="Inspect Hyper Agent to MiniZinc Planner evidence"><span>Hyper → MiniZinc</span></button>
+            <button class="edge e-pddl-maneuver" data-edge="pddl|maneuver-control" aria-label="Inspect PDDL Planner to Maneuver Control evidence"><span>PDDL → Maneuver</span></button>
+            <button class="edge e-minizinc-maneuver" data-edge="minizinc|maneuver-control" aria-label="Inspect MiniZinc Planner to Maneuver Control evidence"><span>MiniZinc → Maneuver</span></button>
+            <button class="edge e-maneuver-fsm" data-edge="maneuver-control|fsm" aria-label="Inspect Maneuver Control to FSM Runner evidence"><span>Maneuver → FSM</span></button>
+            <button class="edge e-fsm-transport" data-edge="fsm|transport" aria-label="Inspect FSM Runner to transport evidence"><span>FSM → transport</span></button>
+            <button class="edge e-transport-environment" data-edge="transport|environment" aria-label="Inspect transport to environment evidence"><span>Transport → environment</span></button>
+            <button class="edge e-environment-context" data-edge="environment|context" aria-label="Inspect environment to Context Coordination evidence"><span>Environment → context</span></button>
+            <button class="edge e-summary-hyper" data-edge="mission-summary|hyper-agent" aria-label="Inspect Mission Summary to Hyper Agent evidence"><span>Summary → Hyper</span></button>
+
             <button class="node context" data-component="context"><span class="node-icon">CC</span><span>Context Coordination</span><small>public context</small></button>
+            <button class="node belief" data-component="belief"><span class="node-icon">BB</span><span>Bayesian Belief Manager</span><small>belief evidence</small></button>
+            <button class="node hyper" data-component="hyper-agent"><span class="node-icon">HA</span><span>Hyper Agent</span><small>mission authority</small></button>
+            <button class="node pddl" data-component="pddl"><span class="node-icon">PD</span><span>PDDL Planner</span><small>symbolic planning</small></button>
+            <button class="node minizinc" data-component="minizinc"><span class="node-icon">MZ</span><span>MiniZinc Planner</span><small>temporal planning</small></button>
             <button class="node maneuver" data-component="maneuver-control"><span class="node-icon">MC</span><span>Maneuver Control</span><small>decision authority</small></button>
-            <button class="node snapshot" data-component="snapshot"><span class="node-icon">SS</span><span>Snapshot &amp; FSM</span><small>state evidence</small></button>
             <button class="node fsm" data-component="fsm"><span class="node-icon">FR</span><span>FSM Runner</span><small>transition evidence</small></button>
-            <button class="node skills" data-component="skills"><span class="node-icon">SK</span><span>Skills &amp; advisory</span><small>advisory context</small></button>
-            <button class="node command" data-component="command"><span class="node-icon">CO</span><span>Command &amp; outcome</span><small>issued evidence</small></button>
-            <button class="node feedback" data-component="feedback"><span class="node-icon">FB</span><span>Feedback paths</span><small>environment facts</small></button>
+            <button class="node transport" data-component="transport"><span class="node-icon">TR</span><span>Transport</span><small>command receipts</small></button>
+            <button class="node environment" data-component="environment"><span class="node-icon">EN</span><span>Environment</span><small>validated feedback</small></button>
+            <button class="node mission-summary" data-component="mission-summary"><span class="node-icon">MS</span><span>Mission Summary</span><small>when observed</small></button>
+            <p class="graph-legend"><span><i class="legend-observed"></i> observed</span><span><i class="legend-related"></i> correlated</span><span>select a line for evidence</span></p>
             <div class="mobile-flow" id="mobileFlow" aria-label="Observed data flows"></div>
-            <p class="idle-note" id="idleNote">Awaiting an available runtime. Architecture is ready for review.</p>
+            <p class="idle-note" id="idleNote">Architecture is ready. Start or select an available mission to inspect evidence.</p>
           </div>
 
-          <aside class="inspector" aria-live="polite">
-            <p class="eyebrow" id="inspectorKicker">Selected event</p>
-            <h2 id="inspectorTitle">No observation selected</h2>
-            <p class="inspector-copy" id="inspectorCopy">Trace details appear when a runtime is active and an observed event is selected.</p>
+          <aside class="inspector" id="inspector" aria-live="polite">
+            <p class="eyebrow" id="inspectorKicker">Architecture inspector</p>
+            <h2 id="inspectorTitle">Select a component or flow</h2>
+            <p class="inspector-copy" id="inspectorCopy">Nodes show durable observed history. Flow lines show the evidence that traversed them.</p>
             <dl class="detail-list" id="detailList"></dl>
+            <div class="inspector-body" id="inspectorBody"></div>
             <div class="safety-list" id="safetyList"></div>
           </aside>
         </div>
 
         <section class="replay" id="replayControls" aria-label="Observed trace replay" hidden>
-          <div class="replay-actions">
-            <button class="command-button" id="playPause" type="button" aria-label="Pause replay">Pause</button>
-            <button class="icon-button" id="restart" type="button" aria-label="Restart replay" title="Restart replay">↺</button>
-            <label class="speed-label" for="speed">Speed <select id="speed"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
-          </div>
-          <div class="scrubber-wrap"><input id="scrubber" type="range" min="0" max="0" value="0" step="1" aria-label="Trace event position"><div class="scrubber-labels"><span id="scrubberStart">Start</span><span id="scrubberEnd">0 observed</span></div></div>
+          <div class="replay-actions"><button class="command-button" id="playPause" type="button">Pause</button><button class="icon-button" id="restart" type="button" aria-label="Restart replay" title="Restart replay">↺</button><label class="speed-label" for="speed">Speed <select id="speed"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label></div>
+          <div class="scrubber-wrap"><input id="scrubber" type="range" min="0" max="0" value="0" step="1" aria-label="Trace event position"><div class="scrubber-labels"><span>Start</span><span id="scrubberEnd">0 observed</span></div></div>
         </section>
       </div>
-      <section class="summaries" id="summaries" aria-label="Mission summaries" hidden>
-        <div class="summary-heading"><div><p class="eyebrow">Mission summaries</p><h2>Non-authoritative summary</h2></div><p class="quiet" id="summaryStatus"></p></div>
-        <div class="summary-latest" id="summaryLatest"></div>
-        <div class="summary-history" id="summaryHistory" aria-label="Prior mission summaries"></div>
-      </section>
-      <section class="summaries" id="debugProfiles" aria-label="Agent capabilities" hidden>
-        <div class="summary-heading"><div><p class="eyebrow">Agent capabilities</p><h2>Skills and callable tools</h2></div><p class="quiet" id="debugStatus"></p></div>
-        <p class="summary-latest" id="debugEmpty"></p>
-        <dl class="detail-list" id="debugProfileList"></dl>
-      </section>
+      <section class="summaries" id="summaries" aria-label="Mission summaries" hidden><div class="summary-heading"><div><p class="eyebrow">Mission summaries</p><h2>Non-authoritative summary</h2></div><p class="quiet" id="summaryStatus"></p></div><div class="summary-latest" id="summaryLatest"></div><div class="summary-history" id="summaryHistory" aria-label="Prior mission summaries"></div></section>
     </section>
-
-    <section class="trace-strip" id="traceStrip" aria-label="Observed trace" hidden>
-      <div class="trace-header"><p class="eyebrow">Observation order</p><button class="clear-button" id="clearSelection" type="button" hidden>Clear correlation</button></div>
-      <div class="event-list" id="eventList"></div>
-    </section>
-    <section class="trace-strip" id="debugTimeline" aria-label="Agent activity timeline" hidden>
-      <div class="trace-header"><p class="eyebrow">Invocation timeline</p></div>
-      <div class="event-list" id="debugEventList"></div>
-    </section>
+    <section class="trace-strip" id="traceStrip" aria-label="Observed trace" hidden><div class="trace-header"><p class="eyebrow">Observation order</p><button class="clear-button" id="clearSelection" type="button" hidden>Clear correlation</button></div><div class="event-list" id="eventList"></div></section>
   </main>
   <script src="app.js"></script>
 </body>

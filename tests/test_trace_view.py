@@ -151,6 +151,107 @@ def test_typed_feedback_and_replan_records_have_view_components_and_safe_links()
     }
 
 
+def test_belief_events_keep_only_public_typed_payload_fields() -> None:
+    content_hash = "a" * 64
+    records = [
+        _event(
+            "risk-1",
+            1,
+            "risk.observed",
+            {
+                "event_id": "risk-1",
+                "input_revision": 1,
+                "risk_type": "collision",
+                "associations": [{"entity_id": "contact-1", "weight": 1.0}],
+                "likelihood_given_risk": 0.9,
+                "likelihood_given_safe": 0.1,
+                "analysis": "private reasoning",
+            },
+        ),
+        _event(
+            "constraints-2",
+            2,
+            "belief.constraints",
+            {
+                "input_revision": 2,
+                "constraints": [
+                    {
+                        "constraint_id": "not-both",
+                        "assignments": [
+                            {
+                                "key": {
+                                    "entity_id": "contact-1",
+                                    "risk_type": "collision",
+                                },
+                                "is_risk": True,
+                            }
+                        ],
+                    }
+                ],
+                "prompt": "private constraint prompt",
+            },
+        ),
+        _event(
+            "belief-3",
+            3,
+            "belief.updated",
+            {
+                "source": "bayesian_belief_snapshot",
+                "revision": 3,
+                "reference": "bayesian-beliefs/mission-test/belief-v1.json",
+                "content_sha256": content_hash,
+                "health": "healthy",
+                "fresh": True,
+                "token": "private-token",
+            },
+        ),
+    ]
+
+    items = TraceProjection().project(records)
+
+    assert len(items) == 3
+    assert all(item.component == "environment" for item in items)
+    assert all(item.authority == "bayesian-belief-source" for item in items)
+    by_kind = {item.event_kind: item.to_dict()["payload"] for item in items}
+    assert by_kind["risk.observed"] == {
+        "associations": [{"entity_id": "contact-1", "weight": 1.0}],
+        "event_id": "risk-1",
+        "input_revision": 1,
+        "likelihood_given_risk": 0.9,
+        "likelihood_given_safe": 0.1,
+        "risk_type": "collision",
+    }
+    assert by_kind["belief.constraints"] == {
+        "constraints": [
+            {
+                "assignments": [
+                    {
+                        "is_risk": True,
+                        "key": {
+                            "entity_id": "contact-1",
+                            "risk_type": "collision",
+                        },
+                    }
+                ],
+                "constraint_id": "not-both",
+            }
+        ],
+        "input_revision": 2,
+    }
+    assert by_kind["belief.updated"] == {
+        "content_sha256": content_hash,
+        "fresh": True,
+        "health": "healthy",
+        "reference": "bayesian-beliefs/mission-test/belief-v1.json",
+        "revision": 3,
+        "source": "bayesian_belief_snapshot",
+    }
+    rendered = json.dumps([item.to_dict() for item in items])
+    assert "private reasoning" not in rendered
+    assert "private constraint prompt" not in rendered
+    assert "private-token" not in rendered
+
+
 def test_error_diagnostics_never_emit_source_derived_strings() -> None:
     adversarial = [
         {**_event("bad-fields", 1), "prompt_sk-secret-field": "secret-value"},

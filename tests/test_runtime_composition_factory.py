@@ -42,6 +42,7 @@ def _runtime(
         storage=StorageConfig(Path("storage")),
         services=ServicesConfig("hyper", "maneuver", "context", "fsm", "planner"),
         debug=False,
+        agent_name="test-agent",
         agents=AgentsConfig(
             hyper_agent=AgentConfig(
                 OutputStructureRetryConfig(max_retries=hyper_max_retries)
@@ -81,18 +82,35 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     runtime = _runtime()
     configured_model = object()
     deep_models: list[object] = []
+    factory_calls: list[dict[str, object]] = []
 
     class FakeChatModel:
         pass
 
-    def fake_model_factory() -> FakeChatModel:
+    def fake_model_factory(
+        *, mission_id: str | None, debug_scope: str
+    ) -> FakeChatModel:
+        factory_calls.append(
+            {"mission_id": mission_id, "debug_scope": debug_scope}
+        )
         deep_models.append(configured_model)
         return FakeChatModel()
+
+    def fake_create_chat_model(
+        _runtime: RuntimeComposition,
+        *,
+        mission_id: str | None = None,
+        debug_scope: str = "runtime",
+    ) -> FakeChatModel:
+        return fake_model_factory(
+            mission_id=mission_id,
+            debug_scope=debug_scope,
+        )
 
     monkeypatch.setattr(
         composition_module.RuntimeComposition,
         "create_chat_model",
-        lambda _runtime: fake_model_factory(),
+        fake_create_chat_model,
     )
     monkeypatch.setattr(
         composition_module,
@@ -107,6 +125,10 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
 
     runtime.create_hyper_agent()
     runtime.create_maneuver_control(_FakeAdapter(), mission_id="mission")
+    assert factory_calls == [
+        {"mission_id": None, "debug_scope": "hyper-agent"},
+        {"mission_id": "mission", "debug_scope": "maneuver-control"},
+    ]
     assert len(deep_models) == 4
     assert isinstance(deep_models[1], FakeChatModel)
     assert isinstance(deep_models[3], FakeChatModel)
@@ -116,6 +138,7 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     assert deep_models[-1] is explicit
     provider = object()
     runtime.create_maneuver_control(_FakeAdapter(), decision_provider=provider)
+    assert len(factory_calls) == 2
     assert len(deep_models) == 5
 
 

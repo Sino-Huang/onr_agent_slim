@@ -67,7 +67,7 @@ _SUMMARY_FIELDS = {
 _SNAPSHOT_FIELDS = {
     "schema_version", "mission_id", "version", "created_at", "plan_revision",
     "plan_reference", "operational_scene_graph", "bayesian_belief_snapshot", "fsm_status",
-    "active_maneuver", "source_revisions", "source_references", "source_health",
+    "active_maneuver", "source_revisions", "source_references", "source_hashes", "source_health",
     "source_freshness", "missing_sources",
 }
 _STATECHART_FIELDS = {
@@ -128,17 +128,18 @@ _LOG_DETAIL_FIELDS = {
     "transport_sequence", "timer_due",
 }
 _COMMON_EVENT_PAYLOAD_FIELDS = {
-    "action", "active_maneuver", "active_state", "all_physical_actions", "catalogue",
+    "action", "active_maneuver", "active_state", "all_physical_actions", "associations", "catalogue",
     "backend", "belief_id", "choice", "command_id", "component", "content_hash", "correlation_id",
-    "edges", "event", "event_kind",
+    "constraints", "content_sha256", "edges", "event", "event_id", "event_kind",
     "feedback_loop", "fresh", "from", "health", "immutable_versions", "intent", "kind",
+    "input_event_id", "input_revision", "likelihood_given_risk", "likelihood_given_safe",
     "maneuver_id", "mission_memory_isolated", "missing", "missing_fields", "nodes",
-    "non_physical_choice", "normalized_plan", "objective", "operation", "outcome",
+    "marginals", "non_physical_choice", "normalized_plan", "objective", "operation", "outcome",
     "parameters", "physical_actions", "plan_revision", "planner", "planner_choice",
     "probability",
     "prior_summary_ids", "question", "question_id",
     "redacted_fields", "reference", "resume_sequence", "revision", "role_skills",
-    "scene_graph", "snapshot_id", "source_freshness", "source_health", "source_references",
+    "risk_type", "scene_graph", "snapshot_id", "source_freshness", "source_hashes", "source_health", "source_references",
     "source_revisions", "state", "status", "summary", "target_service", "target_services",
     "skills", "source", "to", "topic", "transition", "translation", "trusted", "version",
 }
@@ -152,6 +153,9 @@ _TRANSPORT_IDENTITIES = {
     "context-coordination": ("context-coordination", "context-coordination"),
     "mission-snapshot": ("context-coordination", "derived-snapshot"),
     "bayesian-belief": ("environment", "bayesian-belief-source"),
+    "risk.observed": ("environment", "bayesian-belief-source"),
+    "belief.constraints": ("environment", "bayesian-belief-source"),
+    "belief.updated": ("environment", "bayesian-belief-source"),
     "statechart": ("fsm-runner", "declarative-statechart"),
     "fsm-status": ("fsm-runner", "fsm-status"),
     "fsm-execution-record": ("fsm-runner", "durable-fsm-state"),
@@ -747,6 +751,18 @@ class TraceProjection:
         )
         component, authority = _TRANSPORT_IDENTITIES.get(event_kind, _IDENTITY["transport_event"])
         item = replace(item, component=component, authority=authority)
+        snapshot_version = source_payload.get("version")
+        if (
+            event_kind == "mission-snapshot"
+            and isinstance(snapshot_version, int)
+            and not isinstance(snapshot_version, bool)
+            and event_id == f"mission-snapshot:{mission_id}:{snapshot_version}"
+        ):
+            item = replace(
+                item,
+                trace_id=f"transport:{event_id}",
+                event_id=f"transport:{event_id}",
+            )
         if event_kind in {"stale", "late-record", "stale-delivery"}:
             item = replace(item, replay_disposition="stale")
         elif event_kind in {"replayed", "replayed-delivery"}:
@@ -1014,7 +1030,12 @@ class TraceProjection:
         return _CanonicalRecord(item, "replan_request", True)
 
     def _snapshot(self, raw: Mapping[str, object]) -> _CanonicalRecord:
-        _exact(raw, _SNAPSHOT_FIELDS, "MissionSnapshot")
+        expected = (
+            _SNAPSHOT_FIELDS
+            if "source_hashes" in raw
+            else _SNAPSHOT_FIELDS - {"source_hashes"}
+        )
+        _exact(raw, expected, "MissionSnapshot")
         from onr.contracts.context_coordination import MissionSnapshot
 
         try:
@@ -1027,7 +1048,7 @@ class TraceProjection:
         missing_sources = raw.get("missing_sources")
         if not isinstance(missing_sources, (list, tuple)) or any(not isinstance(item, str) for item in missing_sources):
             raise _RecordError("invalid_record")
-        fields = _SNAPSHOT_FIELDS - {"schema_version", "mission_id", "version", "created_at", "missing_sources"}
+        fields = expected - {"schema_version", "mission_id", "version", "created_at", "missing_sources"}
         payload, redactions = _safe_payload(raw, fields)
         item = self._base(
             "mission_snapshot", event_id=f"mission-snapshot:{mission_id}:{version}",

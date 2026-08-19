@@ -12,6 +12,7 @@ import pytest
 from onr.adapters.file_transport import FileTransport
 from onr.contracts.hyper_agent import MissionInput
 import onr.runtime.cli as runtime_cli
+from onr.runtime.lease import RuntimeLeaseStore
 
 
 def _mission_file(tmp_path: Path, **overrides: object) -> Path:
@@ -24,6 +25,19 @@ def _mission_file(tmp_path: Path, **overrides: object) -> Path:
     path = tmp_path / "mission.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     return path
+
+
+def _role_prompt_files(tmp_path: Path) -> tuple[str, str]:
+    hyper_prompt = "Temporary hyper-agent role prompt."
+    maneuver_prompt = "Temporary maneuver-control role prompt."
+    for role, prompt in (
+        ("hyper-agent", hyper_prompt),
+        ("maneuver-control", maneuver_prompt),
+    ):
+        path = tmp_path / "conf/system_prompt" / role / "SYSTEM.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prompt, encoding="utf-8")
+    return hyper_prompt, maneuver_prompt
 
 
 def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
@@ -79,11 +93,89 @@ def test_installed_cli_help_works_outside_checkout(tmp_path: Path) -> None:
     assert "ModuleNotFoundError" not in result.stderr
 
 
+def test_demo_artifact_rollover_moves_prior_var_wholesale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prior_files = {
+        "transport/topics/events.json": "transport",
+        "storage/operational-log/events.jsonl": "storage",
+        "planner-artifacts/temporal/plan.txt": "planner",
+        "environment/mission.json": "environment",
+        "debug/llm/response.json": "debug",
+    }
+    for relative, content in prior_files.items():
+        path = tmp_path / "var" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(
+        runtime_cli, "_utc_archive_timestamp", lambda: "20260819T123456.123456Z"
+    )
+
+    destination = runtime_cli._rollover_demo_artifacts(
+        repo_root=tmp_path,
+        lease=RuntimeLeaseStore(tmp_path / "var/storage/runtime"),
+    )
+
+    expected = (
+        tmp_path / "data/past_debug_rounds/20260819T123456.123456Z/var"
+    )
+    assert destination == expected
+    assert not (tmp_path / "var").exists()
+    assert {
+        str(path.relative_to(expected)): path.read_text(encoding="utf-8")
+        for path in expected.rglob("*")
+        if path.is_file()
+    } == prior_files
+
+
+def test_demo_artifact_rollover_is_noop_without_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        runtime_cli, "_utc_archive_timestamp", lambda: "20260819T123456.123456Z"
+    )
+
+    destination = runtime_cli._rollover_demo_artifacts(
+        repo_root=tmp_path,
+        lease=RuntimeLeaseStore(tmp_path / "var/storage/runtime"),
+    )
+
+    assert destination is None
+    assert not (tmp_path / "var").exists()
+    assert not (tmp_path / "data").exists()
+
+
+def test_demo_artifact_rollover_refuses_an_active_lease_without_moving_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prior = tmp_path / "var/debug/prior.json"
+    prior.parent.mkdir(parents=True)
+    prior.write_text("prior", encoding="utf-8")
+    lease_root = tmp_path / "var/storage/runtime"
+    active_owner = RuntimeLeaseStore(lease_root)
+    active_owner.start(session_id="active-demo")
+    monkeypatch.setattr(
+        runtime_cli, "_utc_archive_timestamp", lambda: "20260819T123456.123456Z"
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="another runtime session is active"):
+            runtime_cli._rollover_demo_artifacts(
+                repo_root=tmp_path,
+                lease=RuntimeLeaseStore(lease_root),
+            )
+    finally:
+        active_owner.stop()
+
+    assert prior.read_text(encoding="utf-8") == "prior"
+    assert not (tmp_path / "data").exists()
+
+
 def test_cli_composes_and_runs_offline_through_injected_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls: list[object] = []
-    model = object()
+    models: dict[str, object] = {}
 
     class FakeRuntime:
         def __init__(self) -> None:
@@ -97,8 +189,15 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             calls.append(("planners", root))
             return {"temporal": "planner"}
 
-        def create_chat_model(self) -> object:
-            calls.append("model")
+        def create_chat_model(
+            self,
+            *,
+            mission_id: str | None = None,
+            debug_scope: str = "runtime",
+        ) -> object:
+            model = object()
+            models[debug_scope] = model
+            calls.append(("model", debug_scope, mission_id, model))
             return model
 
         def create_hyper_agent(self, **kwargs: object) -> object:
@@ -117,6 +216,10 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             calls.append(("fsm", kwargs))
             return "fsm-runner"
 
+        def create_bayesian_belief_service(self, **kwargs: object) -> object:
+            calls.append(("belief", kwargs))
+            return "belief-service"
+
         def run_mission(self, mission: MissionInput, **kwargs: object) -> object:
             calls.append(("run", mission, kwargs))
             assert kwargs["environment_step"]() == "demo-evidence"  # type: ignore[operator]
@@ -127,6 +230,9 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
                     command_id="command-demo", maneuver_id="maneuver-demo"
                 ),
                 final_status=SimpleNamespace(active_state="state-1", status="active"),
+                belief_snapshot=SimpleNamespace(
+                    belief_revision=1, content_sha256="a" * 64
+                ),
             )
 
     class FakeEnvironment:
@@ -137,6 +243,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             return "demo-evidence"
 
     runtime = FakeRuntime()
+    hyper_prompt, maneuver_prompt = _role_prompt_files(tmp_path)
     monkeypatch.setattr(
         runtime_cli,
         "_create_runtime",
@@ -175,12 +282,23 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         "final_state": "state-1",
         "final_status": "active",
         "environment_file": None,
+        "belief_revision": 1,
+        "belief_sha256": "a" * 64,
     }
     assert calls[0] == (
         "runtime",
         {"repo_root": tmp_path, "config_path": Path("runtime.yaml")},
     )
     assert ("planners", planner_root) in calls
+    model_calls = [
+        item for item in calls if isinstance(item, tuple) and item[0] == "model"
+    ]
+    assert [(item[1], item[2]) for item in model_calls] == [
+        ("hyper-agent", "mission:demo"),
+        ("maneuver-control", "mission:demo"),
+        ("mission-summary", "mission:demo"),
+    ]
+    assert len({id(item[3]) for item in model_calls}) == 3
     hyper_call = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "hyper"
     )
@@ -192,12 +310,17 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert skill_catalog.root == tmp_path / "conf/skills"
     assert hyper_call[1]["backend_root"] == tmp_path
     assert maneuver_call[2]["backend_root"] == tmp_path
-    assert "You are agent drone-1." in hyper_call[1]["system_prompt"]
-    assert "You are agent drone-1." in maneuver_call[2]["system_prompt"]
+    assert hyper_call[1]["model"] is models["hyper-agent"]
+    assert maneuver_call[2]["model"] is models["maneuver-control"]
+    assert hyper_call[1]["system_prompt"] == f"You are agent drone-1. {hyper_prompt}"
+    assert maneuver_call[2]["system_prompt"] == (
+        f"You are agent drone-1. {maneuver_prompt}"
+    )
     run_call = next(item for item in calls if isinstance(item, tuple) and item[0] == "run")
-    assert run_call[2]["model"] is model
+    assert run_call[2]["model"] is models["mission-summary"]
     assert run_call[2]["hyper_agent"] == "hyper-agent"
     assert run_call[2]["maneuver_control"] == "maneuver-control"
+    assert run_call[2]["bayesian_belief_service"] == "belief-service"
     assert "environment" in calls
 
 
@@ -221,3 +344,28 @@ def test_cli_failure_is_nonzero_actionable_and_safe(
     assert "RuntimeError" in captured.err
     assert "Survey the demo area" not in captured.err
     assert "api_key" not in captured.err and "secret" not in captured.err
+
+
+def test_cli_reports_system_prompt_loading_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime = SimpleNamespace(
+        transport=FileTransport(tmp_path / "transport"),
+        verify_llm_reachability=lambda: None,
+    )
+    monkeypatch.setattr(runtime_cli, "_create_runtime", lambda **kwargs: runtime)
+
+    result = runtime_cli.main(
+        [
+            "--mission-file",
+            str(_mission_file(tmp_path)),
+            "--repo-root",
+            str(tmp_path),
+            "--demo-environment",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1 and captured.out == ""
+    assert "system prompt loading" in captured.err
+    assert "ValueError" in captured.err

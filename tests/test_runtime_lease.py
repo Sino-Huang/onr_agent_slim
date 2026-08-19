@@ -89,6 +89,8 @@ def test_direct_runtime_composition_uses_canonical_lease_root(tmp_path: Path) ->
         TransportConfig("inprocess", tmp_path / "transport"),
         StorageConfig(tmp_path / "storage"),
         ServicesConfig("hyper", "control", "context", "fsm", "planner"),
+        debug=False,
+        agent_name="test-agent",
     )
     runtime = RuntimeComposition(config, InProcessTransport())
     assert runtime.lease is not None

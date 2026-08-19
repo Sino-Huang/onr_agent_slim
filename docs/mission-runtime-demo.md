@@ -51,16 +51,41 @@ and runs Context Coordination and FSM Runner. During the active mission session,
 the runtime owns the lease and writes normal transport, operational-log, FSM,
 planner, and summary artifacts. It prints only mission/result identifiers and
 final public status; it does not print mission text or configuration secrets.
+Mission-summary calls send the per-request
+`chat_template_kwargs.enable_thinking: false` override, disabling Gemma thinking
+for summaries even when the vLLM server default enables it. Other model calls
+retain their existing behavior.
 
-With top-level `debug: true`, each provider chat-completion response is recorded
-atomically under `var/debug/llm/mission%3Ademo/*.json`. These artifacts contain
-the entire outbound JSON request body, including prompts/messages, tool
-definitions, response format, and model parameters, plus the returned content,
-function calls, tool calls, and provider reasoning fields. Request headers,
-authorization values, cookies, API keys, URL query values, and other credentials
-are not stored. Debug artifacts remain outside the viewer and trace APIs. This
-records only provider-returned reasoning; the current `ChatOpenAI` layer
-otherwise drops vLLM non-standard reasoning fields.
+Before checking the configured LLM endpoint, a new demo run moves any existing
+`var/` directory wholesale to
+`data/past_debug_rounds/<UTC timestamp>/var/`. This preserves prior transport,
+storage, planner, environment, and debug output together. If another demo
+runtime session has an active lease, the new run fails safely and leaves
+`var/` in place; wait for the active demo to finish before trying again.
+
+With top-level `debug: true`, provider chat-completion responses are separated by
+their runtime role and recorded atomically under:
+
+- `var/debug/llm/hyper-agent/mission%3Ademo/*.json`
+- `var/debug/llm/maneuver-control/mission%3Ademo/*.json`
+- `var/debug/llm/mission-summary/mission%3Ademo/*.json`
+
+Completed callback traces use the corresponding role-first layout:
+
+- `var/debug/agent/hyper-agent/mission%3Ademo/*.json`
+- `var/debug/agent/maneuver-control/mission%3Ademo/*.json`
+- `var/debug/agent/mission-summary/mission%3Ademo/*.json`
+
+The raw LLM artifacts contain the entire outbound JSON request body, including
+prompts/messages, tool definitions, response format, and model parameters, plus
+the returned content, function calls, tool calls, and provider reasoning fields.
+Request headers, authorization values, cookies, API keys, URL query values, and
+other credentials are not stored. Callback input, output, and error data
+preserve provider reasoning fields whenever LangChain exposes those fields. The
+raw LLM artifacts remain authoritative when `ChatOpenAI` does not surface a
+vLLM-specific field. Existing exclusions for request headers and credentials
+apply to both debug folders. Debug artifacts remain outside the viewer and trace
+APIs.
 
 The viewer owns no runtime lifecycle. It polls `/api/runtime` and the selected
 mission's `/api/trace` endpoint, cannot issue commands, and cannot invoke

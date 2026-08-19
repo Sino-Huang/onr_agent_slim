@@ -1,4 +1,4 @@
-"""Mission-scoped capture of raw OpenAI-compatible completion responses."""
+"""Role- and mission-scoped capture of raw OpenAI-compatible responses."""
 
 from __future__ import annotations
 
@@ -13,21 +13,6 @@ from urllib.parse import quote
 import httpx
 
 
-_PRIVATE_REASONING_KEYS = {"reasoning", "reasoning_content", "reasoning_details"}
-
-
-def _without_private_reasoning(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _without_private_reasoning(item)
-            for key, item in value.items()
-            if key not in _PRIVATE_REASONING_KEYS
-        }
-    if isinstance(value, list):
-        return [_without_private_reasoning(item) for item in value]
-    return value
-
-
 class LLMResponseRecorder:
     """Persist selected fields from raw chat completion responses."""
 
@@ -36,9 +21,14 @@ class LLMResponseRecorder:
         root: Path,
         mission_id: str,
         *,
+        role: str = "runtime",
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self._directory = Path(root) / quote(mission_id, safe="._-")
+        self._directory = (
+            Path(root)
+            / quote(role, safe="._-")
+            / quote(mission_id, safe="._-")
+        )
         self._lock = Lock()
         self._sequence = max(
             (
@@ -79,9 +69,12 @@ class LLMResponseRecorder:
                 "finish_reason": choice.get("finish_reason"),
                 "content": message.get("content"),
                 "function_call": message.get("function_call"),
+                "reasoning": message.get("reasoning"),
+                "reasoning_content": message.get("reasoning_content"),
+                "reasoning_details": message.get("reasoning_details"),
                 "tool_calls": message.get("tool_calls"),
             }
-            self._write(_without_private_reasoning(artifact))
+            self._write(artifact)
         except (OSError, ValueError, TypeError, json.JSONDecodeError, httpx.HTTPError):
             return
 

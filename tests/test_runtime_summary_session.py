@@ -32,11 +32,13 @@ class _RecordingModel:
     def __init__(self, content: str = "mission summary") -> None:
         self.content = content
         self.prompts: list[str] = []
+        self.invocation_kwargs: list[dict[str, object]] = []
         self.called = Event()
         self.error: Exception | None = None
 
-    def invoke(self, prompt: str) -> _Response:
+    def invoke(self, prompt: str, **kwargs: object) -> _Response:
         self.prompts.append(prompt)
+        self.invocation_kwargs.append(kwargs)
         self.called.set()
         if self.error is not None:
             raise self.error
@@ -125,6 +127,8 @@ def _runtime(
         TransportConfig("inprocess", tmp_path / "transport"),
         StorageConfig(storage),
         ServicesConfig("hyper", "maneuver", "context", "fsm", "planner"),
+        debug=False,
+        agent_name="test-agent",
     )
     return RuntimeComposition(config, InProcessTransport(), logger), logger
 
@@ -168,6 +172,9 @@ def test_short_session_final_flush_combines_all_component_records(
     assert artifact["input_start_sequence"] == 1
     assert artifact["input_end_sequence"] == 4
     assert len(model.prompts) == 1
+    assert model.invocation_kwargs == [
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    ]
     assert len(logger.replay("mission-all")) == 4
     prompt = model.prompts[0]
     for source in ("hyper-agent", "fsm-runner", "maneuver-control", "environment"):

@@ -16,7 +16,12 @@ import onr.viewer.server as viewer_server
 from onr.viewer.server import ViewerHTTPServer, create_server
 
 
-_EMPTY = {"enabled": False, "profiles": [], "invocations": []}
+_EMPTY = {
+    "enabled": False,
+    "profiles": [],
+    "invocations": [],
+    "conversations": [],
+}
 
 
 def _config(tmp_path: Path, *, debug: bool = True) -> tuple[Path, Path]:
@@ -28,6 +33,7 @@ def _config(tmp_path: Path, *, debug: bool = True) -> tuple[Path, Path]:
     config.write_text(
         "\n".join(
             (
+                "agent_name: test-agent",
                 f"debug: {'true' if debug else 'false'}",
                 "llm:",
                 "  provider: openai",
@@ -98,10 +104,14 @@ def _running_server(
 
 
 def _request(
-    server: ViewerHTTPServer, method: str, path: str
+    server: ViewerHTTPServer,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> tuple[HTTPResponse, bytes]:
     connection = HTTPConnection("127.0.0.1", server.server_port, timeout=2)
-    connection.request(method, path)
+    connection.request(method, path, headers=headers or {})
     response = connection.getresponse()
     body = response.read()
     connection.close()
@@ -114,9 +124,30 @@ def _activate(storage: Path) -> RuntimeLeaseStore:
     return store
 
 
-def _mission_root(storage: Path, mission_id: str) -> Path:
-    root = storage.parent / "debug" / "agent" / quote(mission_id, safe="._-")
+def _mission_root(
+    storage: Path,
+    mission_id: str,
+    *,
+    role: str = "hyper-agent",
+    legacy: bool = False,
+) -> Path:
+    root = storage.parent / "debug" / "agent"
+    if not legacy:
+        root /= role
+    root /= quote(mission_id, safe="._-")
     (root / "profiles").mkdir(parents=True)
+    return root
+
+
+def _llm_root(storage: Path, mission_id: str, role: str) -> Path:
+    root = (
+        storage.parent
+        / "debug"
+        / "llm"
+        / role
+        / quote(mission_id, safe="._-")
+    )
+    root.mkdir(parents=True)
     return root
 
 
@@ -150,6 +181,26 @@ def _invocation(
     }
 
 
+def _llm_artifact() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "request": {
+            "model": "reasoning-model",
+            "messages": [{"role": "user", "content": "private prompt"}],
+        },
+        "response_id": "chatcmpl-1",
+        "model": "reasoning-model",
+        "status_code": 200,
+        "finish_reason": "stop",
+        "content": "private answer",
+        "function_call": None,
+        "reasoning": "provider reasoning",
+        "reasoning_content": "provider reasoning content",
+        "reasoning_details": [{"type": "summary", "text": "provider detail"}],
+        "tool_calls": [{"id": "call-1", "type": "function"}],
+    }
+
+
 def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
@@ -166,6 +217,11 @@ def test_active_debug_is_mission_scoped_sorted_and_preserves_raw_json(
         _write(selected / "20.json", _invocation(2, "invocation-b"))
         _write(selected / "10.json", _invocation(1, "invocation-a"))
         _write(other / "01.json", _invocation(1, "other-mission"))
+        _write(
+            _llm_root(storage, "mission:one", "hyper-agent")
+            / "00000000000000000001.json",
+            _llm_artifact(),
+        )
 
         response, body = _request(
             server, "GET", "/api/debug?mission_id=mission%3Aone"
@@ -188,6 +244,38 @@ def test_active_debug_is_mission_scoped_sorted_and_preserves_raw_json(
     assert payload["invocations"][0]["output"] == {
         "choices": [{"text": "private output", "score": 0.75}]
     }
+    assert all(item["role"] == "hyper-agent" for item in payload["profiles"])
+    assert all(item["role"] == "hyper-agent" for item in payload["invocations"])
+    assert payload["conversations"] == [
+        {
+            "role": "hyper-agent",
+            "sequence": 1,
+            "response_id": "chatcmpl-1",
+            "model": "reasoning-model",
+            "request": {
+                "model": "reasoning-model",
+                "messages": [
+                    {"role": "user", "content": "private prompt"}
+                ],
+            },
+            "input": [{"role": "user", "content": "private prompt"}],
+            "reasoning": "provider reasoning",
+            "reasoning_content": "provider reasoning content",
+            "reasoning_details": [
+                {"type": "summary", "text": "provider detail"}
+            ],
+            "output": {
+                "content": "private answer",
+                "function_call": None,
+                "tool_calls": [{"id": "call-1", "type": "function"}],
+            },
+            "content": "private answer",
+            "function_call": None,
+            "tool_calls": [{"id": "call-1", "type": "function"}],
+            "finish_reason": "stop",
+            "status_code": 200,
+        }
+    ]
     assert "other-mission" not in json.dumps(payload)
 
 
@@ -240,6 +328,31 @@ def test_debug_disabled_returns_safe_empty_even_with_artifacts(tmp_path: Path) -
     assert json.loads(body) == _EMPTY
 
 
+def test_raw_reasoning_endpoint_rejects_foreign_host_and_origin(tmp_path: Path) -> None:
+    with _running_server(tmp_path) as (server, storage):
+        _activate(storage)
+        _write(
+            _llm_root(storage, "mission-one", "hyper-agent") / "01.json",
+            _llm_artifact(),
+        )
+        host_response, host_body = _request(
+            server,
+            "GET",
+            "/api/debug?mission_id=mission-one",
+            headers={"Host": "attacker.example"},
+        )
+        origin_response, origin_body = _request(
+            server,
+            "GET",
+            "/api/debug?mission_id=mission-one",
+            headers={"Origin": "http://attacker.example"},
+        )
+
+    assert host_response.status == origin_response.status == 403
+    assert json.loads(host_body) == json.loads(origin_body) == {"error": "forbidden"}
+    assert b"provider reasoning" not in host_body + origin_body
+
+
 def test_malformed_oversized_and_symlinked_artifacts_are_ignored(
     tmp_path: Path,
 ) -> None:
@@ -257,6 +370,19 @@ def test_malformed_oversized_and_symlinked_artifacts_are_ignored(
             mission_root / "profiles" / "invalid.json",
             {**_profile("invalid"), "tools": [7]},
         )
+        llm_root = _llm_root(storage, "mission-one", "hyper-agent")
+        _write(llm_root / "00000000000000000001.json", _llm_artifact())
+        (llm_root / "00000000000000000002.json").write_text("{", encoding="utf-8")
+        _write(
+            llm_root / "00000000000000000003.json",
+            {**_llm_artifact(), "unknown": True},
+        )
+        (llm_root / "00000000000000000004.json").write_bytes(
+            b" " * (1024 * 1024 + 1)
+        )
+        outside_llm = tmp_path / "outside-llm.json"
+        _write(outside_llm, _llm_artifact())
+        (llm_root / "00000000000000000005.json").symlink_to(outside_llm)
 
         response, body = _request(
             server, "GET", "/api/debug?mission_id=mission-one"
@@ -264,11 +390,69 @@ def test_malformed_oversized_and_symlinked_artifacts_are_ignored(
 
     payload = json.loads(body)
     assert response.status == 200
-    assert payload == {
-        "enabled": True,
-        "profiles": [],
-        "invocations": [_invocation(1, "valid")],
-    }
+    assert payload["enabled"] is True
+    assert payload["profiles"] == []
+    assert payload["invocations"] == [
+        {"role": "hyper-agent", **_invocation(1, "valid")}
+    ]
+    assert len(payload["conversations"]) == 1
+    assert payload["conversations"][0]["reasoning"] == "provider reasoning"
+
+
+def test_canonical_and_legacy_agent_layouts_merge_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    with _running_server(tmp_path) as (server, storage):
+        _activate(storage)
+        canonical = _mission_root(
+            storage, "mission-one", role="maneuver-control"
+        )
+        legacy = _mission_root(storage, "mission-one", legacy=True)
+        duplicate = _invocation(
+            1, "shared", role="maneuver-control"
+        )
+        _write(
+            canonical / "profiles" / "maneuver.json",
+            _profile("maneuver-control"),
+        )
+        _write(legacy / "profiles" / "hyper.json", _profile("hyper-agent"))
+        _write(canonical / "01.json", duplicate)
+        _write(legacy / "01.json", duplicate)
+        _write(legacy / "02.json", _invocation(2, "legacy-hyper"))
+        _write(
+            _llm_root(storage, "mission-one", "hyper-agent") / "01.json",
+            _llm_artifact(),
+        )
+        _write(
+            _llm_root(storage, "mission-one", "maneuver-control") / "01.json",
+            {**_llm_artifact(), "response_id": "chatcmpl-maneuver"},
+        )
+
+        _, all_body = _request(
+            server, "GET", "/api/debug?mission_id=mission-one"
+        )
+        _, filtered_body = _request(
+            server,
+            "GET",
+            "/api/debug?mission_id=mission-one&role=hyper-agent",
+        )
+
+    all_payload = json.loads(all_body)
+    assert [item["invocation_id"] for item in all_payload["invocations"]] == [
+        "legacy-hyper",
+        "shared",
+    ]
+    assert [item["role"] for item in all_payload["invocations"]] == [
+        "hyper-agent",
+        "maneuver-control",
+    ]
+    filtered = json.loads(filtered_body)
+    assert filtered["enabled"] is True
+    assert [item["invocation_id"] for item in filtered["invocations"]] == [
+        "legacy-hyper"
+    ]
+    assert [item["role"] for item in filtered["profiles"]] == ["hyper-agent"]
+    assert [item["role"] for item in filtered["conversations"]] == ["hyper-agent"]
 
 
 def test_lease_replacement_during_collection_returns_safe_empty(
@@ -280,8 +464,10 @@ def test_lease_replacement_during_collection_returns_safe_empty(
         _write(mission_root / "01.json", _invocation(1, "hidden-after-race"))
         original = viewer_server.load_debug_artifacts
 
-        def replace_after_load(storage_root: Path, mission_id: str):
-            result = original(storage_root, mission_id)
+        def replace_after_load(
+            storage_root: Path, mission_id: str, *, role: str | None = None
+        ):
+            result = original(storage_root, mission_id, role=role)
             now = datetime.now(timezone.utc).isoformat()
             replacement = RuntimeLease("replacement", 999, now, now, "active")
             store.path.write_text(json.dumps(replacement.to_dict()), encoding="utf-8")
@@ -314,6 +500,8 @@ def test_debug_endpoint_headers_head_and_query_validation(tmp_path: Path) -> Non
                 "/api/debug?mission_id=one&mission_id=two",
                 "/api/debug?mission_id=mission-one&extra=value",
                 "/api/debug?mission_id=..%2Fmission-two",
+                "/api/debug?mission_id=mission-one&role=unknown",
+                "/api/debug?mission_id=mission-one&role=hyper-agent&role=runtime",
             )
         ]
 
@@ -325,6 +513,7 @@ def test_debug_endpoint_headers_head_and_query_validation(tmp_path: Path) -> Non
         "enabled": True,
         "profiles": [],
         "invocations": [],
+        "conversations": [],
     }
     assert head_response.getheader("Content-Length") == str(len(get_body))
     assert head_body == b""

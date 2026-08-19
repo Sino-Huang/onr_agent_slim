@@ -40,6 +40,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     config.write_text(
         "\n".join(
             (
+                "agent_name: test-agent",
                 "debug: true",
                 "llm:",
                 "  provider: openai",
@@ -307,9 +308,10 @@ def test_desktop_idle_has_architecture_only(
                 page.goto(url, wait_until="networkidle")
                 expect(page.locator("#runtimeLabel")).to_have_text("Runtime idle")
                 nodes = page.locator(".node")
-                expect(nodes).to_have_count(8)
-                for index in range(8):
+                expect(nodes).to_have_count(10)
+                for index in range(10):
                     expect(nodes.nth(index)).to_be_visible()
+                expect(page.get_by_text("Skills & advisory", exact=True)).to_have_count(0)
                 expect(page.locator("#idleNote")).to_be_visible()
                 mission_picker = page.locator("#missionPicker")
                 expect(mission_picker).to_be_hidden()
@@ -348,6 +350,9 @@ def test_active_mission_shows_safe_flow_and_summary(
             with _diagnostic(page, tmp_path, "desktop-active-failure"):
                 page.goto(url, wait_until="networkidle")
                 expect(page.locator("#runtimeLabel")).to_have_text("Runtime active")
+                expect(page.locator("#runtimeLabel")).not_to_have_text(
+                    "Runtime unavailable"
+                )
                 expect(page.locator("#missionSelect")).to_have_value("mission-alpha")
                 expect(page.locator("#observationCount")).to_contain_text("observed")
                 _pause_and_show_all(page)
@@ -360,8 +365,10 @@ def test_active_mission_shows_safe_flow_and_summary(
                 expect(page.locator(".edge.active-flow").first).to_be_visible()
                 expect(page.locator(".node.focused").first).to_be_visible()
 
-                page.locator(".tab[data-view='feedback']").click()
-                feedback_event = page.locator(".event", has_text="maneuver-feedback")
+                page.locator(".tab[data-view='runtime']").click()
+                feedback_event = page.locator(
+                    "#eventList .event", has_text="maneuver-feedback"
+                )
                 expect(feedback_event).to_have_count(1)
                 feedback_event.click()
                 expect(page.locator("#inspectorTitle")).to_have_text("maneuver-feedback")
@@ -435,6 +442,7 @@ def test_available_completed_mission_keeps_replay_and_debug_activity(
                             "enabled": True,
                             "profiles": [
                                 {
+                                    "role": "hyper-agent",
                                     "agent_role": "navigator",
                                     "skills": [
                                         {
@@ -446,17 +454,13 @@ def test_available_completed_mission_keeps_replay_and_debug_activity(
                                     "tools": ["map.lookup"],
                                 }
                             ],
-                            "invocations": [
+                            "conversations": [
                                 {
                                     "sequence": 4,
-                                    "agent_role": "navigator",
-                                    "kind": "tool",
-                                    "name": "map.lookup",
                                     "input": {"zone": "A"},
-                                    "output": {"route": "clear"},
-                                    "started_at": "2026-08-19T00:00:01Z",
-                                    "finished_at": "2026-08-19T00:00:02Z",
-                                    "invocation_id": "tool-4",
+                                    "reasoning": "checked route constraints",
+                                    "output": {"content": "clear", "tool_calls": ["map.lookup"]},
+                                    "role": "hyper-agent",
                                 }
                             ],
                         }
@@ -470,16 +474,11 @@ def test_available_completed_mission_keeps_replay_and_debug_activity(
             expect(page.locator("#traceStrip")).to_be_visible()
             expect(page.locator(".event", has_text="mission-completed")).to_have_count(1)
 
-            page.locator(".tab[data-view='debug']").click()
-            expect(page.locator("#debugProfiles")).to_be_visible()
-            expect(page.locator("#debugProfileList")).to_contain_text("route-planning 2.1")
-            expect(page.locator("#debugProfileList")).to_contain_text("map.lookup")
-            invocation = page.locator("#debugEventList .event", has_text="map.lookup")
-            expect(invocation).to_have_count(1)
-            invocation.click()
-            expect(page.locator("#inspectorTitle")).to_have_text("map.lookup")
-            expect(page.locator("#detailList")).to_contain_text('"route": "clear"')
-            assert page.evaluate("() => document.querySelectorAll('#debugEventList .event').length") == 1
+            page.locator(".node[data-component='hyper-agent']").click()
+            expect(page.locator("#inspectorTitle")).to_have_text("Hyper Agent")
+            expect(page.locator("#inspectorBody")).to_contain_text("route-planning 2.1")
+            expect(page.locator("#inspectorBody")).to_contain_text("map.lookup")
+            expect(page.locator("#inspectorBody")).to_contain_text("Provider reasoning")
         finally:
             context.close()
 
@@ -542,13 +541,13 @@ def test_mission_replay_selection_and_drill_down_stay_synchronized(
                 expect(page.locator("#runtimeLabel")).to_have_text("Runtime active")
                 _pause_and_show_all(page)
 
-                page.locator(".tab[data-view='feedback']").click()
-                expect(page.locator("#viewTitle")).to_have_text("Feedback paths")
+                page.locator(".tab[data-view='runtime']").click()
+                expect(page.locator("#viewTitle")).to_have_text("Runtime flow")
                 feedback_event = page.locator(".event", has_text="maneuver-feedback")
                 feedback_event.click()
                 expect(feedback_event).to_have_class(re.compile(r"\bselected\b"))
                 expect(page.locator("#inspectorCopy")).to_have_text(
-                    "feedback reported this observation."
+                    "Environment reported this observation."
                 )
                 assert int(page.locator("#scrubber").input_value()) > 0
 
@@ -559,7 +558,7 @@ def test_mission_replay_selection_and_drill_down_stay_synchronized(
                 expect(replan_event).to_have_count(1)
                 replan_event.click()
                 expect(page.locator("#inspectorCopy")).to_have_text(
-                    "hyper-agent reported this observation."
+                    "Hyper Agent reported this observation."
                 )
                 expect(page.locator("#detailList")).to_contain_text("replan-alpha")
                 expect(page.locator("#clearSelection")).to_be_visible()
@@ -614,6 +613,7 @@ def test_mobile_active_layout_flow_and_summary_history_are_usable(
                 expect(history).to_be_visible()
                 history.click()
                 expect(history).to_have_class("summary-item selected")
+                expect(history).to_have_attribute("aria-pressed", "true")
 
                 _assert_no_global_overflow(page)
                 selectors = (
@@ -635,5 +635,191 @@ def test_mobile_active_layout_flow_and_summary_history_are_usable(
                     selectors,
                 )
                 assert fits
+        finally:
+            context.close()
+
+
+def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
+    chromium_browser: Browser, tmp_path: Path
+) -> None:
+    """The diagram names only runtime components and keeps long debug records local."""
+    with _viewer_server(tmp_path, active=False) as (url, _, _):
+        context, page = _page(chromium_browser, width=1440, height=1000)
+        try:
+            trace_items = [
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "context-1",
+                    "event_id": "context-1",
+                    "component": "context-coordination",
+                    "authority": "observed",
+                    "event_kind": "mission-snapshot",
+                    "occurred_at": "2026-08-20T00:00:00Z",
+                    "observation_sequence": 1,
+                    "payload": {"snapshot_id": "snapshot-1"},
+                },
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "pddl-3",
+                    "event_id": "pddl-3",
+                    "component": "planner",
+                    "authority": "observed",
+                    "event_kind": "normalized-plan",
+                    "occurred_at": "2026-08-20T00:00:02Z",
+                    "observation_sequence": 3,
+                    "payload": {"planner": "pddl", "plan_revision": 2},
+                },
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "minizinc-4",
+                    "event_id": "minizinc-4",
+                    "component": "planner",
+                    "authority": "observed",
+                    "event_kind": "normalized-plan",
+                    "occurred_at": "2026-08-20T00:00:03Z",
+                    "observation_sequence": 4,
+                    "payload": {"planner": "minizinc", "plan_revision": 3},
+                },
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "transport-5",
+                    "event_id": "transport-5",
+                    "component": "transport",
+                    "authority": "observed",
+                    "event_kind": "command-receipt",
+                    "occurred_at": "2026-08-20T00:00:04Z",
+                    "observation_sequence": 5,
+                    "payload": {"command_id": "command-5"},
+                },
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "unknown-6",
+                    "event_id": "unknown-6",
+                    "component": "unknown-service",
+                    "authority": "observed",
+                    "event_kind": "normalized-plan",
+                    "occurred_at": "2026-08-20T00:00:05Z",
+                    "observation_sequence": 6,
+                    "payload": {"planner": "pddl"},
+                },
+            ]
+            page.route(
+                "**/api/runtime",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "available": True,
+                            "active": False,
+                            "mission_ids": ["mission-diagram"],
+                        }
+                    ),
+                ),
+            )
+            page.route(
+                "**/api/trace?mission_id=mission-diagram",
+                lambda route: route.fulfill(
+                    content_type="application/json", body=json.dumps({"items": trace_items})
+                ),
+            )
+            page.route(
+                "**/api/debug?mission_id=mission-diagram",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "enabled": True,
+                            "profiles": [
+                                {
+                                    "role": "hyper-agent",
+                                    "agent_role": "hyper-agent",
+                                    "tools": ["map.lookup"],
+                                    "skills": [{"name": "route-planning", "version": "2.1", "path": "/skills/route"}],
+                                }
+                            ],
+                            "conversations": [
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 2,
+                                    "input": {"request": "choose a route"},
+                                    "reasoning": "r" * 6000,
+                                    "output": {"content": "route selected", "tool_calls": ["map.lookup"]},
+                                }
+                            ],
+                        }
+                    ),
+                ),
+            )
+            page.goto(url, wait_until="networkidle")
+            _pause_and_show_all(page)
+
+            expect(page.get_by_text("Skills & advisory", exact=True)).to_have_count(0)
+            expect(page.locator(".node[data-component='pddl']")).to_be_visible()
+            expect(page.locator(".node[data-component='minizinc']")).to_be_visible()
+            expect(page.locator(".node[data-component='belief']")).to_be_visible()
+            expect(page.locator(".edge.active-flow")).to_have_count(0)
+
+            page.locator(".edge[data-edge='context|belief']").click()
+            expect(page.locator("#inspectorTitle")).to_have_text(
+                "Context Coordination → Bayesian Belief Manager"
+            )
+            observed_evidence = page.locator("#detailList div").filter(
+                has=page.locator("dt", has_text="Observed evidence")
+            )
+            expect(observed_evidence.locator("dt")).to_have_text("Observed evidence")
+            expect(observed_evidence.locator("dd")).to_have_text("0")
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "Declared contract classes"
+            )
+            expect(page.locator("#inspectorBody")).to_contain_text("MissionSnapshot")
+
+            page.locator(".node[data-component='pddl']").click()
+            expect(page.locator("#inspectorBody")).to_contain_text("Output history")
+            expect(page.locator("#inspectorBody")).to_contain_text("No observed history")
+
+            trace_items.append(
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "belief-2",
+                    "event_id": "belief-2",
+                    "component": "environment",
+                    "authority": "bayesian-belief-source",
+                    "event_kind": "bayesian-belief",
+                    "occurred_at": "2026-08-20T00:00:01Z",
+                    "observation_sequence": 2,
+                    "parent_id": "context-1",
+                    "payload": {"snapshot_id": "belief-1"},
+                }
+            )
+            page.reload(wait_until="networkidle")
+            _pause_and_show_all(page)
+            expect(page.locator(".edge.active-flow")).to_have_count(1)
+            page.locator(".edge[data-edge='context|belief']").click()
+            expect(observed_evidence.locator("dd")).to_have_text("1")
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "BayesianBeliefSnapshot"
+            )
+
+            page.locator(".edge[data-edge='pddl|maneuver-control']").click()
+            expect(observed_evidence.locator("dd")).to_have_text("0")
+            expect(page.locator("#inspectorBody")).to_contain_text("NormalizedPlan")
+
+            page.locator("#eventList .event", has_text="unknown-service").click()
+            expect(page.locator("#inspectorTitle")).to_have_text("normalized-plan")
+            expect(page.locator("#inspectorCopy")).to_contain_text(
+                "Unclassified component: unknown-service"
+            )
+
+            page.locator(".node[data-component='hyper-agent']").click()
+            expect(page.locator("#inspectorBody")).to_contain_text("map.lookup")
+            expect(page.locator("#inspectorBody")).to_contain_text("route-planning 2.1")
+            expect(page.locator("#inspectorBody")).to_contain_text("Input / request")
+            expect(page.locator("#inspectorBody")).to_contain_text("Provider reasoning")
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "Output / content / tool calls"
+            )
+            assert page.locator(".conversation-list").evaluate(
+                "element => element.scrollHeight > element.clientHeight"
+            )
         finally:
             context.close()

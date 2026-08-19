@@ -15,6 +15,8 @@ import random
 from urllib.parse import quote
 
 from onr.adapters.file_transport import FileTransport
+from onr.application.bayesian_belief import create_risk_observation_event
+from onr.contracts.bayesian_belief import EntityAssociation, RiskObservation
 from onr.contracts.context_coordination import create_source_fact_event
 from onr.contracts.fsm import ManeuverFeedback
 from onr.contracts.maneuver_control import ManeuverCommand
@@ -42,6 +44,7 @@ class FakeEnvironmentResult:
     command: ManeuverCommand
     scene_graph: TransportEvent
     source_fact: TransportEvent
+    risk_observation: TransportEvent
     feedback: TransportEvent
     environment_file: Path
 
@@ -132,8 +135,16 @@ class FakeEnvironment:
             return existing
 
         scene_graph, source_fact, environment_file = self._scene_graph_and_fact(command)
+        risk_observation = self._risk_observation(command)
         feedback = self._feedback(command, lifecycle)
-        result = FakeEnvironmentResult(command, scene_graph, source_fact, feedback, environment_file)
+        result = FakeEnvironmentResult(
+            command,
+            scene_graph,
+            source_fact,
+            risk_observation,
+            feedback,
+            environment_file,
+        )
         self._results[key] = result
         self.last_result = result
         return result
@@ -247,6 +258,35 @@ class FakeEnvironment:
             }
         )
         return entities
+
+    def _risk_observation(self, command: ManeuverCommand) -> TransportEvent:
+        event_id = f"risk.observed:{command.command_id}:collision"
+        existing = self.transport.get_event(event_id)
+        if existing is not None:
+            return existing
+        sequence = self.transport.next_event_sequence(
+            "belief-observations", command.mission_id
+        )
+        observation = RiskObservation(
+            event_id=event_id,
+            input_revision=sequence + 1,
+            risk_type="collision",
+            associations=(
+                EntityAssociation("ship-1", 0.7),
+                EntityAssociation("ship-2", 0.2),
+                EntityAssociation("ship-3", 0.1),
+            ),
+            likelihood_given_risk=0.85,
+            likelihood_given_safe=0.15,
+        )
+        return self.transport.publish_event(
+            "belief-observations",
+            create_risk_observation_event(
+                command.mission_id,
+                observation,
+                sequence=sequence,
+            ),
+        )
 
     def _feedback(self, command: ManeuverCommand, lifecycle: str) -> TransportEvent:
         feedback_id = f"maneuver-feedback:{command.command_id}:{lifecycle}"

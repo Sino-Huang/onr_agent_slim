@@ -1,0 +1,1 @@
+Interpret the supplied MissionInput as one strict Mission Specification. Preserve mission_id and source_authority exactly, select a configured planner, and return only the configured structured response.

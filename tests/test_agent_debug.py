@@ -19,7 +19,9 @@ def _artifacts(directory: Path) -> list[dict[str, Any]]:
 
 
 def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Path) -> None:
-    recorder = AgentDebugRecorder(tmp_path / "debug/agent", "mission:demo")
+    recorder = AgentDebugRecorder(
+        tmp_path / "debug/agent", "mission:demo", role="hyper-agent"
+    )
     recorder.record_profile(
         "hyper-agent",
         [
@@ -43,6 +45,11 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
         parent_run_id=parent_id,
         invocation_params={
             "model_name": "solver-model",
+            "provider_input": {
+                "reasoning": "input reasoning",
+                "reasoning_content": "input reasoning content",
+                "reasoning_details": [{"type": "input", "text": "detail"}],
+            },
             "tools": [
                 {"type": "function", "function": {"name": "read_file"}}
             ],
@@ -75,12 +82,23 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
                     )
                 ]
             ],
-            llm_output={"structured": {"status": "complete"}},
+            llm_output={
+                "structured": {
+                    "status": "complete",
+                    "provider_output": {
+                        "reasoning": "output reasoning",
+                        "reasoning_content": "output reasoning content",
+                        "reasoning_details": [
+                            {"type": "output", "text": "detail"}
+                        ],
+                    },
+                }
+            },
         ),
         run_id=llm_id,
     )
 
-    directory = tmp_path / "debug/agent/mission%3Ademo"
+    directory = tmp_path / "debug/agent/hyper-agent/mission%3Ademo"
     profile = json.loads(
         (directory / "profiles/hyper-agent.json").read_text(encoding="utf-8")
     )
@@ -113,18 +131,30 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
     assert llm["kind"] == "llm"
     assert llm["name"] == "solver-model"
     assert llm["input"]["messages"][0][0]["content"] == "inspect the skill"
+    assert llm["input"]["invocation_params"]["provider_input"] == {
+        "reasoning": "input reasoning",
+        "reasoning_content": "input reasoning content",
+        "reasoning_details": [{"type": "input", "text": "detail"}],
+    }
     assert llm["output"]["generations"][0][0]["message"]["content"] == "done"
+    assert llm["output"]["llm_output"]["structured"]["provider_output"] == {
+        "reasoning": "output reasoning",
+        "reasoning_content": "output reasoning content",
+        "reasoning_details": [{"type": "output", "text": "detail"}],
+    }
     assert llm["error"] is None
     assert isinstance(llm["started_at"], str)
     assert isinstance(llm["finished_at"], str)
     assert not list(directory.rglob("*.tmp"))
 
 
-def test_recorder_pairs_errors_omits_reasoning_and_continues_sequence(
+def test_recorder_pairs_errors_retains_reasoning_and_continues_sequence(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "agent"
-    recorder = AgentDebugRecorder(root, "mission/demo")
+    recorder = AgentDebugRecorder(
+        root, "mission/demo", role="maneuver-control"
+    )
     recorder.record_profile("maneuver-control", [], ["execute"])
     callback = recorder.callback_for("maneuver-control")
     first_id = UUID("10000000-0000-0000-0000-000000000001")
@@ -133,7 +163,10 @@ def test_recorder_pairs_errors_omits_reasoning_and_continues_sequence(
         {"name": "private-model"},
         [[HumanMessage(content="decide", additional_kwargs={"reasoning": "hidden"})]],
         run_id=first_id,
-        invocation_params={"reasoning_details": ["hidden"]},
+        invocation_params={
+            "reasoning_content": "hidden content",
+            "reasoning_details": ["hidden detail"],
+        },
     )
     callback.on_tool_start(
         {"name": "execute"},
@@ -144,14 +177,16 @@ def test_recorder_pairs_errors_omits_reasoning_and_continues_sequence(
     callback.on_llm_error(RuntimeError("model unavailable"), run_id=first_id)
     callback.on_tool_error(ValueError("tool failed"), run_id=second_id)
 
-    restarted = AgentDebugRecorder(root, "mission/demo")
+    restarted = AgentDebugRecorder(
+        root, "mission/demo", role="maneuver-control"
+    )
     restarted.record_profile("maneuver-control", [], ["execute"])
     callback = restarted.callback_for("maneuver-control")
     third_id = UUID("10000000-0000-0000-0000-000000000003")
     callback.on_tool_start({"name": "execute"}, "raw input", run_id=third_id)
     callback.on_tool_end("ok", run_id=third_id)
 
-    directory = root / "mission%2Fdemo"
+    directory = root / "maneuver-control/mission%2Fdemo"
     artifacts = _artifacts(directory)
     assert [artifact["sequence"] for artifact in artifacts] == [1, 2, 3]
     assert artifacts[0]["invocation_id"] == str(first_id)
@@ -165,8 +200,11 @@ def test_recorder_pairs_errors_omits_reasoning_and_continues_sequence(
     assert artifacts[1]["error"] == {"type": "ValueError", "message": "tool failed"}
     assert artifacts[2]["invocation_id"] == str(third_id)
     assert artifacts[2]["output"] == "ok"
-    serialized = json.dumps(artifacts)
-    assert "reasoning" not in serialized
-    assert "reasoning_content" not in serialized
-    assert "reasoning_details" not in serialized
+    assert artifacts[0]["input"]["messages"][0][0]["additional_kwargs"] == {
+        "reasoning": "hidden"
+    }
+    assert artifacts[0]["input"]["invocation_params"] == {
+        "reasoning_content": "hidden content",
+        "reasoning_details": ["hidden detail"],
+    }
     assert not list(directory.rglob("*.tmp"))

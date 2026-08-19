@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -10,24 +11,17 @@ from typing import Mapping, Sequence, cast
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
+from onr.adapters.system_prompts import load_system_prompt
+from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.maneuver_control import ManeuverCommand
 from onr.demo.fake_environment import FakeEnvironment
 from onr.runtime.composition import RuntimeComposition, RuntimeRunResult
+from onr.runtime.lease import RuntimeLeaseStore
 
 
 _MISSION_FIELDS = {"mission_id", "mission_text", "source_authority"}
 _MAX_MISSION_BYTES = 1024 * 1024
-_HYPER_PROMPT = (
-    "Interpret the supplied MissionInput as one strict Mission Specification. "
-    "Preserve mission_id and source_authority exactly, select a configured planner, "
-    "and return only the configured structured response."
-)
-_MANEUVER_PROMPT = (
-    "Return only one strict ManeuverControlDecision JSON object for the supplied "
-    "snapshot and FSM status. Preserve mission and plan identity and select at most "
-    "one enabled physical maneuver."
-)
 
 
 class _DemoManeuverAdapter:
@@ -72,6 +66,30 @@ def _create_runtime(*, repo_root: Path, config_path: Path | None) -> RuntimeComp
     return RuntimeComposition.create(repo_root=repo_root, config_path=config_path)
 
 
+def _utc_archive_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+
+
+def _rollover_demo_artifacts(
+    *, repo_root: Path, lease: RuntimeLeaseStore
+) -> Path | None:
+    source = repo_root / "var"
+    if not source.exists():
+        return None
+
+    current = lease.inspect()
+    if current is not None and current.status == "active":
+        raise RuntimeError("another runtime session is active")
+
+    archive_root = (
+        repo_root / "data/past_debug_rounds" / _utc_archive_timestamp()
+    )
+    archive_root.mkdir(parents=True, exist_ok=False)
+    destination = archive_root / "var"
+    source.rename(destination)
+    return destination
+
+
 def _create_demo_environment(
     runtime: RuntimeComposition,
     mission_id: str,
@@ -94,6 +112,16 @@ def _safe_result(
         "final_state": result.final_status.active_state,
         "final_status": result.final_status.status,
         "environment_file": str(environment_file) if environment_file is not None else None,
+        "belief_revision": (
+            result.belief_snapshot.belief_revision
+            if result.belief_snapshot is not None
+            else None
+        ),
+        "belief_sha256": (
+            result.belief_snapshot.content_sha256
+            if result.belief_snapshot is not None
+            else None
+        ),
     }
 
 
@@ -123,14 +151,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         mission_input = load_mission_file(args.mission_file)
         repo_root = Path(args.repo_root).resolve()
         config_path = Path(args.config_path) if args.config_path is not None else None
+        prior_var_exists = (repo_root / "var").exists()
 
         stage = "runtime configuration"
         runtime = _create_runtime(repo_root=repo_root, config_path=config_path)
         if not isinstance(runtime.transport, FileTransport):
             raise RuntimeError("demo mission requires transport.backend=file")
 
+        if prior_var_exists:
+            stage = "demo artifact rollover"
+            lease = runtime.lease
+            if lease is None:
+                raise RuntimeError("runtime lease was not initialized")
+            archived = _rollover_demo_artifacts(repo_root=repo_root, lease=lease)
+            if archived is not None:
+                # Runtime composition creates the transport root. Recreate it only
+                # after the wholesale move so this run cannot write into the archive.
+                runtime.transport.root.mkdir(parents=True, exist_ok=True)
+
         stage = "configured LLM endpoint check"
         runtime.verify_llm_reachability()
+
+        stage = "system prompt loading"
+        prompt_root = repo_root / "conf/system_prompt"
+        hyper_prompt = load_system_prompt(prompt_root, "hyper-agent")
+        maneuver_prompt = load_system_prompt(prompt_root, "maneuver-control")
 
         stage = "planner and model composition"
         artifact_root = Path(args.planner_artifacts)
@@ -138,25 +183,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_root = repo_root / artifact_root
         planners = runtime.create_planners(artifact_root.resolve())
         skill_catalog = FilesystemRoleSkillCatalog(repo_root / "conf/skills")
-        try:
-            model = runtime.create_chat_model(mission_id=mission_input.mission_id)
-        except TypeError:
-            if isinstance(runtime, RuntimeComposition):
-                raise
-            model = runtime.create_chat_model()
+        hyper_model = runtime.create_chat_model(
+            mission_id=mission_input.mission_id,
+            debug_scope="hyper-agent",
+        )
+        maneuver_model = runtime.create_chat_model(
+            mission_id=mission_input.mission_id,
+            debug_scope="maneuver-control",
+        )
+        summary_model = runtime.create_chat_model(
+            mission_id=mission_input.mission_id,
+            debug_scope="mission-summary",
+        )
         hyper_agent = runtime.create_hyper_agent(
             planners=planners,
-            model=model,
+            model=hyper_model,
             mission_id=mission_input.mission_id,
-            system_prompt=f"You are agent {runtime.config.agent_name}. {_HYPER_PROMPT}",
+            system_prompt=f"You are agent {runtime.config.agent_name}. {hyper_prompt}",
             skill_catalog=skill_catalog,
             backend_root=repo_root,
         )
         maneuver_control = runtime.create_maneuver_control(
             _DemoManeuverAdapter(),
-            model=model,
+            model=maneuver_model,
             mission_id=mission_input.mission_id,
-            system_prompt=f"You are agent {runtime.config.agent_name}. {_MANEUVER_PROMPT}",
+            system_prompt=f"You are agent {runtime.config.agent_name}. {maneuver_prompt}",
             skill_catalog=skill_catalog,
             backend_root=repo_root,
         )
@@ -164,6 +215,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             mission_id=mission_input.mission_id
         )
         fsm_runner = runtime.create_fsm_runner(mission_id=mission_input.mission_id)
+        belief_service = runtime.create_bayesian_belief_service(
+            mission_id=mission_input.mission_id,
+            keys=tuple(
+                BeliefKey(f"ship-{index}", "collision") for index in range(1, 4)
+            ),
+            particle_count=512,
+            seed=0,
+        )
         environment = _create_demo_environment(
             runtime,
             mission_input.mission_id,
@@ -178,7 +237,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             fsm_runner=fsm_runner,
             maneuver_control=maneuver_control,
             environment_step=environment.run_once,
-            model=model,
+            bayesian_belief_service=belief_service,
+            model=summary_model,
         )
         print(
             json.dumps(

@@ -7,11 +7,16 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from onr.adapters.inprocess_transport import InProcessTransport
+from onr.application.bayesian_belief import (
+    BayesianBeliefManager,
+    belief_artifact_reference,
+)
 from onr.application.hyper_agent import HyperAgent
 from onr.agents.hyper_agent import DeepAgentsMissionInterpreter, create_hyper_agent
 from onr.agents.structured_output import StructuredOutputRetriesExhausted
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.bayesian_belief import BeliefKey, EntityAssociation, RiskObservation
 from onr.contracts.hyper_agent import HumanQuestion, MissionInput, ReplanRequest
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -595,3 +600,49 @@ def test_replan_transport_event_can_be_ingested_without_republication() -> None:
         consumer.close()
     assert accepted is not None and accepted.request_id == "wire-1"
     assert transport.next_event_sequence("replan-requests", "mission-1") == 1
+
+
+def test_heartbeat_accepts_only_manifest_authorized_typed_belief_artifact() -> None:
+    manager = BayesianBeliefManager(
+        "mission-1", (BeliefKey("entity", "collision"),), particle_count=64, seed=5
+    )
+    belief = manager.update(
+        RiskObservation(
+            "belief-input-1",
+            1,
+            "collision",
+            (EntityAssociation("entity", 1.0),),
+            0.8,
+            0.2,
+        ),
+        created_at="2026-08-19T12:00:00+00:00",
+    )
+    reference = belief_artifact_reference("mission-1", belief.content_sha256)
+    manifest = MissionSnapshot(
+        "mission-1",
+        1,
+        "time-1",
+        source_revisions={"bayesian_belief_snapshot": belief.belief_revision},
+        source_references={"bayesian_belief_snapshot": reference},
+        source_hashes={"bayesian_belief_snapshot": belief.content_sha256},
+        source_health={"bayesian_belief_snapshot": "healthy"},
+        source_freshness={"bayesian_belief_snapshot": True},
+    )
+    service = HyperAgent(lambda _: _spec(), planner=Planner())
+    service.freeze_mission(MissionInput("mission-1", "Survey", "mission-control"))
+
+    accepted = service.heartbeat(manifest, belief_snapshot=belief)
+
+    assert accepted.belief_snapshot == belief
+    mismatched = MissionSnapshot(
+        "mission-1",
+        2,
+        "time-2",
+        source_revisions={"bayesian_belief_snapshot": belief.belief_revision},
+        source_references={"bayesian_belief_snapshot": reference},
+        source_hashes={"bayesian_belief_snapshot": "b" * 64},
+        source_health={"bayesian_belief_snapshot": "healthy"},
+        source_freshness={"bayesian_belief_snapshot": True},
+    )
+    with pytest.raises(ValueError, match="hash does not match"):
+        service.heartbeat(mismatched, belief_snapshot=belief)

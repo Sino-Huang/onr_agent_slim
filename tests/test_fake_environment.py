@@ -9,6 +9,7 @@ from onr.adapters.file_transport import FileTransport
 from onr.application.context_coordination import ContextCoordination
 from onr.application.maneuver_control import ManeuverControl
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.bayesian_belief import RiskObservation
 from onr.contracts.fsm import FSMStatus, ManeuverFeedback, TransitionCandidate
 from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecision
 from onr.contracts.planning import ManeuverIntent, ManeuverParameter
@@ -55,6 +56,7 @@ def _transport(tmp_path: Path, mission_id: str = "mission-1") -> FileTransport:
             Subscription("scene-reader", mission_id, "operational-scene-graph"),
             Subscription("context-coordination", mission_id, "normalized-plans"),
             Subscription("feedback-reader", mission_id, "maneuver-feedback"),
+            Subscription("belief-reader", mission_id, "belief-observations"),
         ),
     )
 
@@ -74,6 +76,14 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
     assert result.source_fact.event_kind == "source-fact"
     assert result.source_fact.payload["source"] == "operational_scene_graph"
     assert result.source_fact.payload["reference"] == result.scene_graph.event_id
+    assert result.risk_observation.event_kind == "risk.observed"
+    observation = RiskObservation.from_dict(result.risk_observation.payload)
+    assert observation.risk_type == "collision"
+    assert {item.entity_id for item in observation.associations} == {
+        "ship-1",
+        "ship-2",
+        "ship-3",
+    }
     assert result.environment_file == tmp_path.parent / "environment" / mission_id / "scene.json"
     environment = cast(
         dict[str, Any], json.loads(result.environment_file.read_text(encoding="utf-8"))
@@ -174,6 +184,8 @@ def test_maneuver_feedback_replay_is_idempotent_across_crash_window(tmp_path: Pa
     assert second.scene_graph.sequence == first.scene_graph.sequence
     assert second.source_fact.event_id == first.source_fact.event_id
     assert second.source_fact.sequence == first.source_fact.sequence
+    assert second.risk_observation.event_id == first.risk_observation.event_id
+    assert second.risk_observation.sequence == first.risk_observation.sequence
     assert second.feedback.event_id == first.feedback.event_id
     assert second.feedback.sequence == first.feedback.sequence
     assert second.environment_file == first.environment_file
