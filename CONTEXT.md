@@ -9,8 +9,12 @@ A bounded operational objective with its participants, constraints, and desired 
 _Avoid_: Task, job
 
 **Mission Intent**:
-The operator-authored natural-language input supplied in a Mission Activation. It is authority input from which the Hyper Agent derives a Mission Specification; it is not part of the shared public observation feed.
+The raw operator-authored natural-language input supplied in a Mission Activation. Together with its `MissionInput` envelope, it remains the source authority from which Hyper derives planning representations; it is not part of the shared public observation feed.
 _Avoid_: Public trace record, Mission Specification
+
+**Planning Intent**:
+An opt-in, structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It preserves source provenance and may hold flexible planner-selection facts in `details`, but never planner assets or verification evidence; it does not amend the Mission Intent or MissionInput.
+_Avoid_: Source authority, planner-native asset, verification record
 
 **Mission Run**:
 One concrete execution attempt for a Mission. A Mission can have more than one Mission Run.
@@ -117,7 +121,7 @@ The identified authority from which a Mission Specification originates and whose
 _Avoid_: Planner, executor
 
 **Mission Specification**:
-An immutable structured description of a Mission, its objective, constraints, and chosen planning profile.
+The existing immutable structured runtime description of a Mission, its objective, constraints, and chosen planning profile. It remains supported as the legacy runtime mode; opting into PlanningIntent does not change the raw MissionInput or operator Mission Intent as source authority.
 _Avoid_: Prompt, untyped mission
 
 **Planning Profile**:
@@ -125,8 +129,12 @@ The declared planning semantics for one plan revision: temporal scheduling or sy
 _Avoid_: Implicit hybrid, planner setting
 
 **Planner Choice**:
-The semantic selection of the eligible planner for a Mission Specification.
+The semantic selection of the eligible planner derived from an opt-in PlanningIntent or the legacy MissionSpec mode.
 _Avoid_: Executable path, solver command
+
+**Planning Record**:
+A future formal, durable planning output that binds the MissionInput hash/reference; accepted PlanningIntent hash for an opt-in flow; Planner Choice; concise public rationale; translator identity/version; generated planner asset references/hashes; solver evidence references/hashes; code-owned verification checks/outcome; and NormalizedPlan reference/hash. Planner assets and solver evidence are PlanningRecord outputs, never PlanningIntent `details`. This issue introduces no Python contract for the record.
+_Avoid_: Mission authority, planner-selection input
 
 **Operational Scene Graph**:
 The agent-visible representation of operational entities, attributes, predicates, and relationships used for planning.
@@ -141,7 +149,7 @@ A planner-independent revision of abstract maneuver intent and execution constra
 _Avoid_: Planner output, scene snapshot
 
 **Planner Translator**:
-The deterministic transformation from a Mission Specification, Planner Choice, and planning inputs into planner-native assets.
+The deterministic transformation from the selected planning representation, Planner Choice, and planning inputs into planner-native assets.
 _Avoid_: LLM code generation, planner runner
 
 **Invocation Overlay**:

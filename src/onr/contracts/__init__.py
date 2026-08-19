@@ -1,6 +1,7 @@
 """Immutable contracts for Missions, Mission Snapshots, and Transport Events."""
 
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.planning_intent import PlanningIntent
 from onr.contracts.fsm import (
     FSMExecutionRecord,
     FSMEvent,
@@ -33,6 +34,7 @@ from onr.contracts.role_context import (
 
 __all__ = [
     "MissionSnapshot",
+    "PlanningIntent",
     "FSMExecutionRecord",
     "FSMEvent",
     "FSMStatus",

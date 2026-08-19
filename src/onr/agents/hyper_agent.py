@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn, TypeVar, cast
 
 from langchain.agents.middleware import TodoListMiddleware
 
@@ -18,6 +19,7 @@ from onr.agents.structured_output import (
 )
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import MissionSpec, SymbolicMissionSpec
+from onr.contracts.planning_intent import PlanningIntent
 
 
 MISSION_SPEC_SCHEMA: dict[str, Any] = {
@@ -164,6 +166,58 @@ MISSION_SPEC_SCHEMA: dict[str, Any] = {
 }
 
 
+PLANNING_INTENT_SCHEMA: dict[str, Any] = {
+    "title": "PlanningIntentCandidate",
+    "type": "object",
+    "properties": {
+        "mission_id": {"type": "string"},
+        "source_authority": {"type": "string"},
+        "objective": {"type": "string"},
+        "planner_choice": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "planning_profile": {"enum": ["temporal"]},
+                        "planner_id": {"enum": ["minizinc"]},
+                    },
+                    "required": ["planning_profile", "planner_id"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "planning_profile": {"enum": ["symbolic"]},
+                        "planner_id": {"enum": ["fast-downward"]},
+                    },
+                    "required": ["planning_profile", "planner_id"],
+                    "additionalProperties": False,
+                },
+            ],
+        },
+        "rationale": {"type": "string"},
+        "details": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": (
+                "Flexible mission context only; exclude planner assets, generated assets, "
+                "solver input/output, verification evidence, normalized plans, and "
+                "MissionSpec envelopes."
+            ),
+        },
+    },
+    "required": [
+        "mission_id",
+        "source_authority",
+        "objective",
+        "planner_choice",
+        "rationale",
+        "details",
+    ],
+    "additionalProperties": False,
+}
+
+
 def create_hyper_agent(
     *,
     model: Any,
@@ -186,6 +240,32 @@ def create_hyper_agent(
         model=model,
         system_prompt=system_prompt,
         response_format=MISSION_SPEC_SCHEMA,
+        mission_id=mission_id,
+        role="hyper-agent",
+        memory_store=memory_store,
+        skill_catalog=skill_catalog,
+        skill_version=skill_version,
+        backend_root=backend_root,
+        middleware=[TodoListMiddleware()],
+    )
+
+
+def create_planning_intent_agent(
+    *,
+    model: Any,
+    system_prompt: str | None = None,
+    mission_id: str | None = None,
+    memory_store: object | None = None,
+    skill_catalog: object | None = None,
+    skill_version: str | None = None,
+    backend_root: Path | None = None,
+) -> object:
+    """Create a Deep Agent configured for PlanningIntent interpretation."""
+
+    return _create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        response_format=PLANNING_INTENT_SCHEMA,
         mission_id=mission_id,
         role="hyper-agent",
         memory_store=memory_store,
@@ -335,6 +415,33 @@ def _skill_agent_path(path: Path, backend_root: Path | None) -> str:
         raise ValueError("selected Role Skill is outside the agent backend root") from exc
 
 
+T = TypeVar("T")
+
+
+def _interpret_with_structured_output_recovery(
+    agent: object,
+    mission_input: MissionInput,
+    max_retries: int,
+    parse: Callable[[object], T],
+) -> T:
+    invoke = getattr(agent, "invoke", None)
+    if not callable(invoke):
+        raise TypeError("Deep Hyper Agent must expose invoke")
+    callback = getattr(agent, "_onr_debug_callback", None)
+
+    def invoke_with_callback(state: Mapping[str, object]) -> object:
+        if callback is None:
+            return invoke(state)
+        return invoke(state, config={"callbacks": [callback]})
+
+    return invoke_with_structured_output_recovery(
+        invoke_with_callback,
+        mission_input.to_dict(),
+        max_retries,
+        parse,
+    )
+
+
 class DeepAgentsMissionInterpreter:
     """Adapt a Deep Agent response to a validated Mission Specification."""
 
@@ -345,21 +452,26 @@ class DeepAgentsMissionInterpreter:
     def interpret(self, mission_input: MissionInput) -> MissionSpec | SymbolicMissionSpec:
         if not isinstance(mission_input, MissionInput):
             raise TypeError("mission interpreter requires a MissionInput")
-        invoke = getattr(self.agent, "invoke", None)
-        if not callable(invoke):
-            raise TypeError("Deep Hyper Agent must expose invoke")
-        callback = getattr(self.agent, "_onr_debug_callback", None)
+        return _interpret_with_structured_output_recovery(
+            self.agent, mission_input, self.max_retries, _parse_mission_response
+        )
 
-        def invoke_with_callback(state: Mapping[str, object]) -> object:
-            if callback is None:
-                return invoke(state)
-            return invoke(state, config={"callbacks": [callback]})
 
-        return invoke_with_structured_output_recovery(
-            invoke_with_callback,
-            mission_input.to_dict(),
+class DeepAgentsPlanningIntentInterpreter:
+    """Adapt a Deep Agent response to a trusted PlanningIntent."""
+
+    def __init__(self, agent: object, max_retries: int = 4) -> None:
+        self.agent = agent
+        self.max_retries = max_retries
+
+    def interpret(self, mission_input: MissionInput) -> PlanningIntent:
+        if not isinstance(mission_input, MissionInput):
+            raise TypeError("planning intent interpreter requires a MissionInput")
+        return _interpret_with_structured_output_recovery(
+            self.agent,
+            mission_input,
             self.max_retries,
-            _parse_mission_response,
+            lambda response: _parse_planning_intent_response(response, mission_input),
         )
 
 
@@ -406,6 +518,23 @@ def _integer(value: object, path: str) -> None:
 
 
 def _parse_mission_response(response: object) -> MissionSpec | SymbolicMissionSpec:
+    candidate = _structured_response(response)
+    candidate_path = "$.structured_response"
+    if "mission_spec" in candidate:
+        candidate = _fields(candidate, {"mission_spec"}, candidate_path)
+        candidate_path += ".mission_spec"
+        candidate = _object(candidate["mission_spec"], candidate_path)
+
+    profile = _validate_common_structure(candidate, candidate_path)
+    if profile == "temporal":
+        _validate_temporal_structure(candidate, candidate_path)
+        return MissionSpec.from_dict(candidate)
+
+    _validate_symbolic_structure(candidate, candidate_path)
+    return SymbolicMissionSpec.from_dict(candidate)
+
+
+def _structured_response(response: object) -> Mapping[str, Any]:
     envelope = _object(response, "$")
     if "structured_response" not in envelope:
         _fail(
@@ -429,20 +558,73 @@ def _parse_mission_response(response: object) -> MissionSpec | SymbolicMissionSp
             )
         )
 
-    candidate = _object(structured, "$.structured_response")
-    candidate_path = "$.structured_response"
-    if "mission_spec" in candidate:
-        candidate = _fields(candidate, {"mission_spec"}, candidate_path)
-        candidate_path += ".mission_spec"
-        candidate = _object(candidate["mission_spec"], candidate_path)
+    return _object(structured, "$.structured_response")
 
-    profile = _validate_common_structure(candidate, candidate_path)
-    if profile == "temporal":
-        _validate_temporal_structure(candidate, candidate_path)
-        return MissionSpec.from_dict(candidate)
 
-    _validate_symbolic_structure(candidate, candidate_path)
-    return SymbolicMissionSpec.from_dict(candidate)
+def _parse_planning_intent_response(
+    response: object, mission_input: MissionInput
+) -> PlanningIntent:
+    path = "$.structured_response"
+    candidate = _fields(
+        _structured_response(response),
+        {
+            "mission_id",
+            "source_authority",
+            "objective",
+            "planner_choice",
+            "rationale",
+            "details",
+        },
+        path,
+    )
+    for name in ("mission_id", "source_authority", "objective", "rationale"):
+        _text(candidate[name], f"{path}.{name}")
+    _validate_planning_intent_choice(candidate["planner_choice"], f"{path}.planner_choice")
+    _object(candidate["details"], f"{path}.details")
+
+    if candidate["mission_id"] != mission_input.mission_id:
+        raise ValueError("planning intent mission ID does not match mission input")
+    if candidate["source_authority"] != mission_input.source_authority:
+        raise ValueError("planning intent source authority does not match mission input")
+
+    return PlanningIntent.from_dict(
+        {
+            **candidate,
+            "schema_version": 1,
+            "mission_input_sha256": hashlib.sha256(
+                mission_input.to_canonical_json().encode("utf-8")
+            ).hexdigest(),
+        }
+    )
+
+
+def _validate_planning_intent_choice(value: object, path: str) -> None:
+    choice = _fields(value, {"planner_id", "planning_profile"}, path)
+    profile = choice["planning_profile"]
+    if not isinstance(profile, str):
+        _fail(StructuralIssue("invalid_type", f"{path}.planning_profile", "string"))
+    if profile not in ("temporal", "symbolic"):
+        _fail(
+            StructuralIssue(
+                "invalid_value",
+                f"{path}.planning_profile",
+                '"symbolic" or "temporal"',
+            )
+        )
+    planner_id = choice["planner_id"]
+    if planner_id is not None and not isinstance(planner_id, str):
+        _fail(StructuralIssue("invalid_type", f"{path}.planner_id", "string or null"))
+    if (profile, planner_id) not in (
+        ("temporal", "minizinc"),
+        ("symbolic", "fast-downward"),
+    ):
+        _fail(
+            StructuralIssue(
+                "invalid_value",
+                path,
+                "a configured planner",
+            )
+        )
 
 
 def _validate_common_structure(candidate: Mapping[str, Any], path: str) -> str:
@@ -597,4 +779,11 @@ def _validate_intent(value: object, maneuver_path: str) -> None:
             )
 
 
-__all__ = ["MISSION_SPEC_SCHEMA", "create_hyper_agent", "DeepAgentsMissionInterpreter"]
+__all__ = [
+    "MISSION_SPEC_SCHEMA",
+    "PLANNING_INTENT_SCHEMA",
+    "create_hyper_agent",
+    "create_planning_intent_agent",
+    "DeepAgentsMissionInterpreter",
+    "DeepAgentsPlanningIntentInterpreter",
+]

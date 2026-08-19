@@ -66,7 +66,14 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "physical-maneuver-selection",
         "hyper-coordination",
     ]
-    assert [skill.version for skill in (*hyper, *maneuver)] == ["1.0.0"] * 6
+    assert [skill.version for skill in (*hyper, *maneuver)] == [
+        "1.1.0",
+        "1.2.0",
+        "1.0.0",
+        "1.0.0",
+        "1.0.0",
+        "1.0.0",
+    ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [
         "hyper/mission-parsing",
         "hyper/planner-selection",
