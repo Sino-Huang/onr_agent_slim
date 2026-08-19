@@ -27,6 +27,7 @@ from onr.contracts.planning import (
     ManeuverIntent,
     MissionSpec,
     NormalizedPlan,
+    PlanProvenance,
     PlannerChoice,
     PlanningOutcome,
     ScheduledManeuver,
@@ -34,6 +35,7 @@ from onr.contracts.planning import (
     SymbolicMissionSpec,
     SymbolicPlanStep,
     TemporalManeuver,
+    VerifiableReference,
 )
 from onr.ports.transport import Subscription
 from onr.runtime.composition import RuntimeComposition
@@ -399,3 +401,41 @@ def test_file_json_store_reconstructs_without_python_runtime_state(tmp_path) -> 
     asyncio.run(first.transition("advance:survey"))
     restarted = FSMRunner(transport, store=JsonFSMStateStore(tmp_path / "fsm"), clock=lambda: 0)
     assert asyncio.run(restarted.status()).active_state == "state-1"
+
+
+def _provenance_plan() -> NormalizedPlan:
+    choice = PlannerChoice("temporal", "minizinc")
+    return NormalizedPlan(
+        mission_spec=None,
+        plan_revision=1,
+        mission_snapshot_id="mission-fsm:snapshot:1",
+        planner_choice=choice,
+        outcome=PlanningOutcome.SOLVED,
+        maneuvers=(
+            ScheduledManeuver("survey", ManeuverIntent("survey"), (), 0, 2),
+        ),
+        provenance=PlanProvenance(
+            mission_id="mission-fsm",
+            source_authority="authority",
+            mission_intent=VerifiableReference("mission-input:1", "1" * 64),
+            planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
+            operational_scene_graph=VerifiableReference("scene:1", "3" * 64),
+            generated_assets={
+                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
+            },
+            solver_evidence={
+                "stdout": VerifiableReference("solver.stdout", "5" * 64),
+            },
+        ),
+    )
+
+
+def test_statechart_accepts_provenance_only_normalized_plan() -> None:
+    plan = _provenance_plan()
+
+    chart = Statechart.from_normalized_plan(plan)
+
+    assert chart.mission_id == plan.mission_id
+    assert chart.plan_revision == plan.plan_revision
+    assert chart.mission_snapshot_id == plan.mission_snapshot_id
+    assert chart.states == ("state-0", "state-1")

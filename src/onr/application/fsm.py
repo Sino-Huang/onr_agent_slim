@@ -102,6 +102,8 @@ def _intent(value: object) -> ManeuverIntent:
 def _normalized_plan(value: object) -> NormalizedPlan:
     """Rehydrate only the existing validated planning contract from transport JSON."""
 
+    return NormalizedPlan.from_dict(_object(value, "normalized plan payload"))
+
     plan = _object(value, "normalized plan payload")
     expected = {
         "mission_spec",
@@ -217,7 +219,7 @@ def _plan_from_message(message: object) -> NormalizedPlan:
             raise ValueError("normalized-plan transport document does not match the plan")
         if digest != hashlib.sha256(document.encode("utf-8")).hexdigest():
             raise ValueError("normalized-plan transport hash does not match the document")
-        if payload["mission_id"] != message.mission_id or plan.mission_spec.mission_id != message.mission_id:
+        if payload["mission_id"] != message.mission_id or plan.mission_id != message.mission_id:
             raise ValueError("normalized-plan transport mission ID does not match")
         if _int_field(payload, "plan_revision", "plan revision") != plan.plan_revision:
             raise ValueError("normalized-plan transport plan revision does not match")
@@ -225,7 +227,7 @@ def _plan_from_message(message: object) -> NormalizedPlan:
             raise ValueError("normalized-plan transport snapshot ID does not match")
         if PlannerChoice.from_dict(_object(payload["planner_choice"], "transport planner choice")) != plan.planner_choice:
             raise ValueError("normalized-plan transport planner choice does not match")
-        if _text_field(payload, "source_authority", "source authority") != plan.mission_spec.source_authority:
+        if _text_field(payload, "source_authority", "source authority") != plan.source_authority:
             raise ValueError("normalized-plan transport source authority does not match")
         if _text_field(payload, "outcome", "planning outcome") != str(plan.outcome):
             raise ValueError("normalized-plan transport outcome does not match")
@@ -337,8 +339,8 @@ class FSMRunner:
         async with self._lock:
             plan = _plan_from_message(message)
             if self.subscription is None:
-                self.subscription = self.subscription_for(plan.mission_spec.mission_id)
-            elif self.subscription.mission_id != plan.mission_spec.mission_id:
+                self.subscription = self.subscription_for(plan.mission_id)
+            elif self.subscription.mission_id != plan.mission_id:
                 raise ValueError("FSM subscription mission ID does not match plan")
             chart = Statechart.from_normalized_plan(plan)
             if self._chart is not None:

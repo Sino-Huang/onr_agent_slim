@@ -502,7 +502,7 @@ class Statechart:
                 for index, maneuver in enumerate(plan.maneuvers)
             }
         return cls(
-            mission_id=plan.mission_spec.mission_id,
+            mission_id=plan.mission_id,
             plan_revision=plan.plan_revision,
             mission_snapshot_id=plan.mission_snapshot_id,
             planning_profile=str(plan.planner_choice.planning_profile),

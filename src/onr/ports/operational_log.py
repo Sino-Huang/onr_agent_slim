@@ -15,7 +15,8 @@ JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 _SAFE_DETAIL_KEYS = {
     "adapter_submission", "attempt_id", "command_id", "correlation_id", "decision_id",
-    "environment", "error_type", "event_id", "event_kind", "lifecycle", "maneuver_id",
+    "environment", "error_type", "event_id", "event_kind", "generated_assets", "lifecycle",
+    "maneuver_id", "planning_decision_reference", "scene_graph_reference", "solver_evidence",
     "mission_input_sha256", "mission_snapshot_id", "operation", "plan_revision",
     "planner", "planner_id", "planning_intent_sha256", "planning_profile", "rationale",
     "request_id", "revision", "sequence", "service", "snapshot_id", "source", "state",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -472,3 +473,55 @@ def test_identical_source_record_in_distinct_envelopes_is_duplicate_not_conflict
     assert items[1].event_id == "duplicate:same-event:1"
     assert not any(item.replay_disposition == "conflict" for item in items)
     assert not any(item.replay_disposition == "gap" for item in items)
+
+
+def test_normalized_plan_trace_explains_provenance_without_mission_spec() -> None:
+    provenance = {
+        "schema_version": 1,
+        "mission_id": "mission-test",
+        "source_authority": "mission-control",
+        "mission_intent": {"reference": "mission-input:1", "sha256": "1" * 64},
+        "planning_decision": {
+            "reference": "planner-choice:1",
+            "sha256": "2" * 64,
+        },
+        "operational_scene_graph": {
+            "reference": "scene:1",
+            "sha256": "3" * 64,
+        },
+        "generated_assets": {
+            "model.mzn": {"reference": "model.mzn", "sha256": "4" * 64},
+        },
+        "solver_evidence": {
+            "stdout": {"reference": "solver.stdout", "sha256": "5" * 64},
+        },
+    }
+    record = _event(
+        "normalized-plan:mission-test:1",
+        1,
+        event_kind="normalized-plan",
+        payload={
+            "outcome": "solved",
+            "plan_revision": 1,
+            "normalized_plan": {
+                "plan_revision": 1,
+                "mission_snapshot_id": "mission-test:snapshot:1",
+                "planner_choice": {
+                    "planning_profile": "temporal",
+                    "planner_id": "minizinc",
+                },
+                "outcome": "solved",
+                "maneuvers": [],
+                "provenance": provenance,
+            },
+        },
+    )
+
+    (item,) = TraceProjection().project(record)
+
+    normalized_plan = item.payload["normalized_plan"]
+    assert isinstance(normalized_plan, Mapping)
+    assert "mission_spec" not in normalized_plan
+    assert normalized_plan["provenance"] == provenance
+    assert item.component == "planner"
+    assert item.authority == "planner"

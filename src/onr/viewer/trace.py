@@ -122,8 +122,9 @@ _LOG_COMPONENTS = {
 }
 _LOG_DETAIL_FIELDS = {
     "adapter_submission", "command_id", "correlation_id", "environment", "error_type",
-    "event_id", "event_kind", "lifecycle", "maneuver_id", "operation", "plan_revision",
-    "planner", "request_id", "revision", "sequence", "service", "snapshot_id", "source",
+    "event_id", "event_kind", "generated_assets", "lifecycle", "maneuver_id", "operation",
+    "plan_revision", "planner", "planning_decision_reference", "request_id", "revision",
+    "scene_graph_reference", "sequence", "service", "snapshot_id", "solver_evidence", "source",
     "state", "status", "target_service", "topic", "transition", "transport_event_id",
     "transport_sequence", "timer_due",
 }

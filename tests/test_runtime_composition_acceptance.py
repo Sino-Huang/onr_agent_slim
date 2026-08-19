@@ -30,10 +30,12 @@ from onr.contracts.planning import (
     ManeuverParameter,
     MissionSpec,
     NormalizedPlan,
+    PlanProvenance,
     PlannerChoice,
     PlanningOutcome,
-    TemporalManeuver,
     ScheduledManeuver,
+    TemporalManeuver,
+    VerifiableReference,
 )
 from onr.contracts.transport import TransportEvent
 from onr.runtime import RuntimeComposition
@@ -600,3 +602,88 @@ def test_planning_mission_reports_unreferenced_scene_without_generation(
     assert result.planner_choice is None
     assert result.attempt is None
     assert calls == []
+
+
+def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> None:
+    planner_path = tmp_path / "planner"
+    planner_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    planner_path.chmod(0o755)
+    runtime = RuntimeComposition.create(
+        repo_root=tmp_path,
+        config_path=_runtime_config(tmp_path, planner_path),
+    )
+    mission_input = MissionInput(
+        mission_id="mission-provenance",
+        mission_text="Survey area 7.",
+        source_authority="mission-control",
+    )
+    intent = ManeuverIntent(
+        PhysicalAction.NAVIGATE,
+        (ManeuverParameter("waypoint", "area-7"),),
+    )
+    plan = NormalizedPlan(
+        mission_spec=None,
+        plan_revision=1,
+        mission_snapshot_id="mission-provenance:snapshot:1",
+        planner_choice=PlannerChoice("temporal", "minizinc"),
+        outcome=PlanningOutcome.SOLVED,
+        maneuvers=(ScheduledManeuver("survey", intent, (), 0, 1),),
+        provenance=PlanProvenance(
+            mission_id=mission_input.mission_id,
+            source_authority=mission_input.source_authority,
+            mission_intent=VerifiableReference("mission-input:1", "1" * 64),
+            planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
+            operational_scene_graph=VerifiableReference("scene:1", "3" * 64),
+            generated_assets={
+                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
+            },
+            solver_evidence={
+                "stdout": VerifiableReference("solver.stdout", "5" * 64),
+            },
+        ),
+    )
+    context = runtime.create_context_coordination(
+        mission_id=mission_input.mission_id,
+        clock=lambda: "t-runtime",
+    )
+    fsm = runtime.create_fsm_runner(
+        mission_id=mission_input.mission_id,
+        clock=lambda: 0,
+    )
+    adapter = RecordingAdapter()
+    control = runtime.create_maneuver_control(
+        adapter,
+        FixedDecisionProvider(intent),
+    )
+    environment = FakeEnvironment(
+        cast(FileTransport, runtime.transport),
+        mission_input.mission_id,
+    )
+
+    result = runtime.run_provenance_mission(
+        mission_input,
+        plan=plan,
+        context_coordination=context,
+        fsm_runner=fsm,
+        maneuver_control=control,
+        environment_step=environment.run_once,
+        model=FixedSummaryModel(),
+    )
+
+    assert result.authority is None
+    assert result.plan is plan
+    assert result.command.maneuver_id == "survey"
+    assert result.feedback.maneuver_id == "survey"
+    assert result.status_before_feedback.active_state == "state-0"
+    assert result.final_status.active_state == "state-1"
+    planning_record = next(
+        record
+        for record in FileOperationalLog(
+            tmp_path / "storage" / "operational-log"
+        ).replay(mission_input.mission_id)
+        if record.event_kind == "planning"
+    )
+    assert planning_record.details["planning_decision_reference"] == "planner-choice:1"
+    assert planning_record.details["scene_graph_reference"] == "scene:1"
+    assert planning_record.details["generated_assets"] == "model.mzn"
+    assert planning_record.details["solver_evidence"] == "stdout"

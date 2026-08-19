@@ -431,7 +431,7 @@ class ManeuverControl:
             raise ValueError("physical maneuver is not enabled by the current FSM status")
         if plan is None:
             return
-        if plan.mission_spec.mission_id != snapshot.mission_id or plan.plan_revision != status.plan_revision:
+        if plan.mission_id != snapshot.mission_id or plan.plan_revision != status.plan_revision:
             raise ValueError("normalized plan does not match the current maneuver context")
         planned = next(
             (maneuver for maneuver in plan.maneuvers if maneuver.maneuver_id == maneuver_id),

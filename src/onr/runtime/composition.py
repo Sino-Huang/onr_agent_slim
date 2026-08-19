@@ -60,7 +60,12 @@ from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
     PlannerGenerationAttempt,
 )
-from onr.contracts.transport import Command, CommandOutcome, TransportEvent
+from onr.contracts.transport import (
+    Command,
+    CommandOutcome,
+    TransportEvent,
+    create_normalized_plan_transport_event,
+)
 from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.operational_log import OperationalLog
 from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
@@ -85,7 +90,7 @@ from onr.agents.maneuver_control import (
 class RuntimeRunResult:
     """Evidence returned by one synchronous, file-backed runtime run."""
 
-    authority: FrozenMissionSpec
+    authority: FrozenMissionSpec | None
     plan: NormalizedPlan
     context_snapshot: MissionSnapshot
     status_before_feedback: FSMStatus
@@ -247,6 +252,35 @@ class RuntimeComposition:
                 maneuver_control=maneuver_control,
                 environment_step=environment_step,
                 bayesian_belief_service=bayesian_belief_service,
+            )
+
+    def run_provenance_mission(
+        self,
+        mission_input: MissionInput,
+        *,
+        plan: NormalizedPlan,
+        context_coordination: ContextCoordination,
+        fsm_runner: FSMRunner,
+        maneuver_control: ManeuverControl,
+        environment_step: Callable[[], object],
+        summarizer: MissionLogSummarizer | None = None,
+        model: Any | None = None,
+    ) -> RuntimeRunResult:
+        """Execute one verified provenance-only plan through physical feedback."""
+
+        with self.mission_session(
+            mission_input.mission_id,
+            summarizer=summarizer,
+            model=model,
+        ):
+            return self._run_mission(
+                mission_input,
+                hyper_agent=None,
+                context_coordination=context_coordination,
+                fsm_runner=fsm_runner,
+                maneuver_control=maneuver_control,
+                environment_step=environment_step,
+                initial_plan=plan,
             )
 
     def _logger(self) -> OperationalLog:
@@ -689,12 +723,13 @@ class RuntimeComposition:
         self,
         mission_input: MissionInput,
         *,
-        hyper_agent: HyperAgent,
+        hyper_agent: HyperAgent | None,
         context_coordination: ContextCoordination,
         fsm_runner: FSMRunner,
         maneuver_control: ManeuverControl,
         environment_step: Callable[[], object],
         bayesian_belief_service: BayesianBeliefService | None = None,
+        initial_plan: NormalizedPlan | None = None,
     ) -> RuntimeRunResult:
         """Run one deterministic MissionInput-to-authoritative-feedback seam."""
 
@@ -734,7 +769,7 @@ class RuntimeComposition:
             Subscription(
                 self.config.services.hyper_agent,
                 mission_id,
-                hyper_agent.replan_topic,
+                hyper_agent.replan_topic if hyper_agent is not None else "replan-requests",
             ),
             context_coordination.subscription,
             fsm_subscription,
@@ -822,50 +857,101 @@ class RuntimeComposition:
                 else None
             )
 
-            authority = hyper_agent.freeze_mission(mission_input)
-            if not isinstance(authority, FrozenMissionSpec) or authority.mission_id != mission_id:
-                raise RuntimeError("Hyper Agent did not return frozen mission authority")
-            if authority.content_hash != authority.sha256:
-                raise RuntimeError("frozen mission authority hash is invalid")
-            logger.emit(
-                mission_id,
-                "runtime",
-                "agent",
-                "completed",
-                details={"operation": "freeze_mission", "revision": authority.revision},
-            )
-
-            seed = MissionSnapshot(
-                mission_id=mission_id,
-                version=1,
-                created_at="runtime-seed",
-            )
-            heartbeat = hyper_agent.heartbeat(
-                seed,
-                mission_id=mission_id,
-                snapshot_id=f"{mission_id}:snapshot:0",
-            )
-            logger.emit(
-                mission_id,
-                "runtime",
-                "heartbeat",
-                "completed",
-                details={"operation": "hyper_heartbeat", "plan_revision": heartbeat.plan_revision},
-            )
-            plan = heartbeat.plan
+            authority: FrozenMissionSpec | None = None
+            planning_details: dict[str, object] = {"operation": "initial_plan"}
+            if initial_plan is None:
+                if hyper_agent is None:
+                    raise RuntimeError("legacy Mission Run requires a Hyper Agent")
+                authority = hyper_agent.freeze_mission(mission_input)
+                if authority.mission_id != mission_id:
+                    raise RuntimeError("Hyper Agent did not return frozen mission authority")
+                if authority.content_hash != authority.sha256:
+                    raise RuntimeError("frozen mission authority hash is invalid")
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "agent",
+                    "completed",
+                    details={
+                        "operation": "freeze_mission",
+                        "revision": authority.revision,
+                    },
+                )
+                seed = MissionSnapshot(
+                    mission_id=mission_id,
+                    version=1,
+                    created_at="runtime-seed",
+                )
+                heartbeat = hyper_agent.heartbeat(
+                    seed,
+                    mission_id=mission_id,
+                    snapshot_id=f"{mission_id}:snapshot:0",
+                )
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "heartbeat",
+                    "completed",
+                    details={
+                        "operation": "hyper_heartbeat",
+                        "plan_revision": heartbeat.plan_revision,
+                    },
+                )
+                plan = heartbeat.plan
+                if (
+                    not isinstance(plan, NormalizedPlan)
+                    or plan.mission_spec != authority.mission_spec
+                ):
+                    raise RuntimeError(
+                        "initial Hyper heartbeat plan does not match frozen authority"
+                    )
+            else:
+                plan = initial_plan
+                provenance = plan.provenance
+                if (
+                    provenance is None
+                    or plan.mission_id != mission_id
+                    or plan.source_authority != mission_input.source_authority
+                ):
+                    raise RuntimeError(
+                        "provenance plan does not match Mission Input authority"
+                    )
+                topic = context_coordination.input_topic
+                event = create_normalized_plan_transport_event(
+                    plan,
+                    event_id=f"normalized-plan:{mission_id}:{plan.plan_revision}",
+                    sequence=self.transport.next_event_sequence(topic, mission_id),
+                )
+                self.transport.publish_event(topic, event)
+                planning_details.update(
+                    {
+                        "planning_decision_reference": (
+                            provenance.planning_decision.reference
+                        ),
+                        "scene_graph_reference": (
+                            provenance.operational_scene_graph.reference
+                        ),
+                        "generated_assets": ",".join(
+                            sorted(provenance.generated_assets)
+                        ),
+                        "solver_evidence": ",".join(
+                            sorted(provenance.solver_evidence)
+                        ),
+                    }
+                )
             if (
                 not isinstance(plan, NormalizedPlan)
                 or plan.outcome is not PlanningOutcome.SOLVED
                 or len(plan.maneuvers) != 1
-                or plan.mission_spec != authority.mission_spec
             ):
-                raise RuntimeError("initial Hyper heartbeat did not produce one solved maneuver")
+                raise RuntimeError("Mission Run requires one solved maneuver")
+            planning_details["plan_revision"] = plan.plan_revision
             logger.emit(
                 mission_id,
                 "runtime",
                 "planning",
                 "solved",
-                details={"operation": "initial_plan", "plan_revision": plan.plan_revision},
+                details=planning_details,
             )
 
             plan_snapshot = context_coordination.run_once(context_consumer)
@@ -1023,6 +1109,8 @@ class RuntimeComposition:
             belief_context_snapshot: MissionSnapshot | None = None
             belief_heartbeat: HyperHeartbeatResult | None = None
             if bayesian_belief_service is not None:
+                if hyper_agent is None:
+                    raise RuntimeError("Bayesian belief replan requires a Hyper Agent")
                 if belief_consumer is None:
                     raise RuntimeError("Bayesian belief consumer was not composed")
                 belief_snapshot = bayesian_belief_service.run_once(belief_consumer)
