@@ -20,6 +20,7 @@ from onr.contracts.transport import (
     normalized_plan_transport_event_to_wire,
 )
 from onr.ports.transport import Subscription
+from onr.ports.operational_log import OperationalLog
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,11 +45,13 @@ class ContextCoordination:
         max_retries: int = 3,
         clock: Callable[[], str] | None = None,
         subscription: Subscription | None = None,
+        operational_log: OperationalLog | None = None,
     ) -> None:
         self._transport = transport
         self.input_topic = input_topic
         self.snapshot_topic = snapshot_topic
         self._clock = clock or _utc_now
+        self.operational_log = operational_log
         self.subscription = subscription or Subscription(
             service_id=service_id,
             mission_id=mission_id,
@@ -121,6 +124,14 @@ class ContextCoordination:
             ),
         )
         self._last_snapshot = snapshot
+        if self.operational_log is not None:
+            self.operational_log.emit(
+                snapshot.mission_id,
+                "context-coordination",
+                "heartbeat",
+                "completed",
+                details={"operation": "publish_snapshot", "revision": snapshot.version},
+            )
         return snapshot
 
     handle_event = handle
@@ -136,8 +147,16 @@ class ContextCoordination:
             return None
         try:
             snapshot = self.handle(delivery.message)
-        except _MalformedContextEvent:
+        except _MalformedContextEvent as exc:
             delivery.nack()
+            if self.operational_log is not None:
+                self.operational_log.emit(
+                    self.subscription.mission_id,
+                    "context-coordination",
+                    "error",
+                    "failed",
+                    details={"operation": "consume_event", "error_type": type(exc).__name__},
+                )
             return None
         delivery.ack()
         return snapshot

@@ -7,6 +7,7 @@ from onr.adapters.vllm_reachability import (
     probe_vllm,
     probe_vllm_reachability,
 )
+from onr.adapters.operational_log import FileOperationalLog, InProcessOperationalLog
 
 __all__ = [
     "FileMissionMemoryStore",
@@ -14,4 +15,6 @@ __all__ = [
     "VLLMReachabilityError",
     "probe_vllm",
     "probe_vllm_reachability",
+    "FileOperationalLog",
+    "InProcessOperationalLog",
 ]

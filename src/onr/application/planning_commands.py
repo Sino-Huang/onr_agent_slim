@@ -13,6 +13,7 @@ from onr.contracts.transport import (
     normalized_plan_transport_event_to_wire,
     create_normalized_plan_transport_event,
 )
+from onr.ports.operational_log import OperationalLog
 
 
 class PlanningCommandHandler:
@@ -24,10 +25,12 @@ class PlanningCommandHandler:
         planner: Callable[[Command], object] | object,
         *,
         topic: str = "normalized-plans",
+        operational_log: OperationalLog | None = None,
     ) -> None:
         self._transport = transport
         self._planner = planner
         self._topic = topic
+        self._operational_log = operational_log
         self._completed: dict[str, CommandOutcome] = {}
 
     def handle(self, command: Command) -> CommandOutcome:
@@ -71,6 +74,18 @@ class PlanningCommandHandler:
                 status="completed",
                 payload={"event_id": event_id},
             )
+            self._emit(
+                command.mission_id,
+                "solver",
+                "completed",
+                {"operation": "planning_command", "command_id": command.command_id},
+            )
+            self._emit(
+                command.mission_id,
+                "planning",
+                "completed",
+                {"operation": "planning_command", "command_id": command.command_id},
+            )
         except Exception as exc:
             outcome = CommandOutcome(
                 schema_version=command.schema_version,
@@ -80,9 +95,33 @@ class PlanningCommandHandler:
                 status="failed",
                 payload={"error": str(exc)},
             )
+            self._emit(
+                command.mission_id,
+                "planning",
+                "failed",
+                {"operation": "planning_command", "command_id": command.command_id},
+            )
+            self._emit(
+                command.mission_id,
+                "error",
+                "failed",
+                {"operation": "planning_command", "error_type": type(exc).__name__},
+            )
         self._transport.publish_outcome(outcome)
         self._completed[command.command_id] = outcome
         return outcome
+
+    def _emit(
+        self,
+        mission_id: str,
+        event_kind: str,
+        outcome: str,
+        details: dict[str, object],
+    ) -> None:
+        if self._operational_log is not None:
+            self._operational_log.emit(
+                mission_id, "planning-command-handler", event_kind, outcome, details=details
+            )
 
     handle_command = handle
 

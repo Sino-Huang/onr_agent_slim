@@ -18,6 +18,7 @@ from onr.contracts.maneuver_control import (
 from onr.contracts.planning import ManeuverIntent, NormalizedPlan
 from onr.contracts.transport import Command, CommandOutcome, CommandReceipt, TransportEvent
 from onr.ports.maneuver import ManeuverAdapter
+from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Consumer, Transport
 
 
@@ -44,12 +45,14 @@ class ManeuverControl:
         *,
         target_service: str = "maneuver-adapter",
         submission_topic: str = "maneuver-submissions",
+        operational_log: OperationalLog | None = None,
     ) -> None:
         self.transport = transport
         self.adapter = adapter
         self.decision_provider = decision_provider
         self.target_service = target_service
         self.submission_topic = submission_topic
+        self.operational_log = operational_log
         self._submitted: dict[str, CommandOutcome] = {}
 
     def decide(
@@ -63,9 +66,24 @@ class ManeuverControl:
         """Invoke the provider and apply the public contract validation gate."""
 
         self._validate_context(snapshot, status, overlay)
-        raw = self._invoke_provider(snapshot, status, overlay)
-        decision = self._coerce_decision(raw, snapshot.mission_id, status.plan_revision)
-        self._validate_decision(decision, snapshot, status, plan)
+        try:
+            raw = self._invoke_provider(snapshot, status, overlay)
+            decision = self._coerce_decision(raw, snapshot.mission_id, status.plan_revision)
+            self._validate_decision(decision, snapshot, status, plan)
+        except Exception as exc:
+            self._emit(
+                snapshot.mission_id,
+                "error",
+                "failed",
+                {"operation": "decide", "error_type": type(exc).__name__},
+            )
+            raise
+        self._emit(
+            snapshot.mission_id,
+            "control",
+            "completed",
+            {"operation": "decide", "plan_revision": status.plan_revision},
+        )
         return decision
 
     @staticmethod
@@ -105,8 +123,24 @@ class ManeuverControl:
             decision, command = stored
             self._validate_decision(decision, snapshot, status, plan)
         if command is None:
+            self._emit(
+                snapshot.mission_id,
+                "heartbeat",
+                "completed",
+                {"operation": "maneuver_heartbeat", "plan_revision": status.plan_revision},
+            )
             return ManeuverHeartbeatResult(decision)
         receipt = self.transport.send_command(command.to_command(self.target_service))
+        self._emit(
+            snapshot.mission_id,
+            "heartbeat",
+            "completed",
+            {
+                "operation": "maneuver_heartbeat",
+                "command_id": command.command_id,
+                "plan_revision": status.plan_revision,
+            },
+        )
         return ManeuverHeartbeatResult(decision, command, receipt)
 
     def handle_command(self, command: Command | ManeuverCommand) -> CommandOutcome:
@@ -155,6 +189,12 @@ class ManeuverControl:
             outcome = self._failed_outcome(typed, exc)
             self.transport.publish_outcome(outcome)
             self._submitted[typed.command_id] = outcome
+            self._emit(
+                typed.mission_id,
+                "error",
+                "failed",
+                {"operation": "adapter_submit", "error_type": type(exc).__name__},
+            )
             raise
         self.transport.publish_event(
             self.submission_topic_for(typed.command_id),
@@ -173,7 +213,25 @@ class ManeuverControl:
         outcome = self._accepted_outcome(typed)
         self.transport.publish_outcome(outcome)
         self._submitted[typed.command_id] = outcome
+        self._emit(
+            typed.mission_id,
+            "control",
+            outcome.status,
+            {"operation": "adapter_submit", "command_id": typed.command_id},
+        )
         return outcome
+
+    def _emit(
+        self,
+        mission_id: str,
+        event_kind: str,
+        outcome: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        if self.operational_log is not None:
+            self.operational_log.emit(
+                mission_id, "maneuver-control", event_kind, outcome, details=details
+            )
 
     handle = handle_command
 

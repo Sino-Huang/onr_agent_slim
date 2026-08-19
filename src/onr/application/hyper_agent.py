@@ -31,6 +31,7 @@ from onr.contracts.transport import (
     TransportEvent,
     create_normalized_plan_transport_event,
 )
+from onr.ports.operational_log import OperationalLog
 
 
 MissionSpecType = MissionSpec | SymbolicMissionSpec
@@ -103,6 +104,7 @@ class HyperAgent:
         mission_spec_topic: str = "mission-specifications",
         normalized_plan_topic: str = "normalized-plans",
         replan_topic: str = "replan-requests",
+        operational_log: OperationalLog | None = None,
     ) -> None:
         if not callable(interpreter) and not callable(getattr(interpreter, "interpret", None)):
             raise TypeError("mission interpreter must be callable or expose interpret")
@@ -111,6 +113,7 @@ class HyperAgent:
         self.mission_spec_topic = mission_spec_topic
         self.normalized_plan_topic = normalized_plan_topic
         self.replan_topic = replan_topic
+        self.operational_log = operational_log
         self._planner = planner
         self._planners = dict(planners) if planners is not None else None
         self._states: dict[str, _MissionState] = {}
@@ -159,6 +162,12 @@ class HyperAgent:
 
         self._states[mission_input.mission_id] = _MissionState(record)
         self._locks.setdefault(mission_input.mission_id, RLock())
+        self._emit(
+            mission_input.mission_id,
+            "agent",
+            "success",
+            {"operation": "freeze_mission", "revision": record.revision},
+        )
         return record
 
     intake_mission = freeze_mission
@@ -249,6 +258,12 @@ class HyperAgent:
         state = self._states.get(mission)
         if state is None:
             raise ValueError("heartbeat received an unknown Mission")
+        self._emit(
+            mission,
+            "heartbeat",
+            "started",
+            {"operation": "hyper_heartbeat", "snapshot_id": current_snapshot_id},
+        )
         lock = self._locks.setdefault(mission, RLock())
         with lock:
             pending = self._coalesce(state, mission)
@@ -256,9 +271,11 @@ class HyperAgent:
             initial = state.active_plan is None
             if not initial and pending is None and not source_changed:
                 assert state.active_plan is not None
-                return self._result(
+                result = self._result(
                     state, PlanningOutcome(state.active_plan.outcome), None, current_snapshot_id
                 )
+                self._emit(mission, "heartbeat", "completed", {"operation": "hyper_heartbeat"})
+                return result
             next_revision = (state.active_plan.plan_revision + 1) if state.active_plan else 1
             planner = self._select_planner(state.authority.mission_spec)
             if (
@@ -266,9 +283,11 @@ class HyperAgent:
                 and isinstance(state.authority.mission_spec, SymbolicMissionSpec)
                 and state.authority.mission_spec.planner_choice.planner_id is None
             ):
-                return self._result(
+                result = self._result(
                     state, PlanningOutcome.UNSUPPORTED, pending, current_snapshot_id
                 )
+                self._emit(mission, "heartbeat", "unsupported", {"operation": "hyper_heartbeat"})
+                return result
             attempted: NormalizedPlan | None = None
             outcome = PlanningOutcome.ERROR
             try:
@@ -287,8 +306,21 @@ class HyperAgent:
                 outcome = PlanningOutcome(attempted.outcome)
             except Exception:
                 outcome = PlanningOutcome.ERROR
+                self._emit(
+                    mission,
+                    "solver",
+                    "failed",
+                    {"operation": "heartbeat", "error_type": "planner_error"},
+                )
 
             if outcome is not PlanningOutcome.SOLVED or attempted is None:
+                self._emit(mission, "heartbeat", outcome.value, {"operation": "hyper_heartbeat"})
+                self._emit(
+                    mission,
+                    "planning",
+                    outcome.value,
+                    {"operation": "heartbeat", "plan_revision": next_revision},
+                )
                 return self._result(state, outcome, pending, current_snapshot_id)
 
             chart = Statechart.from_normalized_plan(attempted)
@@ -310,6 +342,19 @@ class HyperAgent:
             state.active_source_revisions = dict(revisions)
             state.active_snapshot_id = current_snapshot_id
             self._clear_committed_requests(state, pending)
+            self._emit(
+                mission,
+                "solver",
+                "solved",
+                {"operation": "heartbeat", "plan_revision": next_revision},
+            )
+            self._emit(
+                mission,
+                "planning",
+                outcome.value,
+                {"operation": "heartbeat", "plan_revision": next_revision},
+            )
+            self._emit(mission, "heartbeat", "completed", {"operation": "hyper_heartbeat"})
             return HyperHeartbeatResult(
                 mission_id=mission,
                 outcome=outcome,
@@ -361,6 +406,22 @@ class HyperAgent:
             profile = spec.planner_choice.planning_profile
             return self._planners.get(profile, self._planners.get(str(profile)))
         return self._planner
+
+    def _emit(
+        self,
+        mission_id: str,
+        event_kind: str,
+        outcome: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        if self.operational_log is not None:
+            self.operational_log.emit(
+                mission_id,
+                "hyper-agent",
+                event_kind,
+                outcome,
+                details=details,
+            )
 
     @staticmethod
     def _plan(planner: object, spec: MissionSpecType, revision: int, snapshot_id: str) -> object:

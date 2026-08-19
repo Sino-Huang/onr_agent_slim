@@ -37,6 +37,7 @@ from onr.contracts.transport import (
     TransportEvent,
 )
 from onr.ports.fsm import FSMStateStore, FSMTransport
+from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Consumer, Delivery, Subscription
 
 
@@ -274,12 +275,14 @@ class FSMRunner:
         status_topic: str = "fsm-status",
         clock: Callable[[], int | float] | None = None,
         subscription: Subscription | None = None,
+        operational_log: OperationalLog | None = None,
     ) -> None:
         self.transport = transport
         self.store = store or InMemoryFSMStateStore()
         self.status_topic = status_topic
         self.clock = clock or (lambda: 0)
         self.subscription = subscription
+        self.operational_log = operational_log
         self._chart = self.store.load_statechart()
         self._record = self.store.load_execution_record()
         if (self._chart is None) != (self._record is None):
@@ -384,6 +387,15 @@ class FSMRunner:
                 result = await self.handle(delivery.message)
             except Exception:
                 delivery.nack()
+                if self.operational_log is not None:
+                    mission_id = self.subscription.mission_id if self.subscription is not None else "unknown"
+                    self.operational_log.emit(
+                        mission_id,
+                        "fsm-runner",
+                        "error",
+                        "failed",
+                        details={"operation": "run_once", "error_type": "fsm_error"},
+                    )
                 raise
             delivery.ack()
             return result
@@ -581,6 +593,20 @@ class FSMRunner:
                 payload=status.to_dict(),
             ),
         )
+        if self.operational_log is not None:
+            self.operational_log.emit(
+                status.mission_id,
+                "fsm-runner",
+                "fsm",
+                status.status,
+                details={
+                    "operation": "publish_status",
+                    "plan_revision": status.plan_revision,
+                    "state": status.active_state,
+                    "status": status.status,
+                    "transport_sequence": sequence,
+                },
+            )
         return status
 
     def _timer_due(self) -> bool:

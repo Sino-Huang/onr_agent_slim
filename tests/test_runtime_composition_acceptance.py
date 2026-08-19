@@ -6,6 +6,7 @@ from typing import cast
 
 from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
+from onr.adapters.operational_log import FileOperationalLog
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
 from onr.contracts.hyper_agent import FrozenMissionSpec, MissionInput
@@ -225,3 +226,25 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
     ).glob("*.json")
     assert len(list(command_files)) == 1
     assert isinstance(result.scene_graph, TransportEvent)
+
+    operational_log_root = tmp_path / "storage" / "operational-log"
+    records = FileOperationalLog(operational_log_root).replay(mission_input.mission_id)
+    assert records
+    assert [record.sequence for record in records] == list(range(1, len(records) + 1))
+    assert {
+        "agent",
+        "heartbeat",
+        "planning",
+        "solver",
+        "control",
+        "fsm",
+        "transport",
+        "environment",
+    }.issubset({record.event_kind for record in records})
+    raw_log = "\n".join(
+        (tmp_path / "storage" / "operational-log" / mission_input.mission_id / "events" / f"{record.sequence:020d}.json").read_text(encoding="utf-8")
+        for record in records
+    )
+    assert mission_input.mission_text not in raw_log
+    assert (tmp_path / "storage" / "operational-log" / mission_input.mission_id / "events").is_dir()
+    assert not (tmp_path / "storage" / "mission-memory" / mission_input.mission_id).exists()

@@ -17,6 +17,7 @@ from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.minizinc import MiniZincExecutor
+from onr.adapters.operational_log import FileOperationalLog
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
@@ -32,6 +33,7 @@ from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecis
 from onr.contracts.planning import NormalizedPlan, PlanningOutcome
 from onr.contracts.transport import Command, CommandOutcome, TransportEvent
 from onr.ports.maneuver import ManeuverAdapter
+from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.agents.hyper_agent import (
@@ -65,6 +67,7 @@ class RuntimeComposition:
 
     config: RuntimeConfig
     transport: FileTransport | InProcessTransport
+    operational_log: OperationalLog | None = None
 
     @classmethod
     def create(
@@ -79,7 +82,17 @@ class RuntimeComposition:
             transport = FileTransport(config.transport.root, subscriptions)
         else:
             transport = InProcessTransport(subscriptions)
-        return cls(config=config, transport=transport)
+        return cls(
+            config=config,
+            transport=transport,
+            operational_log=FileOperationalLog(config.storage.root / "operational-log"),
+        )
+
+    def _logger(self) -> OperationalLog:
+        logger = self.operational_log
+        if logger is None:
+            logger = FileOperationalLog(self.config.storage.root / "operational-log")
+        return logger
 
     def create_chat_model(self) -> ChatOpenAI:
         """Create the configured OpenAI-compatible chat model."""
@@ -142,7 +155,9 @@ class RuntimeComposition:
         consumer = self.transport.open_consumer(subscription)
         try:
             self.transport.send_command(command)
-            handler = PlanningCommandHandler(self.transport, planner, topic=topic)
+            handler = PlanningCommandHandler(
+                self.transport, planner, topic=topic, operational_log=self._logger()
+            )
             outcome = handler.run_once(consumer)
             if outcome is None:
                 raise RuntimeError("planning command was not delivered")
@@ -171,6 +186,7 @@ class RuntimeComposition:
             store=JsonFSMStateStore(self.config.storage.root / "fsm" / mission_id),
             clock=clock,
             subscription=subscription,
+            operational_log=self._logger(),
         )
 
     def create_context_coordination(
@@ -200,6 +216,7 @@ class RuntimeComposition:
             service_id=self.config.services.context_coordination,
             clock=clock,
             subscription=subscription,
+            operational_log=self._logger(),
         )
 
     def create_maneuver_control(
@@ -245,6 +262,7 @@ class RuntimeComposition:
             adapter,
             decision_provider,
             target_service=target_service,
+            operational_log=self._logger(),
         )
 
     def create_hyper_agent(
@@ -310,6 +328,7 @@ class RuntimeComposition:
             mission_spec_topic=mission_spec_topic,
             normalized_plan_topic=normalized_plan_topic,
             replan_topic=replan_topic,
+            operational_log=self._logger(),
         )
 
     def run_mission(
@@ -329,6 +348,14 @@ class RuntimeComposition:
         if not callable(environment_step):
             raise TypeError("environment_step must be callable")
         mission_id = mission_input.mission_id
+        logger = self._logger()
+        logger.emit(
+            mission_id,
+            "runtime",
+            "agent",
+            "started",
+            details={"operation": "run_mission"},
+        )
         if context_coordination.subscription.mission_id != mission_id:
             raise ValueError("Context Coordination mission ID does not match MissionInput")
         fsm_subscription = fsm_runner.subscription or FSMRunner.subscription_for(
@@ -360,14 +387,40 @@ class RuntimeComposition:
             if delivery is None or not isinstance(delivery.message, TransportEvent):
                 if delivery is not None:
                     delivery.nack()
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "error",
+                    "failed",
+                    details={"operation": "consume_transport_event", "error_type": "RuntimeError"},
+                )
                 raise RuntimeError(f"expected a {event_kind} transport event")
             if delivery.message.event_kind != event_kind:
                 delivery.nack()
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "error",
+                    "failed",
+                    details={"operation": "consume_transport_event", "error_type": "RuntimeError"},
+                )
                 raise RuntimeError(
                     f"expected a {event_kind} transport event, got {delivery.message.event_kind}"
                 )
             event = delivery.message
             delivery.ack()
+            logger.emit(
+                event.mission_id,
+                "runtime",
+                "transport",
+                "received",
+                details={
+                    "event_id": event.event_id,
+                    "event_kind": event.event_kind,
+                    "topic": event_kind,
+                    "transport_sequence": event.sequence,
+                },
+            )
             return event
 
         def run_async(awaitable: Any) -> Any:
@@ -395,6 +448,13 @@ class RuntimeComposition:
                 raise RuntimeError("Hyper Agent did not return frozen mission authority")
             if authority.content_hash != authority.sha256:
                 raise RuntimeError("frozen mission authority hash is invalid")
+            logger.emit(
+                mission_id,
+                "runtime",
+                "agent",
+                "completed",
+                details={"operation": "freeze_mission", "revision": authority.revision},
+            )
 
             seed = MissionSnapshot(
                 mission_id=mission_id,
@@ -406,6 +466,13 @@ class RuntimeComposition:
                 mission_id=mission_id,
                 snapshot_id=f"{mission_id}:snapshot:0",
             )
+            logger.emit(
+                mission_id,
+                "runtime",
+                "heartbeat",
+                "completed",
+                details={"operation": "hyper_heartbeat", "plan_revision": heartbeat.plan_revision},
+            )
             plan = heartbeat.plan
             if (
                 not isinstance(plan, NormalizedPlan)
@@ -414,6 +481,13 @@ class RuntimeComposition:
                 or plan.mission_spec != authority.mission_spec
             ):
                 raise RuntimeError("initial Hyper heartbeat did not produce one solved maneuver")
+            logger.emit(
+                mission_id,
+                "runtime",
+                "planning",
+                "solved",
+                details={"operation": "initial_plan", "plan_revision": plan.plan_revision},
+            )
 
             plan_snapshot = context_coordination.run_once(context_consumer)
             if plan_snapshot is None or plan_snapshot.plan_revision != plan.plan_revision:
@@ -426,6 +500,13 @@ class RuntimeComposition:
             )
             if status_before_feedback != activated:
                 raise RuntimeError("FSM status evidence does not match activation")
+            logger.emit(
+                mission_id,
+                "runtime",
+                "fsm",
+                "activated",
+                details={"plan_revision": activated.plan_revision, "state": activated.active_state},
+            )
 
             invocation_id = f"maneuver-heartbeat:{mission_id}:{plan.plan_revision}"
             maneuver_result = maneuver_control.heartbeat(
@@ -446,8 +527,36 @@ class RuntimeComposition:
                 or command.mission_snapshot_id != f"{mission_id}:snapshot:{plan_snapshot.version}"
             ):
                 raise RuntimeError("Maneuver Control did not emit one physical command")
+            logger.emit(
+                mission_id,
+                "runtime",
+                "control",
+                "completed",
+                details={
+                    "command_id": command.command_id,
+                    "maneuver_id": command.maneuver_id,
+                    "plan_revision": command.plan_revision,
+                },
+            )
 
-            environment_step()
+            try:
+                environment_step()
+            except Exception as exc:
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "error",
+                    "failed",
+                    details={"operation": "environment_step", "error_type": type(exc).__name__},
+                )
+                raise
+            logger.emit(
+                mission_id,
+                "runtime",
+                "environment",
+                "completed",
+                details={"operation": "environment_step"},
+            )
             scene_graph = consume_event(scene_consumer, "operational_scene_graph")
             feedback_event = consume_event(feedback_consumer, "maneuver-feedback")
             feedback = ManeuverFeedback.from_dict(feedback_event.payload)
@@ -523,6 +632,13 @@ class RuntimeComposition:
             final_status = FSMStatus.from_dict(consume_event(status_consumer, "fsm-status").payload)
             if final_status != applied:
                 raise RuntimeError("final FSM status evidence does not match the applied transition")
+            logger.emit(
+                mission_id,
+                "runtime",
+                "fsm",
+                "transitioned",
+                details={"state": final_status.active_state, "status": final_status.status},
+            )
 
             return RuntimeRunResult(
                 authority=authority,
