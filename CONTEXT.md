@@ -8,6 +8,38 @@ This context describes a system that turns operational missions into plans and r
 A bounded operational objective with its participants, constraints, and desired outcome.
 _Avoid_: Task, job
 
+**Mission Intent**:
+The operator-authored natural-language input supplied in a Mission Activation. It is authority input from which the Hyper Agent derives a Mission Specification; it is not part of the shared public observation feed.
+_Avoid_: Public trace record, Mission Specification
+
+**Mission Run**:
+One concrete execution attempt for a Mission. A Mission can have more than one Mission Run.
+_Avoid_: Mission, process lifetime
+
+**Mission Activation**:
+A Command that asks the pipeline runtime to begin a Mission Run from supplied mission intent.
+_Avoid_: Runtime ownership, UI state change
+
+**Activation Request ID**:
+An opaque idempotency identifier supplied with a Mission Activation so a retry returns its original acceptance outcome rather than creating another Mission Run.
+_Avoid_: Mission ID, Mission Run ID
+
+**Runtime Host**:
+The long-lived local process that accepts Mission Activations, owns Mission Run execution, and publishes public run state.
+_Avoid_: TUI runtime, UI server
+
+**Run Worker**:
+An isolated process tree that executes one Mission Run on behalf of the Runtime Host and can be terminated without terminating the host.
+_Avoid_: Runtime Host, agent process
+
+**Operator Console**:
+The local operator interface that activates a Mission, observes its Mission Run, cancels it, and in the future submits requested Human Decisions.
+_Avoid_: Runtime Host, agent authority
+
+**Console Session**:
+An operator console's authenticated local session that owns the Mission Run it activated. Its opaque credential permits owner-scoped Mission Intent readback, cancellation, and recovery after an ungraceful console loss; a clean console exit cancels its owned Run.
+_Avoid_: Runtime Host session, observer session
+
 **Hyper Agent**:
 The planning authority that interprets a Mission, chooses a planner, and owns plan revision.
 _Avoid_: Main agent, controller
@@ -27,6 +59,54 @@ _Avoid_: Agent memory, ground truth
 **Transport Event**:
 An immutable published fact or outcome that may be consumed by more than one service.
 _Avoid_: Command, notification
+
+**Run Observation**:
+A redacted, non-authoritative public record of a Mission Run's progress or state that may refer to an Artifact.
+_Avoid_: Transport Event, runtime authority
+
+**Run Observation Cursor**:
+An opaque position after a Run Observation that a consumer supplies to resume its ordered observation feed.
+_Avoid_: Event sequence, client state
+
+**Run Activity**:
+A correlated, operator-visible unit of work in a Mission Run, deterministically derived by a versioned code-owned mapping from one or more Run Observations. A valid unmapped observation produces a generic Run Activity.
+_Avoid_: Raw event, agent thought
+
+**Mission Run Status**:
+The explicit public lifecycle state of a Mission Run: queued, running, awaiting human decision, succeeded, failed, or cancelled.
+_Avoid_: Last event, inferred state
+
+**Mission Run Record**:
+The durable Runtime Host-owned lifecycle record for a Mission Run, including its identifiers, owning Console Session, status, worker identity, terminal classification, and internal checkpoint and Artifact references.
+_Avoid_: Run Observation, operational log
+
+**Mission Run Cancellation**:
+A Runtime Host action that terminates a Run Worker and records the Mission Run as cancelled. It does not stop the separate environment or retract a submitted Maneuver Command.
+_Avoid_: Environment stop, maneuver rollback
+
+**Host-Interrupted Failure**:
+A public Mission Run failure classification recorded when the Runtime Host stops unexpectedly and the Run Worker cannot safely continue.
+_Avoid_: Recoverable pause, environment failure
+
+**Artifact**:
+A durable, read-only file produced by or referenced during a Mission Run, including future perception evidence, logs, or conversation records.
+_Avoid_: Transport Event, mission authority
+
+**Public Artifact Inbox**:
+The configured Mission Run directory from which the Runtime Host automatically discovers atomically published Artifacts with valid public metadata. Files outside it are not public Artifacts.
+_Avoid_: Arbitrary storage, scratch directory
+
+**Perception Rationale**:
+A producer-authored, redacted public explanation of a perception conclusion, with references to supporting evidence Artifacts. It excludes private model reasoning.
+_Avoid_: Chain of thought, raw reasoning
+
+**Conversation Artifact**:
+An append-only Artifact directory containing atomically published, monotonically sequenced typed conversation-entry files with author, time, audience, kind, and content or a content reference.
+_Avoid_: Chat transcript, arbitrary log
+
+**Run Narrative**:
+An optional non-authoritative summary generated from sanitized Mission Run evidence. It does not determine Mission Run status or Run Activity.
+_Avoid_: Progress authority, agent reasoning
 
 **Command**:
 A single-recipient request to an agent or service that produces an accepted, completed, or failed outcome.
@@ -127,6 +207,18 @@ _Avoid_: Human question, replan decision
 **Human Question**:
 A reserved Hyper Agent escalation message for information only a human can provide.
 _Avoid_: Maneuver query, live HITL session
+
+**Human Decision Request**:
+A request that pauses a Mission Run for a human decision, with permitted responses and an eventual recorded decision. It is distinct from a Human Question because it seeks an action, not only information.
+_Avoid_: Human Question, live HITL session
+
+**Human Decision**:
+An immutable recorded response, selected from the permitted choices in a Human Decision Request, that permits a paused Mission Run to resume.
+_Avoid_: UI action, unrecorded approval
+
+**Run Checkpoint**:
+A durable continuation point for a paused Mission Run that allows the Runtime Host to resume it after receiving a Human Decision.
+_Avoid_: UI session, transient process state
 
 **Mission Memory**:
 A role-owned durable context retained across future episodes of one Mission.
