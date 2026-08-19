@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
+from onr.adapters.minizinc import MiniZincExecutor
+from onr.application.symbolic_planning import SymbolicPlanning
+from onr.application.temporal_planning import TemporalPlanning
 from onr.runtime import (
     HeartbeatsConfig,
     LLMConfig,
@@ -15,6 +19,12 @@ from onr.runtime import (
     TransportConfig,
 )
 import onr.runtime.composition as composition_module
+
+
+class _FakeAdapter:
+    def submit(self, command: object) -> object:
+        _ = command
+        return None
 
 
 def _runtime() -> RuntimeComposition:
@@ -81,12 +91,7 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     )
 
     runtime.create_hyper_agent()
-    class FakeAdapter:
-        def submit(self, command: object) -> object:
-            _ = command
-            return None
-
-    runtime.create_maneuver_control(FakeAdapter(), mission_id="mission")
+    runtime.create_maneuver_control(_FakeAdapter(), mission_id="mission")
     assert len(deep_models) == 4
     assert isinstance(deep_models[1], FakeChatModel)
     assert isinstance(deep_models[3], FakeChatModel)
@@ -95,5 +100,64 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     runtime.create_hyper_agent(model=explicit)
     assert deep_models[-1] is explicit
     provider = object()
-    runtime.create_maneuver_control(FakeAdapter(), decision_provider=provider)
+    runtime.create_maneuver_control(_FakeAdapter(), decision_provider=provider)
     assert len(deep_models) == 5
+
+
+def test_verify_llm_reachability_uses_configured_values(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fake_probe(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(composition_module, "probe_vllm_reachability", fake_probe)
+    _runtime().verify_llm_reachability(timeout=1.5)
+
+    assert calls == [
+        (
+            ("http://127.0.0.1:11411/v1", "model"),
+            {
+                "api_key": "EMPTY",
+                "temperature": 0.2,
+                "timeout": 1.5,
+            },
+        )
+    ]
+
+
+def test_create_planners_uses_configured_executables_and_artifact_roots(tmp_path) -> None:
+    planners = _runtime().create_planners(tmp_path / "planner-artifacts")
+
+    assert isinstance(planners["temporal"], TemporalPlanning)
+    assert isinstance(planners["symbolic"], SymbolicPlanning)
+    temporal_executor = planners["temporal"]._executor
+    symbolic_executor = planners["symbolic"]._executor
+    assert isinstance(temporal_executor, MiniZincExecutor)
+    assert isinstance(symbolic_executor, FastDownwardExecutor)
+    assert temporal_executor.executable == Path(__file__)
+    assert symbolic_executor.executable == Path(__file__)
+    assert temporal_executor.artifact_root == (tmp_path / "planner-artifacts" / "temporal").resolve()
+    assert symbolic_executor.artifact_root == (tmp_path / "planner-artifacts" / "symbolic").resolve()
+
+
+def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_agent(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        composition_module,
+        "create_deep_maneuver_control_agent",
+        fake_create_agent,
+    )
+    _runtime().create_maneuver_control(
+        _FakeAdapter(),
+        model=object(),
+        mission_id="mission",
+        memory_store=object(),
+        system_prompt="return one physical decision",
+    )
+
+    assert captured["system_prompt"] == "return one physical decision"

@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.contracts.planning import (
@@ -25,12 +23,8 @@ def test_real_symbolic_planning_emits_ordered_costed_actions_without_timing(tmp_
         / "bin"
         / "downward"
     )
-    missing = [path for path in (fast_downward, downward) if not path.is_file()]
-    if missing:
-        pytest.skip(
-            "bundled Fast Downward driver or release build unavailable: "
-            + ", ".join(map(str, missing))
-        )
+    assert fast_downward.is_file(), f"bundled Fast Downward driver unavailable: {fast_downward}"
+    assert downward.is_file(), f"bundled Fast Downward release build unavailable: {downward}"
 
     mission_spec = SymbolicMissionSpec(
         mission_id="mission-real-symbolic-1",

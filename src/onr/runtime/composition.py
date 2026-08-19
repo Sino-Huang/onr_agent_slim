@@ -11,15 +11,20 @@ from typing import Any, Callable, cast
 
 from langchain_openai import ChatOpenAI
 
+from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.mission_memory import FileMissionMemoryStore
+from onr.adapters.minizinc import MiniZincExecutor
+from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
 from onr.application.hyper_agent import HyperAgent
 from onr.application.maneuver_control import ManeuverControl
+from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.planning_commands import PlanningCommandHandler
+from onr.application.temporal_planning import TemporalPlanning
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverDecision, ManeuverFeedback
 from onr.contracts.hyper_agent import FrozenMissionSpec, MissionInput
@@ -86,6 +91,39 @@ class RuntimeComposition:
             api_key=llm.api_key,
             temperature=llm.temperature,
         )
+
+    def verify_llm_reachability(self, *, timeout: float = 5.0) -> None:
+        """Verify the configured vLLM endpoint before composing live agents."""
+
+        llm = self.config.llm
+        probe_vllm_reachability(
+            llm.base_url,
+            llm.model,
+            api_key=llm.api_key,
+            temperature=llm.temperature,
+            timeout=timeout,
+        )
+
+    def create_planners(self, artifact_root: Path) -> dict[object, object]:
+        """Compose both configured real planner facades with persistent artifacts."""
+
+        root = Path(artifact_root).expanduser().resolve()
+        return {
+            "temporal": TemporalPlanning(
+                MiniZincExecutor(
+                    executable=self.config.planners.temporal.entrypoint,
+                    artifact_root=root / "temporal",
+                    timeout_seconds=self.config.planners.temporal.timeout_seconds,
+                )
+            ),
+            "symbolic": SymbolicPlanning(
+                FastDownwardExecutor(
+                    executable=self.config.planners.symbolic.entrypoint,
+                    artifact_root=root / "symbolic",
+                    timeout_seconds=self.config.planners.symbolic.timeout_seconds,
+                )
+            ),
+        }
 
     def run_planning_command(
         self,
@@ -171,6 +209,7 @@ class RuntimeComposition:
         *,
         target_service: str = "maneuver-adapter",
         model: Any | None = None,
+        system_prompt: str | None = None,
         mission_id: str | None = None,
         memory_store: object | None = None,
         skill_catalog: object | None = None,
@@ -192,6 +231,7 @@ class RuntimeComposition:
             decision_provider = DeepAgentsDecisionProvider(
                 create_deep_maneuver_control_agent(
                     model=model,
+                    system_prompt=system_prompt,
                     mission_id=mission_id,
                     memory_store=memory_store,
                     skill_catalog=skill_catalog,
