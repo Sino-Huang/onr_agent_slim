@@ -88,6 +88,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     class FakeRuntime:
         def __init__(self) -> None:
             self.transport = FileTransport(tmp_path / "transport")
+            self.config = SimpleNamespace(agent_name="drone-1")
 
         def verify_llm_reachability(self) -> None:
             calls.append("verify")
@@ -191,6 +192,8 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert skill_catalog.root == tmp_path / "conf/skills"
     assert hyper_call[1]["backend_root"] == tmp_path
     assert maneuver_call[2]["backend_root"] == tmp_path
+    assert "You are agent drone-1." in hyper_call[1]["system_prompt"]
+    assert "You are agent drone-1." in maneuver_call[2]["system_prompt"]
     run_call = next(item for item in calls if isinstance(item, tuple) and item[0] == "run")
     assert run_call[2]["model"] is model
     assert run_call[2]["hyper_agent"] == "hyper-agent"

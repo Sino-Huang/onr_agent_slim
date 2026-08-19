@@ -148,7 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             planners=planners,
             model=model,
             mission_id=mission_input.mission_id,
-            system_prompt=_HYPER_PROMPT,
+            system_prompt=f"You are agent {runtime.config.agent_name}. {_HYPER_PROMPT}",
             skill_catalog=skill_catalog,
             backend_root=repo_root,
         )
@@ -156,7 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _DemoManeuverAdapter(),
             model=model,
             mission_id=mission_input.mission_id,
-            system_prompt=_MANEUVER_PROMPT,
+            system_prompt=f"You are agent {runtime.config.agent_name}. {_MANEUVER_PROMPT}",
             skill_catalog=skill_catalog,
             backend_root=repo_root,
         )

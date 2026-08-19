@@ -29,6 +29,7 @@ def _write_runtime_values(path: Path, values: dict[str, Any]) -> None:
 def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     root = Path(__file__).parents[1]
     config = load_runtime_config(repo_root=root)
+    assert config.agent_name == "drone-1"
     assert config.debug is True
     assert config.llm.provider == "vllm"
     assert config.llm.base_url == "http://127.0.0.1:11411/v1"
@@ -54,7 +55,7 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     executable.chmod(0o755)
     config = tmp_path / "config.yaml"
     config.write_text(
-        """debug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
+        """agent_name: test-agent\ndebug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
         encoding="utf-8",
     )
     config.write_text(
@@ -162,9 +163,37 @@ def test_runtime_config_direct_construction_uses_shipped_agent_defaults() -> Non
         storage=loaded.storage,
         services=loaded.services,
         debug=loaded.debug,
+        agent_name=loaded.agent_name,
     )
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
+
+
+def test_runtime_config_requires_agent_name(tmp_path: Path) -> None:
+    root = Path(__file__).parents[1]
+    config = tmp_path / "config.yaml"
+    values = _shipped_runtime_values()
+    values.pop("agent_name")
+    _write_runtime_values(config, values)
+
+    with pytest.raises(
+        ValueError, match="runtime configuration has unknown or missing keys"
+    ):
+        load_runtime_config(config, repo_root=root)
+
+
+@pytest.mark.parametrize("value", ["", "   ", 1, True])
+def test_runtime_config_rejects_invalid_agent_name(
+    tmp_path: Path, value: object
+) -> None:
+    root = Path(__file__).parents[1]
+    config = tmp_path / "config.yaml"
+    values = _shipped_runtime_values()
+    values["agent_name"] = value
+    _write_runtime_values(config, values)
+
+    with pytest.raises(ValueError, match="agent_name must be a non-empty string"):
+        load_runtime_config(config, repo_root=root)
 
 
 def test_runtime_config_requires_agents_and_every_nested_key(tmp_path: Path) -> None:

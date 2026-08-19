@@ -150,6 +150,7 @@ class RuntimeConfig:
     storage: StorageConfig
     services: ServicesConfig
     debug: bool
+    agent_name: str
     agents: AgentsConfig = DEFAULT_AGENTS_CONFIG
 
 
@@ -192,6 +193,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     top = _exact(
         raw,
         {
+            "agent_name",
             "debug",
             "llm",
             "planners",
@@ -203,6 +205,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         },
         "runtime configuration",
     )
+    agent_name = _text(top["agent_name"], "agent_name")
     debug = _boolean(top["debug"], "debug")
     llm = _exact(
         top["llm"],
@@ -292,6 +295,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         storage=storage,
         services=services,
         debug=debug,
+        agent_name=agent_name,
         agents=agents,
     )
 
