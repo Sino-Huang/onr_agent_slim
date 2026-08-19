@@ -131,6 +131,31 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
         assert all(permission.mode == "deny" for permission in permissions)
 
 
+def test_only_hyper_agent_receives_todo_list_middleware(monkeypatch) -> None:
+    import deepagents
+    from langchain.agents.middleware import TodoListMiddleware
+
+    created: list[dict[str, object]] = []
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        created.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
+
+    create_hyper_agent(model=object())
+    create_maneuver_control_agent(model=object())
+
+    hyper_middleware = created[0].get("middleware")
+    maneuver_middleware = created[1].get("middleware", [])
+    assert isinstance(hyper_middleware, list)
+    assert isinstance(maneuver_middleware, list)
+    assert [type(middleware) for middleware in hyper_middleware] == [TodoListMiddleware]
+    assert not any(
+        isinstance(middleware, TodoListMiddleware) for middleware in maneuver_middleware
+    )
+
+
 def test_debug_agent_profile_uses_selected_skill_metadata_and_interpreter_callback(
     monkeypatch, tmp_path: Path
 ) -> None:

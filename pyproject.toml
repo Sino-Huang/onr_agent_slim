@@ -9,6 +9,7 @@ description = "Autonomous mission-control agents and runtime composition."
 requires-python = ">=3.11"
 dependencies = [
     "deepagents",
+    "langchain",
     "langchain-openai",
     "python-statemachine",
     "PyYAML>=6.0.2",

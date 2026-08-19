@@ -8,6 +8,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+from langchain.agents.middleware import TodoListMiddleware
+
 from onr.agents.role_context import MissionRoleContext, RoleEpisode
 from onr.agents.structured_output import (
     StructuralIssue,
@@ -190,6 +192,7 @@ def create_hyper_agent(
         skill_catalog=skill_catalog,
         skill_version=skill_version,
         backend_root=backend_root,
+        middleware=[TodoListMiddleware()],
     )
 
 
@@ -204,6 +207,7 @@ def _create_deep_agent(
     skill_catalog: object | None = None,
     skill_version: str | None = None,
     backend_root: Path | None = None,
+    middleware: list[Any] | None = None,
 ) -> object:
     """Shared DeepAgents construction with role-context wiring."""
 
@@ -221,6 +225,8 @@ def _create_deep_agent(
         kwargs["response_format"] = response_format
     if system_prompt is not None:
         kwargs["system_prompt"] = system_prompt
+    if middleware is not None:
+        kwargs["middleware"] = middleware
 
     memory_agent_path = "/memory/AGENTS.md"
     context: MissionRoleContext | None = None
