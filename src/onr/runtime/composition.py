@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, Callable, cast
 
 from langchain_openai import ChatOpenAI
@@ -18,7 +19,10 @@ from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.adapters.operational_log import FileOperationalLog
-from onr.adapters.mission_log_summarizer import FileMissionLogSummarizer
+from onr.adapters.mission_log_summarizer import (
+    FileMissionLogSummarizer,
+    SummarizationError,
+)
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
@@ -38,6 +42,7 @@ from onr.ports.operational_log import OperationalLog
 from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
+from onr.runtime.lease import RuntimeLeaseStore
 from onr.agents.hyper_agent import (
     DeepAgentsMissionInterpreter,
     create_hyper_agent as create_deep_hyper_agent,
@@ -70,6 +75,15 @@ class RuntimeComposition:
     config: RuntimeConfig
     transport: FileTransport | InProcessTransport
     operational_log: OperationalLog | None = None
+    lease: RuntimeLeaseStore | None = None
+
+    def __post_init__(self) -> None:
+        if self.lease is None:
+            object.__setattr__(
+                self,
+                "lease",
+                RuntimeLeaseStore(self.config.storage.root / "runtime"),
+            )
 
     @classmethod
     def create(
@@ -90,6 +104,107 @@ class RuntimeComposition:
             operational_log=FileOperationalLog(config.storage.root / "operational-log"),
         )
 
+    @contextmanager
+    def runtime_session(self):
+        """Publish a read-only runtime lease for the duration of one run."""
+        lease = self.lease
+        if lease is None:  # guarded by __post_init__; keeps the optional injection type narrow.
+            raise RuntimeError("runtime lease was not initialized")
+        with lease.session():
+            yield lease
+
+    @contextmanager
+    def mission_session(
+        self,
+        mission_id: str,
+        *,
+        summarizer: MissionLogSummarizer | None = None,
+        model: Any | None = None,
+    ):
+        """Run one mission-scoped summary worker inside the runtime lease."""
+
+        if (
+            not isinstance(mission_id, str)
+            or not mission_id.strip()
+            or Path(mission_id).name != mission_id
+            or mission_id in {".", ".."}
+        ):
+            raise ValueError("mission ID must be one path component")
+        selected = summarizer
+        stop = Event()
+
+        def record_failure(exc: Exception) -> None:
+            try:
+                self._logger().emit(
+                    mission_id,
+                    "runtime",
+                    "summary-unavailable",
+                    "failed",
+                    details={
+                        "operation": "mission_summary",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            except Exception:
+                pass
+
+        def summarize() -> None:
+            nonlocal selected
+            try:
+                if selected is None:
+                    selected = self.create_mission_log_summarizer(model=model)
+                selected.heartbeat(mission_id)
+            except SummarizationError as exc:
+                record_failure(exc)
+            except Exception as exc:
+                record_failure(exc)
+
+        def summary_worker() -> None:
+            cadence = float(self.config.heartbeats.summary_seconds)
+            while not stop.wait(cadence):
+                summarize()
+            summarize()
+
+        worker = Thread(
+            target=summary_worker,
+            name=f"mission-summary-{mission_id}",
+            daemon=False,
+        )
+        with self.runtime_session() as lease:
+            worker.start()
+            try:
+                yield lease
+            finally:
+                stop.set()
+                worker.join()
+
+    def run_mission(
+        self,
+        mission_input: MissionInput,
+        *,
+        hyper_agent: HyperAgent,
+        context_coordination: ContextCoordination,
+        fsm_runner: FSMRunner,
+        maneuver_control: ManeuverControl,
+        environment_step: Callable[[], object],
+        summarizer: MissionLogSummarizer | None = None,
+        model: Any | None = None,
+    ) -> RuntimeRunResult:
+        """Run one mission while publishing a bounded, non-authoritative lease."""
+        with self.mission_session(
+            mission_input.mission_id,
+            summarizer=summarizer,
+            model=model,
+        ):
+            return self._run_mission(
+                mission_input,
+                hyper_agent=hyper_agent,
+                context_coordination=context_coordination,
+                fsm_runner=fsm_runner,
+                maneuver_control=maneuver_control,
+                environment_step=environment_step,
+            )
+
     def _logger(self) -> OperationalLog:
         logger = self.operational_log
         if logger is None:
@@ -103,8 +218,10 @@ class RuntimeComposition:
         return ChatOpenAI(
             base_url=llm.base_url,
             model=llm.model,
-            api_key=llm.api_key,
+            api_key=cast(Any, llm.api_key),
             temperature=llm.temperature,
+            timeout=120.0,
+            max_retries=1,
         )
 
     def verify_llm_reachability(self, *, timeout: float = 5.0) -> None:
@@ -130,7 +247,7 @@ class RuntimeComposition:
         return FileMissionLogSummarizer(
             operational_log or self._logger(),
             self.config.storage.root,
-            model or self.create_chat_model(),
+            model if model is not None else self.create_chat_model(),
         )
 
     def heartbeat(
@@ -358,7 +475,7 @@ class RuntimeComposition:
             operational_log=self._logger(),
         )
 
-    def run_mission(
+    def _run_mission(
         self,
         mission_input: MissionInput,
         *,

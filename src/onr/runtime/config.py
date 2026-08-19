@@ -73,6 +73,10 @@ class PlannersConfig:
 class HeartbeatsConfig:
     hyper_seconds: int | float
     maneuver_seconds: int | float
+    summary_seconds: int | float = 30
+
+    def __post_init__(self) -> None:
+        _positive_duration(self.summary_seconds, "heartbeats.summary_seconds")
 
     @property
     def hyper_agent_seconds(self) -> int | float:
@@ -182,10 +186,17 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
             ),
         )
 
-    heartbeat_values = _exact(top["heartbeats"], {"hyper_seconds", "maneuver_seconds"}, "heartbeats")
+    heartbeat_values = _exact(
+        top["heartbeats"],
+        {"hyper_seconds", "maneuver_seconds", "summary_seconds"},
+        "heartbeats",
+    )
     heartbeats = HeartbeatsConfig(
         _duration(heartbeat_values["hyper_seconds"], "heartbeats.hyper_seconds"),
         _duration(heartbeat_values["maneuver_seconds"], "heartbeats.maneuver_seconds"),
+        _positive_duration(
+            heartbeat_values["summary_seconds"], "heartbeats.summary_seconds"
+        ),
     )
     transport_values = _exact(top["transport"], {"backend", "root"}, "transport")
     backend = _text(transport_values["backend"], "transport.backend")

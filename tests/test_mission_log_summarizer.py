@@ -130,7 +130,7 @@ def test_runtime_composes_and_drives_the_summarizer_heartbeat(tmp_path: Path) ->
     model = _RecordingModel(["runtime summary"])
     runtime = RuntimeComposition(
         RuntimeConfig(
-            LLMConfig("test", "http://127.0.0.1:8000/v1", "model", "key", 0),
+            LLMConfig("test", "http://127.0.0.1:14398/v1", "model", "key", 0),
             PlannersConfig(
                 PlannerConfig(Path(__file__), 1), PlannerConfig(Path(__file__), 1)
             ),

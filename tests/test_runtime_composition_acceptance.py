@@ -102,12 +102,18 @@ class FixedDecisionProvider:
         )
 
 
+class FixedSummaryModel:
+    def invoke(self, prompt: str) -> str:
+        assert "NEW LOG RECORDS" in prompt
+        return "Mission runtime completed one maneuver."
+
+
 def _runtime_config(tmp_path: Path, planner_path: Path) -> Path:
     config = tmp_path / "runtime.yaml"
     config.write_text(
         f"""llm:
   provider: test
-  base_url: http://127.0.0.1:8000/v1
+  base_url: http://127.0.0.1:14398/v1
   model: test-model
   api_key: test-key
   temperature: 0
@@ -121,6 +127,7 @@ planners:
 heartbeats:
   hyper_seconds: 1
   maneuver_seconds: 1
+  summary_seconds: 30
 transport:
   backend: file
   root: transport
@@ -191,6 +198,7 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
         fsm_runner=fsm_runner,
         maneuver_control=maneuver_control,
         environment_step=environment_step,
+        model=FixedSummaryModel(),
     )
 
     assert isinstance(result.authority, FrozenMissionSpec)
@@ -248,3 +256,10 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
     assert mission_input.mission_text not in raw_log
     assert (tmp_path / "storage" / "operational-log" / mission_input.mission_id / "events").is_dir()
     assert not (tmp_path / "storage" / "mission-memory" / mission_input.mission_id).exists()
+    assert (
+        tmp_path
+        / "storage"
+        / "summaries"
+        / mission_input.mission_id
+        / "00000000000000000001.json"
+    ).is_file()

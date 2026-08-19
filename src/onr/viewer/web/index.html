@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ONR Operator Console</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="console" aria-label="ONR runtime observation console">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">ONR</span><span>Operator Console</span></div>
+      <label class="mission-select" id="missionPicker" for="missionSelect" hidden><span>Mission</span><select id="missionSelect" aria-label="Selected mission"></select></label>
+      <div class="runtime-state" id="runtimeState" role="status"><span class="state-dot" aria-hidden="true"></span><span id="runtimeLabel">Checking runtime</span></div>
+      <div class="session-meta" id="sessionMeta" aria-label="Runtime session"></div>
+    </header>
+
+    <section class="workspace" aria-label="Runtime architecture">
+      <div class="section-heading"><div><p class="eyebrow">Mission runtime</p><h1 id="viewTitle">Mission overview</h1></div><p class="quiet" id="observationCount">Architecture ready</p></div>
+      <div class="tool-surface">
+        <nav class="view-tabs" aria-label="Console views">
+          <button class="tab active" data-view="overview" aria-selected="true">Mission overview</button>
+          <button class="tab" data-view="hyper" aria-selected="false">Hyper Agent</button>
+          <button class="tab" data-view="maneuver" aria-selected="false">Maneuver Control</button>
+          <button class="tab" data-view="snapshot" aria-selected="false">Snapshot &amp; FSM</button>
+          <button class="tab" data-view="skills" aria-selected="false">Skills &amp; advisory</button>
+          <button class="tab" data-view="command" aria-selected="false">Command &amp; outcome</button>
+          <button class="tab" data-view="feedback" aria-selected="false">Feedback paths</button>
+        </nav>
+
+        <div class="architecture" id="architecture" aria-label="Component architecture map">
+          <div class="graph-stage" id="graphStage">
+            <div class="edge e-hyper-maneuver" data-edge="hyper|maneuver" aria-hidden="true"></div>
+            <div class="edge e-hyper-context" data-edge="context|hyper" aria-hidden="true"></div>
+            <div class="edge e-context-snapshot" data-edge="context|snapshot" aria-hidden="true"></div>
+            <div class="edge e-snapshot-fsm" data-edge="fsm|snapshot" aria-hidden="true"></div>
+            <div class="edge e-fsm-maneuver" data-edge="fsm|maneuver" aria-hidden="true"></div>
+            <div class="edge e-hyper-skills" data-edge="hyper|skills" aria-hidden="true"></div>
+            <div class="edge e-maneuver-command" data-edge="maneuver|command" aria-hidden="true"></div>
+            <div class="edge e-command-feedback" data-edge="command|feedback" aria-hidden="true"></div>
+            <div class="edge e-feedback-maneuver" data-edge="feedback|maneuver" aria-hidden="true"></div>
+            <button class="node hyper" data-component="hyper-agent"><span class="node-icon">HA</span><span>Hyper Agent</span><small>mission authority</small></button>
+            <button class="node context" data-component="context"><span class="node-icon">CC</span><span>Context Coordination</span><small>public context</small></button>
+            <button class="node maneuver" data-component="maneuver-control"><span class="node-icon">MC</span><span>Maneuver Control</span><small>decision authority</small></button>
+            <button class="node snapshot" data-component="snapshot"><span class="node-icon">SS</span><span>Snapshot &amp; FSM</span><small>state evidence</small></button>
+            <button class="node fsm" data-component="fsm"><span class="node-icon">FR</span><span>FSM Runner</span><small>transition evidence</small></button>
+            <button class="node skills" data-component="skills"><span class="node-icon">SK</span><span>Skills &amp; advisory</span><small>advisory context</small></button>
+            <button class="node command" data-component="command"><span class="node-icon">CO</span><span>Command &amp; outcome</span><small>issued evidence</small></button>
+            <button class="node feedback" data-component="feedback"><span class="node-icon">FB</span><span>Feedback paths</span><small>environment facts</small></button>
+            <div class="mobile-flow" id="mobileFlow" aria-label="Observed data flows"></div>
+            <p class="idle-note" id="idleNote">Awaiting an active runtime. Architecture is available for review.</p>
+          </div>
+
+          <aside class="inspector" aria-live="polite">
+            <p class="eyebrow" id="inspectorKicker">Selected event</p>
+            <h2 id="inspectorTitle">No observation selected</h2>
+            <p class="inspector-copy" id="inspectorCopy">Trace details appear when a runtime is active and an observed event is selected.</p>
+            <dl class="detail-list" id="detailList"></dl>
+            <div class="safety-list" id="safetyList"></div>
+          </aside>
+        </div>
+
+        <section class="replay" id="replayControls" aria-label="Observed trace replay" hidden>
+          <div class="replay-actions">
+            <button class="command-button" id="playPause" type="button" aria-label="Pause replay">Pause</button>
+            <button class="icon-button" id="restart" type="button" aria-label="Restart replay" title="Restart replay">↺</button>
+            <label class="speed-label" for="speed">Speed <select id="speed"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
+          </div>
+          <div class="scrubber-wrap"><input id="scrubber" type="range" min="0" max="0" value="0" step="1" aria-label="Trace event position"><div class="scrubber-labels"><span id="scrubberStart">Start</span><span id="scrubberEnd">0 observed</span></div></div>
+        </section>
+      </div>
+      <section class="summaries" id="summaries" aria-label="Mission summaries" hidden>
+        <div class="summary-heading"><div><p class="eyebrow">Mission summaries</p><h2>Non-authoritative summary</h2></div><p class="quiet" id="summaryStatus"></p></div>
+        <div class="summary-latest" id="summaryLatest"></div>
+        <div class="summary-history" id="summaryHistory" aria-label="Prior mission summaries"></div>
+      </section>
+    </section>
+
+    <section class="trace-strip" id="traceStrip" aria-label="Observed trace" hidden>
+      <div class="trace-header"><p class="eyebrow">Observation order</p><button class="clear-button" id="clearSelection" type="button" hidden>Clear correlation</button></div>
+      <div class="event-list" id="eventList"></div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

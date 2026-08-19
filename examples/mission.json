@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Survey the designated demo area and complete one bounded maneuver.",
+  "source_authority": "demo-operator"
+}

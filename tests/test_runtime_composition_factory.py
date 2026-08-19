@@ -58,6 +58,8 @@ def test_chat_model_factory_uses_runtime_llm(monkeypatch) -> None:
             "model": "model",
             "api_key": "EMPTY",
             "temperature": 0.2,
+            "timeout": 120.0,
+            "max_retries": 1,
         }
     ]
 

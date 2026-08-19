@@ -1,4 +1,4 @@
-"""Compatibility exports for the installed deterministic demo environment."""
+"""Installed deterministic demo integrations with no production authority."""
 
 from onr.demo.fake_environment import (
     FakeEnvironment,
