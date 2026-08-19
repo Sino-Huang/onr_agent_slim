@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -73,6 +74,25 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
     assert result.source_fact.event_kind == "source-fact"
     assert result.source_fact.payload["source"] == "operational_scene_graph"
     assert result.source_fact.payload["reference"] == result.scene_graph.event_id
+    assert result.environment_file == tmp_path.parent / "environment" / mission_id / "scene.json"
+    environment = cast(
+        dict[str, Any], json.loads(result.environment_file.read_text(encoding="utf-8"))
+    )
+    entities = cast(list[dict[str, Any]], environment["entities"])
+    assert len(entities) == 6
+    assert sum(entity["type"] == "ship" for entity in entities) == 5
+    assert sum(entity["type"] == "drone" for entity in entities) == 1
+    assert {entity["area"] for entity in entities} == {"windmill area", "dock"}
+    assert all(
+        set(entity["location"]) == {"x", "y", "z"}
+        and all(
+            isinstance(entity["location"][axis], (int, float))
+            for axis in ("x", "y", "z")
+        )
+        for entity in entities
+    )
+    graph = cast(dict[str, Any], result.scene_graph.payload["graph"])
+    assert list(graph["entities"]) == entities
 
     with transport.open_consumer(Subscription("scene-reader", mission_id, "operational-scene-graph")) as scene:
         scene_delivery = scene.receive()
@@ -156,6 +176,8 @@ def test_maneuver_feedback_replay_is_idempotent_across_crash_window(tmp_path: Pa
     assert second.source_fact.sequence == first.source_fact.sequence
     assert second.feedback.event_id == first.feedback.event_id
     assert second.feedback.sequence == first.feedback.sequence
+    assert second.environment_file == first.environment_file
+    assert second.environment_file.read_bytes() == first.environment_file.read_bytes()
     with transport.open_consumer(Subscription("feedback-reader", mission_id, "maneuver-feedback")) as reader:
         delivery = reader.receive()
         assert delivery is not None

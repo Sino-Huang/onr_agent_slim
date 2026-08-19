@@ -9,6 +9,7 @@ import sys
 from typing import Mapping, Sequence, cast
 
 from onr.adapters.file_transport import FileTransport
+from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.maneuver_control import ManeuverCommand
 from onr.demo.fake_environment import FakeEnvironment
@@ -72,14 +73,19 @@ def _create_runtime(*, repo_root: Path, config_path: Path | None) -> RuntimeComp
 
 
 def _create_demo_environment(
-    runtime: RuntimeComposition, mission_id: str
+    runtime: RuntimeComposition,
+    mission_id: str,
+    *,
+    output_root: Path | None = None,
 ) -> FakeEnvironment:
     if not isinstance(runtime.transport, FileTransport):
         raise RuntimeError("the demo environment requires file transport")
-    return FakeEnvironment(runtime.transport, mission_id)
+    return FakeEnvironment(runtime.transport, mission_id, output_root=output_root)
 
 
-def _safe_result(result: RuntimeRunResult) -> dict[str, object]:
+def _safe_result(
+    result: RuntimeRunResult, *, environment_file: Path | None = None
+) -> dict[str, object]:
     return {
         "mission_id": result.authority.mission_id,
         "plan_revision": result.plan.plan_revision,
@@ -87,6 +93,7 @@ def _safe_result(result: RuntimeRunResult) -> dict[str, object]:
         "maneuver_id": result.command.maneuver_id,
         "final_state": result.final_status.active_state,
         "final_status": result.final_status.status,
+        "environment_file": str(environment_file) if environment_file is not None else None,
     }
 
 
@@ -130,24 +137,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not artifact_root.is_absolute():
             artifact_root = repo_root / artifact_root
         planners = runtime.create_planners(artifact_root.resolve())
-        model = runtime.create_chat_model()
+        skill_catalog = FilesystemRoleSkillCatalog(repo_root / "conf/skills")
+        try:
+            model = runtime.create_chat_model(mission_id=mission_input.mission_id)
+        except TypeError:
+            if isinstance(runtime, RuntimeComposition):
+                raise
+            model = runtime.create_chat_model()
         hyper_agent = runtime.create_hyper_agent(
             planners=planners,
             model=model,
             mission_id=mission_input.mission_id,
             system_prompt=_HYPER_PROMPT,
+            skill_catalog=skill_catalog,
+            backend_root=repo_root,
         )
         maneuver_control = runtime.create_maneuver_control(
             _DemoManeuverAdapter(),
             model=model,
             mission_id=mission_input.mission_id,
             system_prompt=_MANEUVER_PROMPT,
+            skill_catalog=skill_catalog,
+            backend_root=repo_root,
         )
         context_coordination = runtime.create_context_coordination(
             mission_id=mission_input.mission_id
         )
         fsm_runner = runtime.create_fsm_runner(mission_id=mission_input.mission_id)
-        environment = _create_demo_environment(runtime, mission_input.mission_id)
+        environment = _create_demo_environment(
+            runtime,
+            mission_input.mission_id,
+            output_root=repo_root / "var/environment",
+        )
 
         stage = "mission execution"
         result = runtime.run_mission(
@@ -159,7 +180,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             environment_step=environment.run_once,
             model=model,
         )
-        print(json.dumps(_safe_result(cast(RuntimeRunResult, result)), sort_keys=True))
+        print(
+            json.dumps(
+                _safe_result(
+                    cast(RuntimeRunResult, result),
+                    environment_file=environment.last_output_path,
+                ),
+                sort_keys=True,
+            )
+        )
         return 0
     except Exception as exc:
         print(

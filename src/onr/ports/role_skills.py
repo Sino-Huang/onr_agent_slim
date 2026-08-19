@@ -12,5 +12,9 @@ class RoleSkillCatalog(Protocol):
 
     def select(self, role: str, version: str | None = None) -> RoleSkill: ...
 
+    def select_all(
+        self, role: str, version: str | None = None
+    ) -> tuple[RoleSkill, ...]: ...
+
 
 __all__ = ["RoleSkillCatalog"]

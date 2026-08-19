@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, cast
 
+import yaml
+
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.agents.hyper_agent import create_hyper_agent
@@ -16,6 +18,9 @@ from onr.contracts.planning import (
     PlannerChoice,
     TemporalManeuver,
 )
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class PublicFakeDeepAgent:
@@ -38,10 +43,91 @@ def _install_skills(root: Path) -> FilesystemRoleSkillCatalog:
         skill = root / role / version
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(
-            f"---\nname: {role}\nversion: '{version}'\n---\nUse {role}.\n",
+            f"---\nname: {role}\ndescription: Support {role}.\nversion: '{version}'\n---\nUse {role}.\n",
             encoding="utf-8",
         )
     return FilesystemRoleSkillCatalog(root)
+
+
+def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
+    catalog = FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills")
+
+    hyper = catalog.select_all("hyper-agent")
+    maneuver = catalog.select_all("maneuver-control")
+
+    assert [skill.role for skill in hyper] == [
+        "mission-parsing",
+        "planner-selection",
+        "detect-and-replan",
+    ]
+    assert [skill.role for skill in maneuver] == [
+        "decision-cycle",
+        "physical-maneuver-selection",
+        "hyper-coordination",
+    ]
+    assert [skill.version for skill in (*hyper, *maneuver)] == ["1.0.0"] * 6
+    assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [
+        "hyper/mission-parsing",
+        "hyper/planner-selection",
+        "hyper/detect-and-replan",
+    ]
+    assert [skill.path.relative_to(catalog.root).as_posix() for skill in maneuver] == [
+        "maneuver-control/decision-cycle",
+        "maneuver-control/physical-maneuver-selection",
+        "maneuver-control/hyper-coordination",
+    ]
+    for skill in (*hyper, *maneuver):
+        _, front_matter, _ = (skill.path / "SKILL.md").read_text(encoding="utf-8").split(
+            "---", 2
+        )
+        metadata = yaml.safe_load(front_matter)
+        assert isinstance(metadata, dict)
+        assert isinstance(metadata.get("description"), str)
+        assert metadata["description"].strip()
+
+
+def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
+    import deepagents
+
+    created: list[dict[str, object]] = []
+
+    def fake_create_deep_agent(**kwargs: object) -> PublicFakeDeepAgent:
+        created.append(kwargs)
+        return PublicFakeDeepAgent(kwargs.get("skills", ()))
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
+    catalog = FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills")
+    create_hyper_agent(
+        model=object(),
+        mission_id="mission-1",
+        skill_catalog=catalog,
+        backend_root=_REPO_ROOT,
+    )
+    create_maneuver_control_agent(
+        model=object(),
+        mission_id="mission-1",
+        skill_catalog=catalog,
+        backend_root=_REPO_ROOT,
+    )
+
+    hyper_skills = [
+        "/conf/skills/hyper/mission-parsing",
+        "/conf/skills/hyper/planner-selection",
+        "/conf/skills/hyper/detect-and-replan",
+    ]
+    maneuver_skills = [
+        "/conf/skills/maneuver-control/decision-cycle",
+        "/conf/skills/maneuver-control/physical-maneuver-selection",
+        "/conf/skills/maneuver-control/hyper-coordination",
+    ]
+    assert created[0]["skills"] == ["/conf/skills/hyper"]
+    assert created[1]["skills"] == ["/conf/skills/maneuver-control"]
+    for kwargs, selected_skills in zip(created, (hyper_skills, maneuver_skills)):
+        skill_sources = kwargs["skills"]
+        permissions = kwargs["permissions"]
+        assert isinstance(skill_sources, list) and isinstance(permissions, list)
+        assert [permission.paths[0] for permission in permissions[:-1]] == selected_skills
+        assert all(permission.mode == "deny" for permission in permissions)
 
 
 def _make_role_agents(
@@ -122,8 +208,8 @@ def test_role_agents_persist_public_memory_and_isolate_two_missions_and_roles(
     assert "mission-1" not in _memory_state(resumed_other_maneuver)
     assert "mission-1 maneuver" not in _memory_state(resumed_hyper)
     assert "mission-1 hyper" not in _memory_state(resumed_maneuver)
-    assert _state(resumed_hyper)["skills_metadata"] == ["/skills/hyper-agent/2.0.0"]
-    assert _state(resumed_maneuver)["skills_metadata"] == ["/skills/maneuver-control/3.0.0"]
+    assert _state(resumed_hyper)["skills_metadata"] == ["/skills/hyper-agent"]
+    assert _state(resumed_maneuver)["skills_metadata"] == ["/skills/maneuver-control"]
     assert resumed_agents[0].read_context() == "mission-1 hyper ground truth"
 
 
@@ -152,7 +238,7 @@ def test_role_context_policy_allows_only_current_memory_and_denies_skills_and_ot
     assert isinstance(permissions, list)
     assert any(permission.mode == "allow" for permission in permissions)
     assert any(permission.paths == ["/skills/hyper-agent/2.0.0", "/skills/hyper-agent/2.0.0/**"] for permission in permissions)
-    assert captured["skills"] == ["/skills/hyper-agent/2.0.0"]
+    assert captured["skills"] == ["/skills/hyper-agent"]
     assert permissions[-1].mode == "deny"
     assert permissions[-1].paths == ["/**"]
     assert permissions[-2].mode == "allow"

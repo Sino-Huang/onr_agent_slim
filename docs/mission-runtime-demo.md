@@ -52,6 +52,16 @@ the runtime owns the lease and writes normal transport, operational-log, FSM,
 planner, and summary artifacts. It prints only mission/result identifiers and
 final public status; it does not print mission text or configuration secrets.
 
+With top-level `debug: true`, each provider chat-completion response is recorded
+atomically under `var/debug/llm/mission%3Ademo/*.json`. These artifacts contain
+the entire outbound JSON request body, including prompts/messages, tool
+definitions, response format, and model parameters, plus the returned content,
+function calls, tool calls, and provider reasoning fields. Request headers,
+authorization values, cookies, API keys, URL query values, and other credentials
+are not stored. Debug artifacts remain outside the viewer and trace APIs. This
+records only provider-returned reasoning; the current `ChatOpenAI` layer
+otherwise drops vLLM non-standard reasoning fields.
+
 The viewer owns no runtime lifecycle. It polls `/api/runtime` and the selected
 mission's `/api/trace` endpoint, cannot issue commands, and cannot invoke
 summarization or an LLM. A short demo may only appear active for its execution

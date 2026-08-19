@@ -48,6 +48,12 @@ def _exact(value: object, expected: set[str], label: str) -> dict[str, Any]:
     return value
 
 
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     provider: str
@@ -115,6 +121,7 @@ class RuntimeConfig:
     transport: TransportConfig
     storage: StorageConfig
     services: ServicesConfig
+    debug: bool
 
 
 def _path(value: object, label: str, repo_root: Path, *, executable: bool = False) -> Path:
@@ -153,7 +160,12 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         raw = yaml.safe_load(selected.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"runtime configuration cannot be read: {selected}") from exc
-    top = _exact(raw, {"llm", "planners", "heartbeats", "transport", "storage", "services"}, "runtime configuration")
+    top = _exact(
+        raw,
+        {"debug", "llm", "planners", "heartbeats", "transport", "storage", "services"},
+        "runtime configuration",
+    )
+    debug = _boolean(top["debug"], "debug")
     llm = _exact(
         top["llm"],
         {"provider", "base_url", "model", "api_key", "temperature"},
@@ -208,12 +220,15 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     service_values = _exact(top["services"], {"hyper_agent", "maneuver_control", "context_coordination", "fsm_runner", "planner"}, "services")
     services = ServicesConfig(**{key: _text(service_values[key], f"services.{key}") for key in service_values})
     return RuntimeConfig(
-        LLMConfig(provider, base_url, model, api_key, temperature),
-        PlannersConfig(planner_records["temporal"], planner_records["symbolic"]),
-        heartbeats,
-        transport,
-        storage,
-        services,
+        llm=LLMConfig(provider, base_url, model, api_key, temperature),
+        planners=PlannersConfig(
+            planner_records["temporal"], planner_records["symbolic"]
+        ),
+        heartbeats=heartbeats,
+        transport=transport,
+        storage=storage,
+        services=services,
+        debug=debug,
     )
 
 

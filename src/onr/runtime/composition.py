@@ -43,6 +43,7 @@ from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifa
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime.lease import RuntimeLeaseStore
+from onr.runtime.llm_debug import LLMResponseRecorder
 from onr.agents.hyper_agent import (
     DeepAgentsMissionInterpreter,
     create_hyper_agent as create_deep_hyper_agent,
@@ -211,18 +212,30 @@ class RuntimeComposition:
             logger = FileOperationalLog(self.config.storage.root / "operational-log")
         return logger
 
-    def create_chat_model(self) -> ChatOpenAI:
+    def create_chat_model(self, *, mission_id: str | None = None) -> ChatOpenAI:
         """Create the configured OpenAI-compatible chat model."""
 
         llm = self.config.llm
-        return ChatOpenAI(
+        options: dict[str, Any] = {}
+        recorder: LLMResponseRecorder | None = None
+        if self.config.debug and mission_id:
+            recorder = LLMResponseRecorder(
+                self.config.storage.root.parent / "debug" / "llm",
+                mission_id,
+            )
+            options["http_client"] = recorder.http_client
+        model = ChatOpenAI(
             base_url=llm.base_url,
             model=llm.model,
             api_key=cast(Any, llm.api_key),
             temperature=llm.temperature,
             timeout=120.0,
             max_retries=1,
+            **options,
         )
+        if recorder is not None:
+            object.__setattr__(model, "_llm_response_recorder", recorder)
+        return model
 
     def verify_llm_reachability(self, *, timeout: float = 5.0) -> None:
         """Verify the configured vLLM endpoint before composing live agents."""

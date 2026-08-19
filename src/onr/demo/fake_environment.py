@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
+import random
+from urllib.parse import quote
 
 from onr.adapters.file_transport import FileTransport
 from onr.contracts.context_coordination import create_source_fact_event
@@ -21,6 +25,16 @@ from onr.ports.transport import Subscription
 SUPPORTED_LIFECYCLES = ("accepted", "active", "completed", "failed", "cancelled")
 
 
+def _atomic_write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 @dataclass(frozen=True, slots=True)
 class FakeEnvironmentResult:
     """The immutable evidence emitted for one consumed maneuver command."""
@@ -29,6 +43,7 @@ class FakeEnvironmentResult:
     scene_graph: TransportEvent
     source_fact: TransportEvent
     feedback: TransportEvent
+    environment_file: Path
 
 
 class FakeEnvironment:
@@ -45,6 +60,7 @@ class FakeEnvironment:
         scene_graph_topic: str = "operational-scene-graph",
         context_topic: str = "normalized-plans",
         max_retries: int = 3,
+        output_root: Path | str | None = None,
     ) -> None:
         if not isinstance(transport, FileTransport):
             raise TypeError("FakeEnvironment requires a FileTransport")
@@ -55,10 +71,16 @@ class FakeEnvironment:
         self.feedback_topic = feedback_topic
         self.scene_graph_topic = scene_graph_topic
         self.context_topic = context_topic
+        self.output_root = (
+            Path(output_root)
+            if output_root is not None
+            else self.transport.root.parent / "environment"
+        )
         self.subscription = Subscription(target_service, mission_id, command_topic, max_retries)
         self._results: dict[tuple[str, str], FakeEnvironmentResult] = {}
         self._scene_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
         self.last_result: FakeEnvironmentResult | None = None
+        self.last_output_path: Path | None = None
 
     @staticmethod
     def subscription_for(
@@ -109,16 +131,25 @@ class FakeEnvironment:
             self.last_result = existing
             return existing
 
-        scene_graph, source_fact = self._scene_graph_and_fact(command)
+        scene_graph, source_fact, environment_file = self._scene_graph_and_fact(command)
         feedback = self._feedback(command, lifecycle)
-        result = FakeEnvironmentResult(command, scene_graph, source_fact, feedback)
+        result = FakeEnvironmentResult(command, scene_graph, source_fact, feedback, environment_file)
         self._results[key] = result
         self.last_result = result
         return result
 
     def _scene_graph_and_fact(
         self, command: ManeuverCommand
-    ) -> tuple[TransportEvent, TransportEvent]:
+    ) -> tuple[TransportEvent, TransportEvent, Path]:
+        environment_file = self.output_root / quote(self.mission_id, safe="._-") / "scene.json"
+        self.last_output_path = environment_file
+        environment = {
+            "mission_id": command.mission_id,
+            "plan_revision": command.plan_revision,
+            "command_id": command.command_id,
+            "entities": self._entities(command),
+        }
+        _atomic_write_json(environment_file, environment)
         graph = {
             "mission_id": command.mission_id,
             "plan_revision": command.plan_revision,
@@ -131,6 +162,8 @@ class FakeEnvironment:
                     },
                 }
             ],
+            "entities": environment["entities"],
+            "environment_file": str(environment_file),
         }
         graph_json = json.dumps(
             graph, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -138,7 +171,7 @@ class FakeEnvironment:
         reference = hashlib.sha256(graph_json.encode("utf-8")).hexdigest()
         cached = self._scene_facts.get(reference)
         if cached is not None:
-            return cached
+            return (*cached, environment_file)
 
         scene_event_id = f"operational-scene-graph:{command.mission_id}:{reference}"
         source_fact_id = (
@@ -180,7 +213,40 @@ class FakeEnvironment:
                 ),
             )
         self._scene_facts[reference] = (scene_event, source_fact)
-        return scene_event, source_fact
+        return scene_event, source_fact, environment_file
+
+    def _entities(self, command: ManeuverCommand) -> list[dict[str, object]]:
+        seed = hashlib.sha256(
+            f"{command.mission_id}:{command.command_id}:{command.plan_revision}:{command.maneuver_id}".encode(
+                "utf-8"
+            )
+        ).digest()
+        generator = random.Random(int.from_bytes(seed, "big"))
+
+        def location() -> dict[str, float]:
+            return {
+                axis: round(generator.uniform(-100.0, 100.0), 2)
+                for axis in ("x", "y", "z")
+            }
+
+        entities: list[dict[str, object]] = [
+            {
+                "id": f"ship-{index}",
+                "type": "ship",
+                "area": "windmill area" if index <= 3 else "dock",
+                "location": location(),
+            }
+            for index in range(1, 6)
+        ]
+        entities.append(
+            {
+                "id": "drone-1",
+                "type": "drone",
+                "area": "windmill area",
+                "location": location(),
+            }
+        )
+        return entities
 
     def _feedback(self, command: ManeuverCommand, lifecycle: str) -> TransportEvent:
         feedback_id = f"maneuver-feedback:{command.command_id}:{lifecycle}"

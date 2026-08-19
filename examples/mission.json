@@ -1,5 +1,5 @@
 {
   "mission_id": "mission:demo",
-  "mission_text": "Survey the designated demo area and complete one bounded maneuver.",
+  "mission_text": "Please check whether the ships around the windmill area follow the rules.",
   "source_authority": "demo-operator"
 }

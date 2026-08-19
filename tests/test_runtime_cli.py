@@ -47,6 +47,14 @@ def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
         runtime_cli.load_mission_file(_mission_file(tmp_path, source_authority=3))
 
 
+def test_example_mission_requests_windmill_area_rule_check() -> None:
+    mission = runtime_cli.load_mission_file(Path("examples/mission.json"))
+
+    assert mission.mission_text == (
+        "Please check whether the ships around the windmill area follow the rules."
+    )
+
+
 def test_demo_environment_flag_is_explicitly_required(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as exc:
         runtime_cli.main(["--mission-file", str(_mission_file(tmp_path))])
@@ -121,6 +129,8 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             )
 
     class FakeEnvironment:
+        last_output_path = None
+
         def run_once(self) -> str:
             calls.append("environment")
             return "demo-evidence"
@@ -134,8 +144,8 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     monkeypatch.setattr(
         runtime_cli,
         "_create_demo_environment",
-        lambda selected, mission_id: calls.append(
-            ("demo-environment", selected, mission_id)
+        lambda selected, mission_id, **kwargs: calls.append(
+            ("demo-environment", selected, mission_id, kwargs)
         )
         or FakeEnvironment(),
     )
@@ -163,12 +173,24 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         "maneuver_id": "maneuver-demo",
         "final_state": "state-1",
         "final_status": "active",
+        "environment_file": None,
     }
     assert calls[0] == (
         "runtime",
         {"repo_root": tmp_path, "config_path": Path("runtime.yaml")},
     )
     assert ("planners", planner_root) in calls
+    hyper_call = next(
+        item for item in calls if isinstance(item, tuple) and item[0] == "hyper"
+    )
+    maneuver_call = next(
+        item for item in calls if isinstance(item, tuple) and item[0] == "maneuver"
+    )
+    skill_catalog = hyper_call[1]["skill_catalog"]
+    assert maneuver_call[2]["skill_catalog"] is skill_catalog
+    assert skill_catalog.root == tmp_path / "conf/skills"
+    assert hyper_call[1]["backend_root"] == tmp_path
+    assert maneuver_call[2]["backend_root"] == tmp_path
     run_call = next(item for item in calls if isinstance(item, tuple) and item[0] == "run")
     assert run_call[2]["model"] is model
     assert run_call[2]["hyper_agent"] == "hyper-agent"

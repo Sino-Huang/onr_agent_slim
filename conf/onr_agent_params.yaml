@@ -1,3 +1,4 @@
+debug: true
 llm:
   provider: vllm
   base_url: http://127.0.0.1:11411/v1

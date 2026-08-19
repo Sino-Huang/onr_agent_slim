@@ -236,18 +236,29 @@ def _create_deep_agent(
         kwargs["memory"] = [memory_agent_path]
 
     selected_skills: list[str] = []
+    skill_sources: list[str] = []
     if mission_id is not None and skill_catalog is not None:
-        select = getattr(skill_catalog, "select", None)
-        if not callable(select):
-            raise TypeError("Role Skill catalog must expose select")
-        selected = select(role, skill_version)
-        selected_path = getattr(selected, "path", None)
-        if not isinstance(selected_path, Path):
-            raise TypeError("Role Skill catalog returned an invalid selection")
-        selected_skills.append(_skill_agent_path(selected_path, backend_root))
+        select_all = getattr(skill_catalog, "select_all", None)
+        if callable(select_all):
+            selections = select_all(role, skill_version)
+            if not isinstance(selections, tuple) or not selections:
+                raise TypeError("Role Skill catalog returned invalid selections")
+        else:
+            select = getattr(skill_catalog, "select", None)
+            if not callable(select):
+                raise TypeError("Role Skill catalog must expose select")
+            selections = (select(role, skill_version),)
+        for selected in selections:
+            selected_path = getattr(selected, "path", None)
+            if not isinstance(selected_path, Path):
+                raise TypeError("Role Skill catalog returned an invalid selection")
+            selected_skills.append(_skill_agent_path(selected_path, backend_root))
+            source_path = _skill_agent_path(selected_path.parent, backend_root)
+            if source_path not in skill_sources:
+                skill_sources.append(source_path)
 
     if selected_skills:
-        kwargs["skills"] = selected_skills
+        kwargs["skills"] = skill_sources
 
     if context is not None or selected_skills:
         from deepagents.backends.filesystem import FilesystemBackend

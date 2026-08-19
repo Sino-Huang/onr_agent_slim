@@ -14,6 +14,7 @@ from onr.ports.transport import Subscription
 def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     root = Path(__file__).parents[1]
     config = load_runtime_config(repo_root=root)
+    assert config.debug is True
     assert config.llm.provider == "vllm"
     assert config.llm.base_url == "http://127.0.0.1:11411/v1"
     assert config.llm.model == "google/gemma-4-31B-it"
@@ -36,7 +37,7 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     executable.chmod(0o755)
     config = tmp_path / "config.yaml"
     config.write_text(
-        """llm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
+        """debug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
         encoding="utf-8",
     )
     with pytest.raises(ValueError):
@@ -49,6 +50,13 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     assert isinstance(runtime.transport, InProcessTransport)
 
     valid_config = config.read_text(encoding="utf-8")
+    config.write_text(
+        valid_config.replace("debug: false", "debug: disabled"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="debug must be a boolean"):
+        load_runtime_config(config, repo_root=tmp_path)
+
     for invalid in ("0", "-1", "true"):
         config.write_text(
             valid_config.replace("summary_seconds: 30", f"summary_seconds: {invalid}"),

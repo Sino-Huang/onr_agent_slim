@@ -11,6 +11,15 @@ from onr.contracts.role_context import RoleSkill
 
 
 _VERSION = re.compile(r"^v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$")
+_ROLE_FOLDERS = {"hyper-agent": "hyper", "maneuver-control": "maneuver-control"}
+_ROLE_SKILL_ORDER = {
+    "hyper-agent": ("mission-parsing", "planner-selection", "detect-and-replan"),
+    "maneuver-control": (
+        "decision-cycle",
+        "physical-maneuver-selection",
+        "hyper-coordination",
+    ),
+}
 
 
 class FilesystemRoleSkillCatalog:
@@ -52,6 +61,65 @@ class FilesystemRoleSkillCatalog:
         if not isinstance(declared_name, str) or not declared_name.strip():
             raise ValueError(f"Role Skill name is invalid: {selected}")
         return RoleSkill(declared_name, declared_version, selected)
+
+    def select_all(
+        self, role: str, version: str | None = None
+    ) -> tuple[RoleSkill, ...]:
+        """Select every flat skill for a role, with legacy layout fallback."""
+
+        _validate_component(role, "role")
+        if version is not None:
+            _validate_component(version, "Role Skill version")
+        folder = _ROLE_FOLDERS.get(role, role)
+        role_root = self.root / folder
+        candidates = (
+            [
+                path
+                for path in role_root.iterdir()
+                if path.is_dir() and (path / "SKILL.md").is_file()
+            ]
+            if role_root.is_dir()
+            else []
+        )
+        flat: list[RoleSkill] = []
+        has_flat_layout = False
+        for path in candidates:
+            metadata = _skill_metadata(path / "SKILL.md")
+            declared_name = metadata.get("name")
+            declared_version = metadata.get("version")
+            if declared_version == path.name:
+                continue
+            has_flat_layout = True
+            if not isinstance(declared_name, str) or declared_name != path.name:
+                raise ValueError(f"Role Skill name metadata does not match its directory: {path}")
+            if not isinstance(declared_version, str) or not _VERSION.fullmatch(
+                declared_version
+            ):
+                raise ValueError(f"Role Skill version metadata is invalid: {path}")
+            if version is None or declared_version == version:
+                flat.append(RoleSkill(declared_name, declared_version, path))
+        if has_flat_layout:
+            if not flat:
+                requested = version or "latest"
+                raise ValueError(f"Role Skill version is unavailable: {role}/{requested}")
+            order = {
+                name: index
+                for index, name in enumerate(_ROLE_SKILL_ORDER.get(role, ()))
+            }
+            flat.sort(key=lambda skill: (order.get(skill.role, len(order)), skill.role))
+            return tuple(flat)
+        return (self.select(role, version),)
+
+
+def _validate_component(value: object, label: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+    ):
+        raise ValueError(f"{label} must be one path component")
 
 
 def _version_key(value: str) -> tuple[object, ...]:
