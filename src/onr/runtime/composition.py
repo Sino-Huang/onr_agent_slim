@@ -18,6 +18,7 @@ from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.adapters.operational_log import FileOperationalLog
+from onr.adapters.mission_log_summarizer import FileMissionLogSummarizer
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
@@ -34,6 +35,7 @@ from onr.contracts.planning import NormalizedPlan, PlanningOutcome
 from onr.contracts.transport import Command, CommandOutcome, TransportEvent
 from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.operational_log import OperationalLog
+from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
 from onr.ports.transport import Subscription
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.agents.hyper_agent import (
@@ -116,6 +118,31 @@ class RuntimeComposition:
             temperature=llm.temperature,
             timeout=timeout,
         )
+
+    def create_mission_log_summarizer(
+        self,
+        *,
+        model: Any | None = None,
+        operational_log: OperationalLog | None = None,
+    ) -> MissionLogSummarizer:
+        """Compose the independent heartbeat summarizer for configured storage."""
+
+        return FileMissionLogSummarizer(
+            operational_log or self._logger(),
+            self.config.storage.root,
+            model or self.create_chat_model(),
+        )
+
+    def heartbeat(
+        self,
+        mission_id: str,
+        *,
+        summarizer: MissionLogSummarizer | None = None,
+    ) -> SummaryArtifact | None:
+        """Run one mission-log summarizer heartbeat."""
+
+        selected = summarizer or self.create_mission_log_summarizer()
+        return selected.heartbeat(mission_id)
 
     def create_planners(self, artifact_root: Path) -> dict[object, object]:
         """Compose both configured real planner facades with persistent artifacts."""

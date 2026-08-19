@@ -8,6 +8,7 @@ from onr.adapters.vllm_reachability import (
     probe_vllm_reachability,
 )
 from onr.adapters.operational_log import FileOperationalLog, InProcessOperationalLog
+from onr.adapters.mission_log_summarizer import FileMissionLogSummarizer, SummarizationError
 
 __all__ = [
     "FileMissionMemoryStore",
@@ -17,4 +18,6 @@ __all__ = [
     "probe_vllm_reachability",
     "FileOperationalLog",
     "InProcessOperationalLog",
+    "FileMissionLogSummarizer",
+    "SummarizationError",
 ]
