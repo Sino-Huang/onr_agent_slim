@@ -11,6 +11,7 @@ from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.application.minizinc_translation import MiniZincTranslation
+from onr.application.human_decisions import HumanDecisionCoordinator
 from onr.application.pddl_translation import PDDLTranslation
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.temporal_planning import TemporalPlanning
@@ -208,6 +209,13 @@ def test_create_pddl_translation_uses_configured_val_and_correction_bound(
     )
 
     assert isinstance(translation, PDDLTranslation)
+    assert translation.max_corrections == 5
+
+
+def test_create_human_decision_coordinator_uses_runtime_storage() -> None:
+    coordinator = _runtime().create_human_decision_coordinator()
+
+    assert isinstance(coordinator, HumanDecisionCoordinator)
 
 
 def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> None:

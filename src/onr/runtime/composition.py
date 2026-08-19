@@ -16,6 +16,7 @@ from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
+from onr.adapters.human_decisions import FileHumanDecisionStore
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.minizinc import MiniZincExecutor
@@ -32,6 +33,7 @@ from onr.application.bayesian_belief import (
     BayesianBeliefService,
 )
 from onr.application.fsm import FSMRunner
+from onr.application.human_decisions import HumanDecisionCoordinator
 from onr.application.hyper_agent import (
     HyperAgent,
     HyperHeartbeatResult,
@@ -387,6 +389,13 @@ class RuntimeComposition:
             max_corrections=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries
             ),
+        )
+
+    def create_human_decision_coordinator(self) -> HumanDecisionCoordinator:
+        """Compose durable Human Decision pause and resume coordination."""
+
+        return HumanDecisionCoordinator(
+            FileHumanDecisionStore(self.config.storage.root / "human-decisions")
         )
 
     def run_planning_command(
