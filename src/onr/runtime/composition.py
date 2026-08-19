@@ -31,7 +31,11 @@ from onr.application.bayesian_belief import (
     BayesianBeliefService,
 )
 from onr.application.fsm import FSMRunner
-from onr.application.hyper_agent import HyperAgent, HyperHeartbeatResult
+from onr.application.hyper_agent import (
+    HyperAgent,
+    HyperHeartbeatResult,
+    HyperPlanningHeartbeatResult,
+)
 from onr.application.maneuver_control import ManeuverControl
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.planning_commands import PlanningCommandHandler
@@ -46,6 +50,10 @@ from onr.contracts.fsm import FSMStatus, ManeuverDecision, ManeuverFeedback
 from onr.contracts.hyper_agent import FrozenMissionSpec, MissionInput
 from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecision
 from onr.contracts.planning import NormalizedPlan, PlanningOutcome
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
+)
 from onr.contracts.transport import Command, CommandOutcome, TransportEvent
 from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.operational_log import OperationalLog
@@ -57,7 +65,9 @@ from onr.runtime.lease import RuntimeLeaseStore
 from onr.runtime.llm_debug import LLMResponseRecorder
 from onr.agents.hyper_agent import (
     DeepAgentsMissionInterpreter,
+    DeepAgentsPlanningIntentInterpreter,
     create_hyper_agent as create_deep_hyper_agent,
+    create_planning_intent_agent,
 )
 from onr.agents.maneuver_control import (
     DeepAgentsDecisionProvider,
@@ -81,6 +91,16 @@ class RuntimeRunResult:
     belief_snapshot: BayesianBeliefSnapshot | None = None
     belief_context_snapshot: MissionSnapshot | None = None
     belief_heartbeat: HyperHeartbeatResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningMissionRunResult:
+    """Evidence returned by one planner-native, scene-backed Mission Run."""
+
+    planner_choice: PlannerChoiceRecord
+    attempt: PlannerGenerationAttempt
+    context_snapshot: MissionSnapshot
+    scene_graph: TransportEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +550,7 @@ class RuntimeComposition:
         interpreter: object | None = None,
         planner: object | None = None,
         *,
+        planning_intent_interpreter: object | None = None,
         planners: dict[object, object] | None = None,
         temporal_planner: object | None = None,
         symbolic_planner: object | None = None,
@@ -569,6 +590,21 @@ class RuntimeComposition:
                 ),
                 max_retries=self.config.agents.hyper_agent.output_structure_retry.max_retries,
             )
+            if planning_intent_interpreter is None:
+                planning_intent_interpreter = DeepAgentsPlanningIntentInterpreter(
+                    create_planning_intent_agent(
+                        model=model,
+                        system_prompt=system_prompt,
+                        mission_id=mission_id,
+                        memory_store=memory_store,
+                        skill_catalog=skill_catalog,
+                        skill_version=skill_version,
+                        backend_root=context_backend_root,
+                    ),
+                    max_retries=(
+                        self.config.agents.hyper_agent.output_structure_retry.max_retries
+                    ),
+                )
         selected = planners
         if selected is None and (temporal_planner is not None or symbolic_planner is not None):
             selected = {}
@@ -586,6 +622,7 @@ class RuntimeComposition:
                 self.transport.subscriptions = self.transport.subscriptions + (subscription,)
         return HyperAgent(
             interpreter=interpreter,
+            planning_intent_interpreter=planning_intent_interpreter,
             planner=planner,
             planners=selected,
             transport=self.transport,
@@ -988,6 +1025,128 @@ class RuntimeComposition:
                 belief_snapshot=belief_snapshot,
                 belief_context_snapshot=belief_context_snapshot,
                 belief_heartbeat=belief_heartbeat,
+            )
+
+
+
+    def run_planning_mission(
+        self,
+        mission_input: MissionInput,
+        *,
+        hyper_agent: HyperAgent,
+        context_coordination: ContextCoordination,
+        environment_heartbeat: Callable[[], object],
+        generate: Callable[
+            [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
+            PlannerGenerationAttempt,
+        ],
+        summarizer: MissionLogSummarizer | None = None,
+        model: Any | None = None,
+    ) -> PlanningMissionRunResult:
+        """Run scene-backed planner selection/generation without a MissionSpec."""
+
+        with self.mission_session(
+            mission_input.mission_id,
+            summarizer=summarizer,
+            model=model,
+        ):
+            return self._run_planning_mission(
+                mission_input,
+                hyper_agent=hyper_agent,
+                context_coordination=context_coordination,
+                environment_heartbeat=environment_heartbeat,
+                generate=generate,
+            )
+
+    def _run_planning_mission(
+        self,
+        mission_input: MissionInput,
+        *,
+        hyper_agent: HyperAgent,
+        context_coordination: ContextCoordination,
+        environment_heartbeat: Callable[[], object],
+        generate: Callable[
+            [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
+            PlannerGenerationAttempt,
+        ],
+    ) -> PlanningMissionRunResult:
+        if not isinstance(mission_input, MissionInput):
+            raise TypeError("run_planning_mission requires a MissionInput")
+        if not callable(environment_heartbeat) or not callable(generate):
+            raise TypeError("planning Mission Run requires environment and generation callables")
+        mission_id = mission_input.mission_id
+        if context_coordination.subscription.mission_id != mission_id:
+            raise ValueError("Context Coordination mission ID does not match MissionInput")
+
+        scene_subscription = Subscription(
+            "runtime-planning-scene-observer",
+            mission_id,
+            "operational-scene-graph",
+        )
+        for subscription in (context_coordination.subscription, scene_subscription):
+            if subscription not in self.transport.subscriptions:
+                self.transport.subscriptions += (subscription,)
+
+        logger = self._logger()
+        logger.emit(
+            mission_id,
+            "runtime",
+            "agent",
+            "started",
+            details={"operation": "run_planning_mission"},
+        )
+        with (
+            self.transport.open_consumer(context_coordination.subscription) as context_consumer,
+            self.transport.open_consumer(scene_subscription) as scene_consumer,
+        ):
+            environment_heartbeat()
+            scene_delivery = scene_consumer.receive()
+            if (
+                scene_delivery is None
+                or not isinstance(scene_delivery.message, TransportEvent)
+                or scene_delivery.message.event_kind != "operational_scene_graph"
+            ):
+                if scene_delivery is not None:
+                    scene_delivery.nack()
+                raise RuntimeError(
+                    "environment heartbeat did not publish an operational scene graph"
+                )
+            scene_graph = scene_delivery.message
+            scene_delivery.ack()
+
+            snapshot = context_coordination.run_once(context_consumer)
+            if (
+                snapshot is None
+                or snapshot.operational_scene_graph != scene_graph.event_id
+            ):
+                raise RuntimeError(
+                    "Context Coordination did not publish the heartbeat scene snapshot"
+                )
+            heartbeat = hyper_agent.planning_heartbeat(
+                mission_input,
+                snapshot,
+                scene_graph,
+                generate,
+            )
+            if not isinstance(heartbeat, HyperPlanningHeartbeatResult):
+                raise RuntimeError("Hyper Agent did not publish planning heartbeat evidence")
+            logger.emit(
+                mission_id,
+                "runtime",
+                "heartbeat",
+                "completed",
+                details={
+                    "operation": "hyper_planning_heartbeat",
+                    "snapshot_id": heartbeat.mission_snapshot_id,
+                    "attempt_id": heartbeat.attempt.attempt_id,
+                    "decision_id": heartbeat.planner_choice.decision_id,
+                },
+            )
+            return PlanningMissionRunResult(
+                planner_choice=heartbeat.planner_choice,
+                attempt=heartbeat.attempt,
+                context_snapshot=snapshot,
+                scene_graph=scene_graph,
             )
 
 

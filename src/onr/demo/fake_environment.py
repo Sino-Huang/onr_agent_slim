@@ -49,6 +49,15 @@ class FakeEnvironmentResult:
     environment_file: Path
 
 
+@dataclass(frozen=True, slots=True)
+class FakeEnvironmentHeartbeat:
+    """Operational scene evidence emitted before any maneuver command."""
+
+    scene_graph: TransportEvent
+    source_fact: TransportEvent
+    environment_file: Path
+
+
 class FakeEnvironment:
     """Consume file-backed maneuver commands and publish deterministic evidence."""
 
@@ -96,6 +105,33 @@ class FakeEnvironment:
         """Return the command subscription to register on ``FileTransport``."""
 
         return Subscription(target_service, mission_id, command_topic, max_retries)
+
+    def heartbeat(self) -> FakeEnvironmentHeartbeat:
+        """Publish the current operational scene before planner generation."""
+
+        environment_file = (
+            self.output_root / quote(self.mission_id, safe="._-") / "scene.json"
+        )
+        self.last_output_path = environment_file
+        environment = {
+            "mission_id": self.mission_id,
+            "plan_revision": 0,
+            "entities": self._entities_for_seed(f"{self.mission_id}:heartbeat"),
+        }
+        _atomic_write_json(environment_file, environment)
+        graph = {
+            "mission_id": self.mission_id,
+            "plan_revision": 0,
+            "maneuvers": [],
+            "entities": environment["entities"],
+            "environment_file": str(environment_file),
+        }
+        scene_graph, source_fact = self._publish_scene_graph(graph, 0)
+        return FakeEnvironmentHeartbeat(
+            scene_graph=scene_graph,
+            source_fact=source_fact,
+            environment_file=environment_file,
+        )
 
     def run_once(self, lifecycle: str = "completed") -> FakeEnvironmentResult | None:
         """Consume and acknowledge at most one command from the registered subscription."""
@@ -176,17 +212,25 @@ class FakeEnvironment:
             "entities": environment["entities"],
             "environment_file": str(environment_file),
         }
+        scene_event, source_fact = self._publish_scene_graph(
+            graph, command.plan_revision
+        )
+        return scene_event, source_fact, environment_file
+
+    def _publish_scene_graph(
+        self, graph: dict[str, object], revision: int
+    ) -> tuple[TransportEvent, TransportEvent]:
         graph_json = json.dumps(
             graph, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
         reference = hashlib.sha256(graph_json.encode("utf-8")).hexdigest()
         cached = self._scene_facts.get(reference)
         if cached is not None:
-            return (*cached, environment_file)
+            return cached
 
-        scene_event_id = f"operational-scene-graph:{command.mission_id}:{reference}"
+        scene_event_id = f"operational-scene-graph:{self.mission_id}:{reference}"
         source_fact_id = (
-            f"source-fact:{command.mission_id}:operational_scene_graph:{reference}"
+            f"source-fact:{self.mission_id}:operational_scene_graph:{reference}"
         )
         scene_event = self.transport.get_event(scene_event_id)
         source_fact = self.transport.get_event(source_fact_id)
@@ -196,14 +240,14 @@ class FakeEnvironment:
                 TransportEvent(
                     schema_version=1,
                     event_id=scene_event_id,
-                    mission_id=command.mission_id,
+                    mission_id=self.mission_id,
                     sequence=self.transport.next_event_sequence(
-                        self.scene_graph_topic, command.mission_id
+                        self.scene_graph_topic, self.mission_id
                     ),
                     event_kind="operational_scene_graph",
                     payload={
                         "source": "operational_scene_graph",
-                        "revision": command.plan_revision,
+                        "revision": revision,
                         "reference": scene_event_id,
                         "graph": json.loads(graph_json),
                     },
@@ -213,25 +257,28 @@ class FakeEnvironment:
             source_fact = self.transport.publish_event(
                 self.context_topic,
                 create_source_fact_event(
-                    command.mission_id,
+                    self.mission_id,
                     "operational_scene_graph",
-                    command.plan_revision,
+                    revision,
                     event_id=source_fact_id,
                     sequence=self.transport.next_event_sequence(
-                        self.context_topic, command.mission_id
+                        self.context_topic, self.mission_id
                     ),
                     reference=scene_event_id,
                 ),
             )
         self._scene_facts[reference] = (scene_event, source_fact)
-        return scene_event, source_fact, environment_file
+        return scene_event, source_fact
 
     def _entities(self, command: ManeuverCommand) -> list[dict[str, object]]:
-        seed = hashlib.sha256(
-            f"{command.mission_id}:{command.command_id}:{command.plan_revision}:{command.maneuver_id}".encode(
-                "utf-8"
-            )
-        ).digest()
+        return self._entities_for_seed(
+            f"{command.mission_id}:{command.command_id}:"
+            f"{command.plan_revision}:{command.maneuver_id}"
+        )
+
+    @staticmethod
+    def _entities_for_seed(seed_value: str) -> list[dict[str, object]]:
+        seed = hashlib.sha256(seed_value.encode("utf-8")).digest()
         generator = random.Random(int.from_bytes(seed, "big"))
 
         def location() -> dict[str, float]:
@@ -246,6 +293,7 @@ class FakeEnvironment:
                 "type": "ship",
                 "area": "windmill area" if index <= 3 else "dock",
                 "location": location(),
+                "risk": round(generator.uniform(0.0, 1.0), 2),
             }
             for index in range(1, 6)
         ]
@@ -318,6 +366,7 @@ class FakeEnvironment:
 
 __all__ = [
     "FakeEnvironment",
+    "FakeEnvironmentHeartbeat",
     "FakeEnvironmentResult",
     "SUPPORTED_LIFECYCLES",
 ]

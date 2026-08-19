@@ -1,0 +1,14 @@
+ship_count = 5;
+horizon = 12;
+event_time = [2, 4, 6, 8, 10];
+ship_x = [-62, -25, 18, 54, 76];
+ship_y = [34, -12, 48, -55, 9];
+
+% FakeEnvironment risks in [0.0, 1.0], scaled by 100.
+risk_weight = [81, 64, 93, 28, 47];
+
+coordinate_bound = 100;
+drone_start_x = 0;
+drone_start_y = 0;
+max_speed = 35;
+fov_radius = 20;

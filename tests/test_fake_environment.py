@@ -93,6 +93,12 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
     assert sum(entity["type"] == "ship" for entity in entities) == 5
     assert sum(entity["type"] == "drone" for entity in entities) == 1
     assert {entity["area"] for entity in entities} == {"windmill area", "dock"}
+    ships = [entity for entity in entities if entity["type"] == "ship"]
+    assert all(
+        isinstance(entity["risk"], float) and 0.0 <= entity["risk"] <= 1.0
+        for entity in ships
+    )
+    assert "risk" not in next(entity for entity in entities if entity["type"] == "drone")
     assert all(
         set(entity["location"]) == {"x", "y", "z"}
         and all(
@@ -116,6 +122,39 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
         source_event = cast(TransportEvent, source_delivery.message)
         assert source_event == result.source_fact
         source_delivery.ack()
+
+
+def test_environment_heartbeat_publishes_scene_before_any_maneuver(
+    tmp_path: Path,
+) -> None:
+    mission_id = "mission-1"
+    transport = _transport(tmp_path, mission_id)
+    environment = FakeEnvironment(transport, mission_id)
+
+    heartbeat = environment.heartbeat()
+
+    assert heartbeat.scene_graph.event_kind == "operational_scene_graph"
+    graph = cast(dict[str, Any], heartbeat.scene_graph.payload["graph"])
+    assert graph["mission_id"] == mission_id
+    assert graph["plan_revision"] == 0
+    assert graph["maneuvers"] == ()
+    entities = cast(list[dict[str, Any]], graph["entities"])
+    assert len(entities) == 6
+    assert all(
+        isinstance(entity["risk"], float) and 0.0 <= entity["risk"] <= 1.0
+        for entity in entities
+        if entity["type"] == "ship"
+    )
+    assert heartbeat.source_fact.payload["reference"] == heartbeat.scene_graph.event_id
+
+    coordination = ContextCoordination(transport, mission_id)
+    with transport.open_consumer(coordination.subscription) as consumer:
+        snapshot = coordination.run_once(consumer)
+
+    assert snapshot is not None
+    assert snapshot.operational_scene_graph == heartbeat.scene_graph.event_id
+    assert snapshot.source_revisions["operational_scene_graph"] == 0
+    assert environment.run_once() is None
 
 
 def test_context_coordination_consumes_operational_scene_graph_source_fact(tmp_path: Path) -> None:

@@ -13,7 +13,12 @@ from onr.contracts.role_context import RoleSkill
 _VERSION = re.compile(r"^v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$")
 _ROLE_FOLDERS = {"hyper-agent": "hyper", "maneuver-control": "maneuver-control"}
 _ROLE_SKILL_ORDER = {
-    "hyper-agent": ("mission-parsing", "planner-selection", "detect-and-replan"),
+    "hyper-agent": (
+        "mission-parsing",
+        "planner-selection",
+        "creating-minizinc-problem-files",
+        "detect-and-replan",
+    ),
     "maneuver-control": (
         "decision-cycle",
         "physical-maneuver-selection",

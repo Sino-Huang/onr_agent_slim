@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -9,6 +10,7 @@ import pytest
 from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.operational_log import FileOperationalLog
+from onr.contracts import PlanningIntent
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.fsm import FSMStatus
@@ -17,6 +19,10 @@ from onr.contracts.maneuver_control import (
     ManeuverControlDecision,
     ManeuverCommand,
     PhysicalAction,
+)
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -51,6 +57,21 @@ class FixedInterpreter:
             ),
             horizon=2,
             source_authority=mission_input.source_authority,
+        )
+
+
+class FixedPlanningIntentInterpreter:
+    def interpret(self, mission_input: MissionInput) -> PlanningIntent:
+        return PlanningIntent(
+            mission_id=mission_input.mission_id,
+            source_authority=mission_input.source_authority,
+            objective="survey area 7",
+            rationale="Timed movement and observation require MiniZinc.",
+            planner_choice=PlannerChoice("temporal", "minizinc"),
+            mission_input_sha256=hashlib.sha256(
+                mission_input.to_canonical_json().encode("utf-8")
+            ).hexdigest(),
+            details={"observation_objective": "maximize FoV coverage"},
         )
 
 
@@ -313,3 +334,91 @@ def test_file_backed_runtime_composes_one_physical_maneuver(tmp_path: Path) -> N
             mission_id=mission_input.mission_id,
             seed=2,
         )
+
+
+
+def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
+    tmp_path: Path,
+) -> None:
+    planner_path = tmp_path / "planner"
+    planner_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    planner_path.chmod(0o755)
+    runtime = RuntimeComposition.create(
+        repo_root=tmp_path,
+        config_path=_runtime_config(tmp_path, planner_path),
+    )
+    mission_input = MissionInput(
+        mission_id="planning-runtime",
+        mission_text="Observe risky ships with maximum field of view coverage.",
+        source_authority="mission-control",
+    )
+    hyper_agent = runtime.create_hyper_agent(
+        FixedInterpreter(),
+        FixedPlanner(),
+        planning_intent_interpreter=FixedPlanningIntentInterpreter(),
+        mission_id=mission_input.mission_id,
+    )
+    context_coordination = runtime.create_context_coordination(
+        mission_id=mission_input.mission_id,
+        clock=lambda: "planning-runtime",
+    )
+    environment = FakeEnvironment(
+        cast(FileTransport, runtime.transport), mission_input.mission_id
+    )
+    model_path = tmp_path / "attempt" / "model.mzn"
+    data_path = tmp_path / "attempt" / "data.dzn"
+    model_path.parent.mkdir()
+    model_path.write_text("solve satisfy;\n", encoding="utf-8")
+    data_path.write_text("horizon = 1;\n", encoding="utf-8")
+
+    def generate(
+        choice: PlannerChoiceRecord,
+        snapshot: MissionSnapshot,
+        scene_graph: TransportEvent,
+    ) -> PlannerGenerationAttempt:
+        assert snapshot.operational_scene_graph == scene_graph.event_id
+        graph = scene_graph.payload["graph"]
+        assert isinstance(graph, Mapping) and graph["entities"]
+        references = {
+            "model.mzn": str(model_path),
+            "data.dzn": str(data_path),
+        }
+        return PlannerGenerationAttempt(
+            attempt_id="attempt-1",
+            decision_id=choice.decision_id,
+            mission_id=choice.mission_id,
+            mission_input_sha256=choice.mission_input_sha256,
+            planning_intent_sha256=choice.planning_intent_sha256,
+            planner_choice=choice.planner_choice,
+            rationale=choice.rationale,
+            mission_snapshot_id=f"{mission_input.mission_id}:snapshot:1",
+            translator_id="hyper-minizinc",
+            translator_version="1.0.0",
+            outcome="accepted",
+            asset_references=references,
+            asset_sha256={
+                name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                for name, path in references.items()
+            },
+        )
+
+    result = runtime.run_planning_mission(
+        mission_input,
+        hyper_agent=hyper_agent,
+        context_coordination=context_coordination,
+        environment_heartbeat=environment.heartbeat,
+        generate=generate,
+        model=FixedSummaryModel(),
+    )
+
+    assert result.attempt.outcome == "accepted"
+    assert result.context_snapshot.operational_scene_graph == result.scene_graph.event_id
+    assert hyper_agent.authority(mission_input.mission_id) is None
+    assert runtime.transport.latest_event(
+        "mission-specifications", mission_input.mission_id
+    ) is None
+    evidence = runtime.transport.latest_event(
+        "planning-evidence", mission_input.mission_id
+    )
+    assert evidence is not None
+    assert evidence.event_kind == "planner-generation-attempt"

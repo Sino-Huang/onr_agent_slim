@@ -132,8 +132,16 @@ _Avoid_: Implicit hybrid, planner setting
 The semantic selection of the eligible planner derived from an opt-in PlanningIntent or the legacy MissionSpec mode.
 _Avoid_: Executable path, solver command
 
+**Planner Choice Record**:
+An immutable public record binding one Planner Choice and concise rationale to the raw Mission Input and accepted PlanningIntent provenance.
+_Avoid_: Mission authority, private reasoning
+
+**Planner Generation Attempt**:
+An immutable accepted-or-rejected record of one planner-native asset generation attempt, bound to its Planner Choice Record and Mission Snapshot.
+_Avoid_: Planner result, hidden retry
+
 **Planning Record**:
-A future formal, durable planning output that binds the MissionInput hash/reference; accepted PlanningIntent hash for an opt-in flow; Planner Choice; concise public rationale; translator identity/version; generated planner asset references/hashes; solver evidence references/hashes; code-owned verification checks/outcome; and NormalizedPlan reference/hash. Planner assets and solver evidence are PlanningRecord outputs, never PlanningIntent `details`. This issue introduces no Python contract for the record.
+A future durable aggregate that binds Planner Choice and generation-attempt records to solver evidence, code-owned verification checks/outcome, and a NormalizedPlan reference/hash. Planner assets and solver evidence are Planning Record outputs, never PlanningIntent `details`.
 _Avoid_: Mission authority, planner-selection input
 
 **Operational Scene Graph**:

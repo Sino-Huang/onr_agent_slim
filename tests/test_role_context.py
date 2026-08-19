@@ -59,6 +59,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.role for skill in hyper] == [
         "mission-parsing",
         "planner-selection",
+        "creating-minizinc-problem-files",
         "detect-and-replan",
     ]
     assert [skill.role for skill in maneuver] == [
@@ -73,10 +74,12 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "1.0.0",
         "1.0.0",
         "1.0.0",
+        "1.0.0",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [
         "hyper/mission-parsing",
         "hyper/planner-selection",
+        "hyper/creating-minizinc-problem-files",
         "hyper/detect-and-replan",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in maneuver] == [
@@ -121,6 +124,7 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
     hyper_skills = [
         "/conf/skills/hyper/mission-parsing",
         "/conf/skills/hyper/planner-selection",
+        "/conf/skills/hyper/creating-minizinc-problem-files",
         "/conf/skills/hyper/detect-and-replan",
     ]
     maneuver_skills = [

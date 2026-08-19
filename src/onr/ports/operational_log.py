@@ -14,11 +14,13 @@ JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 _SAFE_DETAIL_KEYS = {
-    "adapter_submission", "command_id", "correlation_id", "environment",
-    "error_type", "event_id", "event_kind", "lifecycle", "maneuver_id", "operation",
-    "plan_revision", "planner", "request_id", "revision", "sequence", "service",
-    "snapshot_id", "source", "state", "status", "target_service", "topic", "transition",
-    "transport_event_id", "transport_sequence", "timer_due",
+    "adapter_submission", "attempt_id", "command_id", "correlation_id", "decision_id",
+    "environment", "error_type", "event_id", "event_kind", "lifecycle", "maneuver_id",
+    "mission_input_sha256", "mission_snapshot_id", "operation", "plan_revision",
+    "planner", "planner_id", "planning_intent_sha256", "planning_profile", "rationale",
+    "request_id", "revision", "sequence", "service", "snapshot_id", "source", "state",
+    "status", "target_service", "timer_due", "topic", "transition", "translator_id",
+    "translator_version", "transport_event_id", "transport_sequence",
 }
 _SECRET_RE = re.compile(
     r"(?i)(?:api[_ -]?key|secret|token|password|authorization)\s*[:=]\s*[^\s,;]+|"

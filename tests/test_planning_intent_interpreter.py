@@ -1,8 +1,12 @@
 import hashlib
 from collections.abc import Mapping
+from typing import Any, cast
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 
 from onr.agents import (
     DeepAgentsPlanningIntentInterpreter,
@@ -25,6 +29,37 @@ class _ResponseAgent:
     def invoke(self, value: Mapping[str, object]) -> object:
         self.calls.append(value)
         return self.responses.pop(0)
+
+
+class _ScriptedToolModel(BaseChatModel):
+    responses: list[AIMessage]
+    response_index: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted-tool-model"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: object | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        _ = messages, stop, run_manager, kwargs
+        response = self.responses[self.response_index]
+        self.response_index += 1
+        return ChatResult(generations=[ChatGeneration(message=response)])
+
+    def bind_tools(
+        self,
+        tools: object,
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> "_ScriptedToolModel":
+        _ = tools, tool_choice, kwargs
+        return self
 
 
 def _candidate(**overrides: object) -> dict[str, object]:
@@ -101,6 +136,32 @@ def test_planning_intent_interpreter_recovers_from_malformed_output_safely() -> 
     assert raw_candidate not in messages[1].content
 
 
+def test_planning_intent_interpreter_retries_when_fov_details_omit_objective() -> None:
+    missing_fov = _candidate(
+        details={"report_source": "events_report.json", "high_risk_ships": ["ship-1"]}
+    )
+    with_fov = _candidate(
+        details={
+            "report_source": "events_report.json",
+            "observation_objective": "maximize FoV coverage at reported event times",
+            "high_risk_ships": ["ship-1"],
+        }
+    )
+    agent = _ResponseAgent(
+        [
+            {"structured_response": missing_fov},
+            {"structured_response": with_fov},
+        ]
+    )
+
+    result = DeepAgentsPlanningIntentInterpreter(agent, max_retries=1).interpret(
+        MissionInput("mission-1", "Maximize field of view coverage", "mission-control")
+    )
+
+    assert result.to_dict()["details"] == with_fov["details"]
+    assert len(agent.calls) == 2
+
+
 def test_planning_intent_interpreter_caps_four_retries_at_five_invokes() -> None:
     agent = _ResponseAgent([{} for _ in range(5)])
 
@@ -134,6 +195,71 @@ def test_planning_intent_factory_uses_its_schema_without_changing_hyper_factory(
     middleware = planning_intent_kwargs["middleware"]
     assert isinstance(middleware, list)
     assert [type(item) for item in middleware] == [TodoListMiddleware]
+
+
+def test_hyper_agent_todo_tool_tracks_the_three_planning_stages() -> None:
+    stages = [
+        "parse Mission Intent to PlanningIntent",
+        "decide planner",
+        "generate planner problem files",
+    ]
+    updates = [
+        [
+            {"content": stages[0], "status": "in_progress"},
+            {"content": stages[1], "status": "pending"},
+            {"content": stages[2], "status": "pending"},
+        ],
+        [
+            {"content": stages[0], "status": "completed"},
+            {"content": stages[1], "status": "in_progress"},
+            {"content": stages[2], "status": "pending"},
+        ],
+        [
+            {"content": stages[0], "status": "completed"},
+            {"content": stages[1], "status": "completed"},
+            {"content": stages[2], "status": "in_progress"},
+        ],
+        [{"content": stage, "status": "completed"} for stage in stages],
+    ]
+    todo_responses = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": {"todos": todos},
+                    "id": f"todos-{index}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        for index, todos in enumerate(updates, 1)
+    ]
+    model = _ScriptedToolModel(
+        responses=[
+            *todo_responses,
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "PlanningIntentCandidate",
+                        "args": _candidate(),
+                        "id": "intent-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+        ]
+    )
+
+    agent = cast(Any, create_planning_intent_agent(model=model))
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": "Plan mission-1"}]}
+    )
+
+    assert result["todos"] == updates[-1]
+    assert result["structured_response"] == _candidate()
+    assert model.response_index == 5
 
 
 def test_planning_intent_schema_requires_configured_planners_and_safe_details() -> None:

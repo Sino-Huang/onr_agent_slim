@@ -2,6 +2,11 @@
 
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.planning_intent import PlanningIntent
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
+    TranslationAttemptOutcome,
+)
 from onr.contracts.fsm import (
     FSMExecutionRecord,
     FSMEvent,
@@ -35,6 +40,9 @@ from onr.contracts.role_context import (
 __all__ = [
     "MissionSnapshot",
     "PlanningIntent",
+    "PlannerChoiceRecord",
+    "PlannerGenerationAttempt",
+    "TranslationAttemptOutcome",
     "FSMExecutionRecord",
     "FSMEvent",
     "FSMStatus",

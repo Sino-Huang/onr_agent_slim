@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from onr.agents import DeepAgentsDecisionProvider, DeepAgentsMissionInterpreter
+from onr.agents import (
+    DeepAgentsDecisionProvider,
+    DeepAgentsMissionInterpreter,
+    DeepAgentsPlanningIntentInterpreter,
+)
 from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.minizinc import MiniZincExecutor
@@ -119,6 +123,11 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     )
     monkeypatch.setattr(
         composition_module,
+        "create_planning_intent_agent",
+        lambda **kwargs: deep_models.append(kwargs["model"]) or object(),
+    )
+    monkeypatch.setattr(
+        composition_module,
         "create_deep_maneuver_control_agent",
         lambda **kwargs: deep_models.append(kwargs["model"]) or object(),
     )
@@ -129,9 +138,10 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
         {"mission_id": None, "debug_scope": "hyper-agent"},
         {"mission_id": "mission", "debug_scope": "maneuver-control"},
     ]
-    assert len(deep_models) == 4
+    assert len(deep_models) == 5
     assert isinstance(deep_models[1], FakeChatModel)
-    assert isinstance(deep_models[3], FakeChatModel)
+    assert isinstance(deep_models[2], FakeChatModel)
+    assert isinstance(deep_models[4], FakeChatModel)
 
     explicit = object()
     runtime.create_hyper_agent(model=explicit)
@@ -139,7 +149,7 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     provider = object()
     runtime.create_maneuver_control(_FakeAdapter(), decision_provider=provider)
     assert len(factory_calls) == 2
-    assert len(deep_models) == 5
+    assert len(deep_models) == 7
 
 
 def test_verify_llm_reachability_uses_configured_values(monkeypatch) -> None:
@@ -207,6 +217,9 @@ def test_default_hyper_agent_uses_configured_interpreter_retry_limit(monkeypatch
         "create_deep_hyper_agent",
         lambda **_kwargs: object(),
     )
+    monkeypatch.setattr(
+        composition_module, "create_planning_intent_agent", lambda **_kwargs: object()
+    )
 
     service = _runtime(hyper_max_retries=7, maneuver_max_retries=9).create_hyper_agent(
         model=object()
@@ -214,6 +227,10 @@ def test_default_hyper_agent_uses_configured_interpreter_retry_limit(monkeypatch
 
     assert isinstance(service.interpreter, DeepAgentsMissionInterpreter)
     assert service.interpreter.max_retries == 7
+    assert isinstance(
+        service.planning_intent_interpreter, DeepAgentsPlanningIntentInterpreter
+    )
+    assert service.planning_intent_interpreter.max_retries == 7
 
 
 def test_default_maneuver_control_uses_configured_provider_retry_limit(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from collections.abc import Callable, Mapping
@@ -580,7 +581,20 @@ def _parse_planning_intent_response(
     for name in ("mission_id", "source_authority", "objective", "rationale"):
         _text(candidate[name], f"{path}.{name}")
     _validate_planning_intent_choice(candidate["planner_choice"], f"{path}.planner_choice")
-    _object(candidate["details"], f"{path}.details")
+    details_path = f"{path}.details"
+    details = _object(candidate["details"], details_path)
+    mission_text = mission_input.mission_text.casefold()
+    details_text = json.dumps(details, ensure_ascii=False).casefold()
+    if (
+        "fov" in mission_text or "field of view" in mission_text
+    ) and "fov" not in details_text and "field of view" not in details_text:
+        _fail(
+            StructuralIssue(
+                "invalid_value",
+                details_path,
+                "the Mission Intent's FoV observation objective",
+            )
+        )
 
     if candidate["mission_id"] != mission_input.mission_id:
         raise ValueError("planning intent mission ID does not match mission input")

@@ -7,6 +7,7 @@ callables and planner-port-shaped objects.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from threading import RLock
@@ -23,6 +24,11 @@ from onr.contracts.hyper_agent import (
     ReplanRequest,
     _issue_human_question,
 )
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
+)
+from onr.contracts.planning_intent import PlanningIntent
 from onr.contracts.planning import (
     MissionSpec,
     NormalizedPlan,
@@ -79,6 +85,15 @@ class HyperHeartbeatResult:
         return self.retained_maneuver_ids
 
 
+@dataclass(frozen=True, slots=True)
+class HyperPlanningHeartbeatResult:
+    """Planner selection and generation evidence from one scene-backed heartbeat."""
+
+    planner_choice: PlannerChoiceRecord
+    attempt: PlannerGenerationAttempt
+    mission_snapshot_id: str
+
+
 @dataclass
 class _MissionState:
     authority: FrozenMissionSpec
@@ -104,23 +119,40 @@ class HyperAgent:
         planner: object | None = None,
         *,
         planners: Mapping[object, object] | None = None,
+        planning_intent_interpreter: object | None = None,
         transport: Any | None = None,
         mission_spec_topic: str = "mission-specifications",
         normalized_plan_topic: str = "normalized-plans",
         replan_topic: str = "replan-requests",
+        planning_evidence_topic: str = "planning-evidence",
         operational_log: OperationalLog | None = None,
     ) -> None:
         if not callable(interpreter) and not callable(getattr(interpreter, "interpret", None)):
             raise TypeError("mission interpreter must be callable or expose interpret")
+        if planning_intent_interpreter is not None and not callable(
+            planning_intent_interpreter
+        ) and not callable(getattr(planning_intent_interpreter, "interpret", None)):
+            raise TypeError(
+                "PlanningIntent interpreter must be callable or expose interpret"
+            )
         self.interpreter = interpreter
+        self.planning_intent_interpreter = (
+            interpreter
+            if planning_intent_interpreter is None
+            else planning_intent_interpreter
+        )
         self.transport = transport
         self.mission_spec_topic = mission_spec_topic
         self.normalized_plan_topic = normalized_plan_topic
         self.replan_topic = replan_topic
+        self.planning_evidence_topic = planning_evidence_topic
         self.operational_log = operational_log
         self._planner = planner
         self._planners = dict(planners) if planners is not None else None
         self._states: dict[str, _MissionState] = {}
+        self._planning_inputs: dict[str, MissionInput] = {}
+        self._planner_choices: dict[str, PlannerChoiceRecord] = {}
+        self._generation_attempts: dict[tuple[str, str], PlannerGenerationAttempt] = {}
         self._locks: dict[str, RLock] = {}
         if planners is None and isinstance(planner, Mapping):
             self._planners = dict(planner)
@@ -183,6 +215,187 @@ class HyperAgent:
     @property
     def authorities(self) -> Mapping[str, FrozenMissionSpec]:
         return {mission_id: state.authority for mission_id, state in self._states.items()}
+
+    def choose_planner(self, mission_input: MissionInput) -> PlannerChoiceRecord:
+        """Record an opt-in Planner Choice without producing a MissionSpec."""
+
+        if not isinstance(mission_input, MissionInput):
+            raise TypeError("choose_planner requires a MissionInput")
+        mission_id = mission_input.mission_id
+        lock = self._locks.setdefault(mission_id, RLock())
+        with lock:
+            previous_input = self._planning_inputs.get(mission_id)
+            previous_choice = self._planner_choices.get(mission_id)
+            if previous_input is not None:
+                if previous_input == mission_input and previous_choice is not None:
+                    return previous_choice
+                raise ValueError("Mission already has a Planner Choice for another input")
+
+            raw = self._interpret_planning_intent(mission_input)
+            if not isinstance(raw, PlanningIntent):
+                raise ValueError("planner selection interpreter must return a PlanningIntent")
+            expected_hash = hashlib.sha256(
+                mission_input.to_canonical_json().encode("utf-8")
+            ).hexdigest()
+            if raw.mission_id != mission_id:
+                raise ValueError("PlanningIntent Mission ID does not match MissionInput")
+            if raw.source_authority != mission_input.source_authority:
+                raise ValueError(
+                    "PlanningIntent source authority does not match MissionInput"
+                )
+            if raw.mission_input_sha256 != expected_hash:
+                raise ValueError("PlanningIntent does not reference the raw MissionInput")
+
+            choice = PlannerChoiceRecord.from_planning_intent(raw)
+            if self.transport is not None:
+                sequence = self.transport.next_event_sequence(
+                    self.planning_evidence_topic, mission_id
+                )
+                self.transport.publish_event(
+                    self.planning_evidence_topic,
+                    TransportEvent(
+                        schema_version=1,
+                        event_id=choice.decision_id,
+                        mission_id=mission_id,
+                        sequence=sequence,
+                        event_kind="planner-choice",
+                        payload=choice.to_dict(),
+                    ),
+                )
+            self._planning_inputs[mission_id] = mission_input
+            self._planner_choices[mission_id] = choice
+            self._emit(
+                mission_id,
+                "planner-choice",
+                "selected",
+                {
+                    "decision_id": choice.decision_id,
+                    "mission_input_sha256": choice.mission_input_sha256,
+                    "planning_intent_sha256": choice.planning_intent_sha256,
+                    "planning_profile": str(choice.planner_choice.planning_profile),
+                    "planner_id": choice.planner_choice.planner_id,
+                    "rationale": choice.rationale,
+                },
+            )
+            return choice
+
+    def planner_choice(self, mission_id: str) -> PlannerChoiceRecord | None:
+        """Return the opt-in Planner Choice recorded for one Mission."""
+
+        return self._planner_choices.get(mission_id)
+
+    def planning_heartbeat(
+        self,
+        mission_input: MissionInput,
+        snapshot: MissionSnapshot,
+        scene_graph: TransportEvent,
+        generate: Callable[
+            [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
+            PlannerGenerationAttempt,
+        ],
+    ) -> HyperPlanningHeartbeatResult:
+        """Select and generate from one snapshot-authorized operational scene."""
+
+        if not isinstance(snapshot, MissionSnapshot):
+            raise TypeError("planning heartbeat requires a MissionSnapshot")
+        if snapshot.mission_id != mission_input.mission_id:
+            raise ValueError("planning heartbeat Mission IDs do not match")
+        if (
+            not isinstance(scene_graph, TransportEvent)
+            or scene_graph.event_kind != "operational_scene_graph"
+            or scene_graph.mission_id != mission_input.mission_id
+        ):
+            raise ValueError("planning heartbeat requires the Mission scene graph")
+        source = "operational_scene_graph"
+        if snapshot.source_references[source] != scene_graph.event_id:
+            raise ValueError("MissionSnapshot does not reference the supplied scene graph")
+        if snapshot.source_health[source] != "healthy":
+            raise ValueError("MissionSnapshot scene graph is not healthy")
+        if not callable(generate):
+            raise TypeError("planning heartbeat requires a generation callback")
+
+        choice = self.choose_planner(mission_input)
+        attempt = generate(choice, snapshot, scene_graph)
+        if not isinstance(attempt, PlannerGenerationAttempt):
+            raise TypeError("generation callback must return PlannerGenerationAttempt")
+        snapshot_id = f"{mission_input.mission_id}:snapshot:{snapshot.version}"
+        if attempt.mission_snapshot_id != snapshot_id:
+            raise ValueError("generation attempt references another MissionSnapshot")
+        if (
+            attempt.mission_id != mission_input.mission_id
+            or attempt.decision_id != choice.decision_id
+            or attempt.mission_input_sha256 != choice.mission_input_sha256
+            or attempt.planning_intent_sha256 != choice.planning_intent_sha256
+            or attempt.planner_choice != choice.planner_choice
+            or attempt.rationale != choice.rationale
+        ):
+            raise ValueError(
+                "generation attempt does not match the current Planner Choice"
+            )
+        published = self._publish_generation_attempt(attempt, choice)
+        return HyperPlanningHeartbeatResult(
+            planner_choice=choice,
+            attempt=published,
+            mission_snapshot_id=snapshot_id,
+        )
+
+    def _publish_generation_attempt(
+        self,
+        attempt: PlannerGenerationAttempt,
+        choice: PlannerChoiceRecord,
+    ) -> PlannerGenerationAttempt:
+        """Publish evidence already validated by the planning heartbeat."""
+
+        if not isinstance(attempt, PlannerGenerationAttempt):
+            raise TypeError("generation evidence must be a PlannerGenerationAttempt")
+        mission_id = choice.mission_id
+        if self._planner_choices.get(mission_id) != choice:
+            raise ValueError("planning heartbeat Planner Choice is not recorded")
+
+        key = (mission_id, attempt.attempt_id)
+        lock = self._locks.setdefault(mission_id, RLock())
+        with lock:
+            previous = self._generation_attempts.get(key)
+            if previous is not None:
+                if previous == attempt:
+                    return previous
+                raise ValueError(
+                    "generation attempt ID already identifies a different generation attempt"
+                )
+            if self.transport is not None:
+                sequence = self.transport.next_event_sequence(
+                    self.planning_evidence_topic, mission_id
+                )
+                self.transport.publish_event(
+                    self.planning_evidence_topic,
+                    TransportEvent(
+                        schema_version=1,
+                        event_id=(
+                            f"planner-generation-attempt:{mission_id}:"
+                            f"{attempt.attempt_id}"
+                        ),
+                        mission_id=mission_id,
+                        sequence=sequence,
+                        event_kind="planner-generation-attempt",
+                        payload=attempt.to_dict(),
+                    ),
+                )
+            self._generation_attempts[key] = attempt
+            self._emit(
+                mission_id,
+                "planner-generation-attempt",
+                str(attempt.outcome),
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "decision_id": attempt.decision_id,
+                    "mission_snapshot_id": attempt.mission_snapshot_id,
+                    "translator_id": attempt.translator_id,
+                    "translator_version": attempt.translator_version,
+                    "asset_references": dict(attempt.asset_references),
+                    "asset_sha256": dict(attempt.asset_sha256),
+                },
+            )
+            return attempt
 
     def submit_replan(self, request: ReplanRequest) -> ReplanRequest:
         if not isinstance(request, ReplanRequest):
@@ -402,6 +615,15 @@ class HyperAgent:
         if callable(method):
             return method(mission_input)
         return cast(Callable[[MissionInput], object], self.interpreter)(mission_input)
+
+    def _interpret_planning_intent(self, mission_input: MissionInput) -> object:
+        interpreter = self.planning_intent_interpreter
+        if interpreter is None:
+            raise ValueError("Hyper Agent has no PlanningIntent interpreter")
+        method = getattr(interpreter, "interpret", None)
+        if callable(method):
+            return method(mission_input)
+        return cast(Callable[[MissionInput], object], interpreter)(mission_input)
 
     @staticmethod
     def _validated_spec(value: object) -> MissionSpecType:
