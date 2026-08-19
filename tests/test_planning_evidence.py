@@ -6,7 +6,7 @@ import pytest
 
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.operational_log import InProcessOperationalLog
-from onr.application.hyper_agent import HyperAgent
+from onr.application.hyper_agent import HyperAgent, PlanningHeartbeatOutcome
 from onr.contracts import PlanningIntent
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
@@ -160,6 +160,8 @@ def test_hyper_records_distinguishable_immutable_generation_attempts() -> None:
         mission_input, snapshot, scene, lambda *_: accepted
     )
 
+    assert rejected_result.attempt is not None
+    assert accepted_result.attempt is not None
     assert rejected_result.attempt.outcome is TranslationAttemptOutcome.REJECTED
     assert accepted_result.attempt.outcome is TranslationAttemptOutcome.ACCEPTED
     assert rejected.decision_id == accepted.decision_id == choice.decision_id
@@ -255,3 +257,66 @@ def test_planning_heartbeat_rejects_another_missions_attempt() -> None:
         hyper.planning_heartbeat(
             first_input, snapshot, scene, lambda *_: wrong_mission
         )
+
+
+def test_planning_heartbeat_reports_missing_scene_without_starting_planning() -> None:
+    mission_input = _mission_input()
+    intent = _planning_intent(mission_input)
+    snapshot = MissionSnapshot(
+        mission_id=mission_input.mission_id,
+        version=1,
+        created_at="time-1",
+    )
+    calls: list[object] = []
+    hyper = HyperAgent(lambda _: intent)
+
+    def generate(*args: object) -> PlannerGenerationAttempt:
+        calls.append(args)
+        raise AssertionError("generation must not start without scene evidence")
+
+    result = hyper.planning_heartbeat(
+        mission_input,
+        snapshot,
+        None,
+        generate,
+    )
+
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.planner_choice is None
+    assert result.attempt is None
+    assert calls == []
+    assert hyper.planner_choice(mission_input.mission_id) is None
+
+
+def test_planning_heartbeat_reports_stale_scene_without_starting_planning() -> None:
+    mission_input = _mission_input()
+    intent = _planning_intent(mission_input)
+    _, scene = _scene_snapshot()
+    snapshot = MissionSnapshot(
+        mission_id=mission_input.mission_id,
+        version=7,
+        created_at="time-7",
+        operational_scene_graph=scene.event_id,
+        source_revisions={"operational_scene_graph": 7},
+        source_health={"operational_scene_graph": "healthy"},
+        source_freshness={"operational_scene_graph": False},
+    )
+    calls: list[object] = []
+    hyper = HyperAgent(lambda _: intent)
+
+    def generate(*args: object) -> PlannerGenerationAttempt:
+        calls.append(args)
+        raise AssertionError("generation must not start with stale scene evidence")
+
+    result = hyper.planning_heartbeat(
+        mission_input,
+        snapshot,
+        scene,
+        generate,
+    )
+
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.mission_snapshot_id == "mission-1:snapshot:7"
+    assert result.planner_choice is None
+    assert result.attempt is None
+    assert calls == []

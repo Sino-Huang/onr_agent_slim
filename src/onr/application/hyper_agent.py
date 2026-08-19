@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from threading import RLock
 from typing import Any, Callable, cast
 
@@ -85,13 +86,21 @@ class HyperHeartbeatResult:
         return self.retained_maneuver_ids
 
 
+class PlanningHeartbeatOutcome(StrEnum):
+    """Whether scene evidence allowed planner generation to start."""
+
+    ATTEMPTED = "attempted"
+    INSUFFICIENT_SCENE_EVIDENCE = "insufficient_scene_evidence"
+
+
 @dataclass(frozen=True, slots=True)
 class HyperPlanningHeartbeatResult:
     """Planner selection and generation evidence from one scene-backed heartbeat."""
 
-    planner_choice: PlannerChoiceRecord
-    attempt: PlannerGenerationAttempt
+    outcome: PlanningHeartbeatOutcome
     mission_snapshot_id: str
+    planner_choice: PlannerChoiceRecord | None = None
+    attempt: PlannerGenerationAttempt | None = None
 
 
 @dataclass
@@ -288,7 +297,7 @@ class HyperAgent:
         self,
         mission_input: MissionInput,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        scene_graph: TransportEvent | None,
         generate: Callable[
             [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
             PlannerGenerationAttempt,
@@ -300,13 +309,32 @@ class HyperAgent:
             raise TypeError("planning heartbeat requires a MissionSnapshot")
         if snapshot.mission_id != mission_input.mission_id:
             raise ValueError("planning heartbeat Mission IDs do not match")
+        snapshot_id = f"{mission_input.mission_id}:snapshot:{snapshot.version}"
+        source = "operational_scene_graph"
+        if (
+            scene_graph is None
+            or snapshot.source_references[source] is None
+            or snapshot.source_revisions[source] is None
+            or snapshot.source_health[source] != "healthy"
+            or not snapshot.source_freshness[source]
+        ):
+            self._emit(
+                mission_input.mission_id,
+                "planning-scene-evidence",
+                str(PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE),
+                {"mission_snapshot_id": snapshot_id},
+            )
+            return HyperPlanningHeartbeatResult(
+                outcome=PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
+                mission_snapshot_id=snapshot_id,
+            )
+
         if (
             not isinstance(scene_graph, TransportEvent)
             or scene_graph.event_kind != "operational_scene_graph"
             or scene_graph.mission_id != mission_input.mission_id
         ):
             raise ValueError("planning heartbeat requires the Mission scene graph")
-        source = "operational_scene_graph"
         if snapshot.source_references[source] != scene_graph.event_id:
             raise ValueError("MissionSnapshot does not reference the supplied scene graph")
         if snapshot.source_health[source] != "healthy":
@@ -318,7 +346,6 @@ class HyperAgent:
         attempt = generate(choice, snapshot, scene_graph)
         if not isinstance(attempt, PlannerGenerationAttempt):
             raise TypeError("generation callback must return PlannerGenerationAttempt")
-        snapshot_id = f"{mission_input.mission_id}:snapshot:{snapshot.version}"
         if attempt.mission_snapshot_id != snapshot_id:
             raise ValueError("generation attempt references another MissionSnapshot")
         if (
@@ -334,6 +361,7 @@ class HyperAgent:
             )
         published = self._publish_generation_attempt(attempt, choice)
         return HyperPlanningHeartbeatResult(
+            outcome=PlanningHeartbeatOutcome.ATTEMPTED,
             planner_choice=choice,
             attempt=published,
             mission_snapshot_id=snapshot_id,

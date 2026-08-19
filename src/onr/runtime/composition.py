@@ -35,6 +35,7 @@ from onr.application.hyper_agent import (
     HyperAgent,
     HyperHeartbeatResult,
     HyperPlanningHeartbeatResult,
+    PlanningHeartbeatOutcome,
 )
 from onr.application.maneuver_control import ManeuverControl
 from onr.application.symbolic_planning import SymbolicPlanning
@@ -97,10 +98,11 @@ class RuntimeRunResult:
 class PlanningMissionRunResult:
     """Evidence returned by one planner-native, scene-backed Mission Run."""
 
-    planner_choice: PlannerChoiceRecord
-    attempt: PlannerGenerationAttempt
-    context_snapshot: MissionSnapshot
-    scene_graph: TransportEvent
+    outcome: PlanningHeartbeatOutcome
+    planner_choice: PlannerChoiceRecord | None = None
+    attempt: PlannerGenerationAttempt | None = None
+    context_snapshot: MissionSnapshot | None = None
+    scene_graph: TransportEvent | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1108,8 +1110,15 @@ class RuntimeComposition:
             ):
                 if scene_delivery is not None:
                     scene_delivery.nack()
-                raise RuntimeError(
-                    "environment heartbeat did not publish an operational scene graph"
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "planning-scene-evidence",
+                    str(PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE),
+                    details={"operation": "environment_heartbeat"},
+                )
+                return PlanningMissionRunResult(
+                    outcome=PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
                 )
             scene_graph = scene_delivery.message
             scene_delivery.ack()
@@ -1119,8 +1128,17 @@ class RuntimeComposition:
                 snapshot is None
                 or snapshot.operational_scene_graph != scene_graph.event_id
             ):
-                raise RuntimeError(
-                    "Context Coordination did not publish the heartbeat scene snapshot"
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "planning-scene-evidence",
+                    str(PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE),
+                    details={"operation": "context_coordination"},
+                )
+                return PlanningMissionRunResult(
+                    outcome=PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
+                    context_snapshot=snapshot,
+                    scene_graph=scene_graph,
                 )
             heartbeat = hyper_agent.planning_heartbeat(
                 mission_input,
@@ -1130,6 +1148,22 @@ class RuntimeComposition:
             )
             if not isinstance(heartbeat, HyperPlanningHeartbeatResult):
                 raise RuntimeError("Hyper Agent did not publish planning heartbeat evidence")
+            if heartbeat.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE:
+                logger.emit(
+                    mission_id,
+                    "runtime",
+                    "heartbeat",
+                    str(heartbeat.outcome),
+                    details={"operation": "hyper_planning_heartbeat"},
+                )
+                return PlanningMissionRunResult(
+                    outcome=heartbeat.outcome,
+                    context_snapshot=snapshot,
+                    scene_graph=scene_graph,
+                )
+            if heartbeat.attempt is None or heartbeat.planner_choice is None:
+                raise RuntimeError("planning attempt evidence is incomplete")
+
             logger.emit(
                 mission_id,
                 "runtime",
@@ -1144,6 +1178,7 @@ class RuntimeComposition:
             )
             return PlanningMissionRunResult(
                 planner_choice=heartbeat.planner_choice,
+                outcome=heartbeat.outcome,
                 attempt=heartbeat.attempt,
                 context_snapshot=snapshot,
                 scene_graph=scene_graph,

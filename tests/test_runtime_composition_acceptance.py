@@ -10,6 +10,7 @@ import pytest
 from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.operational_log import FileOperationalLog
+from onr.application.hyper_agent import PlanningHeartbeatOutcome
 from onr.contracts import PlanningIntent
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.bayesian_belief import BeliefKey
@@ -411,6 +412,9 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
         model=FixedSummaryModel(),
     )
 
+    assert result.attempt is not None
+    assert result.context_snapshot is not None
+    assert result.scene_graph is not None
     assert result.attempt.outcome == "accepted"
     assert result.context_snapshot.operational_scene_graph == result.scene_graph.event_id
     assert hyper_agent.authority(mission_input.mission_id) is None
@@ -422,3 +426,177 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
     )
     assert evidence is not None
     assert evidence.event_kind == "planner-generation-attempt"
+
+
+def test_planning_mission_reports_missing_heartbeat_scene_without_generation(
+    tmp_path: Path,
+) -> None:
+    planner_path = tmp_path / "planner"
+    planner_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    planner_path.chmod(0o755)
+    runtime = RuntimeComposition.create(
+        repo_root=tmp_path,
+        config_path=_runtime_config(tmp_path, planner_path),
+    )
+    mission_input = MissionInput(
+        mission_id="missing-scene-runtime",
+        mission_text="Observe risky ships.",
+        source_authority="mission-control",
+    )
+    hyper_agent = runtime.create_hyper_agent(
+        FixedInterpreter(),
+        FixedPlanner(),
+        planning_intent_interpreter=FixedPlanningIntentInterpreter(),
+        mission_id=mission_input.mission_id,
+    )
+    context_coordination = runtime.create_context_coordination(
+        mission_id=mission_input.mission_id,
+        clock=lambda: "missing-scene-runtime",
+    )
+    calls: list[object] = []
+
+    def generate(*args: object) -> PlannerGenerationAttempt:
+        calls.append(args)
+        raise AssertionError("generation must not start without scene evidence")
+
+    result = runtime.run_planning_mission(
+        mission_input,
+        hyper_agent=hyper_agent,
+        context_coordination=context_coordination,
+        environment_heartbeat=lambda: None,
+        generate=generate,
+        model=FixedSummaryModel(),
+    )
+
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.planner_choice is None
+    assert result.attempt is None
+    assert result.context_snapshot is None
+    assert result.scene_graph is None
+
+
+def test_planning_mission_reports_stale_snapshot_scene_without_generation(
+    tmp_path: Path,
+) -> None:
+    planner_path = tmp_path / "planner"
+    planner_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    planner_path.chmod(0o755)
+    runtime = RuntimeComposition.create(
+        repo_root=tmp_path,
+        config_path=_runtime_config(tmp_path, planner_path),
+    )
+    mission_input = MissionInput(
+        mission_id="stale-scene-runtime",
+        mission_text="Observe risky ships.",
+        source_authority="mission-control",
+    )
+    hyper_agent = runtime.create_hyper_agent(
+        FixedInterpreter(),
+        FixedPlanner(),
+        planning_intent_interpreter=FixedPlanningIntentInterpreter(),
+        mission_id=mission_input.mission_id,
+    )
+    context_coordination = runtime.create_context_coordination(
+        mission_id=mission_input.mission_id,
+        clock=lambda: "stale-scene-runtime",
+    )
+    transport = cast(FileTransport, runtime.transport)
+    scene = TransportEvent(
+        schema_version=1,
+        event_id="stale-scene",
+        mission_id=mission_input.mission_id,
+        sequence=0,
+        event_kind="operational_scene_graph",
+        payload={"graph": {"entities": []}},
+    )
+
+    def heartbeat() -> None:
+        transport.publish_event("operational-scene-graph", scene)
+        context_coordination.publish_source_fact(
+            "operational_scene_graph",
+            1,
+            reference=scene.event_id,
+            fresh=False,
+        )
+
+    calls: list[object] = []
+
+    def generate(*args: object) -> PlannerGenerationAttempt:
+        calls.append(args)
+        raise AssertionError("generation must not start with stale scene evidence")
+
+    result = runtime.run_planning_mission(
+        mission_input,
+        hyper_agent=hyper_agent,
+        context_coordination=context_coordination,
+        environment_heartbeat=heartbeat,
+        generate=generate,
+        model=FixedSummaryModel(),
+    )
+
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.context_snapshot is not None
+    assert result.scene_graph == scene
+    assert result.planner_choice is None
+    assert result.attempt is None
+    assert calls == []
+
+
+def test_planning_mission_reports_unreferenced_scene_without_generation(
+    tmp_path: Path,
+) -> None:
+    planner_path = tmp_path / "planner"
+    planner_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    planner_path.chmod(0o755)
+    runtime = RuntimeComposition.create(
+        repo_root=tmp_path,
+        config_path=_runtime_config(tmp_path, planner_path),
+    )
+    mission_input = MissionInput(
+        mission_id="unreferenced-scene-runtime",
+        mission_text="Observe risky ships.",
+        source_authority="mission-control",
+    )
+    hyper_agent = runtime.create_hyper_agent(
+        FixedInterpreter(),
+        FixedPlanner(),
+        planning_intent_interpreter=FixedPlanningIntentInterpreter(),
+        mission_id=mission_input.mission_id,
+    )
+    context_coordination = runtime.create_context_coordination(
+        mission_id=mission_input.mission_id,
+        clock=lambda: "unreferenced-scene-runtime",
+    )
+    transport = cast(FileTransport, runtime.transport)
+    scene = TransportEvent(
+        schema_version=1,
+        event_id="unreferenced-scene",
+        mission_id=mission_input.mission_id,
+        sequence=0,
+        event_kind="operational_scene_graph",
+        payload={"graph": {"entities": []}},
+    )
+    calls: list[object] = []
+
+    def heartbeat() -> None:
+        transport.publish_event("operational-scene-graph", scene)
+
+    def generate(*args: object) -> PlannerGenerationAttempt:
+        calls.append(args)
+        raise AssertionError("generation must not start without a snapshot reference")
+
+    result = runtime.run_planning_mission(
+        mission_input,
+        hyper_agent=hyper_agent,
+        context_coordination=context_coordination,
+        environment_heartbeat=heartbeat,
+        generate=generate,
+        model=FixedSummaryModel(),
+    )
+
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.context_snapshot is None
+    assert result.scene_graph == scene
+    assert result.planner_choice is None
+    assert result.attempt is None
+    assert calls == []

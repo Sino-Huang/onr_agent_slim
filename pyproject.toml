@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "playwright", "pyright"]
+dev = ["pytest", "playwright", "pyright", "ruff"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/onr"]
