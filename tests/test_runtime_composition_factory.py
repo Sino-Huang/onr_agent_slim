@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from onr.agents import DeepAgentsDecisionProvider, DeepAgentsMissionInterpreter
 from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.minizinc import MiniZincExecutor
@@ -19,6 +20,7 @@ from onr.runtime import (
     TransportConfig,
 )
 import onr.runtime.composition as composition_module
+from onr.runtime.config import AgentConfig, AgentsConfig, OutputStructureRetryConfig
 
 
 class _FakeAdapter:
@@ -27,7 +29,9 @@ class _FakeAdapter:
         return None
 
 
-def _runtime() -> RuntimeComposition:
+def _runtime(
+    *, hyper_max_retries: int = 2, maneuver_max_retries: int = 1
+) -> RuntimeComposition:
     config = RuntimeConfig(
         llm=LLMConfig("vllm", "http://127.0.0.1:11411/v1", "model", "EMPTY", 0.2),
         planners=PlannersConfig(
@@ -37,6 +41,15 @@ def _runtime() -> RuntimeComposition:
         transport=TransportConfig("inprocess", Path("transport")),
         storage=StorageConfig(Path("storage")),
         services=ServicesConfig("hyper", "maneuver", "context", "fsm", "planner"),
+        debug=False,
+        agents=AgentsConfig(
+            hyper_agent=AgentConfig(
+                OutputStructureRetryConfig(max_retries=hyper_max_retries)
+            ),
+            maneuver_control=AgentConfig(
+                OutputStructureRetryConfig(max_retries=maneuver_max_retries)
+            ),
+        ),
     )
     return RuntimeComposition(config, InProcessTransport())
 
@@ -163,3 +176,59 @@ def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> N
     )
 
     assert captured["system_prompt"] == "return one physical decision"
+
+
+def test_default_hyper_agent_uses_configured_interpreter_retry_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        composition_module,
+        "create_deep_hyper_agent",
+        lambda **_kwargs: object(),
+    )
+
+    service = _runtime(hyper_max_retries=7, maneuver_max_retries=9).create_hyper_agent(
+        model=object()
+    )
+
+    assert isinstance(service.interpreter, DeepAgentsMissionInterpreter)
+    assert service.interpreter.max_retries == 7
+
+
+def test_default_maneuver_control_uses_configured_provider_retry_limit(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        composition_module,
+        "create_deep_maneuver_control_agent",
+        lambda **_kwargs: object(),
+    )
+
+    service = _runtime(hyper_max_retries=7, maneuver_max_retries=9).create_maneuver_control(
+        _FakeAdapter(),
+        model=object(),
+        mission_id="mission",
+    )
+
+    assert isinstance(service.decision_provider, DeepAgentsDecisionProvider)
+    assert service.decision_provider.max_retries == 9
+
+
+def test_explicit_agent_providers_bypass_default_retry_wiring(monkeypatch) -> None:
+    runtime = _runtime(hyper_max_retries=7, maneuver_max_retries=9)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("default provider construction must not run")
+
+    monkeypatch.setattr(composition_module, "DeepAgentsMissionInterpreter", fail)
+    monkeypatch.setattr(composition_module, "DeepAgentsDecisionProvider", fail)
+    monkeypatch.setattr(composition_module.RuntimeComposition, "create_chat_model", fail)
+
+    interpreter = lambda _mission_input: None
+    decision_provider = object()
+
+    hyper_agent = runtime.create_hyper_agent(interpreter=interpreter)
+    maneuver_control = runtime.create_maneuver_control(
+        _FakeAdapter(), decision_provider=decision_provider
+    )
+
+    assert hyper_agent.interpreter is interpreter
+    assert maneuver_control.decision_provider is decision_provider

@@ -14,7 +14,13 @@ from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
 from onr.application.planning_commands import PlanningCommandHandler
-from onr.agents.maneuver_control import DeepAgentsDecisionProvider
+import onr.agents.maneuver_control as maneuver_control_agent
+from onr.agents.maneuver_control import (
+    MANEUVER_CONTROL_DECISION_SCHEMA,
+    DeepAgentsDecisionProvider,
+    create_maneuver_control_agent,
+)
+from onr.agents.structured_output import StructuredOutputRetriesExhausted
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.application.temporal_planning import TemporalPlanning
 from onr.contracts.context_coordination import MissionSnapshot
@@ -105,11 +111,307 @@ def test_deep_agents_decision_provider_unwraps_message_state() -> None:
 
     provider = DeepAgentsDecisionProvider(Agent())
     result = provider.decide(
-        cast(MissionSnapshot, SimpleNamespace(to_dict=lambda: {})),
-        cast(FSMStatus, SimpleNamespace(to_dict=lambda: {})),
+        cast(MissionSnapshot, cast(object, SimpleNamespace(to_dict=lambda: {}))),
+        cast(FSMStatus, cast(object, SimpleNamespace(to_dict=lambda: {}))),
     )
 
     assert result == expected
+
+
+class RecordingDecisionAgent:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = responses
+        self.calls: list[Mapping[str, object]] = []
+
+    def invoke(self, value: Mapping[str, object]) -> object:
+        self.calls.append(value)
+        return self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
+
+
+def _model_decision(
+    *, mission_id: str = "mission-recovery", plan_revision: int = 4
+) -> ManeuverControlDecision:
+    return ManeuverControlDecision(
+        "decision-recovery",
+        mission_id,
+        plan_revision,
+        maneuver_id="survey",
+        action="navigate",
+    )
+
+
+def _message_contents(call: Mapping[str, object]) -> list[str]:
+    messages = call["messages"]
+    assert isinstance(messages, list)
+    contents = [getattr(message, "content", None) for message in messages]
+    assert all(isinstance(content, str) for content in contents)
+    return cast(list[str], contents)
+
+
+def test_structural_failure_retries_with_original_context_and_safe_feedback() -> None:
+    snapshot = _snapshot("mission-recovery", 4)
+    status = _status("mission-recovery", 4)
+    overlay = InvocationOverlay("mission-recovery", "request-4", {"hint": "hold"})
+    expected = _model_decision()
+    agent = RecordingDecisionAgent(
+        [
+            {"structured_response": {"raw-secret-field": "raw-secret-value"}},
+            {"structured_response": expected.to_dict()},
+        ]
+    )
+
+    result = DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+        snapshot, status, overlay
+    )
+
+    assert result == expected
+    assert len(agent.calls) == 2
+    original = {
+        "snapshot": snapshot.to_dict(),
+        "fsm_status": status.to_dict(),
+        "overlay": overlay.to_dict(),
+    }
+    first = _message_contents(agent.calls[0])
+    second = _message_contents(agent.calls[1])
+    assert json.loads(first[0]) == original
+    assert second[0] == first[0]
+    feedback = json.loads(second[1])
+    assert feedback == {
+        "errors": [
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.choice",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.decision_id",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.maneuver_id",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.mission_id",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.payload",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.physical_intent",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.plan_revision",
+                "retries_remaining": 1,
+            },
+            {
+                "attempt": 1,
+                "code": "missing_required_field",
+                "expected": "required field",
+                "path": "$.schema_version",
+                "retries_remaining": 1,
+            },
+        ],
+        "additional_errors_omitted": True,
+    }
+    assert "raw-secret" not in second[1]
+
+
+@pytest.mark.parametrize("max_retries", [0, 1, 3])
+def test_structured_output_retry_budget_is_initial_call_plus_retries(
+    max_retries: int,
+) -> None:
+    agent = RecordingDecisionAgent([{"structured_response": None}])
+    provider = DeepAgentsDecisionProvider(agent, max_retries=max_retries)
+
+    with pytest.raises(StructuredOutputRetriesExhausted) as caught:
+        provider.decide(_snapshot("mission-recovery", 4), _status("mission-recovery", 4))
+
+    assert caught.value.code == "output_structure_retries_exhausted"
+    assert len(agent.calls) == max_retries + 1
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(
+            lambda value: {key: item for key, item in value.items() if key != "payload"},
+            id="missing-field",
+        ),
+        pytest.param(lambda value: {**value, "extra": True}, id="extra-field"),
+        pytest.param(lambda value: {**value, "plan_revision": "4"}, id="wrong-primitive"),
+        pytest.param(lambda value: {**value, "payload": []}, id="wrong-container"),
+        pytest.param(lambda value: {**value, "choice": "launch"}, id="invalid-choice"),
+        pytest.param(
+            lambda value: {
+                **value,
+                "physical_intent": {"action": "launch", "parameters": {}},
+            },
+            id="invalid-action",
+        ),
+    ],
+)
+def test_structural_decision_errors_retry(invalid: Any) -> None:
+    expected = _model_decision()
+    agent = RecordingDecisionAgent(
+        [
+            {"structured_response": invalid(expected.to_dict())},
+            {"structured_response": expected.to_dict()},
+        ]
+    )
+
+    assert DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+        _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+    ) == expected
+    assert len(agent.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "invalid_response",
+    [
+        object(),
+        {"messages": [SimpleNamespace(content="{raw-secret")]},
+        {"messages": [SimpleNamespace(content=[{"type": "tool_call"}])]},
+    ],
+)
+def test_nonmapping_malformed_json_and_tool_call_responses_retry(
+    invalid_response: object,
+) -> None:
+    expected = _model_decision()
+    agent = RecordingDecisionAgent(
+        [invalid_response, {"structured_response": expected.to_dict()}]
+    )
+
+    assert DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+        _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+    ) == expected
+    assert len(agent.calls) == 2
+    assert "raw-secret" not in _message_contents(agent.calls[1])[1]
+
+
+def test_nonmapping_response_exhausts_without_escaping_to_application() -> None:
+    agent = RecordingDecisionAgent([object()])
+
+    with pytest.raises(StructuredOutputRetriesExhausted):
+        DeepAgentsDecisionProvider(agent, max_retries=0).decide(
+            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+        )
+
+    assert len(agent.calls) == 1
+
+
+def test_typed_decision_response_shapes_return_without_retry() -> None:
+    expected = _model_decision()
+    for response in (expected, {"structured_response": expected}):
+        agent = RecordingDecisionAgent([response])
+        assert DeepAgentsDecisionProvider(agent, max_retries=3).decide(
+            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+        ) == expected
+        assert len(agent.calls) == 1
+
+
+def test_agent_factory_receives_strict_maneuver_decision_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(maneuver_control_agent, "_create_deep_agent", fake_create)
+
+    create_maneuver_control_agent(model="model")
+
+    assert captured["response_format"] is MANEUVER_CONTROL_DECISION_SCHEMA
+    assert MANEUVER_CONTROL_DECISION_SCHEMA["additionalProperties"] is False
+    assert set(MANEUVER_CONTROL_DECISION_SCHEMA["required"]) == set(
+        ManeuverControlDecision(
+            "schema", "mission", 1, choice=NonPhysicalChoice.REPORT
+        ).to_dict()
+    )
+    properties = MANEUVER_CONTROL_DECISION_SCHEMA["properties"]
+    assert properties["choice"]["type"] == ["string", "null"]
+    assert set(properties["choice"]["enum"]) == {
+        *(choice.value for choice in NonPhysicalChoice),
+        None,
+    }
+    physical = properties["physical_intent"]
+    assert set(physical["oneOf"][0]["properties"]["action"]["enum"]) == {
+        action.value for action in PhysicalAction
+    }
+
+
+def test_typed_decision_application_validation_failure_is_not_retried_or_effectful() -> None:
+    mission_id = "mission-validation"
+    decision = _model_decision(mission_id="wrong-mission", plan_revision=1)
+    agent = RecordingDecisionAgent([decision])
+    provider = DeepAgentsDecisionProvider(agent, max_retries=4)
+    transport = InProcessTransport()
+    adapter = RecordingAdapter()
+    control = ManeuverControl(cast(Any, transport), adapter, provider)
+
+    with pytest.raises(ValueError, match="mission ID does not match context"):
+        control.heartbeat(
+            _snapshot(mission_id, 1),
+            _status(mission_id, 1),
+            event_id="invalid-input",
+        )
+
+    assert len(agent.calls) == 1
+    assert transport.latest_event(
+        "maneuver-invocations/invalid-input", mission_id
+    ) is None
+    assert transport.state.commands == {}
+    assert adapter.commands == []
+
+
+def test_structured_decision_success_has_one_decision_and_command_path() -> None:
+    mission_id = "mission-success"
+    expected = _model_decision(mission_id=mission_id, plan_revision=1)
+    agent = RecordingDecisionAgent([{"structured_response": expected.to_dict()}])
+    transport = InProcessTransport()
+    adapter = RecordingAdapter()
+    control = ManeuverControl(
+        cast(Any, transport),
+        adapter,
+        DeepAgentsDecisionProvider(agent, max_retries=2),
+    )
+
+    result = control.heartbeat(
+        _snapshot(mission_id, 1), _status(mission_id, 1), event_id="valid-input"
+    )
+
+    assert result.decision == expected
+    assert result.command is not None
+    assert len(agent.calls) == 1
+    queued = transport.state.commands[("maneuver-adapter", mission_id)]
+    assert sum(isinstance(message, Command) for _, message in queued) == 1
+    control.handle_command(result.command)
+    assert len(adapter.commands) == 1
 
 
 class AlternatingDecisionProvider:

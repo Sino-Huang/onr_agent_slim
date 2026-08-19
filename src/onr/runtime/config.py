@@ -54,6 +54,12 @@ def _boolean(value: object, label: str) -> bool:
     return value
 
 
+def _non_negative_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     provider: str
@@ -114,6 +120,28 @@ class ServicesConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OutputStructureRetryConfig:
+    max_retries: int
+
+
+@dataclass(frozen=True, slots=True)
+class AgentConfig:
+    output_structure_retry: OutputStructureRetryConfig
+
+
+@dataclass(frozen=True, slots=True)
+class AgentsConfig:
+    hyper_agent: AgentConfig
+    maneuver_control: AgentConfig
+
+
+DEFAULT_AGENTS_CONFIG = AgentsConfig(
+    hyper_agent=AgentConfig(OutputStructureRetryConfig(max_retries=2)),
+    maneuver_control=AgentConfig(OutputStructureRetryConfig(max_retries=1)),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     llm: LLMConfig
     planners: PlannersConfig
@@ -122,6 +150,7 @@ class RuntimeConfig:
     storage: StorageConfig
     services: ServicesConfig
     debug: bool
+    agents: AgentsConfig = DEFAULT_AGENTS_CONFIG
 
 
 def _path(value: object, label: str, repo_root: Path, *, executable: bool = False) -> Path:
@@ -162,7 +191,16 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         raise ValueError(f"runtime configuration cannot be read: {selected}") from exc
     top = _exact(
         raw,
-        {"debug", "llm", "planners", "heartbeats", "transport", "storage", "services"},
+        {
+            "debug",
+            "llm",
+            "planners",
+            "heartbeats",
+            "transport",
+            "storage",
+            "services",
+            "agents",
+        },
         "runtime configuration",
     )
     debug = _boolean(top["debug"], "debug")
@@ -219,6 +257,31 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     storage = StorageConfig(_config_path(storage_values["root"], "storage.root", root))
     service_values = _exact(top["services"], {"hyper_agent", "maneuver_control", "context_coordination", "fsm_runner", "planner"}, "services")
     services = ServicesConfig(**{key: _text(service_values[key], f"services.{key}") for key in service_values})
+    agent_values = _exact(
+        top["agents"], {"hyper_agent", "maneuver_control"}, "agents"
+    )
+    agent_records: dict[str, AgentConfig] = {}
+    for name in ("hyper_agent", "maneuver_control"):
+        values = _exact(
+            agent_values[name], {"output_structure_retry"}, f"agents.{name}"
+        )
+        retry_values = _exact(
+            values["output_structure_retry"],
+            {"max_retries"},
+            f"agents.{name}.output_structure_retry",
+        )
+        agent_records[name] = AgentConfig(
+            OutputStructureRetryConfig(
+                _non_negative_integer(
+                    retry_values["max_retries"],
+                    f"agents.{name}.output_structure_retry.max_retries",
+                )
+            )
+        )
+    agents = AgentsConfig(
+        hyper_agent=agent_records["hyper_agent"],
+        maneuver_control=agent_records["maneuver_control"],
+    )
     return RuntimeConfig(
         llm=LLMConfig(provider, base_url, model, api_key, temperature),
         planners=PlannersConfig(
@@ -229,6 +292,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         storage=storage,
         services=services,
         debug=debug,
+        agents=agents,
     )
 
 

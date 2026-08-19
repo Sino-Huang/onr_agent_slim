@@ -1,4 +1,6 @@
 import asyncio
+import json
+from collections.abc import Mapping
 
 import pytest
 from langchain_openai import ChatOpenAI
@@ -7,6 +9,7 @@ from pydantic import SecretStr
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.application.hyper_agent import HyperAgent
 from onr.agents.hyper_agent import DeepAgentsMissionInterpreter, create_hyper_agent
+from onr.agents.structured_output import StructuredOutputRetriesExhausted
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import HumanQuestion, MissionInput, ReplanRequest
@@ -165,6 +168,144 @@ def test_deep_agents_interpreter_uses_strict_domain_parser() -> None:
         MissionInput("mission-1", "Survey", "mission-control")
     )
     assert result == _spec()
+
+
+class _ResponseAgent:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = responses
+        self.calls: list[Mapping[str, object]] = []
+
+    def invoke(self, value: Mapping[str, object]) -> object:
+        self.calls.append(value)
+        return self.responses.pop(0)
+
+
+def test_interpreter_recovers_temporal_output_with_original_safe_message() -> None:
+    raw_failure = "PRIVATE malformed candidate"
+    agent = _ResponseAgent(
+        [
+            {"structured_response": raw_failure},
+            {"structured_response": _spec().to_dict()},
+        ]
+    )
+    mission_input = MissionInput("mission-1", "Survey", "mission-control")
+
+    result = DeepAgentsMissionInterpreter(agent).interpret(mission_input)
+
+    assert result == _spec()
+    assert len(agent.calls) == 2
+    expected = json.dumps(
+        mission_input.to_dict(),
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    first_messages = agent.calls[0]["messages"]
+    second_messages = agent.calls[1]["messages"]
+    assert isinstance(first_messages, list) and len(first_messages) == 1
+    assert isinstance(second_messages, list) and len(second_messages) == 2
+    assert first_messages[0].content == expected
+    assert second_messages[0].content == expected
+    assert raw_failure not in second_messages[1].content
+
+
+def test_interpreter_accepts_valid_symbolic_candidate() -> None:
+    spec = _symbolic_spec()
+    agent = _ResponseAgent([{"structured_response": spec.to_dict()}])
+
+    result = DeepAgentsMissionInterpreter(agent).interpret(
+        MissionInput(spec.mission_id, "Survey", "mission-control")
+    )
+
+    assert result == spec
+    assert len(agent.calls) == 1
+
+
+@pytest.mark.parametrize(("max_retries", "expected_calls"), [(0, 1), (1, 2), (4, 5)])
+def test_interpreter_retry_budget_limits_calls(
+    max_retries: int, expected_calls: int
+) -> None:
+    agent = _ResponseAgent([{} for _ in range(expected_calls)])
+
+    with pytest.raises(StructuredOutputRetriesExhausted):
+        DeepAgentsMissionInterpreter(agent, max_retries=max_retries).interpret(
+            MissionInput("mission-1", "Survey", "mission-control")
+        )
+
+    assert len(agent.calls) == expected_calls
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {
+            key: value
+            for key, value in _spec().to_dict().items()
+            if key != "objective"
+        },
+        {**_spec().to_dict(), "unexpected": True},
+        {**_spec().to_dict(), "horizon": "three"},
+        {
+            **_spec().to_dict(),
+            "planner_choice": {
+                "planning_profile": "quantum",
+                "planner_id": "minizinc",
+            },
+        },
+    ],
+    ids=["missing", "extra", "wrong-type", "invalid-enum"],
+)
+def test_interpreter_retries_structural_contract_errors(
+    candidate: dict[str, object],
+) -> None:
+    agent = _ResponseAgent(
+        [
+            {"structured_response": candidate},
+            {"structured_response": _spec().to_dict()},
+        ]
+    )
+
+    assert DeepAgentsMissionInterpreter(agent, max_retries=1).interpret(
+        MissionInput("mission-1", "Survey", "mission-control")
+    ) == _spec()
+    assert len(agent.calls) == 2
+
+
+def test_interpreter_does_not_retry_semantic_bad_bound() -> None:
+    candidate = {**_spec().to_dict(), "horizon": 0}
+    agent = _ResponseAgent(
+        [
+            {"structured_response": candidate},
+            {"structured_response": _spec().to_dict()},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="mission horizon must be positive"):
+        DeepAgentsMissionInterpreter(agent).interpret(
+            MissionInput("mission-1", "Survey", "mission-control")
+        )
+
+    assert len(agent.calls) == 1
+
+
+def test_freeze_identity_mismatch_does_not_retry_or_publish() -> None:
+    candidate = _spec(mission_id="wrong-mission")
+    agent = _ResponseAgent([{"structured_response": candidate.to_dict()}])
+    transport = InProcessTransport()
+    service = HyperAgent(
+        DeepAgentsMissionInterpreter(agent),
+        transport=transport,
+    )
+
+    with pytest.raises(ValueError, match="Mission ID does not match"):
+        service.freeze_mission(
+            MissionInput("mission-1", "Survey", "mission-control")
+        )
+
+    assert len(agent.calls) == 1
+    assert service.authority("mission-1") is None
+    assert transport.latest_event("mission-specifications", "mission-1") is None
 
 
 def test_deep_agent_accepts_mission_spec_response_schema() -> None:

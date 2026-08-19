@@ -411,7 +411,8 @@ class RuntimeComposition:
                     skill_catalog=skill_catalog,
                     skill_version=skill_version,
                     backend_root=context_backend_root,
-                )
+                ),
+                max_retries=self.config.agents.maneuver_control.output_structure_retry.max_retries,
             )
 
         return ManeuverControl(
@@ -460,7 +461,8 @@ class RuntimeComposition:
                     skill_catalog=skill_catalog,
                     skill_version=skill_version,
                     backend_root=context_backend_root,
-                )
+                ),
+                max_retries=self.config.agents.hyper_agent.output_structure_retry.max_retries,
             )
         selected = planners
         if selected is None and (temporal_planner is not None or symbolic_planner is not None):

@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import math
+import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, cast
 
 from onr.agents.role_context import MissionRoleContext, RoleEpisode
+from onr.agents.structured_output import (
+    StructuralIssue,
+    StructuredOutputFailure,
+    invoke_with_structured_output_recovery,
+)
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import MissionSpec, SymbolicMissionSpec
 
@@ -304,8 +312,9 @@ def _skill_agent_path(path: Path, backend_root: Path | None) -> str:
 class DeepAgentsMissionInterpreter:
     """Adapt a Deep Agent response to a validated Mission Specification."""
 
-    def __init__(self, agent: object) -> None:
+    def __init__(self, agent: object, max_retries: int = 2) -> None:
         self.agent = agent
+        self.max_retries = max_retries
 
     def interpret(self, mission_input: MissionInput) -> MissionSpec | SymbolicMissionSpec:
         if not isinstance(mission_input, MissionInput):
@@ -313,25 +322,247 @@ class DeepAgentsMissionInterpreter:
         invoke = getattr(self.agent, "invoke", None)
         if not callable(invoke):
             raise TypeError("Deep Hyper Agent must expose invoke")
-        response = invoke({"mission_input": mission_input.to_dict(), **mission_input.to_dict()})
-        structured = response.get("structured_response") if isinstance(response, dict) else response
+
+        return invoke_with_structured_output_recovery(
+            cast(Callable[[Mapping[str, object]], object], invoke),
+            mission_input.to_dict(),
+            self.max_retries,
+            _parse_mission_response,
+        )
+
+
+def _fail(*issues: StructuralIssue) -> NoReturn:
+    raise StructuredOutputFailure(issues)
+
+
+def _object(value: object, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        _fail(StructuralIssue("invalid_type", path, "object"))
+    return cast(Mapping[str, Any], value)
+
+
+def _fields(value: object, expected: set[str], path: str) -> Mapping[str, Any]:
+    data = _object(value, path)
+    actual = set(data)
+    issues = [
+        StructuralIssue("missing_required_field", f"{path}.{name}", "required field")
+        for name in sorted(expected - actual)
+    ]
+    if actual - expected:
+        issues.append(
+            StructuralIssue(
+                "unexpected_field",
+                path,
+                "only the declared fields",
+            )
+        )
+    if issues:
+        raise StructuredOutputFailure(issues)
+    return data
+
+
+def _text(value: object, path: str) -> None:
+    if not isinstance(value, str):
+        _fail(StructuralIssue("invalid_type", path, "string"))
+    if not value.strip():
+        _fail(StructuralIssue("invalid_value", path, "non-empty string"))
+
+
+def _integer(value: object, path: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        _fail(StructuralIssue("invalid_type", path, "integer"))
+
+
+def _parse_mission_response(response: object) -> MissionSpec | SymbolicMissionSpec:
+    envelope = _object(response, "$")
+    if "structured_response" not in envelope:
+        _fail(
+            StructuralIssue(
+                "missing_required_field",
+                "$.structured_response",
+                "required field",
+            )
+        )
+    structured = envelope["structured_response"]
+    try:
         model_dump = getattr(structured, "model_dump", None)
         if callable(model_dump):
             structured = model_dump()
-        if not isinstance(structured, dict):
-            raise ValueError("Deep Hyper Agent did not return a structured Mission Specification")
-        if "mission_spec" in structured and len(structured) == 1:
-            structured = structured["mission_spec"]
-        if not isinstance(structured, dict):
-            raise ValueError("structured Mission Specification must be an object")
+    except Exception:
+        _fail(
+            StructuralIssue(
+                "malformed_structured_output",
+                "$.structured_response",
+                "serializable structured output",
+            )
+        )
 
-        try:
-            return MissionSpec.from_dict(structured)
-        except ValueError as temporal_error:
-            try:
-                return SymbolicMissionSpec.from_dict(structured)
-            except ValueError as symbolic_error:
-                raise ValueError("structured response is not a valid MissionSpec") from symbolic_error
+    candidate = _object(structured, "$.structured_response")
+    candidate_path = "$.structured_response"
+    if "mission_spec" in candidate:
+        candidate = _fields(candidate, {"mission_spec"}, candidate_path)
+        candidate_path += ".mission_spec"
+        candidate = _object(candidate["mission_spec"], candidate_path)
+
+    profile = _validate_common_structure(candidate, candidate_path)
+    if profile == "temporal":
+        _validate_temporal_structure(candidate, candidate_path)
+        return MissionSpec.from_dict(candidate)
+
+    _validate_symbolic_structure(candidate, candidate_path)
+    return SymbolicMissionSpec.from_dict(candidate)
+
+
+def _validate_common_structure(candidate: Mapping[str, Any], path: str) -> str:
+    common = {"mission_id", "objective", "planner_choice", "maneuvers", "source_authority"}
+    missing = common - set(candidate)
+    if missing:
+        raise StructuredOutputFailure(
+            [
+                StructuralIssue(
+                    "missing_required_field", f"{path}.{name}", "required field"
+                )
+                for name in sorted(missing)
+            ]
+        )
+
+    for name in ("mission_id", "objective", "source_authority"):
+        _text(candidate[name], f"{path}.{name}")
+
+    choice_path = f"{path}.planner_choice"
+    choice = _fields(
+        candidate["planner_choice"],
+        {"planner_id", "planning_profile"},
+        choice_path,
+    )
+    profile = choice["planning_profile"]
+    if not isinstance(profile, str):
+        _fail(
+            StructuralIssue(
+                "invalid_type", f"{choice_path}.planning_profile", "string"
+            )
+        )
+    if profile not in ("temporal", "symbolic"):
+        _fail(
+            StructuralIssue(
+                "invalid_value",
+                f"{choice_path}.planning_profile",
+                '"symbolic" or "temporal"',
+            )
+        )
+    planner_id = choice["planner_id"]
+    if planner_id is not None and not isinstance(planner_id, str):
+        _fail(
+            StructuralIssue(
+                "invalid_type", f"{choice_path}.planner_id", "string or null"
+            )
+        )
+    return profile
+
+
+def _validate_temporal_structure(candidate: Mapping[str, Any], path: str) -> None:
+    _fields(
+        candidate,
+        {
+            "mission_id",
+            "objective",
+            "planner_choice",
+            "maneuvers",
+            "horizon",
+            "source_authority",
+        },
+        path,
+    )
+    _integer(candidate["horizon"], f"{path}.horizon")
+    _validate_maneuvers(candidate["maneuvers"], path, "duration")
+
+
+def _validate_symbolic_structure(candidate: Mapping[str, Any], path: str) -> None:
+    _fields(
+        candidate,
+        {
+            "mission_id",
+            "objective",
+            "planner_choice",
+            "maneuvers",
+            "source_authority",
+            "domain_revision",
+        },
+        path,
+    )
+    _integer(candidate["domain_revision"], f"{path}.domain_revision")
+    _validate_maneuvers(candidate["maneuvers"], path, "cost")
+
+
+def _validate_maneuvers(value: object, path: str, measure: str) -> None:
+    maneuvers_path = f"{path}.maneuvers"
+    if not isinstance(value, (list, tuple)):
+        _fail(StructuralIssue("invalid_type", maneuvers_path, "array"))
+    for index, raw in enumerate(value):
+        maneuver_path = f"{maneuvers_path}[{index}]"
+        maneuver = _fields(
+            raw,
+            {"maneuver_id", "intent", "dependencies", measure},
+            maneuver_path,
+        )
+        maneuver_id = maneuver["maneuver_id"]
+        if not isinstance(maneuver_id, str):
+            _fail(
+                StructuralIssue(
+                    "invalid_type", f"{maneuver_path}.maneuver_id", "string"
+                )
+            )
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", maneuver_id) is None:
+            _fail(
+                StructuralIssue(
+                    "invalid_value",
+                    f"{maneuver_path}.maneuver_id",
+                    "portable semantic identifier",
+                )
+            )
+        _validate_intent(maneuver["intent"], maneuver_path)
+        dependencies = maneuver["dependencies"]
+        dependencies_path = f"{maneuver_path}.dependencies"
+        if not isinstance(dependencies, (list, tuple)):
+            _fail(StructuralIssue("invalid_type", dependencies_path, "array"))
+        for dependency_index, dependency in enumerate(dependencies):
+            if not isinstance(dependency, str):
+                _fail(
+                    StructuralIssue(
+                        "invalid_type",
+                        f"{dependencies_path}[{dependency_index}]",
+                        "string",
+                    )
+                )
+        _integer(maneuver[measure], f"{maneuver_path}.{measure}")
+
+
+def _validate_intent(value: object, maneuver_path: str) -> None:
+    intent_path = f"{maneuver_path}.intent"
+    intent = _fields(value, {"action", "parameters"}, intent_path)
+    _text(intent["action"], f"{intent_path}.action")
+    parameters_path = f"{intent_path}.parameters"
+    parameters = _object(intent["parameters"], parameters_path)
+    for name, parameter in parameters.items():
+        if not isinstance(name, str) or not name.strip():
+            _fail(
+                StructuralIssue(
+                    "invalid_value", parameters_path, "non-empty string field names"
+                )
+            )
+        parameter_path = f"{parameters_path}.{name}"
+        if parameter is not None and not isinstance(parameter, (str, int, float, bool)):
+            _fail(
+                StructuralIssue(
+                    "invalid_type", parameter_path, "JSON scalar"
+                )
+            )
+        if isinstance(parameter, float) and not math.isfinite(parameter):
+            _fail(
+                StructuralIssue(
+                    "invalid_value", parameter_path, "finite JSON number"
+                )
+            )
 
 
 __all__ = ["MISSION_SPEC_SCHEMA", "create_hyper_agent", "DeepAgentsMissionInterpreter"]
