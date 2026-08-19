@@ -57,6 +57,13 @@ def _config(tmp_path: Path, *, debug: bool = True) -> tuple[Path, Path]:
                 "  context_coordination: context-coordination",
                 "  fsm_runner: fsm-runner",
                 "  planner: planner",
+                "agents:",
+                "  hyper_agent:",
+                "    output_structure_retry:",
+                "      max_retries: 2",
+                "  maneuver_control:",
+                "    output_structure_retry:",
+                "      max_retries: 1",
             )
         )
         + "\n",

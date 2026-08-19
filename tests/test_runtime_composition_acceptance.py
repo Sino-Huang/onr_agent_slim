@@ -111,7 +111,8 @@ class FixedSummaryModel:
 def _runtime_config(tmp_path: Path, planner_path: Path) -> Path:
     config = tmp_path / "runtime.yaml"
     config.write_text(
-        f"""llm:
+        f"""debug: false
+llm:
   provider: test
   base_url: http://127.0.0.1:14398/v1
   model: test-model
@@ -139,6 +140,13 @@ services:
   context_coordination: context-coordination
   fsm_runner: fsm-runner
   planner: planner
+agents:
+  hyper_agent:
+    output_structure_retry:
+      max_retries: 2
+  maneuver_control:
+    output_structure_retry:
+      max_retries: 1
 """,
         encoding="utf-8",
     )
