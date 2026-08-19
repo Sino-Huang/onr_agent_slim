@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from onr.application.symbolic_planning import SymbolicPlanning
 from onr.contracts.planning import (
     ManeuverIntent,
     PlannerChoice,
+    PlannerExecutionEvidence,
     PlanningOutcome,
     SymbolicActionCall,
     SymbolicManeuver,
@@ -53,6 +56,12 @@ def test_symbolic_planning_normalizes_ordered_actions_and_emits_transport() -> N
     executor = FakeSymbolicExecutor(
         SymbolicPlannerExecutionResult(
             outcome=PlanningOutcome.SOLVED,
+            evidence=PlannerExecutionEvidence(
+                artifact_directory=Path("artifacts/symbolic"),
+                artifact_paths=(Path("artifacts/symbolic/domain.pddl"),),
+                stdout_path=Path("artifacts/symbolic/solver.stdout"),
+                stderr_path=Path("artifacts/symbolic/solver.stderr"),
+            ),
             action_calls=(
                 SymbolicActionCall("survey"),
                 SymbolicActionCall("return-to-base"),
@@ -72,6 +81,7 @@ def test_symbolic_planning_normalizes_ordered_actions_and_emits_transport() -> N
     )
 
     assert result.outcome is PlanningOutcome.SOLVED
+    assert result.evidence == executor.result.evidence
     assert tuple(
         (step.step_index, step.maneuver_id, step.cost)
         for step in result.normalized_plan.symbolic_steps

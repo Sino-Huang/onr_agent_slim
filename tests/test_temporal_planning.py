@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from onr.application.temporal_planning import TemporalPlanning
@@ -5,6 +7,7 @@ from onr.contracts.planning import (
     ManeuverIntent,
     ManeuverParameter,
     MissionSpec,
+    PlannerExecutionEvidence,
     PlannerChoice,
     PlannerExecutionResult,
     PlanningOutcome,
@@ -73,6 +76,12 @@ def test_temporal_planning_preserves_provenance_and_terminal_outcomes(
     )
     executor_result = PlannerExecutionResult(
         outcome=terminal_outcome,
+        evidence=PlannerExecutionEvidence(
+            artifact_directory=Path("artifacts/temporal"),
+            artifact_paths=(Path("artifacts/temporal/model.mzn"),),
+            stdout_path=Path("artifacts/temporal/solver.stdout"),
+            stderr_path=Path("artifacts/temporal/solver.stderr"),
+        ),
         assignments=(
             (
                 TemporalAssignment(
@@ -98,6 +107,7 @@ def test_temporal_planning_preserves_provenance_and_terminal_outcomes(
     assert result.normalized_plan.plan_revision == 7
     assert result.normalized_plan.mission_snapshot_id == "snapshot-12"
     assert result.normalized_plan.planner_choice == planner_choice
+    assert result.evidence == executor_result.evidence
     if terminal_outcome is not PlanningOutcome.SOLVED:
         assert result.normalized_plan.maneuvers == ()
         return

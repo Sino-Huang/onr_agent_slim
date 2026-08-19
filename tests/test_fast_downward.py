@@ -30,6 +30,7 @@ def test_fast_downward_executor_parses_ordered_plan_and_cost(tmp_path) -> None:
     )
     result = FastDownwardExecutor(
         executable=sys.executable,
+        artifact_root=tmp_path / "artifacts",
         arguments=(str(driver),),
     ).execute(
         {
@@ -45,6 +46,15 @@ def test_fast_downward_executor_parses_ordered_plan_and_cost(tmp_path) -> None:
         "return-to-base",
     )
     assert result.total_plan_cost == 7
+    assert result.evidence is not None
+    assert result.evidence.artifact_directory.parent == (tmp_path / "artifacts").resolve()
+    assert {path.name for path in result.evidence.artifact_paths} == {
+        "domain.pddl",
+        "problem.pddl",
+        "sas_plan",
+    }
+    assert result.evidence.stdout_path.read_text(encoding="utf-8") == ""
+    assert result.evidence.stderr_path.read_text(encoding="utf-8") == ""
 
 
 @pytest.mark.parametrize(
@@ -64,11 +74,15 @@ def test_fast_downward_executor_maps_documented_nonzero_exits(
 
     result = FastDownwardExecutor(
         executable=sys.executable,
+        artifact_root=tmp_path / "artifacts",
         arguments=(str(driver),),
     ).execute({"domain.pddl": b"domain", "problem.pddl": b"problem"})
 
     assert result.outcome is expected
     assert result.action_calls == ()
+    assert result.evidence is not None
+    assert result.evidence.stdout_path.exists()
+    assert result.evidence.stderr_path.exists()
 
 
 def test_fast_downward_executor_maps_subprocess_timeout(tmp_path) -> None:
@@ -76,11 +90,14 @@ def test_fast_downward_executor_maps_subprocess_timeout(tmp_path) -> None:
 
     result = FastDownwardExecutor(
         executable=sys.executable,
+        artifact_root=tmp_path / "artifacts",
         arguments=(str(driver),),
         timeout_seconds=0.01,
     ).execute({"domain.pddl": b"domain", "problem.pddl": b"problem"})
 
     assert result.outcome is PlanningOutcome.TIMEOUT
+    assert result.evidence is not None
+    assert "timed out" in result.evidence.stderr_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -106,6 +123,7 @@ def test_fast_downward_executor_rejects_missing_or_malformed_plan_content(
 
     result = FastDownwardExecutor(
         executable=sys.executable,
+        artifact_root=tmp_path / "artifacts",
         arguments=(str(driver),),
     ).execute({"domain.pddl": b"domain", "problem.pddl": b"problem"})
 

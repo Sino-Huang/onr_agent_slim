@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, cast
 
 
@@ -509,11 +510,32 @@ class TemporalAssignment:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannerExecutionEvidence:
+    """Filesystem evidence persisted for one planner execution."""
+
+    artifact_directory: Path
+    artifact_paths: tuple[Path, ...]
+    stdout_path: Path
+    stderr_path: Path
+
+    def __post_init__(self) -> None:
+        artifact_directory = Path(self.artifact_directory).resolve()
+        artifact_paths = tuple(Path(path).resolve() for path in self.artifact_paths)
+        stdout_path = Path(self.stdout_path).resolve()
+        stderr_path = Path(self.stderr_path).resolve()
+        object.__setattr__(self, "artifact_directory", artifact_directory)
+        object.__setattr__(self, "artifact_paths", artifact_paths)
+        object.__setattr__(self, "stdout_path", stdout_path)
+        object.__setattr__(self, "stderr_path", stderr_path)
+
+
+@dataclass(frozen=True, slots=True)
 class PlannerExecutionResult:
     """Terminal timing result returned through the planner executor port."""
 
     outcome: PlanningOutcome | str
     assignments: tuple[TemporalAssignment, ...] = ()
+    evidence: PlannerExecutionEvidence | None = None
 
     def __post_init__(self) -> None:
         outcome = PlanningOutcome(self.outcome)
@@ -553,6 +575,7 @@ class SymbolicPlannerExecutionResult:
     outcome: PlanningOutcome | str
     action_calls: tuple[SymbolicActionCall, ...] = ()
     total_plan_cost: int = 0
+    evidence: PlannerExecutionEvidence | None = None
 
     def __post_init__(self) -> None:
         outcome = PlanningOutcome(self.outcome)
@@ -747,6 +770,7 @@ class TemporalPlanningResult:
 
     outcome: PlanningOutcome
     normalized_plan: NormalizedPlan
+    evidence: PlannerExecutionEvidence | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is not self.normalized_plan.outcome:
@@ -759,6 +783,7 @@ class SymbolicPlanningResult:
 
     outcome: PlanningOutcome
     normalized_plan: NormalizedPlan
+    evidence: PlannerExecutionEvidence | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is not self.normalized_plan.outcome:

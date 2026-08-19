@@ -6,6 +6,7 @@ from onr.application.minizinc import translate_minizinc
 from onr.contracts.planning import (
     MissionSpec,
     NormalizedPlan,
+    PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlanningOutcome,
     ScheduledManeuver,
@@ -55,6 +56,7 @@ class TemporalPlanning:
             mission_snapshot_id,
             outcome,
             maneuvers,
+            evidence=execution.evidence,
         )
 
     def plan_event(
@@ -80,6 +82,8 @@ def _terminal_result(
     mission_snapshot_id: str,
     outcome: PlanningOutcome,
     maneuvers: tuple[ScheduledManeuver, ...] = (),
+    *,
+    evidence: PlannerExecutionEvidence | None = None,
 ) -> TemporalPlanningResult:
     normalized_plan = NormalizedPlan(
         mission_spec=mission_spec,
@@ -92,6 +96,7 @@ def _terminal_result(
     return TemporalPlanningResult(
         outcome=outcome,
         normalized_plan=normalized_plan,
+        evidence=evidence,
     )
 
 

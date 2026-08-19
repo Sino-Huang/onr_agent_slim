@@ -15,7 +15,7 @@ from onr.contracts.planning import (
 )
 
 
-def test_real_temporal_planning_is_canonical_and_preserves_source_authority() -> None:
+def test_real_temporal_planning_is_canonical_and_preserves_source_authority(tmp_path) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     minizinc = (
         repository_root
@@ -99,6 +99,7 @@ def test_real_temporal_planning_is_canonical_and_preserves_source_authority() ->
     planning = TemporalPlanning(
         executor=MiniZincExecutor(
             executable=minizinc,
+            artifact_root=tmp_path / "artifacts",
             timeout_seconds=10,
         )
     )

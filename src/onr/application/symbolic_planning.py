@@ -5,6 +5,7 @@ from __future__ import annotations
 from onr.application.pddl import translate_pddl
 from onr.contracts.planning import (
     NormalizedPlan,
+    PlannerExecutionEvidence,
     PlanningOutcome,
     SymbolicActionCall,
     SymbolicMissionSpec,
@@ -66,6 +67,7 @@ class SymbolicPlanning:
             mission_snapshot_id,
             outcome,
             steps,
+            evidence=execution.evidence,
         )
 
     def plan_event(
@@ -91,6 +93,8 @@ def _terminal_result(
     mission_snapshot_id: str,
     outcome: PlanningOutcome,
     maneuvers: tuple[SymbolicPlanStep, ...] = (),
+    *,
+    evidence: PlannerExecutionEvidence | None = None,
 ) -> SymbolicPlanningResult:
     normalized_plan = NormalizedPlan(
         mission_spec=mission_spec,
@@ -100,7 +104,11 @@ def _terminal_result(
         outcome=outcome,
         maneuvers=maneuvers,
     )
-    return SymbolicPlanningResult(outcome=outcome, normalized_plan=normalized_plan)
+    return SymbolicPlanningResult(
+        outcome=outcome,
+        normalized_plan=normalized_plan,
+        evidence=evidence,
+    )
 
 
 def _join_action_calls(

@@ -13,7 +13,7 @@ from onr.contracts.planning import (
 )
 
 
-def test_real_symbolic_planning_emits_ordered_costed_actions_without_timing() -> None:
+def test_real_symbolic_planning_emits_ordered_costed_actions_without_timing(tmp_path) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     fast_downward = repository_root / "modules" / "downward" / "fast-downward.py"
     downward = (
@@ -65,6 +65,7 @@ def test_real_symbolic_planning_emits_ordered_costed_actions_without_timing() ->
     result = SymbolicPlanning(
         executor=FastDownwardExecutor(
             executable=fast_downward,
+            artifact_root=tmp_path / "artifacts",
             timeout_seconds=10,
         )
     ).plan(
@@ -74,6 +75,9 @@ def test_real_symbolic_planning_emits_ordered_costed_actions_without_timing() ->
     )
 
     assert result.outcome is PlanningOutcome.SOLVED
+    assert result.evidence is not None
+    assert result.evidence.stdout_path.exists()
+    assert result.evidence.stderr_path.exists()
     assert tuple(
         (step.step_index, step.maneuver_id, step.cost)
         for step in result.normalized_plan.symbolic_steps

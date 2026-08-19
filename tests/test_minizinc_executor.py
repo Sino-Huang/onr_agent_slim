@@ -87,6 +87,7 @@ def test_minizinc_executor_maps_json_stream_to_public_results(
     timeout_seconds: float,
     expected_outcome: PlanningOutcome,
     expected_assignments: tuple[TemporalAssignment, ...],
+    tmp_path: Path,
 ) -> None:
     planner_choice = PlannerChoice(
         planning_profile="temporal",
@@ -115,6 +116,7 @@ def test_minizinc_executor_maps_json_stream_to_public_results(
     )
     executor = MiniZincExecutor(
         executable=Path(sys.executable),
+        artifact_root=tmp_path / "artifacts",
         arguments=("-c", script),
         timeout_seconds=timeout_seconds,
     )
@@ -123,3 +125,32 @@ def test_minizinc_executor_maps_json_stream_to_public_results(
 
     assert result.outcome is expected_outcome
     assert result.assignments == expected_assignments
+    assert result.evidence is not None
+    assert result.evidence.artifact_directory.parent == (tmp_path / "artifacts").resolve()
+    assert {path.name for path in result.evidence.artifact_paths} == {
+        "model.mzn",
+        "data.dzn",
+    }
+    assert result.evidence.stdout_path.exists()
+    assert result.evidence.stderr_path.exists()
+
+
+def test_minizinc_executor_persists_relative_solver_artifacts_in_run_directory(
+    tmp_path: Path,
+) -> None:
+    script = (
+        "from pathlib import Path;"
+        "Path('relative-solver-artifact.txt').write_text('artifact', encoding='utf-8');"
+        "print('{\"type\": \"status\", \"status\": \"UNSATISFIABLE\"}')"
+    )
+    result = MiniZincExecutor(
+        executable=Path(sys.executable),
+        artifact_root=tmp_path / "artifacts",
+        arguments=("-c", script),
+    ).execute({"model.mzn": b"model", "data.dzn": b"data"})
+
+    assert result.outcome is PlanningOutcome.UNSOLVABLE
+    assert result.evidence is not None
+    artifact = result.evidence.artifact_directory / "relative-solver-artifact.txt"
+    assert artifact.read_text(encoding="utf-8") == "artifact"
+    assert artifact in result.evidence.artifact_paths

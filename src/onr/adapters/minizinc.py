@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from onr.contracts.planning import (
+    PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlanningOutcome,
     TemporalAssignment,
@@ -32,11 +33,13 @@ class MiniZincExecutor:
     """Execute planner-native assets with the configured MiniZinc executable."""
 
     executable: Path
+    artifact_root: Path
     arguments: tuple[str, ...] = ()
     timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         executable = Path(self.executable)
+        artifact_root = Path(self.artifact_root).expanduser().resolve()
         arguments = tuple(self.arguments)
         if not all(isinstance(argument, str) for argument in arguments):
             raise ValueError("executor arguments must be strings")
@@ -48,32 +51,104 @@ class MiniZincExecutor:
         ):
             raise ValueError("executor timeout must be a positive finite number")
         object.__setattr__(self, "executable", executable)
+        if artifact_root.exists() and not artifact_root.is_dir():
+            raise ValueError("planner artifact root must be a directory")
+        object.__setattr__(self, "artifact_root", artifact_root)
         object.__setattr__(self, "arguments", arguments)
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                asset_paths = _materialize_assets(Path(directory), assets)
-                completed = subprocess.run(
-                    [
-                        str(self.executable),
-                        *self.arguments,
-                        *_MINIZINC_ARGUMENTS,
-                        *map(str, asset_paths),
-                    ],
-                    capture_output=True,
-                    check=False,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                )
-        except subprocess.TimeoutExpired:
-            return PlannerExecutionResult(outcome=PlanningOutcome.TIMEOUT)
-        except (OSError, TypeError, ValueError, UnicodeError):
+            artifact_root = Path(self.artifact_root)
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            run_directory = Path(
+                tempfile.mkdtemp(prefix="run-", dir=artifact_root)
+            ).resolve()
+        except (OSError, TypeError, ValueError):
             return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
 
+        try:
+            asset_paths = _materialize_assets(run_directory, assets)
+            completed = subprocess.run(
+                [
+                    str(self.executable),
+                    *self.arguments,
+                    *_MINIZINC_ARGUMENTS,
+                    *map(str, asset_paths),
+                ],
+                capture_output=True,
+                check=False,
+                cwd=str(run_directory),
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+            _persist_solver_output(run_directory, completed.stdout, completed.stderr)
+            evidence = _execution_evidence(run_directory)
+        except subprocess.TimeoutExpired as exc:
+            _persist_solver_output(
+                run_directory,
+                exc.stdout,
+                exc.stderr or f"solver timed out after {self.timeout_seconds} seconds",
+            )
+            return PlannerExecutionResult(
+                outcome=PlanningOutcome.TIMEOUT,
+                evidence=_execution_evidence(run_directory),
+            )
+        except (OSError, TypeError, ValueError, UnicodeError) as exc:
+            _persist_solver_output(run_directory, "", f"{type(exc).__name__}: {exc}")
+            return PlannerExecutionResult(
+                outcome=PlanningOutcome.ERROR,
+                evidence=_execution_evidence(run_directory),
+            )
+
         if completed.returncode != 0:
-            return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
-        return _parse_json_stream(completed.stdout)
+            return PlannerExecutionResult(
+                outcome=PlanningOutcome.ERROR,
+                evidence=evidence,
+            )
+        parsed = _parse_json_stream(completed.stdout)
+        return PlannerExecutionResult(
+            outcome=parsed.outcome,
+            assignments=parsed.assignments,
+            evidence=evidence,
+        )
+
+
+def _persist_solver_output(directory: Path, stdout: object, stderr: object) -> None:
+    for name, value in (("solver.stdout", stdout), ("solver.stderr", stderr)):
+        try:
+            (directory / name).write_text(_output_text(value), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _output_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _execution_evidence(directory: Path) -> PlannerExecutionEvidence:
+    try:
+        artifact_paths = tuple(
+            sorted(
+                (
+                    path.resolve()
+                    for path in directory.iterdir()
+                    if path.is_file() and path.name not in {"solver.stdout", "solver.stderr"}
+                ),
+                key=lambda path: path.name,
+            )
+        )
+    except OSError:
+        artifact_paths = ()
+    return PlannerExecutionEvidence(
+        artifact_directory=directory,
+        artifact_paths=artifact_paths,
+        stdout_path=directory / "solver.stdout",
+        stderr_path=directory / "solver.stderr",
+    )
 
 
 def _materialize_assets(
@@ -86,7 +161,9 @@ def _materialize_assets(
             raise ValueError("planner asset names must be plain filenames")
         if not isinstance(content, bytes):
             raise ValueError("planner assets must contain bytes")
-        path = directory / name
+        path = (directory / name).resolve()
+        if path.parent != directory:
+            raise ValueError("planner asset path escaped the artifact directory")
         path.write_bytes(content)
         paths[name] = path
 
