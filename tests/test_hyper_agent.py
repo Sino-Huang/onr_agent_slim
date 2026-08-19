@@ -222,6 +222,52 @@ def test_interpreter_accepts_valid_symbolic_candidate() -> None:
     assert len(agent.calls) == 1
 
 
+def test_interpreter_retries_malformed_symbolic_structure_once() -> None:
+    spec = _symbolic_spec()
+    malformed = {**spec.to_dict(), "domain_revision": "one"}
+    agent = _ResponseAgent(
+        [
+            {"structured_response": malformed},
+            {"structured_response": spec.to_dict()},
+        ]
+    )
+
+    result = DeepAgentsMissionInterpreter(agent, max_retries=1).interpret(
+        MissionInput(spec.mission_id, "Survey", "mission-control")
+    )
+
+    assert result == spec
+    assert len(agent.calls) == 2
+
+
+def test_interpreter_retries_malformed_structured_output_with_safe_feedback() -> None:
+    raw_candidate = "PRIVATE malformed tool candidate"
+    raw_exception = "PRIVATE tool-call exception"
+
+    class MalformedStructuredResponse:
+        def __repr__(self) -> str:
+            return raw_candidate
+
+        def model_dump(self) -> dict[str, object]:
+            raise RuntimeError(raw_exception)
+
+    agent = _ResponseAgent(
+        [
+            {"structured_response": MalformedStructuredResponse()},
+            {"structured_response": _spec().to_dict()},
+        ]
+    )
+
+    assert DeepAgentsMissionInterpreter(agent, max_retries=1).interpret(
+        MissionInput("mission-1", "Survey", "mission-control")
+    ) == _spec()
+    assert len(agent.calls) == 2
+    messages = agent.calls[1]["messages"]
+    assert isinstance(messages, list)
+    assert raw_candidate not in messages[1].content
+    assert raw_exception not in messages[1].content
+
+
 @pytest.mark.parametrize(("max_retries", "expected_calls"), [(0, 1), (1, 2), (4, 5)])
 def test_interpreter_retry_budget_limits_calls(
     max_retries: int, expected_calls: int
@@ -306,6 +352,108 @@ def test_freeze_identity_mismatch_does_not_retry_or_publish() -> None:
     assert len(agent.calls) == 1
     assert service.authority("mission-1") is None
     assert transport.latest_event("mission-specifications", "mission-1") is None
+
+
+def test_freeze_source_authority_mismatch_does_not_retry_or_publish() -> None:
+    spec = _symbolic_spec()
+    candidate = {**spec.to_dict(), "source_authority": "untrusted-source"}
+    agent = _ResponseAgent([{"structured_response": candidate}])
+    transport = InProcessTransport()
+    service = HyperAgent(DeepAgentsMissionInterpreter(agent), transport=transport)
+
+    with pytest.raises(ValueError, match="source authority does not match"):
+        service.freeze_mission(
+            MissionInput(spec.mission_id, "Survey", "mission-control")
+        )
+
+    assert len(agent.calls) == 1
+    assert service.authority(spec.mission_id) is None
+    assert transport.latest_event("mission-specifications", spec.mission_id) is None
+
+
+@pytest.mark.parametrize(
+    ("candidate", "message"),
+    [
+        (
+            {
+                **_symbolic_spec().to_dict(),
+                "planner_choice": {
+                    "planning_profile": "symbolic",
+                    "planner_id": "unsupported-planner",
+                },
+            },
+            "unsupported symbolic planner",
+        ),
+        ({**_symbolic_spec().to_dict(), "maneuvers": []}, "requires symbolic maneuvers"),
+        (
+            {
+                **_symbolic_spec().to_dict(),
+                "maneuvers": [
+                    {
+                        "maneuver_id": "survey",
+                        "intent": {"action": "survey", "parameters": {}},
+                        "dependencies": ["report"],
+                        "cost": 1,
+                    },
+                    {
+                        "maneuver_id": "report",
+                        "intent": {"action": "report", "parameters": {}},
+                        "dependencies": ["survey"],
+                        "cost": 1,
+                    },
+                ],
+            },
+            "dependencies must be acyclic",
+        ),
+    ],
+    ids=["unsupported-planner", "empty-maneuvers", "dependency-cycle"],
+)
+def test_semantic_planning_invariants_do_not_retry_or_publish(
+    candidate: dict[str, object], message: str
+) -> None:
+    spec = _symbolic_spec()
+    agent = _ResponseAgent(
+        [
+            {"structured_response": candidate},
+            {"structured_response": spec.to_dict()},
+        ]
+    )
+    transport = InProcessTransport()
+    service = HyperAgent(DeepAgentsMissionInterpreter(agent), transport=transport)
+
+    with pytest.raises(ValueError, match=message):
+        service.freeze_mission(
+            MissionInput(spec.mission_id, "Survey", "mission-control")
+        )
+
+    assert len(agent.calls) == 1
+    assert service.authority(spec.mission_id) is None
+    assert transport.latest_event("mission-specifications", spec.mission_id) is None
+
+
+def test_already_frozen_conflict_does_not_retry_or_publish() -> None:
+    spec = _symbolic_spec()
+    changed = _symbolic_spec().to_dict()
+    changed["objective"] = "Changed mission"
+    agent = _ResponseAgent(
+        [
+            {"structured_response": spec.to_dict()},
+            {"structured_response": changed},
+            {"structured_response": spec.to_dict()},
+        ]
+    )
+    transport = InProcessTransport()
+    service = HyperAgent(DeepAgentsMissionInterpreter(agent), transport=transport)
+    mission_input = MissionInput(spec.mission_id, "Survey", "mission-control")
+    frozen = service.freeze_mission(mission_input)
+    event = transport.latest_event("mission-specifications", spec.mission_id)
+
+    with pytest.raises(ValueError, match="already frozen"):
+        service.freeze_mission(mission_input)
+
+    assert len(agent.calls) == 2
+    assert service.authority(spec.mission_id) is frozen
+    assert transport.latest_event("mission-specifications", spec.mission_id) is event
 
 
 def test_deep_agent_accepts_mission_spec_response_schema() -> None:

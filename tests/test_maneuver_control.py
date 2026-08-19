@@ -290,6 +290,52 @@ def test_structural_decision_errors_retry(invalid: Any) -> None:
 
 
 @pytest.mark.parametrize(
+    ("invalid", "path", "allowed"),
+    [
+        pytest.param(
+            lambda value: {**value, "choice": "raw-invalid-choice"},
+            "$.choice",
+            tuple(choice.value for choice in NonPhysicalChoice),
+            id="choice",
+        ),
+        pytest.param(
+            lambda value: {
+                **value,
+                "physical_intent": {
+                    "action": "raw-invalid-action",
+                    "parameters": {},
+                },
+            },
+            "$.physical_intent.action",
+            tuple(action.value for action in PhysicalAction),
+            id="physical-action",
+        ),
+    ],
+)
+def test_invalid_enums_receive_allowed_values_in_safe_feedback(
+    invalid: Any, path: str, allowed: tuple[str, ...]
+) -> None:
+    expected = _model_decision()
+    agent = RecordingDecisionAgent(
+        [
+            {"structured_response": invalid(expected.to_dict())},
+            {"structured_response": expected},
+        ]
+    )
+
+    assert DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+        _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+    ) == expected
+
+    feedback_text = _message_contents(agent.calls[1])[1]
+    feedback = json.loads(feedback_text)
+    issue = next(error for error in feedback["errors"] if error["path"] == path)
+    assert issue["code"] == "invalid_value"
+    assert all(f'"{value}"' in issue["expected"] for value in allowed)
+    assert "raw-invalid" not in feedback_text
+
+
+@pytest.mark.parametrize(
     "invalid_response",
     [
         object(),
@@ -321,6 +367,37 @@ def test_nonmapping_response_exhausts_without_escaping_to_application() -> None:
         )
 
     assert len(agent.calls) == 1
+
+
+def test_structured_output_exhaustion_has_no_maneuver_control_side_effect() -> None:
+    mission_id = "mission-exhaustion"
+    snapshot = _snapshot(mission_id, 1)
+    status = _status(mission_id, 1)
+    original_status = status.to_dict()
+    agent = RecordingDecisionAgent(
+        [{"structured_response": {"choice": "raw-invalid-choice"}}]
+    )
+    transport = InProcessTransport()
+    adapter = RecordingAdapter()
+    control = ManeuverControl(
+        cast(Any, transport),
+        adapter,
+        DeepAgentsDecisionProvider(agent, max_retries=1),
+    )
+
+    with pytest.raises(StructuredOutputRetriesExhausted):
+        control.heartbeat(snapshot, status, event_id="exhausted-input")
+
+    assert len(agent.calls) == 2
+    assert transport.latest_event(
+        "maneuver-invocations/exhausted-input", mission_id
+    ) is None
+    assert transport.state.events == {}
+    assert transport.state.commands == {}
+    assert transport.state.receipts == {}
+    assert transport.state.outcomes == {}
+    assert status.to_dict() == original_status
+    assert adapter.commands == []
 
 
 def test_typed_decision_response_shapes_return_without_retry() -> None:
@@ -389,10 +466,42 @@ def test_typed_decision_application_validation_failure_is_not_retried_or_effectf
     assert adapter.commands == []
 
 
-def test_structured_decision_success_has_one_decision_and_command_path() -> None:
+def test_stale_typed_decision_is_not_retried_or_effectful() -> None:
+    mission_id = "mission-stale-validation"
+    decision = _model_decision(mission_id=mission_id, plan_revision=0)
+    agent = RecordingDecisionAgent([decision])
+    transport = InProcessTransport()
+    adapter = RecordingAdapter()
+    status = _status(mission_id, 1)
+    original_status = status.to_dict()
+    control = ManeuverControl(
+        cast(Any, transport),
+        adapter,
+        DeepAgentsDecisionProvider(agent, max_retries=4),
+    )
+
+    with pytest.raises(ValueError, match="plan revision does not match FSM status"):
+        control.heartbeat(
+            _snapshot(mission_id, 1), status, event_id="stale-input"
+        )
+
+    assert len(agent.calls) == 1
+    assert transport.latest_event("maneuver-invocations/stale-input", mission_id) is None
+    assert transport.state.events == {}
+    assert transport.state.commands == {}
+    assert status.to_dict() == original_status
+    assert adapter.commands == []
+
+
+def test_structural_correction_then_typed_decision_has_one_decision_and_command_path() -> None:
     mission_id = "mission-success"
     expected = _model_decision(mission_id=mission_id, plan_revision=1)
-    agent = RecordingDecisionAgent([{"structured_response": expected.to_dict()}])
+    agent = RecordingDecisionAgent(
+        [
+            {"structured_response": {**expected.to_dict(), "choice": "invalid"}},
+            {"structured_response": expected},
+        ]
+    )
     transport = InProcessTransport()
     adapter = RecordingAdapter()
     control = ManeuverControl(
@@ -407,7 +516,17 @@ def test_structured_decision_success_has_one_decision_and_command_path() -> None
 
     assert result.decision == expected
     assert result.command is not None
-    assert len(agent.calls) == 1
+    assert len(agent.calls) == 2
+    marker = transport.latest_event(
+        "maneuver-invocations/valid-input", mission_id, event_kind="maneuver-invocation"
+    )
+    assert marker is not None
+    assert marker.payload["decision"] == expected.to_dict()
+    assert sum(
+        event.event_kind == "maneuver-invocation"
+        for events in transport.state.events.values()
+        for event in events
+    ) == 1
     queued = transport.state.commands[("maneuver-adapter", mission_id)]
     assert sum(isinstance(message, Command) for _, message in queued) == 1
     control.handle_command(result.command)

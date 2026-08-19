@@ -43,8 +43,18 @@ _DECISION_FIELDS: Final = frozenset(
     }
 )
 _PHYSICAL_INTENT_FIELDS: Final = frozenset({"action", "parameters"})
-_PHYSICAL_ACTIONS: Final = tuple(action.value for action in PhysicalAction)
-_NON_PHYSICAL_CHOICES: Final = tuple(choice.value for choice in NonPhysicalChoice)
+_PHYSICAL_ACTIONS: Final = tuple(sorted(action.value for action in PhysicalAction))
+_NON_PHYSICAL_CHOICES: Final = tuple(
+    sorted(choice.value for choice in NonPhysicalChoice)
+)
+_PHYSICAL_ACTIONS_EXPECTED: Final = "one of " + ", ".join(
+    f'"{value}"' for value in _PHYSICAL_ACTIONS
+)
+_NON_PHYSICAL_CHOICES_EXPECTED: Final = (
+    "one of "
+    + ", ".join(f'"{value}"' for value in _NON_PHYSICAL_CHOICES)
+    + ", or null"
+)
 
 MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
     "title": "ManeuverControlDecision",
@@ -296,7 +306,7 @@ def _check_choice(
     elif choice not in _NON_PHYSICAL_CHOICES:
         issues.append(
             StructuralIssue(
-                "invalid_value", "$.choice", "valid non-physical choice or null"
+                "invalid_value", "$.choice", _NON_PHYSICAL_CHOICES_EXPECTED
             )
         )
 
@@ -338,7 +348,7 @@ def _check_physical_intent(
                 StructuralIssue(
                     "invalid_value",
                     "$.physical_intent.action",
-                    "valid physical action",
+                    _PHYSICAL_ACTIONS_EXPECTED,
                 )
             )
     parameters = physical.get("parameters")
