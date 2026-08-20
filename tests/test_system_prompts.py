@@ -60,17 +60,17 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     assert [prompt.index(stage) for stage in stages] == sorted(
         prompt.index(stage) for stage in stages
     )
-    assert "Call `write_todos` immediately" in prompt
-    assert "Never batch several completions" in prompt
+    assert "Run one live todo list with exactly these eight todos in order" in prompt
+    assert "never batch completions" in prompt
     assert "`outcome: execution_ready`" in prompt
     assert "verified NormalizedPlan" in prompt
-    assert "payload is flexible" in prompt
-    assert "rather than assuming a fixed environment schema" in prompt
-    assert "Never generate both complete files in the same response" in prompt
+    assert "Treat `environment_data` as flexible" in prompt
+    assert "derive planner facts from the actual payload" in prompt
+    assert "Write one complete file per response" in prompt
     assert "`belief_snapshot`" in prompt
-    assert "required `reflection` argument" in prompt
-    assert "not private reasoning" in prompt
-    assert "exact MiniZinc error" in prompt
+    assert "tool `reflection` arguments" in prompt
+    assert "Never expose private reasoning" in prompt
+    assert "correction stage" in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",

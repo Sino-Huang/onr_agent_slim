@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
 description: Apply when observed execution facts may invalidate the current plan and an evidence-based replan decision is required.
-version: '1.0.0'
+version: '1.1.0'
 ---
 
 # Detect And Replan
@@ -17,7 +17,7 @@ version: '1.0.0'
 
 ## Authority Boundaries
 
-- This skill is read-only guidance. A replan request is advisory and is not a new plan or authority revision.
+- A replan request is advisory and is not a new plan or authority revision.
 - Never perform a hidden local rewrite of Mission Input, PlanningIntent, the plan, scene/belief, lifecycle, or FSM execution state.
 - Replanning does not automatically cancel physical execution; cancellation must occur through the established control and lifecycle path.
 

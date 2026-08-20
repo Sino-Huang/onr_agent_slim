@@ -1,12 +1,10 @@
 ---
 name: physical-maneuver-selection
 description: Use when a Maneuver Decision may request, track, or cancel one environment-executed physical maneuver while preserving environment lifecycle authority.
-version: '1.0.0'
+version: '1.1.0'
 ---
 
 # Physical Maneuver Selection
-
-This skill is read-only guidance. It constrains Maneuver requests but never authorizes movement or determines a request's lifecycle.
 
 ## Allowed Physical Actions
 

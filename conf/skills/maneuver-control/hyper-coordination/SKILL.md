@@ -1,12 +1,10 @@
 ---
 name: hyper-coordination
 description: Use when Maneuver needs a replan evaluation, a planning-authority answer, or a correlated report to Hyper while preserving the active Mission objectives and plan authority.
-version: '1.0.0'
+version: '1.1.0'
 ---
 
 # Hyper Coordination
-
-This skill is read-only guidance. It governs communication with Hyper; it does not grant Maneuver planning authority or make a response authoritative before the runtime publishes it.
 
 ## Communication Contract
 
