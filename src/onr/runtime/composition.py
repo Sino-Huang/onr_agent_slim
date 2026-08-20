@@ -11,6 +11,7 @@ from threading import Event, Thread
 from typing import Any, Callable, cast
 
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
 
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.fast_downward import FastDownwardExecutor
@@ -30,6 +31,11 @@ from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.agents.hyper_agent import (
     DeepAgentsPlanningIntentInterpreter,
     create_planning_intent_agent,
+)
+from onr.agents.hyper_workflow import (
+    DeepAgentsHyperWorkflow,
+    HyperWorkflowContext,
+    create_hyper_workflow_agent,
 )
 from onr.agents.maneuver_control import (
     DeepAgentsDecisionProvider,
@@ -349,7 +355,12 @@ class RuntimeComposition:
         selected = summarizer or self.create_mission_log_summarizer()
         return selected.heartbeat(mission_id)
 
-    def create_minizinc_translation(self, artifact_root: Path) -> MiniZincTranslation:
+    def create_minizinc_translation(
+        self,
+        artifact_root: Path,
+        *,
+        max_corrections: int | None = None,
+    ) -> MiniZincTranslation:
         """Compose generated MiniZinc correction with the configured real planner."""
 
         planner = self.config.planners.temporal
@@ -362,6 +373,8 @@ class RuntimeComposition:
             artifact_root / "generation-attempts",
             max_corrections=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries
+                if max_corrections is None
+                else max_corrections
             ),
         )
 
@@ -642,6 +655,72 @@ class RuntimeComposition:
             transport=self.transport,
             planning_evidence_topic=planning_evidence_topic,
             operational_log=self._logger(),
+        )
+
+    def create_hyper_workflow(
+        self,
+        *,
+        model: Any | None = None,
+        system_prompt: str,
+        mission_id: str,
+        memory_store: object | None = None,
+        skill_catalog: object | None = None,
+        skill_version: str | None = None,
+        backend_root: Path | None = None,
+        checkpointer: object | None = None,
+    ) -> DeepAgentsHyperWorkflow:
+        """Compose one checkpointed Deep Agent for the complete Hyper workflow."""
+
+        if not isinstance(mission_id, str) or not mission_id.strip():
+            raise ValueError("Hyper workflow requires a Mission ID")
+        if model is None:
+            model = self.create_chat_model(
+                mission_id=mission_id,
+                debug_scope="hyper-agent",
+            )
+        if memory_store is None:
+            memory_store = FileMissionMemoryStore(
+                self.config.storage.root / "mission-memory"
+            )
+        context_backend_root = backend_root
+        if context_backend_root is None and skill_catalog is not None:
+            context_backend_root = self.config.storage.root
+        graph = create_hyper_workflow_agent(
+            model=model,
+            system_prompt=system_prompt,
+            mission_id=mission_id,
+            memory_store=memory_store,
+            skill_catalog=skill_catalog,
+            skill_version=skill_version,
+            backend_root=context_backend_root,
+            checkpointer=(
+                InMemorySaver() if checkpointer is None else checkpointer
+            ),
+        )
+        return DeepAgentsHyperWorkflow(graph)
+
+    def create_hyper_workflow_context(
+        self,
+        mission_input: MissionInput,
+        mission_snapshot: MissionSnapshot,
+        scene_graph: TransportEvent,
+        *,
+        artifact_root: Path,
+    ) -> HyperWorkflowContext:
+        """Bind one Mission Run's authorized evidence to workflow planner tools."""
+
+        return HyperWorkflowContext(
+            mission_input=mission_input,
+            mission_snapshot=mission_snapshot,
+            scene_graph=scene_graph,
+            artifact_root=artifact_root,
+            minizinc_translation=self.create_minizinc_translation(
+                artifact_root,
+                max_corrections=0,
+            ),
+            max_planner_attempts=(
+                self.config.agents.hyper_agent.output_structure_retry.max_retries + 1
+            ),
         )
 
     def _run_mission(

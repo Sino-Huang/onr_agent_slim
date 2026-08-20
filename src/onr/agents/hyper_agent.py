@@ -109,6 +109,9 @@ def _create_deep_agent(
     skill_version: str | None = None,
     backend_root: Path | None = None,
     middleware: list[Any] | None = None,
+    tools: list[Any] | None = None,
+    context_schema: type[Any] | None = None,
+    checkpointer: object | None = None,
 ) -> object:
     """Shared DeepAgents construction with role-context wiring."""
 
@@ -128,6 +131,12 @@ def _create_deep_agent(
         kwargs["system_prompt"] = system_prompt
     if middleware is not None:
         kwargs["middleware"] = middleware
+    if tools is not None:
+        kwargs["tools"] = tools
+    if context_schema is not None:
+        kwargs["context_schema"] = context_schema
+    if checkpointer is not None:
+        kwargs["checkpointer"] = checkpointer
 
     memory_agent_path = "/memory/AGENTS.md"
     context: MissionRoleContext | None = None

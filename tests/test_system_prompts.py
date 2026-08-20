@@ -41,3 +41,34 @@ def test_load_system_prompt_rejects_missing_unreadable_and_blank_files(
     blank.write_text(" \n\t", encoding="utf-8")
     with pytest.raises(ValueError, match="is blank"):
         load_system_prompt(tmp_path, "blank")
+
+
+def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
+    prompt = load_system_prompt(
+        Path(__file__).parents[1] / "conf/system_prompt",
+        "hyper-agent",
+    )
+
+    stages = (
+        "Parse Mission Intent into PlanningIntent.",
+        "Decide and record the MiniZinc planner inside PlanningIntent.",
+        "Load the current snapshot-authorized operational evidence.",
+        "Generate and persist MiniZinc problem files.",
+        "Run MiniZinc and repair rejected translations.",
+    )
+    assert [prompt.index(stage) for stage in stages] == sorted(
+        prompt.index(stage) for stage in stages
+    )
+    assert "Call `write_todos` immediately" in prompt
+    assert "Never batch several completions" in prompt
+    for capability in (
+        "mission-parsing",
+        "planner-selection",
+        "`record_planning_intent`",
+        "creating-minizinc-problem-files",
+        "`load_planning_context`",
+        "`persist_planner_assets`",
+        "`planner_executor`",
+        "`HyperWorkflowResultCandidate`",
+    ):
+        assert capability in prompt

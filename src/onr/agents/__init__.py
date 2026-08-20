@@ -5,6 +5,12 @@ from onr.agents.hyper_agent import (
     DeepAgentsPlanningIntentInterpreter,
     create_planning_intent_agent,
 )
+from onr.agents.hyper_workflow import (
+    DeepAgentsHyperWorkflow,
+    HyperWorkflowContext,
+    HyperWorkflowRunResult,
+    create_hyper_workflow_agent,
+)
 from onr.agents.maneuver_control import (
     DeepAgentsDecisionProvider,
     create_maneuver_control_agent,
@@ -12,11 +18,15 @@ from onr.agents.maneuver_control import (
 from onr.agents.role_context import MissionRoleContext, RoleEpisode
 
 __all__ = [
-    "DeepAgentsDecisionProvider",
-    "create_maneuver_control_agent",
-    "DeepAgentsPlanningIntentInterpreter",
     "PLANNING_INTENT_SCHEMA",
-    "create_planning_intent_agent",
+    "DeepAgentsDecisionProvider",
+    "DeepAgentsHyperWorkflow",
+    "DeepAgentsPlanningIntentInterpreter",
+    "HyperWorkflowContext",
+    "HyperWorkflowRunResult",
     "MissionRoleContext",
     "RoleEpisode",
+    "create_hyper_workflow_agent",
+    "create_maneuver_control_agent",
+    "create_planning_intent_agent",
 ]

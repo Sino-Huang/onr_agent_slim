@@ -45,8 +45,12 @@ An operator console's authenticated local session that owns the Mission Run it a
 _Avoid_: Runtime Host session, observer session
 
 **Hyper Agent**:
-The planning agent that derives Planning Intent, chooses a planner, and publishes scene-backed generation evidence.
+The planning agent that owns one Hyper Workflow Episode, derives Planning Intent, chooses and invokes planners through code-owned capabilities, manages correction, and hands verified planning artifacts toward execution.
 _Avoid_: Main agent, controller
+
+**Hyper Workflow Episode**:
+One checkpointed planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, snapshot-authorized generation, verification, and execution handoff. Invoked capabilities return evidence but do not own or update the todo state.
+_Avoid_: Planning Intent invocation, shared agent state, planner authority
 
 **Maneuver Control Agent**:
 The decision-making authority that uses Mission Snapshot and FSM status to select transitions, maneuvers, escalation, or status.

@@ -193,28 +193,34 @@ def test_planning_intent_factory_uses_its_schema_and_todo_middleware(
     assert [type(item) for item in middleware] == [TodoListMiddleware]
 
 
-def test_hyper_agent_todo_tool_tracks_the_three_planning_stages() -> None:
+def test_hyper_agent_todo_tool_tracks_the_planner_to_fsm_workflow() -> None:
     stages = [
-        "parse Mission Intent to PlanningIntent",
-        "decide planner",
-        "generate planner problem files",
+        "Parse Mission Intent into PlanningIntent",
+        "Decide and record the planner inside PlanningIntent",
+        "Load the current snapshot-authorized scene and belief evidence",
+        "Generate planner-native problem files",
+        "Run the selected planner and repair rejected translations",
+        "Review the verified result and publish a provenance-only NormalizedPlan",
+        "Generate a python-statemachine FSM Python script from the NormalizedPlan",
+        "Verify and repair the FSM Python script",
+        "Hand the NormalizedPlan and verified FSM script reference to Maneuver Control",
     ]
     updates = [
         [
-            {"content": stages[0], "status": "in_progress"},
-            {"content": stages[1], "status": "pending"},
-            {"content": stages[2], "status": "pending"},
-        ],
-        [
-            {"content": stages[0], "status": "completed"},
-            {"content": stages[1], "status": "in_progress"},
-            {"content": stages[2], "status": "pending"},
-        ],
-        [
-            {"content": stages[0], "status": "completed"},
-            {"content": stages[1], "status": "completed"},
-            {"content": stages[2], "status": "in_progress"},
-        ],
+            {
+                "content": stage,
+                "status": (
+                    "completed"
+                    if stage_index < active_index
+                    else "in_progress"
+                    if stage_index == active_index
+                    else "pending"
+                ),
+            }
+            for stage_index, stage in enumerate(stages)
+        ]
+        for active_index in range(len(stages))
+    ] + [
         [{"content": stage, "status": "completed"} for stage in stages],
     ]
     todo_responses = [
@@ -255,7 +261,7 @@ def test_hyper_agent_todo_tool_tracks_the_three_planning_stages() -> None:
 
     assert result["todos"] == updates[-1]
     assert result["structured_response"] == _candidate()
-    assert model.response_index == 5
+    assert model.response_index == len(updates) + 1
 
 
 def test_planning_intent_schema_requires_configured_planners_and_safe_details() -> None:

@@ -1,6 +1,6 @@
 # ADR 0003: Derived PlanningIntent provenance
 
-- Status: Accepted
+- Status: Superseded in part by ADR 0007
 - Date: 2026-08-20
 
 ## Context

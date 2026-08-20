@@ -6,11 +6,17 @@ import onr.runtime.composition as composition_module
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.agents import (
     DeepAgentsDecisionProvider,
+    DeepAgentsHyperWorkflow,
     DeepAgentsPlanningIntentInterpreter,
+    HyperWorkflowContext,
 )
 from onr.application.human_decisions import HumanDecisionCoordinator
 from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
+from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.planner_translation import operational_scene_graph_sha256
+from onr.contracts.transport import TransportEvent
 from onr.runtime import (
     HeartbeatsConfig,
     LLMConfig,
@@ -226,6 +232,93 @@ def test_default_hyper_agent_uses_configured_interpreter_retry_limit(monkeypatch
 
     assert isinstance(service.planning_intent_interpreter, DeepAgentsPlanningIntentInterpreter)
     assert service.planning_intent_interpreter.max_retries == 7
+
+
+def test_runtime_composes_one_workflow_level_hyper_deep_agent(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeGraph:
+        def invoke(self, *args: object, **kwargs: object) -> object:
+            _ = args, kwargs
+            return {}
+
+    graph = FakeGraph()
+
+    def fake_create_workflow_agent(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return graph
+
+    monkeypatch.setattr(
+        composition_module,
+        "create_hyper_workflow_agent",
+        fake_create_workflow_agent,
+    )
+    model = object()
+    memory_store = object()
+    skill_catalog = object()
+    checkpointer = object()
+
+    workflow = _runtime().create_hyper_workflow(
+        model=model,
+        system_prompt="workflow prompt",
+        mission_id="mission",
+        memory_store=memory_store,
+        skill_catalog=skill_catalog,
+        skill_version="1.0.0",
+        backend_root=Path("backend"),
+        checkpointer=checkpointer,
+    )
+
+    assert isinstance(workflow, DeepAgentsHyperWorkflow)
+    assert workflow.agent is graph
+    assert captured == {
+        "model": model,
+        "system_prompt": "workflow prompt",
+        "mission_id": "mission",
+        "memory_store": memory_store,
+        "skill_catalog": skill_catalog,
+        "skill_version": "1.0.0",
+        "backend_root": Path("backend"),
+        "checkpointer": checkpointer,
+    }
+
+
+def test_runtime_builds_single_attempt_workflow_planner_context(
+    tmp_path: Path,
+) -> None:
+    mission = MissionInput("mission", "Observe the harbor.", "mission-control")
+    scene = TransportEvent(
+        schema_version=1,
+        event_id="scene-1",
+        mission_id=mission.mission_id,
+        sequence=0,
+        event_kind="operational_scene_graph",
+        payload={"graph": {"entities": []}},
+    )
+    snapshot = MissionSnapshot(
+        mission_id=mission.mission_id,
+        version=1,
+        created_at="2026-08-20T00:00:00+00:00",
+        operational_scene_graph=scene.event_id,
+        source_revisions={"operational_scene_graph": 1},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
+        source_health={"operational_scene_graph": "healthy"},
+        source_freshness={"operational_scene_graph": True},
+    )
+
+    context = _runtime(hyper_max_retries=7).create_hyper_workflow_context(
+        mission,
+        snapshot,
+        scene,
+        artifact_root=tmp_path / "planner-artifacts",
+    )
+
+    assert isinstance(context, HyperWorkflowContext)
+    assert context.minizinc_translation.max_corrections == 0
+    assert context.max_planner_attempts == 8
+    assert context.artifact_root == (tmp_path / "planner-artifacts").resolve()
 
 
 def test_default_maneuver_control_uses_configured_provider_retry_limit(
