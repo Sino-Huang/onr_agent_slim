@@ -231,8 +231,10 @@ _LOG_COMPONENTS = {
 }
 _LOG_DETAIL_FIELDS = {
     "adapter_submission",
+    "attempt_id",
     "command_id",
     "correlation_id",
+    "decision_id",
     "environment",
     "error_type",
     "event_id",
@@ -240,10 +242,16 @@ _LOG_DETAIL_FIELDS = {
     "generated_assets",
     "lifecycle",
     "maneuver_id",
+    "mission_input_sha256",
+    "mission_snapshot_id",
     "operation",
     "plan_revision",
     "planner",
+    "planner_id",
     "planning_decision_reference",
+    "planning_intent_sha256",
+    "planning_profile",
+    "rationale",
     "request_id",
     "revision",
     "scene_graph_reference",
@@ -260,6 +268,8 @@ _LOG_DETAIL_FIELDS = {
     "transport_event_id",
     "transport_sequence",
     "timer_due",
+    "translator_id",
+    "translator_version",
 }
 _COMMON_EVENT_PAYLOAD_FIELDS = {
     "action",

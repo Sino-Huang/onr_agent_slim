@@ -315,6 +315,39 @@ def test_terminal_lease_keeps_debug_visible(
     assert json.loads(body)["enabled"] is True
 
 
+def test_debug_artifacts_without_a_runtime_lease_remain_visible(tmp_path: Path) -> None:
+    with _running_server(tmp_path) as (server, storage):
+        mission_root = _mission_root(storage, "mission-historical")
+        _write(
+            mission_root / "profiles" / "hyper-agent.json",
+            _profile("hyper-agent"),
+        )
+        _write(
+            mission_root / "01.json",
+            {
+                **_invocation(1, "tool-call"),
+                "kind": "tool",
+                "name": "load_planning_context",
+            },
+        )
+        _write(
+            _llm_root(storage, "mission-historical", "hyper-agent") / "01.json",
+            _llm_artifact(),
+        )
+
+        response, body = _request(
+            server, "GET", "/api/debug?mission_id=mission-historical"
+        )
+
+    payload = json.loads(body)
+    assert response.status == 200
+    assert payload["enabled"] is True
+    assert [item["name"] for item in payload["invocations"]] == [
+        "load_planning_context"
+    ]
+    assert len(payload["profiles"]) == len(payload["conversations"]) == 1
+
+
 def test_debug_disabled_returns_safe_empty_even_with_artifacts(tmp_path: Path) -> None:
     with _running_server(tmp_path, debug=False) as (server, storage):
         _activate(storage)

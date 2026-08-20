@@ -185,6 +185,36 @@ def test_idle_get_inspection_is_non_mutating_and_returns_no_trace(tmp_path: Path
     assert trace_response.getheader("Cache-Control") == "no-store"
 
 
+def test_persisted_artifacts_without_a_runtime_lease_remain_replayable(
+    tmp_path: Path,
+) -> None:
+    with _running_server(tmp_path) as (server, storage, _):
+        FileOperationalLog(storage / "operational-log").emit(
+            "mission-historical",
+            "hyper-agent",
+            "planning-context",
+            "completed",
+            details={"snapshot_id": "mission-historical:snapshot:1"},
+        )
+
+        runtime_response, runtime_body = _request(server, "GET", "/api/runtime")
+        trace_response, trace_body = _request(
+            server, "GET", "/api/trace?mission_id=mission-historical"
+        )
+
+    runtime = json.loads(runtime_body)
+    assert runtime_response.status == trace_response.status == 200
+    assert runtime == {
+        "active": False,
+        "available": True,
+        "status": "historical",
+        "mission_ids": ["mission-historical"],
+    }
+    assert [item["event_kind"] for item in json.loads(trace_body)["items"]] == [
+        "planning-context"
+    ]
+
+
 def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:
     config, _, _ = _config(tmp_path)
     with pytest.raises(ValueError, match="viewer host must"):

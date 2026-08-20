@@ -29,27 +29,34 @@
 
         <div class="architecture" aria-label="Component architecture map">
           <div class="graph-stage" id="graphStage">
-            <button class="edge e-context-belief" data-edge="context|belief" aria-label="Inspect Context Coordination to Bayesian Belief Manager evidence"><span>Context → belief</span></button>
-            <button class="edge e-belief-hyper" data-edge="belief|hyper-agent" aria-label="Inspect Bayesian Belief Manager to Hyper Agent evidence"><span>Belief → Hyper</span></button>
-            <button class="edge e-hyper-pddl" data-edge="hyper-agent|pddl" aria-label="Inspect Hyper Agent to PDDL Planner evidence"><span>Hyper → PDDL</span></button>
-            <button class="edge e-hyper-minizinc" data-edge="hyper-agent|minizinc" aria-label="Inspect Hyper Agent to MiniZinc Planner evidence"><span>Hyper → MiniZinc</span></button>
-            <button class="edge e-pddl-maneuver" data-edge="pddl|maneuver-control" aria-label="Inspect PDDL Planner to Maneuver Control evidence"><span>PDDL → Maneuver</span></button>
-            <button class="edge e-minizinc-maneuver" data-edge="minizinc|maneuver-control" aria-label="Inspect MiniZinc Planner to Maneuver Control evidence"><span>MiniZinc → Maneuver</span></button>
+            <button class="edge e-mission-hyper" data-edge="mission-input|hyper-agent" aria-label="Inspect Mission Input to Hyper Agent evidence"><span>Mission Input → Hyper</span></button>
+            <button class="edge e-hyper-intent" data-edge="hyper-agent|planning-intent" aria-label="Inspect Hyper Agent to Planning Intent evidence"><span>Hyper → Planning Intent</span></button>
+            <button class="edge e-intent-context" data-edge="planning-intent|planning-context" aria-label="Inspect Planning Intent to Planning Context evidence"><span>Planning Intent → Planning Context</span></button>
+            <button class="edge e-context-model" data-edge="planning-context|minizinc-assets" aria-label="Inspect Planning Context to MiniZinc string generation evidence"><span>Planning Context → MiniZinc strings</span></button>
+            <button class="edge e-model-assets" data-edge="minizinc-assets|planner-assets" aria-label="Inspect MiniZinc strings to persisted planner assets evidence"><span>MiniZinc strings → persisted assets</span></button>
+            <button class="edge e-assets-executor" data-edge="planner-assets|planner-executor" aria-label="Inspect persisted planner assets to Planner Executor evidence"><span>Planner assets → executor</span></button>
+            <button class="edge e-executor-maneuver" data-edge="planner-executor|maneuver-control" aria-label="Inspect Planner Executor to Maneuver Control evidence"><span>Planner Executor → Maneuver</span></button>
             <button class="edge e-maneuver-fsm" data-edge="maneuver-control|fsm" aria-label="Inspect Maneuver Control to FSM Runner evidence"><span>Maneuver → FSM</span></button>
             <button class="edge e-fsm-transport" data-edge="fsm|transport" aria-label="Inspect FSM Runner to transport evidence"><span>FSM → transport</span></button>
             <button class="edge e-transport-environment" data-edge="transport|environment" aria-label="Inspect transport to environment evidence"><span>Transport → environment</span></button>
             <button class="edge e-environment-context" data-edge="environment|context" aria-label="Inspect environment to Context Coordination evidence"><span>Environment → context</span></button>
+            <button class="edge e-context-belief" data-edge="context|belief" aria-label="Inspect Context Coordination to Bayesian Belief Manager evidence"><span>Context → belief</span></button>
+            <button class="edge e-belief-hyper" data-edge="belief|hyper-agent" aria-label="Inspect Bayesian Belief Manager to Hyper Agent evidence"><span>Belief → Hyper</span></button>
             <button class="edge e-summary-hyper" data-edge="mission-summary|hyper-agent" aria-label="Inspect Mission Summary to Hyper Agent evidence"><span>Summary → Hyper</span></button>
 
-            <button class="node context" data-component="context"><span class="node-icon">CC</span><span>Context Coordination</span><small>public context</small></button>
-            <button class="node belief" data-component="belief"><span class="node-icon">BB</span><span>Bayesian Belief Manager</span><small>belief evidence</small></button>
-            <button class="node hyper" data-component="hyper-agent"><span class="node-icon">HA</span><span>Hyper Agent</span><small>mission authority</small></button>
-            <button class="node pddl" data-component="pddl"><span class="node-icon">PD</span><span>PDDL Planner</span><small>symbolic planning</small></button>
-            <button class="node minizinc" data-component="minizinc"><span class="node-icon">MZ</span><span>MiniZinc Planner</span><small>temporal planning</small></button>
+            <button class="node mission-input" data-component="mission-input"><span class="node-icon">MI</span><span>Mission Input</span><small>HumanMessage</small></button>
+            <button class="node hyper" data-component="hyper-agent"><span class="node-icon">HA</span><span>Hyper Agent</span><small>workflow owner</small></button>
+            <button class="node planning-intent" data-component="planning-intent"><span class="node-icon">PI</span><span>Record Planning Intent</span><small>record_planning_intent</small></button>
+            <button class="node planning-context" data-component="planning-context"><span class="node-icon">PC</span><span>Load Planning Context</span><small>snapshot + scene graph</small></button>
+            <button class="node minizinc-assets" data-component="minizinc-assets"><span class="node-icon">MZ</span><span>Generate MiniZinc</span><small>model.mzn + data.dzn</small></button>
+            <button class="node planner-assets" data-component="planner-assets"><span class="node-icon">PA</span><span>Persist Planner Assets</span><small>persist_planner_assets</small></button>
+            <button class="node planner-executor" data-component="planner-executor"><span class="node-icon">PE</span><span>Planner Executor</span><small>validate · solve · normalize</small></button>
             <button class="node maneuver" data-component="maneuver-control"><span class="node-icon">MC</span><span>Maneuver Control</span><small>decision authority</small></button>
             <button class="node fsm" data-component="fsm"><span class="node-icon">FR</span><span>FSM Runner</span><small>transition evidence</small></button>
             <button class="node transport" data-component="transport"><span class="node-icon">TR</span><span>Transport</span><small>command receipts</small></button>
             <button class="node environment" data-component="environment"><span class="node-icon">EN</span><span>Environment</span><small>validated feedback</small></button>
+            <button class="node context" data-component="context"><span class="node-icon">CC</span><span>Context Coordination</span><small>snapshot + scene graph</small></button>
+            <button class="node belief" data-component="belief"><span class="node-icon">BB</span><span>Bayesian Belief Manager</span><small>belief evidence</small></button>
             <button class="node mission-summary" data-component="mission-summary"><span class="node-icon">MS</span><span>Mission Summary</span><small>when observed</small></button>
             <p class="graph-legend"><span><i class="legend-observed"></i> observed</span><span><i class="legend-related"></i> correlated</span><span>select a line for evidence</span></p>
             <div class="mobile-flow" id="mobileFlow" aria-label="Observed data flows"></div>

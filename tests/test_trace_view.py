@@ -307,6 +307,49 @@ def test_operational_log_and_summary_artifact_map_real_public_fields() -> None:
     }
 
 
+def test_operational_log_projects_current_public_planning_metadata() -> None:
+    operational = {
+        "schema_version": 1,
+        "record_id": "planning-log-1",
+        "mission_id": "mission-test",
+        "sequence": 1,
+        "event_time": "2026-01-01T00:00:00Z",
+        "source": "hyper-agent",
+        "event_kind": "planning-intent",
+        "outcome": "completed",
+        "details": {
+            "attempt_id": "attempt-1",
+            "decision_id": "decision-1",
+            "mission_input_sha256": "1" * 64,
+            "mission_snapshot_id": "mission-test:snapshot:1",
+            "planner_id": "minizinc",
+            "planning_intent_sha256": "2" * 64,
+            "planning_profile": "temporal",
+            "rationale": "Temporal constraints require scheduling.",
+            "translator_id": "hyper-agent",
+            "translator_version": "1",
+            "private_prompt": "must not be projected",
+        },
+    }
+
+    (item,) = TraceProjection().project(_observation(1, operational))
+
+    assert item.payload == {
+        "attempt_id": "attempt-1",
+        "decision_id": "decision-1",
+        "mission_input_sha256": "1" * 64,
+        "mission_snapshot_id": "mission-test:snapshot:1",
+        "planner_id": "minizinc",
+        "planning_intent_sha256": "2" * 64,
+        "planning_profile": "temporal",
+        "rationale": "Temporal constraints require scheduling.",
+        "translator_id": "hyper-agent",
+        "translator_version": "1",
+    }
+    assert "private_prompt" not in item.payload
+    assert "must not be projected" not in json.dumps(item.to_dict())
+
+
 def test_projection_is_permutation_invariant_and_preserves_replay_evidence() -> None:
     first = _event("first", 1, payload={"status": "accepted"})
     late = _event("late", 2, "late-record", {"status": "received"})

@@ -84,7 +84,7 @@ class _PublicArtifact:
 class _RuntimeView:
     config: RuntimeConfig
     store: RuntimeLeaseStore
-    lease: RuntimeLease
+    lease: RuntimeLease | None
 
 
 def _aware_timestamp(value: str) -> str:
@@ -806,32 +806,43 @@ class ViewerApplication:
             lease = store.inspect()
         except Exception:
             return None
-        if lease is None:
-            return None
         return _RuntimeView(config, store, lease)
 
     @staticmethod
-    def _current_lease(runtime: _RuntimeView) -> RuntimeLease | None:
-        lease = runtime.store.inspect()
-        if lease is None or (
-            lease.session_id,
-            lease.started_at,
-        ) != (
+    def _runtime_unchanged(runtime: _RuntimeView) -> bool:
+        current = runtime.store.inspect()
+        if runtime.lease is None:
+            return current is None
+        return current is not None and (
+            current.session_id,
+            current.started_at,
+        ) == (
             runtime.lease.session_id,
             runtime.lease.started_at,
-        ):
-            return None
-        return lease
+        )
 
     def runtime_payload(self) -> dict[str, object]:
         runtime = self._runtime()
         if runtime is None:
             return {"active": False, "available": False, "status": "unavailable"}
         artifacts = _load_public_artifacts(runtime.config)
-        lease = self._current_lease(runtime)
-        if lease is None:
+        if not self._runtime_unchanged(runtime):
             return {"active": False, "available": False, "status": "unavailable"}
         mission_ids = sorted({artifact.mission_id for artifact in artifacts})
+        lease = runtime.lease
+        if lease is None:
+            if not mission_ids:
+                return {
+                    "active": False,
+                    "available": False,
+                    "status": "unavailable",
+                }
+            return {
+                "active": False,
+                "available": True,
+                "status": "historical",
+                "mission_ids": mission_ids,
+            }
         return {
             "active": lease.status == "active",
             "available": True,
@@ -880,7 +891,7 @@ class ViewerApplication:
         selected_items = [
             item for item in projected if item["mission_id"] == selected
         ]
-        if self._current_lease(runtime) is None:
+        if not self._runtime_unchanged(runtime):
             return {"items": []}
         return {"items": selected_items}
 
@@ -909,7 +920,7 @@ class ViewerApplication:
             )
         except Exception:
             return empty
-        if self._current_lease(runtime) is None:
+        if not self._runtime_unchanged(runtime):
             return empty
         return {
             "enabled": True,

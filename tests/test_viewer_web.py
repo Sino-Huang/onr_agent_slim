@@ -308,8 +308,8 @@ def test_desktop_idle_has_architecture_only(
                 page.goto(url, wait_until="networkidle")
                 expect(page.locator("#runtimeLabel")).to_have_text("Runtime idle")
                 nodes = page.locator(".node")
-                expect(nodes).to_have_count(10)
-                for index in range(10):
+                expect(nodes).to_have_count(14)
+                for index in range(14):
                     expect(nodes.nth(index)).to_be_visible()
                 expect(page.get_by_text("Skills & advisory", exact=True)).to_have_count(0)
                 expect(page.locator("#idleNote")).to_be_visible()
@@ -642,7 +642,7 @@ def test_mobile_active_layout_flow_and_summary_history_are_usable(
 def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
     chromium_browser: Browser, tmp_path: Path
 ) -> None:
-    """The diagram names only runtime components and keeps long debug records local."""
+    """The diagram follows Hyper's workflow and exposes local debug activity."""
     with _viewer_server(tmp_path, active=False) as (url, _, _):
         context, page = _page(chromium_browser, width=1440, height=1000)
         try:
@@ -660,46 +660,61 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
                 },
                 {
                     "mission_id": "mission-diagram",
-                    "trace_id": "pddl-3",
-                    "event_id": "pddl-3",
-                    "component": "planner",
+                    "trace_id": "intent-3",
+                    "event_id": "intent-3",
+                    "component": "hyper-agent",
                     "authority": "observed",
-                    "event_kind": "normalized-plan",
+                    "event_kind": "planning-intent",
                     "occurred_at": "2026-08-20T00:00:02Z",
                     "observation_sequence": 3,
-                    "payload": {"planner": "pddl", "plan_revision": 2},
+                    "payload": {
+                        "decision_id": "decision-1",
+                        "planner_id": "minizinc",
+                        "planning_profile": "temporal",
+                    },
                 },
                 {
                     "mission_id": "mission-diagram",
-                    "trace_id": "minizinc-4",
-                    "event_id": "minizinc-4",
-                    "component": "planner",
+                    "trace_id": "context-4",
+                    "event_id": "context-4",
+                    "component": "hyper-agent",
                     "authority": "observed",
-                    "event_kind": "normalized-plan",
+                    "event_kind": "planning-context",
                     "occurred_at": "2026-08-20T00:00:03Z",
                     "observation_sequence": 4,
-                    "payload": {"planner": "minizinc", "plan_revision": 3},
+                    "payload": {"snapshot_id": "snapshot-1"},
                 },
                 {
                     "mission_id": "mission-diagram",
-                    "trace_id": "transport-5",
-                    "event_id": "transport-5",
+                    "trace_id": "assets-5",
+                    "event_id": "assets-5",
+                    "component": "hyper-agent",
+                    "authority": "observed",
+                    "event_kind": "planner-assets",
+                    "occurred_at": "2026-08-20T00:00:04Z",
+                    "observation_sequence": 5,
+                    "payload": {"planner": "minizinc"},
+                },
+                {
+                    "mission_id": "mission-diagram",
+                    "trace_id": "transport-6",
+                    "event_id": "transport-6",
                     "component": "transport",
                     "authority": "observed",
                     "event_kind": "command-receipt",
-                    "occurred_at": "2026-08-20T00:00:04Z",
-                    "observation_sequence": 5,
-                    "payload": {"command_id": "command-5"},
+                    "occurred_at": "2026-08-20T00:00:05Z",
+                    "observation_sequence": 6,
+                    "payload": {"command_id": "command-6"},
                 },
                 {
                     "mission_id": "mission-diagram",
-                    "trace_id": "unknown-6",
-                    "event_id": "unknown-6",
+                    "trace_id": "unknown-7",
+                    "event_id": "unknown-7",
                     "component": "unknown-service",
                     "authority": "observed",
                     "event_kind": "normalized-plan",
-                    "occurred_at": "2026-08-20T00:00:05Z",
-                    "observation_sequence": 6,
+                    "occurred_at": "2026-08-20T00:00:06Z",
+                    "observation_sequence": 7,
                     "payload": {"planner": "pddl"},
                 },
             ]
@@ -737,6 +752,44 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
                                     "skills": [{"name": "route-planning", "version": "2.1", "path": "/skills/route"}],
                                 }
                             ],
+                            "invocations": [
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 1,
+                                    "kind": "tool",
+                                    "name": "read_file",
+                                    "input": {"file_path": "/skills/route-planning/SKILL.md"},
+                                    "output": "skill loaded",
+                                    "error": None,
+                                },
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 3,
+                                    "kind": "tool",
+                                    "name": "record_planning_intent",
+                                    "input": {"planning_profile": "temporal"},
+                                    "output": {"planner_id": "minizinc"},
+                                    "error": None,
+                                },
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 5,
+                                    "kind": "tool",
+                                    "name": "load_planning_context",
+                                    "input": {},
+                                    "output": {"status": "ready"},
+                                    "error": None,
+                                },
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 7,
+                                    "kind": "tool",
+                                    "name": "persist_planner_assets",
+                                    "input": {"attempt_number": 1},
+                                    "output": {"planner_id": "minizinc"},
+                                    "error": None,
+                                },
+                            ],
                             "conversations": [
                                 {
                                     "role": "hyper-agent",
@@ -754,10 +807,26 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
             _pause_and_show_all(page)
 
             expect(page.get_by_text("Skills & advisory", exact=True)).to_have_count(0)
-            expect(page.locator(".node[data-component='pddl']")).to_be_visible()
-            expect(page.locator(".node[data-component='minizinc']")).to_be_visible()
+            expect(page.locator(".node[data-component='mission-input']")).to_be_visible()
+            expect(page.locator(".node[data-component='planning-intent']")).to_be_visible()
+            expect(page.locator(".node[data-component='planning-context']")).to_be_visible()
+            expect(page.locator(".node[data-component='minizinc-assets']")).to_be_visible()
+            expect(page.locator(".node[data-component='planner-assets']")).to_be_visible()
+            expect(page.locator(".node[data-component='pddl']")).to_have_count(0)
             expect(page.locator(".node[data-component='belief']")).to_be_visible()
-            expect(page.locator(".edge.active-flow")).to_have_count(0)
+            expect(
+                page.locator(".edge[data-edge='hyper-agent|planning-intent']")
+            ).to_have_class(re.compile("active-flow"))
+            expect(
+                page.locator(".edge[data-edge='planning-intent|planning-context']")
+            ).to_have_class(re.compile("active-flow"))
+            expect(
+                page.locator(".edge[data-edge='minizinc-assets|planner-assets']")
+            ).to_have_class(re.compile("active-flow"))
+
+            page.locator("#eventList .event", has_text="planning-intent").click()
+            expect(page.locator("#detailList")).to_contain_text("decision-1")
+            expect(page.locator("#detailList")).to_contain_text("minizinc")
 
             page.locator(".edge[data-edge='context|belief']").click()
             expect(page.locator("#inspectorTitle")).to_have_text(
@@ -773,9 +842,9 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
             )
             expect(page.locator("#inspectorBody")).to_contain_text("MissionSnapshot")
 
-            page.locator(".node[data-component='pddl']").click()
+            page.locator(".node[data-component='planning-context']").click()
             expect(page.locator("#inspectorBody")).to_contain_text("Output history")
-            expect(page.locator("#inspectorBody")).to_contain_text("No observed history")
+            expect(page.locator("#inspectorBody")).to_contain_text("planning-context")
 
             trace_items.append(
                 {
@@ -793,16 +862,17 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
             )
             page.reload(wait_until="networkidle")
             _pause_and_show_all(page)
-            expect(page.locator(".edge.active-flow")).to_have_count(1)
+            expect(page.locator(".edge[data-edge='context|belief']")).to_have_class(
+                re.compile("active-flow")
+            )
             page.locator(".edge[data-edge='context|belief']").click()
             expect(observed_evidence.locator("dd")).to_have_text("1")
             expect(page.locator("#inspectorBody")).to_contain_text(
                 "BayesianBeliefSnapshot"
             )
 
-            page.locator(".edge[data-edge='pddl|maneuver-control']").click()
-            expect(observed_evidence.locator("dd")).to_have_text("0")
-            expect(page.locator("#inspectorBody")).to_contain_text("NormalizedPlan")
+            page.locator(".edge[data-edge='planning-context|minizinc-assets']").click()
+            expect(page.locator("#inspectorBody")).to_contain_text("MiniZinc strings")
 
             page.locator("#eventList .event", has_text="unknown-service").click()
             expect(page.locator("#inspectorTitle")).to_have_text("normalized-plan")
@@ -813,6 +883,17 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
             page.locator(".node[data-component='hyper-agent']").click()
             expect(page.locator("#inspectorBody")).to_contain_text("map.lookup")
             expect(page.locator("#inspectorBody")).to_contain_text("route-planning 2.1")
+            expect(page.locator("#inspectorBody")).to_contain_text("Skill activations")
+            expect(page.locator("#inspectorBody")).to_contain_text("Tool calls")
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "record_planning_intent"
+            )
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "load_planning_context"
+            )
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "persist_planner_assets"
+            )
             expect(page.locator("#inspectorBody")).to_contain_text("Input / request")
             expect(page.locator("#inspectorBody")).to_contain_text("Provider reasoning")
             expect(page.locator("#inspectorBody")).to_contain_text(
