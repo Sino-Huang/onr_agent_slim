@@ -11,7 +11,13 @@ import pytest
 
 import onr.runtime.cli as runtime_cli
 from onr.adapters.file_transport import FileTransport
+from onr.contracts.context_coordination import (
+    MissionSnapshot,
+    create_source_fact_event,
+)
 from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.hyper_workflow import HyperWorkflowOutcome
+from onr.contracts.planner_translation import operational_scene_graph_sha256
 from onr.contracts.planning import (
     ManeuverIntent,
     NormalizedPlan,
@@ -21,6 +27,8 @@ from onr.contracts.planning import (
     ScheduledManeuver,
     VerifiableReference,
 )
+from onr.contracts.transport import TransportEvent
+from onr.ports.transport import Subscription
 from onr.runtime.lease import RuntimeLeaseStore
 
 
@@ -36,8 +44,8 @@ def _mission_file(tmp_path: Path, **overrides: object) -> Path:
     return path
 
 
-def _plan_file(tmp_path: Path) -> Path:
-    plan = NormalizedPlan(
+def _normalized_plan() -> NormalizedPlan:
+    return NormalizedPlan(
         plan_revision=3,
         mission_snapshot_id="mission:demo:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
@@ -61,16 +69,17 @@ def _plan_file(tmp_path: Path) -> Path:
             solver_evidence={"result": VerifiableReference("result", "5" * 64)},
         ),
     )
-    path = tmp_path / "plan.json"
-    path.write_text(plan.to_canonical_json(), encoding="utf-8")
-    return path
 
 
 def _role_prompt_files(tmp_path: Path) -> str:
     maneuver_prompt = "Temporary maneuver-control role prompt."
-    path = tmp_path / "conf/system_prompt/maneuver-control/SYSTEM.md"
+    prompt_root = tmp_path / "conf/system_prompt"
+    path = prompt_root / "maneuver-control/SYSTEM.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(maneuver_prompt, encoding="utf-8")
+    hyper_path = prompt_root / "hyper-agent/SYSTEM.md"
+    hyper_path.parent.mkdir(parents=True, exist_ok=True)
+    hyper_path.write_text("Temporary Hyper role prompt.", encoding="utf-8")
     return maneuver_prompt
 
 
@@ -107,8 +116,8 @@ def test_demo_environment_flag_is_explicitly_required(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as exc:
         runtime_cli.main(
             [
-                "--mission-file", str(_mission_file(tmp_path)),
-                "--plan-file", str(_plan_file(tmp_path)),
+                "--mission-file",
+                str(_mission_file(tmp_path)),
             ]
         )
     assert exc.value.code == 2
@@ -155,9 +164,7 @@ def test_demo_artifact_rollover_moves_prior_var_wholesale(
         lease=RuntimeLeaseStore(tmp_path / "var/storage/runtime"),
     )
 
-    expected = (
-        tmp_path / "data/past_debug_rounds/20260819T123456.123456Z/var"
-    )
+    expected = tmp_path / "data/past_debug_rounds/20260819T123456.123456Z/var"
     assert destination == expected
     assert not (tmp_path / "var").exists()
     assert {
@@ -215,6 +222,50 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
 ) -> None:
     calls: list[object] = []
     models: dict[str, object] = {}
+    plan = _normalized_plan()
+    scene = TransportEvent(
+        schema_version=1,
+        event_id="operational-scene-graph:mission:demo:1",
+        mission_id="mission:demo",
+        sequence=0,
+        event_kind="operational_scene_graph",
+        payload={"graph": {"mission_id": "mission:demo", "entities": []}},
+    )
+    snapshot = MissionSnapshot(
+        mission_id="mission:demo",
+        version=1,
+        created_at="2026-08-20T00:00:00+00:00",
+        operational_scene_graph=scene.event_id,
+        source_revisions={"operational_scene_graph": 0},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
+        source_health={"operational_scene_graph": "healthy"},
+        source_freshness={"operational_scene_graph": True},
+    )
+
+    class FakeHyperWorkflow:
+        def run(self, context: object, **kwargs: object) -> object:
+            calls.append(("hyper-run", context, kwargs))
+            return SimpleNamespace(
+                outcome=HyperWorkflowOutcome.PLAN_READY,
+                normalized_plan=plan,
+                todos=({"content": "Run MiniZinc", "status": "completed"},),
+            )
+
+    class FakeContextCoordination:
+        def __init__(self, transport: FileTransport) -> None:
+            self.subscription = Subscription(
+                "context-coordination", "mission:demo", "normalized-plans"
+            )
+            transport.subscriptions += (self.subscription,)
+
+        def run_once(self, consumer: object) -> MissionSnapshot:
+            delivery = consumer.receive()  # type: ignore[attr-defined]
+            assert delivery is not None
+            delivery.ack()
+            calls.append("heartbeat-snapshot")
+            return snapshot
 
     class FakeRuntime:
         def __init__(self) -> None:
@@ -223,7 +274,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
 
         def verify_llm_reachability(self) -> None:
             calls.append("verify")
-
 
         def create_chat_model(
             self,
@@ -236,19 +286,39 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             calls.append(("model", debug_scope, mission_id, model))
             return model
 
-
         def create_maneuver_control(self, adapter: object, **kwargs: object) -> object:
             calls.append(("maneuver", adapter, kwargs))
             return "maneuver-control"
 
         def create_context_coordination(self, **kwargs: object) -> object:
             calls.append(("context", kwargs))
-            return "context-coordination"
+            return FakeContextCoordination(self.transport)
 
         def create_fsm_runner(self, **kwargs: object) -> object:
             calls.append(("fsm", kwargs))
             return "fsm-runner"
 
+        def create_hyper_workflow(self, **kwargs: object) -> object:
+            calls.append(("hyper-workflow", kwargs))
+            return FakeHyperWorkflow()
+
+        def create_hyper_workflow_context(
+            self,
+            mission: MissionInput,
+            selected_snapshot: MissionSnapshot,
+            selected_scene: TransportEvent,
+            **kwargs: object,
+        ) -> object:
+            calls.append(
+                (
+                    "hyper-context",
+                    mission,
+                    selected_snapshot,
+                    selected_scene,
+                    kwargs,
+                )
+            )
+            return "hyper-workflow-context"
 
         def run_mission(self, mission: MissionInput, **kwargs: object) -> object:
             calls.append(("run", mission, kwargs))
@@ -264,6 +334,20 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     class FakeEnvironment:
         last_output_path = None
 
+        def heartbeat(self) -> object:
+            calls.append("environment-heartbeat")
+            source_fact = create_source_fact_event(
+                "mission:demo",
+                "operational_scene_graph",
+                0,
+                event_id="source-fact:mission:demo:scene:1",
+                sequence=0,
+                reference=scene.event_id,
+                content_sha256=operational_scene_graph_sha256(scene),
+            )
+            runtime.transport.publish_event("normalized-plans", source_fact)
+            return SimpleNamespace(scene_graph=scene, source_fact=source_fact)
+
         def run_once(self) -> str:
             calls.append("environment")
             return "demo-evidence"
@@ -278,21 +362,21 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     monkeypatch.setattr(
         runtime_cli,
         "_create_demo_environment",
-        lambda selected, mission_id, **kwargs: calls.append(
-            ("demo-environment", selected, mission_id, kwargs)
-        )
-        or FakeEnvironment(),
+        lambda selected, mission_id, **kwargs: (
+            calls.append(("demo-environment", selected, mission_id, kwargs))
+            or FakeEnvironment()
+        ),
     )
     result = runtime_cli.main(
         [
             "--mission-file",
             str(_mission_file(tmp_path)),
-            "--plan-file",
-            str(_plan_file(tmp_path)),
             "--repo-root",
             str(tmp_path),
             "--config-path",
             "runtime.yaml",
+            "--planner-artifacts",
+            "var/planner-artifacts",
             "--demo-environment",
         ]
     )
@@ -316,10 +400,33 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         item for item in calls if isinstance(item, tuple) and item[0] == "model"
     ]
     assert [(item[1], item[2]) for item in model_calls] == [
+        ("hyper-agent", "mission:demo"),
         ("maneuver-control", "mission:demo"),
         ("mission-summary", "mission:demo"),
     ]
-    assert len({id(item[3]) for item in model_calls}) == 2
+    assert len({id(item[3]) for item in model_calls}) == 3
+    hyper_call = next(
+        item
+        for item in calls
+        if isinstance(item, tuple) and item[0] == "hyper-workflow"
+    )
+    assert hyper_call[1]["model"] is models["hyper-agent"]
+    assert hyper_call[1]["system_prompt"] == "Temporary Hyper role prompt."
+    hyper_context_call = next(
+        item for item in calls if isinstance(item, tuple) and item[0] == "hyper-context"
+    )
+    assert hyper_context_call[2] is snapshot
+    assert hyper_context_call[3] is scene
+    assert hyper_context_call[4]["artifact_root"] == (
+        tmp_path / "var/planner-artifacts"
+    )
+    hyper_run = next(
+        item for item in calls if isinstance(item, tuple) and item[0] == "hyper-run"
+    )
+    assert hyper_run[2] == {
+        "thread_id": "planning-run:mission:demo:1",
+        "recursion_limit": 100,
+    }
     maneuver_call = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "maneuver"
     )
@@ -330,11 +437,14 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert maneuver_call[2]["system_prompt"] == (
         f"You are agent drone-1. {maneuver_prompt}"
     )
-    run_call = next(item for item in calls if isinstance(item, tuple) and item[0] == "run")
+    run_call = next(
+        item for item in calls if isinstance(item, tuple) and item[0] == "run"
+    )
     assert run_call[2]["model"] is models["mission-summary"]
     assert run_call[2]["plan"].mission_id == "mission:demo"
     assert run_call[2]["maneuver_control"] == "maneuver-control"
     assert "environment" in calls
+    assert calls.index("environment-heartbeat") < calls.index("heartbeat-snapshot")
 
 
 def test_cli_failure_is_nonzero_actionable_and_safe(
@@ -344,13 +454,15 @@ def test_cli_failure_is_nonzero_actionable_and_safe(
 
     def fail_runtime(**kwargs: object) -> object:
         _ = kwargs
-        raise RuntimeError("Survey the demo area without exposing this input. api_key=secret")
+        raise RuntimeError(
+            "Survey the demo area without exposing this input. api_key=secret"
+        )
 
     monkeypatch.setattr(runtime_cli, "_create_runtime", fail_runtime)
     result = runtime_cli.main(
         [
-            "--mission-file", str(mission_path),
-            "--plan-file", str(_plan_file(tmp_path)),
+            "--mission-file",
+            str(mission_path),
             "--demo-environment",
         ]
     )
@@ -376,8 +488,6 @@ def test_cli_reports_system_prompt_loading_failure(
         [
             "--mission-file",
             str(_mission_file(tmp_path)),
-            "--plan-file",
-            str(_plan_file(tmp_path)),
             "--repo-root",
             str(tmp_path),
             "--demo-environment",

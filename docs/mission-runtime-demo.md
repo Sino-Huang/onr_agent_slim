@@ -47,7 +47,18 @@ python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --c
 
 The CLI always verifies the configured LLM endpoint, composes the configured
 real planners, creates model-backed Hyper Agent and Maneuver Control services,
-and runs Context Coordination and FSM Runner. During the active mission session,
+and runs Context Coordination and FSM Runner. It first publishes a demo
+environment heartbeat, turns that scene evidence into a Mission Snapshot, and
+invokes the Hyper workflow. Hyper owns the live todo list, creates the MiniZinc
+files under `--planner-artifacts`, invokes the configured solver, and returns the
+verified Normalized Plan consumed by mission execution. There is no operator
+supplied plan file.
+
+The Hyper episode uses a recursion limit of 100 by default. For bounded
+debugging, add a smaller value such as `--recursion-limit 5`; reaching the limit
+stops the episode with a nonzero CLI result instead of continuing an agent loop.
+
+During the active mission session,
 the runtime owns the lease and writes normal transport, operational-log, FSM,
 planner, and summary artifacts. It prints only mission/result identifiers and
 final public status; it does not print mission text or configuration secrets.
@@ -55,6 +66,14 @@ Mission-summary calls send the per-request
 `chat_template_kwargs.enable_thinking: false` override, disabling Gemma thinking
 for summaries even when the vLLM server default enables it. Other model calls
 retain their existing behavior.
+
+Hyper progress is recorded as immutable mission-scoped files under
+`var/storage/operational-log/<mission-id>/events/`. The `hyper-agent` records
+include workflow start and terminal outcome plus `planning-intent`,
+`planner-choice`, `planning-context`, `planner-assets`, and `planner-execution`
+events. Repeated asset and execution events expose correction attempts. These
+records contain sanitized identifiers and outcomes, not raw Mission Intent or
+private model reasoning.
 
 Before checking the configured LLM endpoint, a new demo run moves any existing
 `var/` directory wholesale to

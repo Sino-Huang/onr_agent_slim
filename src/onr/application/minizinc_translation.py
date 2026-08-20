@@ -111,15 +111,23 @@ class MiniZincTranslation:
         generator: object,
         *,
         plan_revision: int,
+        start_attempt_number: int = 1,
     ) -> PlanningTranslationResult:
         self._validate_context(mission_input, planner_choice, snapshot, scene_graph)
+        if (
+            isinstance(start_attempt_number, bool)
+            or not isinstance(start_attempt_number, int)
+            or start_attempt_number < 1
+        ):
+            raise ValueError("starting generation attempt number must be positive")
         generate = self._generator(generator)
         feedback: PlannerCorrectionFeedback | None = None
         feedback_history: list[PlannerCorrectionFeedback] = []
         generation_attempts: list[PlannerGenerationAttempt] = []
         last_evidence = None
 
-        for attempt_number in range(1, self.max_corrections + 2):
+        for local_attempt_index in range(self.max_corrections + 1):
+            attempt_number = start_attempt_number + local_attempt_index
             request = PlannerGenerationContext(
                 mission_input=mission_input,
                 planner_choice=planner_choice,
@@ -168,7 +176,7 @@ class MiniZincTranslation:
                 )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.UNSOLVABLE,
-                    attempt_number,
+                    len(generation_attempts),
                     tuple(generation_attempts),
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
@@ -183,7 +191,7 @@ class MiniZincTranslation:
                 )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.TIMEOUT,
-                    attempt_number,
+                    len(generation_attempts),
                     tuple(generation_attempts),
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
@@ -207,7 +215,7 @@ class MiniZincTranslation:
                 )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.VERIFIED,
-                    attempt_number,
+                    len(generation_attempts),
                     tuple(generation_attempts),
                     normalized_plan=normalized,
                     correction_feedback=tuple(feedback_history),
@@ -227,7 +235,7 @@ class MiniZincTranslation:
 
         return PlanningTranslationResult(
             PlanningTranslationOutcome.REPAIR_EXHAUSTED,
-            self.max_corrections + 1,
+            len(generation_attempts),
             tuple(generation_attempts),
             correction_feedback=tuple(feedback_history),
             evidence=last_evidence,

@@ -72,7 +72,11 @@ from onr.contracts.human_decision import (
     RunCheckpoint,
 )
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecision
+from onr.contracts.maneuver_control import (
+    InvocationOverlay,
+    ManeuverCommand,
+    ManeuverControlDecision,
+)
 from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
@@ -693,9 +697,7 @@ class RuntimeComposition:
             skill_catalog=skill_catalog,
             skill_version=skill_version,
             backend_root=context_backend_root,
-            checkpointer=(
-                InMemorySaver() if checkpointer is None else checkpointer
-            ),
+            checkpointer=(InMemorySaver() if checkpointer is None else checkpointer),
         )
         return DeepAgentsHyperWorkflow(graph)
 
@@ -721,6 +723,7 @@ class RuntimeComposition:
             max_planner_attempts=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries + 1
             ),
+            operational_log=self._logger(),
         )
 
     def _run_mission(
@@ -916,6 +919,11 @@ class RuntimeComposition:
             maneuver_result = maneuver_control.heartbeat(
                 plan_snapshot,
                 status_before_feedback,
+                InvocationOverlay(
+                    mission_id,
+                    invocation_id,
+                    {"normalized_plan": plan.to_dict()},
+                ),
                 event_id=invocation_id,
                 plan=plan,
             )

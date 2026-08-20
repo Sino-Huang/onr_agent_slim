@@ -8,6 +8,7 @@ from enum import StrEnum
 class HyperWorkflowOutcome(StrEnum):
     """Current terminal point reached by the Hyper workflow invocation."""
 
+    PLAN_READY = "plan_ready"
     PLANNER_REJECTED = "planner_rejected"
 
 

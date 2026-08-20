@@ -49,7 +49,7 @@ The planning agent that owns one Hyper Workflow Episode, derives Planning Intent
 _Avoid_: Main agent, controller
 
 **Hyper Workflow Episode**:
-One checkpointed planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, snapshot-authorized generation, verification, and execution handoff. Invoked capabilities return evidence but do not own or update the todo state.
+One checkpointed planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, snapshot-authorized generation, and verification. It terminates with either a verified Normalized Plan ready for execution or a recorded no-plan outcome. Invoked capabilities return evidence but do not own or update the todo state.
 _Avoid_: Planning Intent invocation, shared agent state, planner authority
 
 **Maneuver Control Agent**:

@@ -30,6 +30,7 @@ from onr.contracts.planner_translation import (
 from onr.contracts.planning import (
     ManeuverIntent,
     ManeuverParameter,
+    NormalizedPlan,
     PlannerChoice,
     TemporalManeuver,
 )
@@ -42,7 +43,7 @@ HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "mission_id": {"type": "string"},
-        "outcome": {"enum": ["planner_rejected"]},
+        "outcome": {"enum": ["plan_ready", "planner_rejected"]},
     },
     "required": ["mission_id", "outcome"],
     "additionalProperties": False,
@@ -54,7 +55,9 @@ class TemporalManeuverCandidate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    maneuver_id: str = Field(description="Portable maneuver identifier used in solver output.")
+    maneuver_id: str = Field(
+        description="Portable maneuver identifier used in solver output."
+    )
     action: str = Field(description="Abstract maneuver action for Maneuver Control.")
     parameters: dict[str, str | int | float | bool | None] = Field(
         description="JSON-scalar action parameters keyed by semantic name."
@@ -88,6 +91,7 @@ class HyperWorkflowContext:
     artifact_root: Path
     minizinc_translation: Any
     max_planner_attempts: int = 1
+    operational_log: Any = None
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
     minizinc_problem: Any = field(default=None, init=False)
@@ -104,6 +108,10 @@ class HyperWorkflowContext:
             raise TypeError("Hyper workflow requires an Operational Scene Graph")
         if not isinstance(self.minizinc_translation, MiniZincTranslation):
             raise TypeError("Hyper workflow requires MiniZinc translation")
+        if self.operational_log is not None and not callable(
+            getattr(self.operational_log, "emit", None)
+        ):
+            raise TypeError("Hyper workflow operational log must expose emit")
         if (
             isinstance(self.max_planner_attempts, bool)
             or not isinstance(self.max_planner_attempts, int)
@@ -123,6 +131,7 @@ class HyperWorkflowRunResult:
     planning_intent: PlanningIntent | None
     planner_choice: PlannerChoiceRecord | None
     translation: PlanningTranslationResult | None
+    normalized_plan: NormalizedPlan | None
 
 
 def _context(runtime: ToolRuntime[HyperWorkflowContext]) -> HyperWorkflowContext:
@@ -130,6 +139,23 @@ def _context(runtime: ToolRuntime[HyperWorkflowContext]) -> HyperWorkflowContext
     if not isinstance(context, HyperWorkflowContext):
         raise TypeError("Hyper workflow tool requires HyperWorkflowContext")
     return context
+
+
+def _emit(
+    context: HyperWorkflowContext,
+    event_kind: str,
+    outcome: str,
+    *,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    if context.operational_log is not None:
+        context.operational_log.emit(
+            context.mission_input.mission_id,
+            "hyper-agent",
+            event_kind,
+            outcome,
+            details=details,
+        )
 
 
 @tool(parse_docstring=True)
@@ -179,6 +205,28 @@ def record_planning_intent(
     choice = PlannerChoiceRecord.from_planning_intent(intent)
     context.planning_intent = intent
     context.planner_choice = choice
+    _emit(
+        context,
+        "planning-intent",
+        "completed",
+        details={
+            "decision_id": choice.decision_id,
+            "planner_id": choice.planner_choice.planner_id,
+            "planning_profile": choice.planner_choice.planning_profile,
+            "planning_intent_sha256": choice.planning_intent_sha256,
+        },
+    )
+    _emit(
+        context,
+        "planner-choice",
+        "completed",
+        details={
+            "decision_id": choice.decision_id,
+            "planner_id": choice.planner_choice.planner_id,
+            "planning_profile": choice.planner_choice.planning_profile,
+            "rationale": choice.rationale,
+        },
+    )
     return choice.to_canonical_json()
 
 
@@ -195,6 +243,19 @@ def load_planning_context(
         context.mission_input.mission_id,
         context.mission_snapshot,
         context.scene_graph,
+    )
+    _emit(
+        context,
+        "planning-context",
+        "completed",
+        details={
+            "snapshot_id": (
+                f"{context.mission_input.mission_id}:snapshot:"
+                f"{context.mission_snapshot.version}"
+            ),
+            "scene_graph_reference": context.scene_graph.event_id,
+            "revision": context.mission_snapshot.version,
+        },
     )
     return _canonical_json(
         {
@@ -275,6 +336,18 @@ def persist_planner_assets(
     context.minizinc_problem = problem
     context.draft_references = tuple(sorted(references))
     context.current_attempt_number = attempt_number
+    _emit(
+        context,
+        "planner-assets",
+        "completed",
+        details={
+            "generated_assets": "model.mzn,data.dzn",
+            "planner_id": "minizinc",
+            "sequence": attempt_number,
+            "translator_id": translator_id,
+            "translator_version": translator_version,
+        },
+    )
     return _canonical_json(
         {
             "attempt_number": attempt_number,
@@ -294,8 +367,7 @@ def _temporal_maneuver(value: TemporalManeuverCandidate) -> TemporalManeuver:
         intent=ManeuverIntent(
             value.action,
             tuple(
-                ManeuverParameter(name, item)
-                for name, item in value.parameters.items()
+                ManeuverParameter(name, item) for name, item in value.parameters.items()
             ),
         ),
         dependencies=tuple(value.dependencies),
@@ -340,7 +412,9 @@ def planner_executor(
         path = Path(reference)
         expected = problem.assets.get(path.name)
         if expected is None or path.read_bytes() != expected:
-            raise ValueError("planner executor draft content does not match persistence")
+            raise ValueError(
+                "planner executor draft content does not match persistence"
+            )
 
     translation = context.minizinc_translation.plan(
         context.mission_input,
@@ -349,9 +423,24 @@ def planner_executor(
         context.scene_graph,
         lambda request: problem,
         plan_revision=(context.mission_snapshot.plan_revision or 0) + 1,
+        start_attempt_number=context.current_attempt_number,
     )
     context.translation = translation
     attempt = translation.generation_attempts[-1]
+    _emit(
+        context,
+        "planner-execution",
+        str(translation.outcome),
+        details={
+            "attempt_id": attempt.attempt_id,
+            "planner_id": planner_id,
+            "plan_revision": (
+                translation.normalized_plan.plan_revision
+                if translation.normalized_plan is not None
+                else (context.mission_snapshot.plan_revision or 0) + 1
+            ),
+        },
+    )
     if translation.outcome is PlanningTranslationOutcome.VERIFIED:
         return _canonical_json(
             {
@@ -372,9 +461,7 @@ def planner_executor(
                 "correction_message": feedback.message,
                 "correction_stage": str(feedback.stage),
                 "outcome": (
-                    "repair_exhausted"
-                    if retries_remaining == 0
-                    else "rejected"
+                    "repair_exhausted" if retries_remaining == 0 else "rejected"
                 ),
                 "planner_id": planner_id,
                 "retries_remaining": retries_remaining,
@@ -442,6 +529,49 @@ class DeepAgentsHyperWorkflow:
     ) -> HyperWorkflowRunResult:
         if not isinstance(context, HyperWorkflowContext):
             raise TypeError("Hyper workflow requires HyperWorkflowContext")
+        _emit(
+            context,
+            "workflow",
+            "started",
+            details={"operation": "hyper_workflow", "correlation_id": thread_id},
+        )
+        try:
+            result = self._run(
+                context,
+                thread_id=thread_id,
+                recursion_limit=recursion_limit,
+                max_empty_responses=max_empty_responses,
+            )
+        except Exception as exc:
+            _emit(
+                context,
+                "workflow",
+                "failed",
+                details={
+                    "error_type": type(exc).__name__,
+                    "operation": "hyper_workflow",
+                },
+            )
+            raise
+        _emit(
+            context,
+            "workflow",
+            "completed",
+            details={
+                "operation": "hyper_workflow",
+                "status": str(result.outcome),
+            },
+        )
+        return result
+
+    def _run(
+        self,
+        context: HyperWorkflowContext,
+        *,
+        thread_id: str,
+        recursion_limit: int,
+        max_empty_responses: int = 8,
+    ) -> HyperWorkflowRunResult:
         if not isinstance(thread_id, str) or not thread_id.strip():
             raise ValueError("Hyper workflow thread ID must be non-empty")
         if (
@@ -455,7 +585,9 @@ class DeepAgentsHyperWorkflow:
             or not isinstance(max_empty_responses, int)
             or max_empty_responses < 0
         ):
-            raise ValueError("Hyper workflow empty-response retries must be non-negative")
+            raise ValueError(
+                "Hyper workflow empty-response retries must be non-negative"
+            )
         config: dict[str, object] = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": recursion_limit,
@@ -503,12 +635,21 @@ class DeepAgentsHyperWorkflow:
         if candidate["mission_id"] != context.mission_input.mission_id:
             raise ValueError("Hyper workflow result Mission ID does not match")
         outcome = HyperWorkflowOutcome(cast(str, candidate["outcome"]))
-        if (
-            outcome is HyperWorkflowOutcome.PLANNER_REJECTED
-            and (
+        if outcome is HyperWorkflowOutcome.PLAN_READY:
+            if (
                 context.translation is None
                 or context.translation.outcome
-                is not PlanningTranslationOutcome.REPAIR_EXHAUSTED
+                is not PlanningTranslationOutcome.VERIFIED
+                or context.translation.normalized_plan is None
+            ):
+                raise ValueError("Hyper workflow success lacks a verified plan")
+        elif (
+            context.translation is None
+            or context.translation.outcome is PlanningTranslationOutcome.VERIFIED
+            or (
+                context.translation.outcome
+                is PlanningTranslationOutcome.REPAIR_EXHAUSTED
+                and context.current_attempt_number < context.max_planner_attempts
             )
         ):
             raise ValueError("Hyper workflow rejection lacks planner evidence")
@@ -525,6 +666,10 @@ class DeepAgentsHyperWorkflow:
         )
         if len(todos) != len(raw_todos):
             raise ValueError("Hyper workflow todo state is invalid")
+        if outcome is HyperWorkflowOutcome.PLAN_READY and any(
+            todo["status"] != "completed" for todo in todos
+        ):
+            raise ValueError("Hyper workflow success requires completed todos")
         return HyperWorkflowRunResult(
             outcome=outcome,
             todos=todos,
@@ -532,6 +677,11 @@ class DeepAgentsHyperWorkflow:
             planning_intent=context.planning_intent,
             planner_choice=context.planner_choice,
             translation=context.translation,
+            normalized_plan=(
+                context.translation.normalized_plan
+                if context.translation is not None
+                else None
+            ),
         )
 
 

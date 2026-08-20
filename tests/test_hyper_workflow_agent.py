@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
 
 from onr.adapters.minizinc import MiniZincExecutor
+from onr.adapters.operational_log import InProcessOperationalLog
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
 from onr.agents.hyper_workflow import (
@@ -28,7 +29,12 @@ from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     operational_scene_graph_sha256,
 )
-from onr.contracts.planning import PlannerExecutionResult
+from onr.contracts.planning import (
+    PlannerExecutionEvidence,
+    PlannerExecutionResult,
+    PlanningOutcome,
+    TemporalAssignment,
+)
 from onr.contracts.planning_evidence import TranslationAttemptOutcome
 from onr.contracts.transport import TransportEvent
 
@@ -84,6 +90,25 @@ class RejectingMiniZincPlanner:
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         _ = assets
         raise AssertionError("a statically rejected MiniZinc problem must not execute")
+
+
+class VerifiedMiniZincPlanner:
+    def __init__(self, evidence: PlannerExecutionEvidence) -> None:
+        self.evidence = evidence
+        self.check_count = 0
+
+    def check(self, assets: Mapping[str, bytes]) -> bool:
+        self.check_count += 1
+        return self.check_count == 2 and set(assets) == {"model.mzn", "data.dzn"}
+
+    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
+        for path in self.evidence.artifact_paths:
+            path.write_bytes(assets[path.name])
+        return PlannerExecutionResult(
+            PlanningOutcome.SOLVED,
+            (TemporalAssignment("observe-ship-1", 0, 1),),
+            self.evidence,
+        )
 
 
 def _tool_call(name: str, args: dict[str, object], index: int) -> AIMessage:
@@ -162,6 +187,196 @@ def _scene_context() -> tuple[MissionInput, MissionSnapshot, TransportEvent]:
     return mission, snapshot, scene
 
 
+def _planner_evidence(tmp_path: Path) -> PlannerExecutionEvidence:
+    directory = tmp_path / "solver-run"
+    directory.mkdir()
+    model = directory / "model.mzn"
+    data = directory / "data.dzn"
+    stdout = directory / "solver.stdout"
+    stderr = directory / "solver.stderr"
+    model.write_text("solve satisfy;\n", encoding="utf-8")
+    data.write_text("horizon = 2;\n", encoding="utf-8")
+    stdout.write_text('{"status":"optimal"}\n', encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    return PlannerExecutionEvidence(directory, (model, data), stdout, stderr)
+
+
+def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
+    tmp_path: Path,
+) -> None:
+    mission, snapshot, scene = _scene_context()
+    artifact_root = tmp_path / "planner-artifacts"
+    draft_root = artifact_root / "drafts" / "001"
+    model_path = draft_root / "model.mzn"
+    data_path = draft_root / "data.dzn"
+    second_draft_root = artifact_root / "drafts" / "002"
+    second_model_path = second_draft_root / "model.mzn"
+    second_data_path = second_draft_root / "data.dzn"
+    planning_intent = {
+        "mission_id": mission.mission_id,
+        "source_authority": mission.source_authority,
+        "objective": "observe risky ships",
+        "planning_profile": "temporal",
+        "planner_id": "minizinc",
+        "rationale": "Observation feasibility depends on time and location.",
+        "details": {"observation_objective": "field of view coverage"},
+    }
+    responses = [
+        _tool_call("write_todos", {"todos": _todos(0)}, 1),
+        _tool_call(
+            "read_file",
+            {"file_path": "/conf/skills/hyper/mission-parsing/SKILL.md"},
+            2,
+        ),
+        _tool_call(
+            "read_file",
+            {"file_path": "/conf/skills/hyper/planner-selection/SKILL.md"},
+            3,
+        ),
+        _tool_call("record_planning_intent", planning_intent, 4),
+        _tool_call("write_todos", {"todos": _todos(1)}, 5),
+        _tool_call("write_todos", {"todos": _todos(2)}, 6),
+        _tool_call("load_planning_context", {}, 7),
+        _tool_call("write_todos", {"todos": _todos(3)}, 8),
+        _tool_call(
+            "read_file",
+            {
+                "file_path": (
+                    "/conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
+                )
+            },
+            9,
+        ),
+        _tool_call(
+            "persist_planner_assets",
+            {
+                "attempt_number": 1,
+                "model_mzn": "solve satisfy;\n",
+                "data_dzn": "horizon = 2;\n",
+                "horizon": 2,
+                "maneuvers": [
+                    {
+                        "maneuver_id": "observe-ship-1",
+                        "action": "observe",
+                        "parameters": {"entity_id": "ship-1"},
+                        "dependencies": [],
+                        "duration": 1,
+                    }
+                ],
+                "translator_id": "hyper-minizinc",
+                "translator_version": "1.0.0",
+            },
+            10,
+        ),
+        _tool_call("write_todos", {"todos": _todos(4)}, 11),
+        _tool_call(
+            "planner_executor",
+            {
+                "planner_id": "minizinc",
+                "asset_references": [str(model_path), str(data_path)],
+            },
+            12,
+        ),
+        _tool_call("write_todos", {"todos": _todos(4)}, 13),
+        _tool_call(
+            "persist_planner_assets",
+            {
+                "attempt_number": 2,
+                "model_mzn": "constraint true;\nsolve satisfy;\n",
+                "data_dzn": "horizon = 2;\n",
+                "horizon": 2,
+                "maneuvers": [
+                    {
+                        "maneuver_id": "observe-ship-1",
+                        "action": "observe",
+                        "parameters": {"entity_id": "ship-1"},
+                        "dependencies": [],
+                        "duration": 1,
+                    }
+                ],
+                "translator_id": "hyper-minizinc",
+                "translator_version": "1.0.0",
+            },
+            14,
+        ),
+        _tool_call(
+            "planner_executor",
+            {
+                "planner_id": "minizinc",
+                "asset_references": [
+                    str(second_model_path),
+                    str(second_data_path),
+                ],
+            },
+            15,
+        ),
+        _tool_call("write_todos", {"todos": _todos(5)}, 16),
+        _tool_call(
+            "HyperWorkflowResultCandidate",
+            {"mission_id": mission.mission_id, "outcome": "plan_ready"},
+            17,
+        ),
+    ]
+    log = InProcessOperationalLog()
+    context = HyperWorkflowContext(
+        mission_input=mission,
+        mission_snapshot=snapshot,
+        scene_graph=scene,
+        artifact_root=artifact_root,
+        minizinc_translation=MiniZincTranslation(
+            VerifiedMiniZincPlanner(_planner_evidence(tmp_path)),
+            artifact_root / "generation-attempts",
+            max_corrections=0,
+        ),
+        max_planner_attempts=2,
+        operational_log=log,
+    )
+    graph = create_hyper_workflow_agent(
+        model=ScriptedWorkflowModel(responses=responses),
+        system_prompt=load_system_prompt(
+            _REPO_ROOT / "conf/system_prompt", "hyper-agent"
+        ),
+        mission_id=mission.mission_id,
+        skill_catalog=FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills"),
+        backend_root=_REPO_ROOT,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = DeepAgentsHyperWorkflow(graph).run(
+        context,
+        thread_id=f"planning-run:{mission.mission_id}:verified",
+        recursion_limit=64,
+    )
+
+    assert result.outcome is HyperWorkflowOutcome.PLAN_READY
+    assert result.normalized_plan is not None
+    assert result.normalized_plan.mission_id == mission.mission_id
+    assert result.normalized_plan.maneuvers[0].maneuver_id == "observe-ship-1"
+    assert [todo["status"] for todo in result.todos] == ["completed"] * 5
+    assert [record.event_kind for record in log.replay(mission.mission_id)] == [
+        "workflow",
+        "planning-intent",
+        "planner-choice",
+        "planning-context",
+        "planner-assets",
+        "planner-execution",
+        "planner-assets",
+        "planner-execution",
+        "workflow",
+    ]
+    assert [record.outcome for record in log.replay(mission.mission_id)] == [
+        "started",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "repair_exhausted",
+        "completed",
+        "verified",
+        "completed",
+    ]
+
+
 def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
     tmp_path: Path,
 ) -> None:
@@ -178,9 +393,7 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
         "planning_profile": "temporal",
         "planner_id": "minizinc",
         "rationale": "The objective depends on observation time and drone location.",
-        "details": {
-            "observation_objective": "risk-weighted field of view coverage"
-        },
+        "details": {"observation_objective": "risk-weighted field of view coverage"},
     }
 
     responses = [
@@ -253,8 +466,7 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
     model = ScriptedWorkflowModel(responses=responses)
     planner = MiniZincExecutor(
         executable=(
-            _REPO_ROOT
-            / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
+            _REPO_ROOT / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
         ),
         artifact_root=tmp_path / "planner-artifacts" / "solver-runs",
         timeout_seconds=10,
@@ -330,9 +542,7 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
             "retries_remaining": 0,
         }
     ]
-    checkpoint = cast(Any, graph).get_state(
-        {"configurable": {"thread_id": thread_id}}
-    )
+    checkpoint = cast(Any, graph).get_state({"configurable": {"thread_id": thread_id}})
     assert checkpoint.values["todos"] == list(result.todos)
     assert model.response_index == len(responses)
 

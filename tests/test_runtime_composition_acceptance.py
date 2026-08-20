@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -23,6 +24,7 @@ from onr.contracts.human_decision import (
 )
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.maneuver_control import (
+    InvocationOverlay,
     ManeuverCommand,
     ManeuverControlDecision,
     PhysicalAction,
@@ -77,14 +79,16 @@ class RecordingAdapter:
 class FixedDecisionProvider:
     def __init__(self, intent: ManeuverIntent) -> None:
         self.intent = intent
+        self.overlays: list[InvocationOverlay | None] = []
 
     def decide(
         self,
         snapshot: MissionSnapshot,
         status: FSMStatus,
-        overlay: object = None,
+        overlay: InvocationOverlay | None = None,
     ) -> ManeuverControlDecision:
-        _ = snapshot, overlay
+        _ = snapshot
+        self.overlays.append(overlay)
         return ManeuverControlDecision(
             decision_id="runtime-decision",
             mission_id=status.mission_id,
@@ -746,9 +750,10 @@ def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> 
         clock=lambda: 0,
     )
     adapter = RecordingAdapter()
+    decision_provider = FixedDecisionProvider(intent)
     control = runtime.create_maneuver_control(
         adapter,
-        FixedDecisionProvider(intent),
+        decision_provider,
     )
     environment = FakeEnvironment(
         cast(FileTransport, runtime.transport),
@@ -770,6 +775,12 @@ def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> 
     assert result.feedback.maneuver_id == "survey"
     assert result.status_before_feedback.active_state == "state-0"
     assert result.final_status.active_state == "state-1"
+    overlay = decision_provider.overlays[-1]
+    assert overlay is not None
+    overlay_values = cast(Mapping[str, object], overlay.to_dict()["values"])
+    assert overlay_values["normalized_plan"] == json.loads(
+        plan.to_canonical_json()
+    )
     planning_record = next(
         record
         for record in FileOperationalLog(

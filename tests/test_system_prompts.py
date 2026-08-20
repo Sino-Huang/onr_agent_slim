@@ -61,6 +61,8 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     )
     assert "Call `write_todos` immediately" in prompt
     assert "Never batch several completions" in prompt
+    assert "`outcome: plan_ready`" in prompt
+    assert "verified NormalizedPlan" in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",
@@ -72,3 +74,17 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
         "`HyperWorkflowResultCandidate`",
     ):
         assert capability in prompt
+
+
+def test_maneuver_prompt_uses_generated_plan_before_transition() -> None:
+    prompt = load_system_prompt(
+        Path(__file__).parents[1] / "conf/system_prompt",
+        "maneuver-control",
+    )
+
+    assert "invocation overlay" in prompt
+    assert "`normalized_plan`" in prompt
+    assert "select that exact maneuver" in prompt
+    assert (
+        "Do not advance a maneuver before authoritative completion feedback" in prompt
+    )
