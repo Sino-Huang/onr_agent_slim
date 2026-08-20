@@ -267,6 +267,7 @@ def test_runtime_composes_one_workflow_level_hyper_deep_agent(monkeypatch) -> No
         skill_version="1.0.0",
         backend_root=Path("backend"),
         checkpointer=checkpointer,
+        artifact_root=Path("backend/planner-artifacts"),
     )
 
     assert isinstance(workflow, DeepAgentsHyperWorkflow)
@@ -280,6 +281,7 @@ def test_runtime_composes_one_workflow_level_hyper_deep_agent(monkeypatch) -> No
         "skill_version": "1.0.0",
         "backend_root": Path("backend"),
         "checkpointer": checkpointer,
+        "planner_workspace_location": "/planner-artifacts/workspace",
     }
 
 
@@ -313,12 +315,14 @@ def test_runtime_builds_single_attempt_workflow_planner_context(
         snapshot,
         scene,
         artifact_root=tmp_path / "planner-artifacts",
+        backend_root=tmp_path,
     )
 
     assert isinstance(context, HyperWorkflowContext)
     assert context.minizinc_translation.max_corrections == 0
     assert context.max_planner_attempts == 8
     assert context.artifact_root == (tmp_path / "planner-artifacts").resolve()
+    assert context.planner_workspace_location == "/planner-artifacts/workspace"
 
 
 def test_default_maneuver_control_uses_configured_provider_retry_limit(

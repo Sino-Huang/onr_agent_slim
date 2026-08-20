@@ -15,6 +15,7 @@ from langgraph.errors import GraphRecursionError
 
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.adapters.operational_log import InProcessOperationalLog
+from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
 from onr.agents.hyper_workflow import (
@@ -50,8 +51,11 @@ _STAGES = (
     "Parse Mission Intent into PlanningIntent",
     "Decide and record the MiniZinc planner inside PlanningIntent",
     "Load the current snapshot-authorized operational evidence",
-    "Generate and persist MiniZinc problem files",
+    "Generate and write MiniZinc problem files",
+    "Persist the written MiniZinc problem files",
     "Run MiniZinc and repair rejected translations",
+    "Generate a semantic Statechart from the verified NormalizedPlan",
+    "Validate and repair the Statechart",
 )
 
 
@@ -258,6 +262,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
         },
     )
     artifact_root = tmp_path / "planner-artifacts"
+    workspace = artifact_root / "workspace" / "001"
     context = HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
@@ -282,7 +287,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     }
     assert context.planning_context_loaded is False
 
-    cast(Any, record_planning_intent).func(
+    recorded = json.loads(cast(Any, record_planning_intent).func(
         mission_id=mission.mission_id,
         source_authority=mission.source_authority,
         objective="observe risky ships",
@@ -291,13 +296,15 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
         rationale="Observation feasibility depends on time and location.",
         details={"observation_objective": "field of view coverage"},
         runtime=runtime,
-    )
+    ))
+    assert recorded["status"] == "accepted"
+    assert recorded["next_tool"] == "load_planning_context"
 
     missing_context = json.loads(
         cast(Any, persist_planner_assets).func(
             attempt_number=1,
-            model_mzn="solve satisfy;\n",
-            data_dzn="horizon = 2;\n",
+            model_file_location=str(workspace / "model.mzn"),
+            data_file_location=str(workspace / "data.dzn"),
             horizon=2,
             maneuvers=[],
             translator_id="hyper-minizinc",
@@ -324,6 +331,24 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     assert drone["max_velocity"] == 20
     assert drone["fov_radius"] == 30
     assert ready["belief_snapshot"] == belief.to_dict()
+    assert ready["planner_asset_locations"] == {
+        "model_file_location": str(artifact_root / "workspace/001/model.mzn"),
+        "data_file_location": str(artifact_root / "workspace/001/data.dzn"),
+    }
+    assert context.planning_context_loaded is True
+
+    duplicate = json.loads(cast(Any, record_planning_intent).func(
+        mission_id=mission.mission_id,
+        source_authority=mission.source_authority,
+        objective="observe risky ships",
+        planning_profile="temporal",
+        planner_id="minizinc",
+        rationale="Observation feasibility depends on time and location.",
+        details={"observation_objective": "field of view coverage"},
+        runtime=runtime,
+    ))
+    assert duplicate["status"] == "already_recorded"
+    assert duplicate["next_tool"] == "load_planning_context"
     assert context.planning_context_loaded is True
 
     missing_draft = json.loads(
@@ -342,6 +367,16 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
 ) -> None:
     mission, snapshot, scene = _scene_context()
     artifact_root = tmp_path / "planner-artifacts"
+    first_workspace = artifact_root / "workspace" / "001"
+    second_workspace = artifact_root / "workspace" / "002"
+    first_workspace.mkdir(parents=True)
+    second_workspace.mkdir(parents=True)
+    (first_workspace / "model.mzn").write_text("solve satisfy;\n", encoding="utf-8")
+    (first_workspace / "data.dzn").write_text("horizon = 2;\n", encoding="utf-8")
+    (second_workspace / "model.mzn").write_text(
+        "constraint true;\nsolve satisfy;\n", encoding="utf-8"
+    )
+    (second_workspace / "data.dzn").write_text("horizon = 2;\n", encoding="utf-8")
     draft_root = artifact_root / "drafts" / "001"
     model_path = draft_root / "model.mzn"
     data_path = draft_root / "data.dzn"
@@ -384,12 +419,13 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
             },
             9,
         ),
+        _tool_call("write_todos", {"todos": _todos(4)}, 90),
         _tool_call(
             "persist_planner_assets",
             {
                 "attempt_number": 1,
-                "model_mzn": "solve satisfy;\n",
-                "data_dzn": "horizon = 2;\n",
+                "model_file_location": str(first_workspace / "model.mzn"),
+                "data_file_location": str(first_workspace / "data.dzn"),
                 "horizon": 2,
                 "maneuvers": [
                     {
@@ -405,7 +441,7 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
             },
             10,
         ),
-        _tool_call("write_todos", {"todos": _todos(4)}, 11),
+        _tool_call("write_todos", {"todos": _todos(5)}, 11),
         _tool_call(
             "planner_executor",
             {
@@ -414,13 +450,13 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
             },
             12,
         ),
-        _tool_call("write_todos", {"todos": _todos(4)}, 13),
+        _tool_call("write_todos", {"todos": _todos(5)}, 13),
         _tool_call(
             "persist_planner_assets",
             {
                 "attempt_number": 2,
-                "model_mzn": "constraint true;\nsolve satisfy;\n",
-                "data_dzn": "horizon = 2;\n",
+                "model_file_location": str(second_workspace / "model.mzn"),
+                "data_file_location": str(second_workspace / "data.dzn"),
                 "horizon": 2,
                 "maneuvers": [
                     {
@@ -447,11 +483,75 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
             },
             15,
         ),
-        _tool_call("write_todos", {"todos": _todos(5)}, 16),
+        _tool_call("write_todos", {"todos": _todos(6)}, 16),
+        _tool_call(
+            "read_file",
+            {
+                "file_path": (
+                    "/conf/skills/hyper/creating-statechart-files/SKILL.md"
+                )
+            },
+            17,
+        ),
+        _tool_call(
+            "submit_statechart_draft",
+            {
+                "attempt_number": 1,
+                "statechart": {
+                    "entry_state": "at-initial-location",
+                    "terminal_states": ["observation-complete"],
+                    "states": [
+                        "at-initial-location",
+                        "observing-ship-1",
+                        "observation-complete",
+                    ],
+                    "state_context": {
+                        "at-initial-location": {
+                            "phase": "stationary",
+                            "x": 0,
+                            "y": 0,
+                        },
+                        "observing-ship-1": {
+                            "phase": "observing",
+                            "entity_id": "ship-1",
+                        },
+                        "observation-complete": {"phase": "complete"},
+                    },
+                    "transitions": [
+                        {
+                            "event": "begin-observation",
+                            "source": "at-initial-location",
+                            "target": "observing-ship-1",
+                            "conditions": [
+                                {
+                                    "kind": "environment_time_at_or_after",
+                                    "time_tick": 0,
+                                    "time_scale": 1,
+                                }
+                            ],
+                        },
+                        {
+                            "event": "complete-observation",
+                            "source": "observing-ship-1",
+                            "target": "observation-complete",
+                            "conditions": [
+                                {
+                                    "kind": "environment_time_at_or_after",
+                                    "time_tick": 1,
+                                    "time_scale": 1,
+                                }
+                            ],
+                        },
+                    ],
+                },
+            },
+            18,
+        ),
+        _tool_call("write_todos", {"todos": _todos(8)}, 19),
         _tool_call(
             "HyperWorkflowResultCandidate",
-            {"mission_id": mission.mission_id, "outcome": "plan_ready"},
-            17,
+            {"mission_id": mission.mission_id, "outcome": "execution_ready"},
+            20,
         ),
     ]
     log = InProcessOperationalLog()
@@ -466,6 +566,7 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
             max_corrections=0,
         ),
         max_planner_attempts=2,
+        state_machine_factory=PythonStateMachineFactory(),
         operational_log=log,
     )
     graph = create_hyper_workflow_agent(
@@ -482,14 +583,17 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
     result = DeepAgentsHyperWorkflow(graph).run(
         context,
         thread_id=f"planning-run:{mission.mission_id}:verified",
-        recursion_limit=64,
+        recursion_limit=96,
     )
 
-    assert result.outcome is HyperWorkflowOutcome.PLAN_READY
+    assert result.outcome is HyperWorkflowOutcome.EXECUTION_READY
     assert result.normalized_plan is not None
     assert result.normalized_plan.mission_id == mission.mission_id
     assert result.normalized_plan.maneuvers[0].maneuver_id == "observe-ship-1"
-    assert [todo["status"] for todo in result.todos] == ["completed"] * 5
+    assert result.statechart is not None
+    assert result.statechart_reference is not None
+    assert result.initial_fsm_status is not None
+    assert [todo["status"] for todo in result.todos] == ["completed"] * 8
     early_context_result = next(
         json.loads(cast(str, message.content))
         for message in result.messages
@@ -507,6 +611,7 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
         "planner-execution",
         "planner-assets",
         "planner-execution",
+        "statechart-generation",
         "workflow",
     ]
     assert [record.outcome for record in log.replay(mission.mission_id)] == [
@@ -517,6 +622,7 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
         "completed",
         "repair_exhausted",
         "completed",
+        "verified",
         "verified",
         "completed",
     ]
@@ -531,6 +637,10 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
     data_path = draft_root / "data.dzn"
     invalid_model = "this is not valid MiniZinc;\n"
     data = "horizon = 2;\n"
+    workspace = tmp_path / "planner-artifacts" / "workspace" / "001"
+    workspace.mkdir(parents=True)
+    (workspace / "model.mzn").write_text(invalid_model, encoding="utf-8")
+    (workspace / "data.dzn").write_text(data, encoding="utf-8")
     planning_intent = {
         "mission_id": mission.mission_id,
         "source_authority": mission.source_authority,
@@ -568,12 +678,13 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
             },
             9,
         ),
+        _tool_call("write_todos", {"todos": _todos(4)}, 90),
         _tool_call(
             "persist_planner_assets",
             {
                 "attempt_number": 1,
-                "model_mzn": invalid_model,
-                "data_dzn": data,
+                "model_file_location": str(workspace / "model.mzn"),
+                "data_file_location": str(workspace / "data.dzn"),
                 "horizon": 2,
                 "maneuvers": [
                     {
@@ -589,7 +700,7 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
             },
             10,
         ),
-        _tool_call("write_todos", {"todos": _todos(4)}, 11),
+        _tool_call("write_todos", {"todos": _todos(5)}, 11),
         _tool_call(
             "planner_executor",
             {
@@ -598,7 +709,7 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
             },
             12,
         ),
-        _tool_call("write_todos", {"todos": _todos(4)}, 13),
+        _tool_call("write_todos", {"todos": _todos(5)}, 13),
         _tool_call(
             "HyperWorkflowResultCandidate",
             {
@@ -660,7 +771,10 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
         "completed",
         "completed",
         "completed",
+        "completed",
         "in_progress",
+        "pending",
+        "pending",
     ]
     assert model_path.read_text(encoding="utf-8") == invalid_model
     assert data_path.read_text(encoding="utf-8") == data

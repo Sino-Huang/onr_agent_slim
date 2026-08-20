@@ -53,7 +53,8 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
         "Parse Mission Intent into PlanningIntent.",
         "Decide and record the MiniZinc planner inside PlanningIntent.",
         "Load the current snapshot-authorized operational evidence.",
-        "Generate and persist MiniZinc problem files.",
+        "Generate and write MiniZinc problem files.",
+        "Persist the written MiniZinc problem files.",
         "Run MiniZinc and repair rejected translations.",
     )
     assert [prompt.index(stage) for stage in stages] == sorted(
@@ -61,7 +62,7 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     )
     assert "Call `write_todos` immediately" in prompt
     assert "Never batch several completions" in prompt
-    assert "`outcome: plan_ready`" in prompt
+    assert "`outcome: execution_ready`" in prompt
     assert "verified NormalizedPlan" in prompt
     assert "`environment_data.static_info`" in prompt
     assert "`environment_data.scene_graph`" in prompt
@@ -71,23 +72,24 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
         "planner-selection",
         "`record_planning_intent`",
         "creating-minizinc-problem-files",
+        "`write_file`",
         "`load_planning_context`",
         "`persist_planner_assets`",
         "`planner_executor`",
+        "`submit_statechart_draft`",
         "`HyperWorkflowResultCandidate`",
     ):
         assert capability in prompt
 
 
-def test_maneuver_prompt_uses_generated_plan_before_transition() -> None:
+def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -> None:
     prompt = load_system_prompt(
         Path(__file__).parents[1] / "conf/system_prompt",
         "maneuver-control",
     )
 
     assert "invocation overlay" in prompt
-    assert "`normalized_plan`" in prompt
-    assert "select that exact maneuver" in prompt
-    assert (
-        "Do not advance a maneuver before authoritative completion feedback" in prompt
-    )
+    assert "current `environment_data`" in prompt
+    assert "semantic context" in prompt
+    assert "environment_time_at_or_after" in prompt
+    assert "`choice: no_change`" in prompt

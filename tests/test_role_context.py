@@ -12,6 +12,7 @@ from onr.agents.hyper_agent import (
     DeepAgentsPlanningIntentInterpreter,
     create_planning_intent_agent,
 )
+from onr.agents.hyper_workflow import create_hyper_workflow_agent
 from onr.agents.maneuver_control import create_maneuver_control_agent
 from onr.agents.role_context import RoleEpisode
 from onr.contracts.hyper_agent import MissionInput
@@ -57,6 +58,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "creating-minizinc-problem-files",
         "creating-pddl-problem-files",
         "detect-and-replan",
+        "creating-statechart-files",
     ]
     assert [skill.role for skill in maneuver] == [
         "decision-cycle",
@@ -66,8 +68,9 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.3.0",
         "1.3.0",
-        "1.3.0",
+        "1.4.0",
         "1.1.0",
+        "1.0.0",
         "1.0.0",
         "1.0.0",
         "1.0.0",
@@ -79,6 +82,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "hyper/creating-minizinc-problem-files",
         "hyper/creating-pddl-problem-files",
         "hyper/detect-and-replan",
+        "hyper/creating-statechart-files",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in maneuver] == [
         "maneuver-control/decision-cycle",
@@ -125,6 +129,7 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
         "/conf/skills/hyper/creating-minizinc-problem-files",
         "/conf/skills/hyper/creating-pddl-problem-files",
         "/conf/skills/hyper/detect-and-replan",
+        "/conf/skills/hyper/creating-statechart-files",
     ]
     maneuver_skills = [
         "/conf/skills/maneuver-control/decision-cycle",
@@ -350,6 +355,43 @@ def test_role_context_policy_allows_only_current_memory_and_denies_skills_and_ot
     assert permissions[-1].mode == "deny"
     assert permissions[-1].paths == ["/**"]
     assert permissions[-2].mode == "allow"
+
+
+def test_hyper_workflow_allows_only_its_planner_workspace_write_scope(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import deepagents
+
+    captured: dict[str, object] = {}
+
+    def fake_create_deep_agent(**kwargs: object) -> PublicFakeDeepAgent:
+        captured.update(kwargs)
+        return PublicFakeDeepAgent(kwargs.get("skills", ()))
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
+    create_hyper_workflow_agent(
+        model=object(),
+        system_prompt="Hyper workflow prompt.",
+        mission_id="mission-1",
+        memory_store=FileMissionMemoryStore(tmp_path / "memory"),
+        skill_catalog=_install_skills(tmp_path / "skills"),
+        backend_root=tmp_path,
+        planner_workspace_location="/planner-artifacts/workspace",
+    )
+
+    permissions = captured["permissions"]
+    assert isinstance(permissions, list)
+    assert any(
+        permission.mode == "allow"
+        and permission.paths
+        == [
+            "/planner-artifacts/workspace",
+            "/planner-artifacts/workspace/**",
+        ]
+        for permission in permissions
+    )
+    assert permissions[-1].mode == "deny"
+    assert permissions[-1].paths == ["/**"]
 
 
 def test_event_accounting_patrol_routes_to_information_gain_example() -> None:

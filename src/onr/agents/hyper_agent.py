@@ -110,6 +110,7 @@ def _create_deep_agent(
     backend_root: Path | None = None,
     middleware: list[Any] | None = None,
     tools: list[Any] | None = None,
+    writable_paths: list[str] | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: object | None = None,
 ) -> object:
@@ -217,6 +218,13 @@ def _create_deep_agent(
             )
         if context is not None:
             hard_permissions.append(FilesystemPermission(["write"], [memory_scope], mode="allow"))
+        for writable_path in writable_paths or []:
+            if not writable_path.startswith("/") or ".." in Path(writable_path).parts:
+                raise ValueError("agent writable path must be an absolute virtual path")
+            scope = writable_path.rstrip("/") or "/"
+            hard_permissions.append(
+                FilesystemPermission(["write"], [scope, f"{scope}/**"], mode="allow")
+            )
         hard_permissions.append(FilesystemPermission(["write"], ["/**"], mode="deny"))
         kwargs["permissions"] = hard_permissions
 

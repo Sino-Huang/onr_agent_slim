@@ -32,11 +32,11 @@ Select at most one physical action per decision. Each request is an environment-
 - the target entity or area identified by current Mission data; and
 - typed intent parameters required by that maneuver kind.
 
-Copy plan maneuver identifiers and targets exactly. Express intent, not adapter calls, vehicle controls, environment-specific protocols, or an expected lifecycle result.
+Copy target facts from the active semantic state and current environment data. Express intent, not adapter calls, vehicle controls, environment-specific protocols, or an expected lifecycle result.
 
 ## Selection and Submission
 
-1. Check the current Mission Snapshot, FSM Status, plan constraints, and Active Maneuver before selecting an action.
+1. Check the current Mission Snapshot, semantic FSM Status, environment context, and Active Maneuver before selecting an action.
 2. Ensure the selected maneuver belongs to the current Mission and revision and has a valid target and typed parameters.
 3. Prefer no physical request when the Mission is already reserved by a submitted nonterminal action.
 4. Submit the command once with its stable action ID. Submission reserves the Mission until environment feedback reports a terminal outcome.

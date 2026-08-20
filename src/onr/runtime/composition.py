@@ -26,6 +26,7 @@ from onr.adapters.mission_log_summarizer import (
 )
 from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.operational_log import FileOperationalLog
+from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.adapters.val import VALPlanValidator
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.agents.hyper_agent import (
@@ -437,6 +438,7 @@ class RuntimeComposition:
             clock=clock,
             subscription=subscription,
             operational_log=self._logger(),
+            machine_factory=PythonStateMachineFactory(),
         )
 
     def create_context_coordination(
@@ -673,6 +675,7 @@ class RuntimeComposition:
         skill_version: str | None = None,
         backend_root: Path | None = None,
         checkpointer: object | None = None,
+        artifact_root: Path | None = None,
     ) -> DeepAgentsHyperWorkflow:
         """Compose one checkpointed Deep Agent for the complete Hyper workflow."""
 
@@ -690,6 +693,21 @@ class RuntimeComposition:
         context_backend_root = backend_root
         if context_backend_root is None and skill_catalog is not None:
             context_backend_root = self.config.storage.root
+        planner_workspace_location = None
+        if artifact_root is not None:
+            if context_backend_root is None:
+                raise ValueError(
+                    "Hyper workflow planner workspace requires a backend root"
+                )
+            try:
+                relative_workspace = (
+                    Path(artifact_root).resolve() / "workspace"
+                ).relative_to(Path(context_backend_root).resolve())
+            except ValueError as exc:
+                raise ValueError(
+                    "Hyper workflow planner workspace is outside the backend root"
+                ) from exc
+            planner_workspace_location = "/" + relative_workspace.as_posix()
         graph = create_hyper_workflow_agent(
             model=model,
             system_prompt=system_prompt,
@@ -699,6 +717,7 @@ class RuntimeComposition:
             skill_version=skill_version,
             backend_root=context_backend_root,
             checkpointer=(InMemorySaver() if checkpointer is None else checkpointer),
+            planner_workspace_location=planner_workspace_location,
         )
         return DeepAgentsHyperWorkflow(graph)
 
@@ -710,18 +729,32 @@ class RuntimeComposition:
         *,
         artifact_root: Path,
         belief_snapshot: BayesianBeliefSnapshot | None = None,
+        backend_root: Path | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""
 
         validated_belief = HyperAgent.validate_belief_provenance(
             mission_snapshot, belief_snapshot
         )
+        planner_workspace_location = None
+        if backend_root is not None:
+            try:
+                relative_workspace = (
+                    Path(artifact_root).resolve() / "workspace"
+                ).relative_to(Path(backend_root).resolve())
+            except ValueError as exc:
+                raise ValueError(
+                    "Hyper workflow planner workspace is outside the backend root"
+                ) from exc
+            planner_workspace_location = "/" + relative_workspace.as_posix()
         return HyperWorkflowContext(
             mission_input=mission_input,
             mission_snapshot=mission_snapshot,
             environment_event=environment_event,
             belief_snapshot=validated_belief,
             artifact_root=artifact_root,
+            backend_root=backend_root,
+            planner_workspace_location=planner_workspace_location,
             minizinc_translation=self.create_minizinc_translation(
                 artifact_root,
                 max_corrections=0,
@@ -729,6 +762,10 @@ class RuntimeComposition:
             max_planner_attempts=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries + 1
             ),
+            max_statechart_attempts=(
+                self.config.agents.hyper_agent.output_structure_retry.max_retries + 1
+            ),
+            state_machine_factory=PythonStateMachineFactory(),
             operational_log=self._logger(),
         )
 

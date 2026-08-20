@@ -121,6 +121,7 @@ class FakeEnvironment:
         graph = {
             "mission_id": self.mission_id,
             "plan_revision": 0,
+            "mission_time_seconds": 0.0,
             "maneuvers": [],
             "entities": self._entities_for_seed(f"{self.mission_id}:heartbeat"),
             "environment_file": str(environment_file),

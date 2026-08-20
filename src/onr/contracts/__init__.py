@@ -8,6 +8,7 @@ from onr.contracts.fsm import (
     ManeuverDecision,
     ManeuverFeedback,
     Statechart,
+    StatechartCondition,
     StatechartTransition,
     TransitionCandidate,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "ReplanRequest",
     "RoleSkill",
     "Statechart",
+    "StatechartCondition",
     "StatechartTransition",
     "TransitionCandidate",
     "TranslationAttemptOutcome",

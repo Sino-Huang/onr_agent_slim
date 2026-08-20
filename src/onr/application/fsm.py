@@ -25,7 +25,12 @@ from onr.contracts.transport import (
     NormalizedPlanTransportEvent,
     TransportEvent,
 )
-from onr.ports.fsm import FSMStateStore, FSMTransport
+from onr.ports.fsm import (
+    FSMStateStore,
+    FSMTransport,
+    RunningStateMachine,
+    StateMachineFactory,
+)
 from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Consumer, Delivery, Subscription
 
@@ -103,6 +108,14 @@ def _plan_from_message(message: object) -> NormalizedPlan:
     raise TypeError("FSM Runner requires a Normalized Plan transport event")
 
 
+def _chart_from_message(message: object) -> Statechart:
+    if isinstance(message, Statechart):
+        return message
+    if isinstance(message, TransportEvent) and message.event_kind == "statechart":
+        return Statechart.from_dict(message.payload)
+    return Statechart.from_normalized_plan(_plan_from_message(message))
+
+
 @dataclass
 class InMemoryFSMStateStore:
     """Small JSON-backed store useful for application tests and composition."""
@@ -144,6 +157,7 @@ class FSMRunner:
         clock: Callable[[], int | float] | None = None,
         subscription: Subscription | None = None,
         operational_log: OperationalLog | None = None,
+        machine_factory: StateMachineFactory | None = None,
     ) -> None:
         self.transport = transport
         self.store = store or InMemoryFSMStateStore()
@@ -151,6 +165,7 @@ class FSMRunner:
         self.clock = clock or (lambda: 0)
         self.subscription = subscription
         self.operational_log = operational_log
+        self.machine_factory = machine_factory
         self._chart = self.store.load_statechart()
         self._record = self.store.load_execution_record()
         if (self._chart is None) != (self._record is None):
@@ -189,6 +204,15 @@ class FSMRunner:
         )
         self._lock = asyncio.Lock()
         self._clock_override: int | float | None = None
+        self._machine: RunningStateMachine | None = None
+        if (
+            self.machine_factory is not None
+            and self._chart is not None
+            and self._record is not None
+        ):
+            self._machine = self.machine_factory.build(
+                self._chart, start_state=self._record.active_state
+            )
 
     @staticmethod
     def subscription_for(
@@ -200,15 +224,14 @@ class FSMRunner:
         return Subscription(service_id=service_id, mission_id=mission_id, topic=topic)
 
     async def handle(self, message: object) -> FSMStatus:
-        """Activate a Normalized Plan event or return the current status."""
+        """Activate a Statechart or legacy Normalized Plan event."""
 
         async with self._lock:
-            plan = _plan_from_message(message)
+            chart = _chart_from_message(message)
             if self.subscription is None:
-                self.subscription = self.subscription_for(plan.mission_id)
-            elif self.subscription.mission_id != plan.mission_id:
-                raise ValueError("FSM subscription mission ID does not match plan")
-            chart = Statechart.from_normalized_plan(plan)
+                self.subscription = self.subscription_for(chart.mission_id)
+            elif self.subscription.mission_id != chart.mission_id:
+                raise ValueError("FSM subscription mission ID does not match Statechart")
             if self._chart is not None:
                 if chart.plan_revision < self._chart.plan_revision:
                     raise ValueError("FSM Runner cannot regress to an older plan revision")
@@ -236,6 +259,8 @@ class FSMRunner:
             )
             self.store.save_statechart(chart)
             self.store.save_execution_record(self._record)
+            if self.machine_factory is not None:
+                self._machine = self.machine_factory.build(chart)
             return await self._publish_status(
                 "superseded" if self._superseded_plan_revision is not None else "initialized"
             )
@@ -344,11 +369,14 @@ class FSMRunner:
             )
             expected_candidate = (
                 TransitionCandidate(
-                    current.event,
-                    current.source,
-                    current.target,
-                    current.requires_lifecycle_fact,
-                    current.requires_decision,
+                    event=current.event,
+                    source=current.source,
+                    target=current.target,
+                    requires_lifecycle_fact=current.requires_lifecycle_fact,
+                    requires_decision=current.requires_decision,
+                    conditions=current.conditions,
+                    source_state_context=self._chart.context_for(current.source),
+                    target_state_context=self._chart.context_for(current.target),
                 )
                 if current is not None
                 else None
@@ -376,6 +404,12 @@ class FSMRunner:
                 current.event, decision_input, self._record.mission_id
             ):
                 return await self._publish_status("unchanged")
+            if self._machine is not None:
+                self._machine.send(current.event)
+                if self._machine.current_state != current.target:
+                    raise RuntimeError(
+                        "python-statemachine state does not match the Statechart transition"
+                    )
             facts = dict(self._record.lifecycle_facts)
             if isinstance(feedback_input, ManeuverFeedback):
                 if (
@@ -443,9 +477,13 @@ class FSMRunner:
                 target=item.target,
                 requires_lifecycle_fact=item.requires_lifecycle_fact,
                 requires_decision=item.requires_decision,
+                conditions=item.conditions,
+                source_state_context=self._chart.context_for(item.source),
+                target_state_context=self._chart.context_for(item.target),
             )
             for item in self._chart.transitions
-            if item.source == self._record.active_state and (deadline is None or timer_due)
+            if item.source == self._record.active_state
+            and (item.conditions or deadline is None or timer_due)
         )
         status = FSMStatus(
             mission_id=self._record.mission_id,
@@ -461,6 +499,7 @@ class FSMRunner:
             timer_due_markers=self._record.timer_due_markers,
             lifecycle_facts=self._record.lifecycle_facts,
             retained_maneuver_ids=self._record.retained_maneuver_ids,
+            active_state_context=self._chart.context_for(self._record.active_state),
         )
         if not publish:
             return status

@@ -21,6 +21,7 @@ from onr.agents.hyper_agent import (
 from onr.application.minizinc_translation import MiniZincProblem, MiniZincTranslation
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planner_translation import (
@@ -44,7 +45,13 @@ HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "mission_id": {"type": "string"},
-        "outcome": {"enum": ["plan_ready", "planner_rejected"]},
+        "outcome": {
+            "enum": [
+                "execution_ready",
+                "planner_rejected",
+                "statechart_rejected",
+            ]
+        },
     },
     "required": ["mission_id", "outcome"],
     "additionalProperties": False,
@@ -93,6 +100,45 @@ def _prerequisite_missing(
     )
 
 
+def _planner_asset_locations(
+    context: HyperWorkflowContext, attempt_number: int
+) -> dict[str, str]:
+    workspace = cast(str, context.planner_workspace_location).rstrip("/")
+    attempt = f"{attempt_number:03d}"
+    return {
+        "model_file_location": f"{workspace}/{attempt}/model.mzn",
+        "data_file_location": f"{workspace}/{attempt}/data.dzn",
+    }
+
+
+def _planner_asset_path(
+    context: HyperWorkflowContext,
+    location: str,
+    *,
+    attempt_number: int,
+    name: str,
+) -> Path:
+    if not isinstance(location, str) or not location.strip():
+        raise ValueError("planner asset file location must be non-empty")
+    expected_location = _planner_asset_locations(context, attempt_number)[name]
+    if location != expected_location:
+        raise ValueError("planner asset file location does not match the attempt workspace")
+    if context.backend_root is not None and location.startswith("/"):
+        path = context.backend_root / location.removeprefix("/")
+    else:
+        path = Path(location)
+    path = path.resolve()
+    expected_path = (
+        context.artifact_root
+        / "workspace"
+        / f"{attempt_number:03d}"
+        / ("model.mzn" if name == "model_file_location" else "data.dzn")
+    ).resolve()
+    if path != expected_path or not path.is_file():
+        raise ValueError("planner asset file does not exist at the expected location")
+    return path
+
+
 @dataclass(slots=True)
 class HyperWorkflowContext:
     """Per-run dependencies and evidence available only through workflow tools."""
@@ -107,7 +153,11 @@ class HyperWorkflowContext:
     minizinc_translation: Any
     belief_snapshot: Any = None
     max_planner_attempts: int = 1
+    max_statechart_attempts: int = 3
+    state_machine_factory: Any = None
     operational_log: Any = None
+    backend_root: Path | None = None
+    planner_workspace_location: str | None = None
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
     planning_context_loaded: bool = field(default=False, init=False)
@@ -115,6 +165,10 @@ class HyperWorkflowContext:
     draft_references: tuple[str, ...] = field(default=(), init=False)
     translation: Any = field(default=None, init=False)
     current_attempt_number: int = field(default=0, init=False)
+    statechart: Any = field(default=None, init=False)
+    statechart_reference: str | None = field(default=None, init=False)
+    initial_fsm_status: Any = field(default=None, init=False)
+    current_statechart_attempt: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_input, MissionInput):
@@ -141,7 +195,23 @@ class HyperWorkflowContext:
             or self.max_planner_attempts < 1
         ):
             raise ValueError("Hyper workflow planner attempt budget must be positive")
+        if (
+            isinstance(self.max_statechart_attempts, bool)
+            or not isinstance(self.max_statechart_attempts, int)
+            or self.max_statechart_attempts < 1
+        ):
+            raise ValueError("Hyper workflow Statechart attempt budget must be positive")
+        if self.state_machine_factory is not None and not callable(
+            getattr(self.state_machine_factory, "build", None)
+        ):
+            raise TypeError("Hyper workflow Statechart factory must expose build")
         self.artifact_root = Path(self.artifact_root).resolve()
+        if self.backend_root is not None:
+            self.backend_root = Path(self.backend_root).resolve()
+        if self.planner_workspace_location is None:
+            self.planner_workspace_location = str(
+                (self.artifact_root / "workspace").resolve()
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +225,9 @@ class HyperWorkflowRunResult:
     planner_choice: PlannerChoiceRecord | None
     translation: PlanningTranslationResult | None
     normalized_plan: NormalizedPlan | None
+    statechart: Statechart | None
+    statechart_reference: str | None
+    initial_fsm_status: FSMStatus | None
 
 
 def _context(runtime: ToolRuntime[HyperWorkflowContext]) -> HyperWorkflowContext:
@@ -226,6 +299,16 @@ def record_planning_intent(
         {"structured_response": candidate}, context.mission_input
     )
     choice = PlannerChoiceRecord.from_planning_intent(intent)
+    if context.planning_intent is not None or context.planner_choice is not None:
+        if context.planning_intent != intent or context.planner_choice != choice:
+            raise ValueError("recorded PlanningIntent conflicts with this workflow")
+        return _canonical_json(
+            {
+                "next_tool": "load_planning_context",
+                "planner_choice_record": choice.to_dict(),
+                "status": "already_recorded",
+            }
+        )
     context.planning_intent = intent
     context.planner_choice = choice
     context.planning_context_loaded = False
@@ -251,7 +334,13 @@ def record_planning_intent(
             "rationale": choice.rationale,
         },
     )
-    return choice.to_canonical_json()
+    return _canonical_json(
+        {
+            "next_tool": "load_planning_context",
+            "planner_choice_record": choice.to_dict(),
+            "status": "accepted",
+        }
+    )
 
 
 @tool
@@ -306,6 +395,9 @@ def load_planning_context(
                 if context.belief_snapshot is not None
                 else None
             ),
+            "planner_asset_locations": _planner_asset_locations(
+                context, context.current_attempt_number + 1
+            ),
         }
     )
 
@@ -313,23 +405,23 @@ def load_planning_context(
 @tool(parse_docstring=True)
 def persist_planner_assets(
     attempt_number: int,
-    model_mzn: str,
-    data_dzn: str,
+    model_file_location: str,
+    data_file_location: str,
     horizon: int,
     maneuvers: list[TemporalManeuverCandidate],
     translator_id: str,
     translator_version: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Persist one MiniZinc draft and its normalization template.
+    """Freeze agent-written MiniZinc files and their normalization template.
 
     Use this after reading creating-minizinc-problem-files and before calling
     planner_executor. Each call creates one attempt-specific immutable draft.
 
     Args:
         attempt_number: Positive generation-attempt sequence number.
-        model_mzn: Complete model.mzn contents.
-        data_dzn: Complete data.dzn contents.
+        model_file_location: Exact model.mzn location returned by planning context.
+        data_file_location: Exact data.dzn location returned by planning context.
         horizon: Positive scheduling horizon represented by the problem.
         maneuvers: Maneuver templates used to check solver assignments.
         translator_id: Public identity of the asset generator.
@@ -365,11 +457,23 @@ def persist_planner_assets(
     ):
         raise ValueError("planner asset attempt is outside the workflow retry sequence")
 
+    model_path = _planner_asset_path(
+        context,
+        model_file_location,
+        attempt_number=attempt_number,
+        name="model_file_location",
+    )
+    data_path = _planner_asset_path(
+        context,
+        data_file_location,
+        attempt_number=attempt_number,
+        name="data_file_location",
+    )
     templates = tuple(_temporal_maneuver(item) for item in maneuvers)
     problem = MiniZincProblem(
         assets={
-            "model.mzn": model_mzn.encode("utf-8"),
-            "data.dzn": data_dzn.encode("utf-8"),
+            "model.mzn": model_path.read_bytes(),
+            "data.dzn": data_path.read_bytes(),
         },
         maneuvers=templates,
         horizon=horizon,
@@ -516,11 +620,15 @@ def planner_executor(
         },
     )
     if translation.outcome is PlanningTranslationOutcome.VERIFIED:
+        normalized_plan = translation.normalized_plan
+        if normalized_plan is None:
+            raise RuntimeError("verified planner translation lacks a Normalized Plan")
         return _canonical_json(
             {
                 "attempt_id": attempt.attempt_id,
                 "outcome": "verified",
                 "planner_id": planner_id,
+                "normalized_plan": normalized_plan.to_dict(),
             }
         )
     if translation.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED:
@@ -550,6 +658,210 @@ def planner_executor(
     )
 
 
+def _statechart_rejection(
+    context: HyperWorkflowContext,
+    *,
+    attempt_number: int,
+    stage: str,
+) -> str:
+    messages = {
+        "schema": "Generated Statechart data failed contract validation.",
+        "machine_build": "Generated Statechart data could not instantiate the FSM engine.",
+    }
+    retries_remaining = context.max_statechart_attempts - attempt_number
+    _emit(
+        context,
+        "statechart-generation",
+        "rejected",
+        details={"attempt_number": attempt_number, "stage": stage},
+    )
+    return _canonical_json(
+        {
+            "attempt_number": attempt_number,
+            "correction_message": messages[stage],
+            "correction_stage": stage,
+            "outcome": (
+                "repair_exhausted" if retries_remaining == 0 else "rejected"
+            ),
+            "retries_remaining": retries_remaining,
+        }
+    )
+
+
+@tool(parse_docstring=True)
+def submit_statechart_draft(
+    attempt_number: int,
+    statechart: dict[str, Any],
+    runtime: ToolRuntime[HyperWorkflowContext],
+) -> str:
+    """Persist and validate one semantic Statechart topology draft.
+
+    The tool binds model-authored topology to the verified NormalizedPlan, builds
+    a live python-statemachine instance, and returns bounded sanitized feedback.
+
+    Args:
+        attempt_number: Positive sequential Statechart generation attempt.
+        statechart: Topology containing exactly entry_state, terminal_states,
+            states, state_context, and transitions. Each transition contains
+            event, source, target, and conditions. Physical actions are omitted.
+
+    Returns:
+        Canonical JSON with accepted Statechart evidence or repair feedback.
+    """
+
+    context = _context(runtime)
+    translation = context.translation
+    plan = translation.normalized_plan if translation is not None else None
+    if (
+        translation is None
+        or translation.outcome is not PlanningTranslationOutcome.VERIFIED
+        or plan is None
+    ):
+        return _prerequisite_missing(
+            missing=("verified_normalized_plan",),
+            required_tool="planner_executor",
+            retry_tool="submit_statechart_draft",
+        )
+    if context.state_machine_factory is None:
+        raise RuntimeError("Hyper workflow has no Statechart machine factory")
+    if isinstance(attempt_number, bool) or not isinstance(attempt_number, int):
+        raise TypeError("Statechart attempt number must be an integer")
+    if (
+        attempt_number < 1
+        or attempt_number > context.max_statechart_attempts
+        or attempt_number > context.current_statechart_attempt + 1
+        or attempt_number < context.current_statechart_attempt
+    ):
+        raise ValueError("Statechart attempt is outside the workflow retry sequence")
+
+    directory = context.artifact_root / "statechart-attempts" / f"{attempt_number:03d}"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "statechart.json"
+    topology_document = _canonical_json(statechart)
+    if path.exists() and path.read_text(encoding="utf-8") != topology_document:
+        raise ValueError("Statechart draft attempt identity conflicts")
+    if not path.exists():
+        path.write_text(topology_document, encoding="utf-8")
+    context.current_statechart_attempt = attempt_number
+
+    try:
+        expected = {
+            "entry_state",
+            "terminal_states",
+            "states",
+            "state_context",
+            "transitions",
+        }
+        if set(statechart) != expected:
+            raise ValueError("Statechart topology contains unknown or missing fields")
+        raw_transitions = statechart["transitions"]
+        if not isinstance(raw_transitions, list):
+            raise TypeError("Statechart transitions must be an array")
+        transitions = []
+        for raw in raw_transitions:
+            if not isinstance(raw, Mapping) or set(raw) != {
+                "event",
+                "source",
+                "target",
+                "conditions",
+            }:
+                raise ValueError("Statechart transition topology is invalid")
+            transitions.append(
+                {
+                    "event": raw["event"],
+                    "source": raw["source"],
+                    "target": raw["target"],
+                    "maneuver_id": None,
+                    "requires_lifecycle_fact": False,
+                    "requires_decision": True,
+                    "conditions": raw["conditions"],
+                }
+            )
+        bound = {
+            "schema_version": 1,
+            "mission_id": plan.mission_id,
+            "plan_revision": plan.plan_revision,
+            "mission_snapshot_id": plan.mission_snapshot_id,
+            "planning_profile": str(plan.planner_choice.planning_profile),
+            "normalized_plan_sha256": hashlib.sha256(
+                plan.to_canonical_json().encode("utf-8")
+            ).hexdigest(),
+            "entry_state": statechart["entry_state"],
+            "terminal_states": statechart["terminal_states"],
+            "states": statechart["states"],
+            "state_context": statechart["state_context"],
+            "transitions": transitions,
+            "timers": {},
+            "trusted": False,
+        }
+        chart = Statechart.from_dict(bound)
+    except (TypeError, ValueError, KeyError):
+        return _statechart_rejection(
+            context, attempt_number=attempt_number, stage="schema"
+        )
+
+    try:
+        machine = context.state_machine_factory.build(chart)
+        if machine.current_state != chart.entry_state:
+            raise RuntimeError("FSM engine entry state does not match Statechart")
+    except Exception:  # noqa: BLE001 - external engine errors become safe feedback.
+        return _statechart_rejection(
+            context, attempt_number=attempt_number, stage="machine_build"
+        )
+
+    candidates = tuple(
+        TransitionCandidate(
+            event=item.event,
+            source=item.source,
+            target=item.target,
+            requires_decision=True,
+            conditions=item.conditions,
+            source_state_context=chart.context_for(item.source),
+            target_state_context=chart.context_for(item.target),
+        )
+        for item in chart.transitions
+        if item.source == chart.entry_state
+    )
+    status = FSMStatus(
+        mission_id=chart.mission_id,
+        plan_revision=chart.plan_revision,
+        statechart_revision=chart.statechart_revision,
+        active_state=chart.entry_state,
+        active_state_context=chart.context_for(chart.entry_state),
+        transition_candidates=candidates,
+        status="initialized",
+    )
+    accepted_path = directory / "accepted-statechart.json"
+    document = chart.to_canonical_json()
+    if not accepted_path.exists():
+        accepted_path.write_text(document, encoding="utf-8")
+    context.statechart = chart
+    context.statechart_reference = str(accepted_path.resolve())
+    context.initial_fsm_status = status
+    _emit(
+        context,
+        "statechart-generation",
+        "verified",
+        details={
+            "attempt_number": attempt_number,
+            "statechart_sha256": chart.statechart_sha256,
+            "state_count": len(chart.states),
+            "transition_count": len(chart.transitions),
+        },
+    )
+    return _canonical_json(
+        {
+            "attempt_number": attempt_number,
+            "entry_state": chart.entry_state,
+            "outcome": "verified",
+            "state_count": len(chart.states),
+            "statechart_reference": context.statechart_reference,
+            "statechart_sha256": chart.statechart_sha256,
+            "transition_count": len(chart.transitions),
+        }
+    )
+
+
 def create_hyper_workflow_agent(
     *,
     model: Any,
@@ -560,6 +872,7 @@ def create_hyper_workflow_agent(
     skill_version: str | None = None,
     backend_root: Path | None = None,
     checkpointer: object | None = None,
+    planner_workspace_location: str | None = None,
 ) -> object:
     """Create one Deep Agent that owns planning workflow state and tools."""
 
@@ -579,7 +892,13 @@ def create_hyper_workflow_agent(
             load_planning_context,
             persist_planner_assets,
             planner_executor,
+            submit_statechart_draft,
         ],
+        writable_paths=(
+            [planner_workspace_location]
+            if planner_workspace_location is not None
+            else None
+        ),
         context_schema=HyperWorkflowContext,
         checkpointer=checkpointer,
     )
@@ -709,24 +1028,37 @@ class DeepAgentsHyperWorkflow:
         if candidate["mission_id"] != context.mission_input.mission_id:
             raise ValueError("Hyper workflow result Mission ID does not match")
         outcome = HyperWorkflowOutcome(cast(str, candidate["outcome"]))
-        if outcome is HyperWorkflowOutcome.PLAN_READY:
+        if outcome is HyperWorkflowOutcome.EXECUTION_READY:
             if (
                 context.translation is None
                 or context.translation.outcome
                 is not PlanningTranslationOutcome.VERIFIED
                 or context.translation.normalized_plan is None
+                or context.statechart is None
+                or context.statechart_reference is None
+                or context.initial_fsm_status is None
             ):
-                raise ValueError("Hyper workflow success lacks a verified plan")
+                raise ValueError(
+                    "Hyper workflow success lacks verified plan and Statechart evidence"
+                )
+        elif outcome is HyperWorkflowOutcome.PLANNER_REJECTED:
+            if (
+                context.translation is None
+                or context.translation.outcome is PlanningTranslationOutcome.VERIFIED
+                or (
+                    context.translation.outcome
+                    is PlanningTranslationOutcome.REPAIR_EXHAUSTED
+                    and context.current_attempt_number < context.max_planner_attempts
+                )
+            ):
+                raise ValueError("Hyper workflow rejection lacks planner evidence")
         elif (
             context.translation is None
-            or context.translation.outcome is PlanningTranslationOutcome.VERIFIED
-            or (
-                context.translation.outcome
-                is PlanningTranslationOutcome.REPAIR_EXHAUSTED
-                and context.current_attempt_number < context.max_planner_attempts
-            )
+            or context.translation.outcome is not PlanningTranslationOutcome.VERIFIED
+            or context.current_statechart_attempt < context.max_statechart_attempts
+            or context.statechart is not None
         ):
-            raise ValueError("Hyper workflow rejection lacks planner evidence")
+            raise ValueError("Hyper workflow rejection lacks Statechart evidence")
         raw_todos = response.get("todos", ())
         raw_messages = response.get("messages", ())
         if not isinstance(raw_todos, (list, tuple)) or not isinstance(
@@ -740,7 +1072,7 @@ class DeepAgentsHyperWorkflow:
         )
         if len(todos) != len(raw_todos):
             raise ValueError("Hyper workflow todo state is invalid")
-        if outcome is HyperWorkflowOutcome.PLAN_READY and any(
+        if outcome is HyperWorkflowOutcome.EXECUTION_READY and any(
             todo["status"] != "completed" for todo in todos
         ):
             raise ValueError("Hyper workflow success requires completed todos")
@@ -756,6 +1088,9 @@ class DeepAgentsHyperWorkflow:
                 if context.translation is not None
                 else None
             ),
+            statechart=context.statechart,
+            statechart_reference=context.statechart_reference,
+            initial_fsm_status=context.initial_fsm_status,
         )
 
 
@@ -770,4 +1105,5 @@ __all__ = [
     "persist_planner_assets",
     "planner_executor",
     "record_planning_intent",
+    "submit_statechart_draft",
 ]

@@ -19,8 +19,8 @@ This skill is read-only guidance. It helps Maneuver produce a `ManeuverControlDe
 ## Procedure
 
 1. Confirm the Mission and plan/statechart revision are consistent across the Mission Snapshot and FSM Status.
-2. Review current plan constraints, enabled Transition Candidates, and any Active Maneuver with environment-reported lifecycle state.
-3. Select at most one physical action for this decision, and only from a current plan maneuver permitted by the supplied context.
+2. Review the active semantic state, all outgoing Transition Candidates and their conditions, current environment data, and any Active Maneuver lifecycle state.
+3. Select at most one physical action permitted by the active state and current environment context.
 4. Separately select the applicable nonphysical response: `transition`, `replan`, `report`, `query`, `no_change`, or `cancel_maneuver`.
 5. Do not combine a physical action with `transition` or `cancel_maneuver`. Use `no_change` when no other response is justified.
 6. Return only the exact structured `ManeuverControlDecision` fields required by the runtime contract, with no prose or extra fields.

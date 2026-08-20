@@ -140,6 +140,7 @@ _STATECHART_FIELDS = {
     "timers",
     "trusted",
 }
+_STATECHART_SEMANTIC_FIELDS = {"terminal_states", "state_context"}
 _FSM_STATUS_FIELDS = {
     "schema_version",
     "mission_id",
@@ -1561,6 +1562,8 @@ class TraceProjection:
             if "timers" in raw
             else (_STATECHART_FIELDS - {"timers"}) | {"deadlines"}
         )
+        if _STATECHART_SEMANTIC_FIELDS.intersection(raw):
+            expected = expected | _STATECHART_SEMANTIC_FIELDS
         _exact(raw, expected, "Statechart")
         from onr.contracts.fsm import Statechart
 
@@ -1587,7 +1590,10 @@ class TraceProjection:
         return _CanonicalRecord(item, "statechart")
 
     def _fsm_status(self, raw: Mapping[str, object]) -> _CanonicalRecord:
-        _exact(raw, _FSM_STATUS_FIELDS, "FSMStatus")
+        expected = _FSM_STATUS_FIELDS
+        if "active_state_context" in raw:
+            expected = expected | {"active_state_context"}
+        _exact(raw, expected, "FSMStatus")
         from onr.contracts.fsm import FSMStatus
 
         try:
@@ -1597,7 +1603,7 @@ class TraceProjection:
         mission_id = _text(raw, "mission_id")
         revision = _integer(raw, "statechart_revision")
         status = _text(raw, "status")
-        fields = _FSM_STATUS_FIELDS - {
+        fields = expected - {
             "schema_version",
             "mission_id",
             "statechart_revision",

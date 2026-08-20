@@ -7,9 +7,9 @@ contains Python source, callbacks, or serialized runtime objects.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -367,6 +367,37 @@ class ManeuverDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class StatechartCondition:
+    """One plan-derived condition interpreted by Maneuver Control."""
+
+    time_tick: int
+    time_scale: int
+    kind: str = "environment_time_at_or_after"
+
+    def __post_init__(self) -> None:
+        if self.kind != "environment_time_at_or_after":
+            raise ValueError("Statechart condition kind is invalid")
+        _non_negative_int(self.time_tick, "Statechart condition time tick")
+        _positive_int(self.time_scale, "Statechart condition time scale")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "time_tick": self.time_tick,
+            "time_scale": self.time_scale,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "StatechartCondition":
+        _strict_fields(
+            value,
+            {"kind", "time_tick", "time_scale"},
+            "Statechart condition",
+        )
+        return cls(**value)
+
+
+@dataclass(frozen=True, slots=True)
 class StatechartTransition:
     """One declarative edge in a Statechart topology."""
 
@@ -376,6 +407,7 @@ class StatechartTransition:
     maneuver_id: str | None = None
     requires_lifecycle_fact: bool = False
     requires_decision: bool = False
+    conditions: tuple[StatechartCondition, ...] = ()
 
     def __post_init__(self) -> None:
         _text(self.event, "transition event")
@@ -387,6 +419,10 @@ class StatechartTransition:
             raise ValueError("transition lifecycle requirement must be boolean")
         if not isinstance(self.requires_decision, bool):
             raise ValueError("transition decision requirement must be boolean")
+        conditions = tuple(self.conditions)
+        if not all(isinstance(item, StatechartCondition) for item in conditions):
+            raise ValueError("transition conditions must be Statechart conditions")
+        object.__setattr__(self, "conditions", conditions)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -396,11 +432,12 @@ class StatechartTransition:
             "maneuver_id": self.maneuver_id,
             "requires_lifecycle_fact": self.requires_lifecycle_fact,
             "requires_decision": self.requires_decision,
+            "conditions": [item.to_dict() for item in self.conditions],
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "StatechartTransition":
-        expected = {
+        legacy = {
             "event",
             "source",
             "target",
@@ -408,9 +445,19 @@ class StatechartTransition:
             "requires_lifecycle_fact",
             "requires_decision",
         }
-        if not isinstance(value, Mapping) or set(value) != expected:
+        if not isinstance(value, Mapping) or set(value) not in {
+            frozenset(legacy),
+            frozenset(legacy | {"conditions"}),
+        }:
             raise ValueError("Statechart transition contains unknown or missing fields")
-        return cls(**value)
+        conditions = value.get("conditions", ())
+        if not isinstance(conditions, (list, tuple)):
+            raise ValueError("Statechart transition conditions must be an array")
+        payload = dict(value)
+        payload["conditions"] = tuple(
+            StatechartCondition.from_dict(item) for item in conditions
+        )
+        return cls(**payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +471,8 @@ class Statechart:
     entry_state: str
     states: tuple[str, ...]
     transitions: tuple[StatechartTransition, ...]
+    terminal_states: tuple[str, ...] = ()
+    state_context: Mapping[str, Mapping[str, object]] = MappingProxyType({})
     deadlines: Mapping[str, int | float] = MappingProxyType({})
     trusted: bool = False
     schema_version: int = 1
@@ -449,6 +498,11 @@ class Statechart:
             raise ValueError("Statechart states must be unique")
         if self.entry_state not in states:
             raise ValueError("Statechart entry state must be declared")
+        terminal_states = tuple(self.terminal_states) or (states[-1],)
+        if not all(item in states for item in terminal_states):
+            raise ValueError("Statechart terminal states must be declared")
+        if len(set(terminal_states)) != len(terminal_states):
+            raise ValueError("Statechart terminal states must be unique")
         transitions = tuple(self.transitions)
         if not all(isinstance(item, StatechartTransition) for item in transitions):
             raise ValueError("Statechart transitions must be StatechartTransition records")
@@ -457,6 +511,38 @@ class Statechart:
         transition_keys = [(item.event, item.source) for item in transitions]
         if len(set(transition_keys)) != len(transition_keys):
             raise ValueError("Statechart cannot contain duplicate event edges")
+        if len({item.event for item in transitions}) != len(transitions):
+            raise ValueError("Statechart transition events must be globally unique")
+        reachable = {self.entry_state}
+        while True:
+            expanded = reachable | {
+                item.target for item in transitions if item.source in reachable
+            }
+            if expanded == reachable:
+                break
+            reachable = expanded
+        if reachable != set(states):
+            raise ValueError("Statechart states must be reachable from the entry state")
+        can_reach_terminal = set(terminal_states)
+        while True:
+            expanded = can_reach_terminal | {
+                item.source
+                for item in transitions
+                if item.target in can_reach_terminal
+            }
+            if expanded == can_reach_terminal:
+                break
+            can_reach_terminal = expanded
+        if can_reach_terminal != set(states):
+            raise ValueError("Statechart states must reach a terminal state")
+        raw_context = self.state_context or {state: {} for state in states}
+        if not isinstance(raw_context, Mapping) or set(raw_context) != set(states):
+            raise ValueError("Statechart context must describe every state")
+        state_context: dict[str, Mapping[str, object]] = {}
+        for state, context in raw_context.items():
+            state_context[state] = _payload(
+                context, f"Statechart context for {state}"
+            )
         frozen_deadlines = _json_value(self.deadlines, "Statechart deadlines")
         if not isinstance(frozen_deadlines, Mapping):
             raise ValueError("Statechart deadlines must be a JSON object")
@@ -472,6 +558,8 @@ class Statechart:
         _positive_int(self.schema_version, "Statechart schema version")
         object.__setattr__(self, "states", states)
         object.__setattr__(self, "transitions", transitions)
+        object.__setattr__(self, "terminal_states", terminal_states)
+        object.__setattr__(self, "state_context", MappingProxyType(state_context))
         object.__setattr__(self, "deadlines", frozen_deadlines)
         object.__setattr__(self, "planning_profile", str(PlanningProfile(self.planning_profile)))
 
@@ -509,6 +597,8 @@ class Statechart:
             entry_state=states[0],
             states=states,
             transitions=transitions,
+            terminal_states=(states[-1],),
+            state_context={state: {} for state in states},
             normalized_plan_sha256=hashlib.sha256(
                 plan.to_canonical_json().encode("utf-8")
             ).hexdigest(),
@@ -549,6 +639,9 @@ class Statechart:
     def timer_deadlines(self) -> Mapping[str, int | float]:
         return self.deadlines
 
+    def context_for(self, state: str) -> Mapping[str, object]:
+        return self.state_context[state]
+
     @property
     def hash(self) -> str:
         return self.statechart_sha256
@@ -564,6 +657,11 @@ class Statechart:
             "entry_state": self.entry_state,
             "states": list(self.states),
             "transitions": [item.to_dict() for item in self.transitions],
+            "terminal_states": list(self.terminal_states),
+            "state_context": {
+                state: _mapping_json(context)
+                for state, context in sorted(self.state_context.items())
+            },
             "timers": _as_json(self.deadlines),
             "trusted": self.trusted,
         }
@@ -573,7 +671,7 @@ class Statechart:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any], *, trusted: bool = False) -> "Statechart":
-        expected = {
+        legacy = {
             "schema_version",
             "mission_id",
             "plan_revision",
@@ -587,13 +685,19 @@ class Statechart:
         }
         keys = set(value) if isinstance(value, Mapping) else set()
         timer_key = "timers" if "timers" in keys else "deadlines"
-        if keys != expected | {timer_key}:
+        semantic = {"terminal_states", "state_context"}
+        if keys not in (legacy | {timer_key}, legacy | semantic | {timer_key}):
             raise ValueError("Statechart contains unknown or missing fields")
         if trusted or value["trusted"] is not False:
             raise ValueError("Statechart assets must be loaded with trusted=False")
         states = value["states"]
         transitions = value["transitions"]
-        if not isinstance(states, (list, tuple)) or not isinstance(transitions, (list, tuple)):
+        terminal_states = value.get("terminal_states", ())
+        if (
+            not isinstance(states, (list, tuple))
+            or not isinstance(transitions, (list, tuple))
+            or not isinstance(terminal_states, (list, tuple))
+        ):
             raise ValueError("Statechart states and transitions must be arrays")
         return cls(
             mission_id=value["mission_id"],
@@ -604,6 +708,8 @@ class Statechart:
             entry_state=value["entry_state"],
             states=tuple(states),
             transitions=tuple(StatechartTransition.from_dict(item) for item in transitions),
+            terminal_states=tuple(terminal_states),
+            state_context=value.get("state_context", {}),
             deadlines=value[timer_key],
             trusted=False,
             schema_version=value["schema_version"],
@@ -624,6 +730,9 @@ class TransitionCandidate:
     requires_lifecycle_fact: bool = False
     requires_decision: bool = False
     schema_version: int = 1
+    conditions: tuple[StatechartCondition, ...] = ()
+    source_state_context: Mapping[str, object] = MappingProxyType({})
+    target_state_context: Mapping[str, object] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         _text(self.event, "transition candidate event")
@@ -631,6 +740,20 @@ class TransitionCandidate:
         _text(self.target, "transition candidate target")
         if not isinstance(self.requires_lifecycle_fact, bool) or not isinstance(self.requires_decision, bool):
             raise ValueError("transition candidate requirements must be boolean")
+        conditions = tuple(self.conditions)
+        if not all(isinstance(item, StatechartCondition) for item in conditions):
+            raise ValueError("transition candidate conditions are invalid")
+        object.__setattr__(self, "conditions", conditions)
+        object.__setattr__(
+            self,
+            "source_state_context",
+            _payload(self.source_state_context, "transition source-state context"),
+        )
+        object.__setattr__(
+            self,
+            "target_state_context",
+            _payload(self.target_state_context, "transition target-state context"),
+        )
         _positive_int(self.schema_version, "transition candidate schema version")
 
     @property
@@ -645,6 +768,9 @@ class TransitionCandidate:
             "target": self.target,
             "requires_lifecycle_fact": self.requires_lifecycle_fact,
             "requires_decision": self.requires_decision,
+            "conditions": [item.to_dict() for item in self.conditions],
+            "source_state_context": _mapping_json(self.source_state_context),
+            "target_state_context": _mapping_json(self.target_state_context),
         }
 
     def to_canonical_json(self) -> str:
@@ -652,10 +778,26 @@ class TransitionCandidate:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "TransitionCandidate":
-        expected = {"schema_version", "event", "source", "target", "requires_lifecycle_fact", "requires_decision"}
-        if not isinstance(value, Mapping) or set(value) != expected:
+        legacy = {
+            "schema_version", "event", "source", "target",
+            "requires_lifecycle_fact", "requires_decision",
+        }
+        semantic = {
+            "conditions", "source_state_context", "target_state_context"
+        }
+        if not isinstance(value, Mapping) or set(value) not in (
+            legacy,
+            legacy | semantic,
+        ):
             raise ValueError("Transition Candidate contains unknown or missing fields")
-        return cls(**value)
+        conditions = value.get("conditions", ())
+        if not isinstance(conditions, (list, tuple)):
+            raise ValueError("Transition Candidate conditions must be an array")
+        payload = dict(value)
+        payload["conditions"] = tuple(
+            StatechartCondition.from_dict(item) for item in conditions
+        )
+        return cls(**payload)
 
     @classmethod
     def from_json(cls, value: str) -> "TransitionCandidate":
@@ -817,6 +959,7 @@ class FSMStatus:
     lifecycle_facts: Mapping[str, object] = MappingProxyType({})
     retained_maneuver_ids: tuple[str, ...] = ()
     schema_version: int = 1
+    active_state_context: Mapping[str, object] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         _text(self.mission_id, "FSM status mission ID")
@@ -848,6 +991,11 @@ class FSMStatus:
         object.__setattr__(self, "superseded_maneuver_ids", maneuver_ids)
         object.__setattr__(self, "timer_due_markers", timer_markers)
         object.__setattr__(self, "retained_maneuver_ids", retained_ids)
+        object.__setattr__(
+            self,
+            "active_state_context",
+            _payload(self.active_state_context, "FSM active-state context"),
+        )
 
     @property
     def enabled_events(self) -> tuple[str, ...]:
@@ -881,6 +1029,7 @@ class FSMStatus:
             "timer_due_markers": list(self.timer_due_markers),
             "lifecycle_facts": _mapping_json(self.lifecycle_facts),
             "retained_maneuver_ids": list(self.retained_maneuver_ids),
+            "active_state_context": _mapping_json(self.active_state_context),
         }
 
     def to_canonical_json(self) -> str:
@@ -894,7 +1043,10 @@ class FSMStatus:
             "superseded_plan_revision", "superseded_maneuver_ids", "last_applied_event",
             "timer_due_markers", "lifecycle_facts", "retained_maneuver_ids",
         }
-        if not isinstance(value, Mapping) or set(value) != expected:
+        if not isinstance(value, Mapping) or set(value) not in (
+            expected,
+            expected | {"active_state_context"},
+        ):
             raise ValueError("FSM Status contains unknown or missing fields")
         candidates = value["transition_candidates"]
         maneuver_ids = value["superseded_maneuver_ids"]

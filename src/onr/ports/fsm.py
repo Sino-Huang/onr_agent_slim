@@ -20,6 +20,26 @@ class FSMStateStore(Protocol):
     def save_execution_record(self, record: FSMExecutionRecord) -> None: ...
 
 
+class RunningStateMachine(Protocol):
+    """Live transition engine reconstructed from Statechart data."""
+
+    @property
+    def current_state(self) -> str: ...
+
+    @property
+    def allowed_events(self) -> tuple[str, ...]: ...
+
+    def send(self, event: str) -> None: ...
+
+
+class StateMachineFactory(Protocol):
+    """Build a live machine without making it durable authority."""
+
+    def build(
+        self, statechart: Statechart, *, start_state: str | None = None
+    ) -> RunningStateMachine: ...
+
+
 class FSMTransport(Protocol):
     """Minimal transport surface required by the application FSM."""
 

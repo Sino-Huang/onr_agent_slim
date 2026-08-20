@@ -8,16 +8,20 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
-
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
 from onr.application.bayesian_belief import belief_artifact_reference
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.fsm import Statechart
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.maneuver_control import ManeuverCommand
+from onr.contracts.maneuver_control import (
+    InvocationOverlay,
+    ManeuverCommand,
+    ManeuverControlDecision,
+)
+from onr.contracts.transport import create_normalized_plan_transport_event
 from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.demo.fake_environment import FakeEnvironment
 from onr.runtime.composition import RuntimeComposition, RuntimeRunResult
@@ -115,6 +119,30 @@ def _safe_result(
         "environment_file": str(environment_file)
         if environment_file is not None
         else None,
+    }
+
+
+def _safe_preview_result(
+    *,
+    outcome: HyperWorkflowOutcome,
+    statechart: Statechart,
+    statechart_reference: str,
+    decision: ManeuverControlDecision,
+    environment_file: Path | None,
+) -> dict[str, object]:
+    return {
+        "mission_id": statechart.mission_id,
+        "plan_revision": statechart.plan_revision,
+        "outcome": str(outcome),
+        "statechart_reference": statechart_reference,
+        "statechart_sha256": statechart.statechart_sha256,
+        "entry_state": statechart.entry_state,
+        "state_count": len(statechart.states),
+        "transition_count": len(statechart.transitions),
+        "maneuver_decision": decision.to_dict(),
+        "environment_file": (
+            str(environment_file) if environment_file is not None else None
+        ),
     }
 
 
@@ -241,6 +269,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mission_id=mission_input.mission_id,
             skill_catalog=skill_catalog,
             backend_root=repo_root,
+            artifact_root=planner_artifacts,
         )
         hyper_context = runtime.create_hyper_workflow_context(
             mission_input,
@@ -248,6 +277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             heartbeat.environment_event,
             artifact_root=planner_artifacts,
             belief_snapshot=belief_snapshot,
+            backend_root=repo_root,
         )
         hyper_result = hyper_workflow.run(
             hyper_context,
@@ -255,19 +285,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             recursion_limit=args.recursion_limit,
         )
         plan = hyper_result.normalized_plan
-        if hyper_result.outcome is not HyperWorkflowOutcome.PLAN_READY or plan is None:
+        statechart = hyper_result.statechart
+        initial_fsm_status = hyper_result.initial_fsm_status
+        statechart_reference = hyper_result.statechart_reference
+        if (
+            hyper_result.outcome is not HyperWorkflowOutcome.EXECUTION_READY
+            or plan is None
+            or statechart is None
+            or initial_fsm_status is None
+            or statechart_reference is None
+        ):
             raise RuntimeError(
-                f"Hyper planning ended without a Normalized Plan: {hyper_result.outcome}"
+                "Hyper planning ended without execution-ready Statechart evidence: "
+                f"{hyper_result.outcome}"
             )
 
-        stage = "execution model composition"
+        stage = "Statechart context publication"
+        topic = context_coordination.input_topic
+        runtime.transport.publish_event(
+            topic,
+            create_normalized_plan_transport_event(
+                plan,
+                event_id=(
+                    f"normalized-plan:{mission_input.mission_id}:"
+                    f"{plan.plan_revision}"
+                ),
+                sequence=runtime.transport.next_event_sequence(
+                    topic, mission_input.mission_id
+                ),
+            ),
+        )
+        with runtime.transport.open_consumer(
+            context_coordination.subscription
+        ) as context_consumer:
+            maneuver_snapshot = context_coordination.run_once(context_consumer)
+        if (
+            not isinstance(maneuver_snapshot, MissionSnapshot)
+            or maneuver_snapshot.plan_revision != plan.plan_revision
+        ):
+            raise RuntimeError(
+                "Context Coordination did not publish the Statechart preview snapshot"
+            )
+
+        stage = "Maneuver preview model composition"
         maneuver_model = runtime.create_chat_model(
             mission_id=mission_input.mission_id,
             debug_scope="maneuver-control",
-        )
-        summary_model = runtime.create_chat_model(
-            mission_id=mission_input.mission_id,
-            debug_scope="mission-summary",
         )
         maneuver_control = runtime.create_maneuver_control(
             _DemoManeuverAdapter(),
@@ -277,22 +340,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             skill_catalog=skill_catalog,
             backend_root=repo_root,
         )
-        fsm_runner = runtime.create_fsm_runner(mission_id=mission_input.mission_id)
-
-        stage = "mission execution"
-        result = runtime.run_mission(
-            mission_input,
-            plan=plan,
-            context_coordination=context_coordination,
-            fsm_runner=fsm_runner,
-            maneuver_control=maneuver_control,
-            environment_step=environment.run_once,
-            model=summary_model,
+        stage = "Maneuver preview"
+        decision = maneuver_control.decide(
+            maneuver_snapshot,
+            initial_fsm_status,
+            InvocationOverlay(
+                mission_input.mission_id,
+                f"maneuver-preview:{mission_input.mission_id}:{plan.plan_revision}",
+                {"environment_data": heartbeat.environment_event.payload},
+            ),
         )
         print(
             json.dumps(
-                _safe_result(
-                    cast(RuntimeRunResult, result),
+                _safe_preview_result(
+                    outcome=hyper_result.outcome,
+                    statechart=statechart,
+                    statechart_reference=statechart_reference,
+                    decision=decision,
                     environment_file=environment.last_output_path,
                 ),
                 sort_keys=True,

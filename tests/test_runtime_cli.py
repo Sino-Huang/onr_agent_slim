@@ -16,8 +16,13 @@ from onr.contracts.context_coordination import (
     MissionSnapshot,
     create_source_fact_event,
 )
+from onr.contracts.fsm import FSMStatus, Statechart
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
+from onr.contracts.maneuver_control import (
+    ManeuverControlDecision,
+    NonPhysicalChoice,
+)
 from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -270,13 +275,53 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             "bayesian_belief_snapshot": True,
         },
     )
+    plan_snapshot = MissionSnapshot(
+        mission_id="mission:demo",
+        version=3,
+        created_at="2026-08-20T00:00:02+00:00",
+        plan_revision=plan.plan_revision,
+        plan_reference="normalized-plan:mission:demo:3",
+        environment_data=scene.event_id,
+        bayesian_belief_snapshot=belief_reference,
+        source_revisions={
+            "environment_data": 0,
+            "bayesian_belief_snapshot": belief.belief_revision,
+            "plan": plan.plan_revision,
+        },
+        source_hashes={
+            "environment_data": environment_data_sha256(scene),
+            "bayesian_belief_snapshot": belief.content_sha256,
+            "plan": "9" * 64,
+        },
+        source_health={
+            "environment_data": "healthy",
+            "bayesian_belief_snapshot": "healthy",
+            "plan": "healthy",
+        },
+        source_freshness={
+            "environment_data": True,
+            "bayesian_belief_snapshot": True,
+            "plan": True,
+        },
+    )
+    statechart = Statechart.from_normalized_plan(plan)
+    initial_status = FSMStatus(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        statechart_revision=plan.plan_revision,
+        active_state=statechart.entry_state,
+        active_state_context=statechart.context_for(statechart.entry_state),
+    )
 
     class FakeHyperWorkflow:
         def run(self, context: object, **kwargs: object) -> object:
             calls.append(("hyper-run", context, kwargs))
             return SimpleNamespace(
-                outcome=HyperWorkflowOutcome.PLAN_READY,
+                outcome=HyperWorkflowOutcome.EXECUTION_READY,
                 normalized_plan=plan,
+                statechart=statechart,
+                statechart_reference="/tmp/accepted-statechart.json",
+                initial_fsm_status=initial_status,
                 todos=({"content": "Run MiniZinc", "status": "completed"},),
             )
 
@@ -286,8 +331,9 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             self.subscription = Subscription(
                 "context-coordination", "mission:demo", "normalized-plans"
             )
+            self.input_topic = "normalized-plans"
             transport.subscriptions += (self.subscription,)
-            self.snapshots = iter((environment_snapshot, snapshot))
+            self.snapshots = iter((environment_snapshot, snapshot, plan_snapshot))
 
         def publish_source_fact(
             self,
@@ -338,7 +384,18 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
 
         def create_maneuver_control(self, adapter: object, **kwargs: object) -> object:
             calls.append(("maneuver", adapter, kwargs))
-            return "maneuver-control"
+
+            class PreviewControl:
+                def decide(self, *args: object) -> ManeuverControlDecision:
+                    calls.append(("maneuver-preview", args))
+                    return ManeuverControlDecision(
+                        decision_id="preview-decision",
+                        mission_id="mission:demo",
+                        plan_revision=plan.plan_revision,
+                        choice=NonPhysicalChoice.NO_CHANGE,
+                    )
+
+            return PreviewControl()
 
         def create_context_coordination(self, **kwargs: object) -> object:
             calls.append(("context", kwargs))
@@ -436,10 +493,18 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert json.loads(captured.out) == {
         "mission_id": "mission:demo",
         "plan_revision": 3,
-        "command_id": "command-demo",
-        "maneuver_id": "maneuver-demo",
-        "final_state": "state-1",
-        "final_status": "active",
+        "outcome": "execution_ready",
+        "statechart_reference": "/tmp/accepted-statechart.json",
+        "statechart_sha256": statechart.statechart_sha256,
+        "entry_state": statechart.entry_state,
+        "state_count": len(statechart.states),
+        "transition_count": len(statechart.transitions),
+        "maneuver_decision": ManeuverControlDecision(
+            decision_id="preview-decision",
+            mission_id="mission:demo",
+            plan_revision=3,
+            choice=NonPhysicalChoice.NO_CHANGE,
+        ).to_dict(),
         "environment_file": None,
     }
     assert calls[0] == (
@@ -452,9 +517,8 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert [(item[1], item[2]) for item in model_calls] == [
         ("hyper-agent", "mission:demo"),
         ("maneuver-control", "mission:demo"),
-        ("mission-summary", "mission:demo"),
     ]
-    assert len({id(item[3]) for item in model_calls}) == 3
+    assert len({id(item[3]) for item in model_calls}) == 2
     hyper_call = next(
         item
         for item in calls
@@ -488,13 +552,14 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert maneuver_call[2]["system_prompt"] == (
         f"You are agent drone-1. {maneuver_prompt}"
     )
-    run_call = next(
-        item for item in calls if isinstance(item, tuple) and item[0] == "run"
+    preview_call = next(
+        item
+        for item in calls
+        if isinstance(item, tuple) and item[0] == "maneuver-preview"
     )
-    assert run_call[2]["model"] is models["mission-summary"]
-    assert run_call[2]["plan"].mission_id == "mission:demo"
-    assert run_call[2]["maneuver_control"] == "maneuver-control"
-    assert "environment" in calls
+    assert preview_call[1][0] is plan_snapshot
+    assert preview_call[1][1] is initial_status
+    assert "environment" not in calls
     assert calls.index("environment-heartbeat") < calls.index("heartbeat-snapshot")
 
 
