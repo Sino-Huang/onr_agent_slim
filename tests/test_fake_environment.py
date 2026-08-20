@@ -18,6 +18,11 @@ from onr.ports.transport import Subscription, Transport
 
 from harness.fake_environment import FakeEnvironment
 
+_EVENT_REPORT_PATH = (
+    Path(__file__).parents[1]
+    / "data/ships_report_and_trajectory_example/ships/events_report.json"
+)
+
 
 class FixedDecisionProvider:
     def __init__(self, decision: ManeuverControlDecision) -> None:
@@ -72,7 +77,7 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
     assert result is not None
     assert result.command == command
     assert result.scene_graph.event_kind == "operational_scene_graph"
-    assert result.scene_graph.payload["graph"]
+    assert set(result.scene_graph.payload) == {"scene_graph", "event_report"}
     assert result.source_fact.event_kind == "source-fact"
     assert result.source_fact.payload["source"] == "operational_scene_graph"
     assert result.source_fact.payload["reference"] == result.scene_graph.event_id
@@ -88,7 +93,12 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
     environment = cast(
         dict[str, Any], json.loads(result.environment_file.read_text(encoding="utf-8"))
     )
-    entities = cast(list[dict[str, Any]], environment["entities"])
+    assert environment == result.scene_graph.to_dict()["payload"]
+    assert environment["event_report"] == json.loads(
+        _EVENT_REPORT_PATH.read_text(encoding="utf-8")
+    )
+    graph = cast(dict[str, Any], environment["scene_graph"])
+    entities = cast(list[dict[str, Any]], graph["entities"])
     assert len(entities) == 6
     assert sum(entity["type"] == "ship" for entity in entities) == 5
     assert sum(entity["type"] == "drone" for entity in entities) == 1
@@ -107,7 +117,6 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
         )
         for entity in entities
     )
-    graph = cast(dict[str, Any], result.scene_graph.payload["graph"])
     assert list(graph["entities"]) == entities
 
     with transport.open_consumer(Subscription("scene-reader", mission_id, "operational-scene-graph")) as scene:
@@ -134,7 +143,7 @@ def test_environment_heartbeat_publishes_scene_before_any_maneuver(
     heartbeat = environment.heartbeat()
 
     assert heartbeat.scene_graph.event_kind == "operational_scene_graph"
-    graph = cast(dict[str, Any], heartbeat.scene_graph.payload["graph"])
+    graph = cast(dict[str, Any], heartbeat.scene_graph.payload["scene_graph"])
     assert graph["mission_id"] == mission_id
     assert graph["plan_revision"] == 0
     assert graph["maneuvers"] == ()
@@ -144,6 +153,12 @@ def test_environment_heartbeat_publishes_scene_before_any_maneuver(
         isinstance(entity["risk"], float) and 0.0 <= entity["risk"] <= 1.0
         for entity in entities
         if entity["type"] == "ship"
+    )
+    heartbeat_payload = cast(
+        dict[str, Any], heartbeat.scene_graph.to_dict()["payload"]
+    )
+    assert heartbeat_payload["event_report"] == json.loads(
+        _EVENT_REPORT_PATH.read_text(encoding="utf-8")
     )
     assert heartbeat.source_fact.payload["reference"] == heartbeat.scene_graph.event_id
 
@@ -155,6 +170,40 @@ def test_environment_heartbeat_publishes_scene_before_any_maneuver(
     assert snapshot.operational_scene_graph == heartbeat.scene_graph.event_id
     assert snapshot.source_revisions["operational_scene_graph"] == 0
     assert environment.run_once() is None
+
+
+def test_event_report_content_participates_in_environment_identity(
+    tmp_path: Path,
+) -> None:
+    mission_id = "mission-1"
+    transport = _transport(tmp_path / "transport", mission_id)
+    output_root = tmp_path / "environment"
+    first_report = tmp_path / "first-report.json"
+    second_report = tmp_path / "second-report.json"
+    first_report.write_text('[{"event":"first"}]\n', encoding="utf-8")
+    second_report.write_text('[{"event":"second"}]\n', encoding="utf-8")
+
+    first = FakeEnvironment(
+        transport,
+        mission_id,
+        output_root=output_root,
+        event_report_path=first_report,
+    ).heartbeat()
+    second = FakeEnvironment(
+        transport,
+        mission_id,
+        output_root=output_root,
+        event_report_path=second_report,
+    ).heartbeat()
+
+    first_payload = cast(dict[str, Any], first.scene_graph.to_dict()["payload"])
+    second_payload = cast(dict[str, Any], second.scene_graph.to_dict()["payload"])
+    assert first_payload["event_report"] == [{"event": "first"}]
+    assert second_payload["event_report"] == [{"event": "second"}]
+    assert first.scene_graph.event_id != second.scene_graph.event_id
+    assert first.source_fact.payload["content_sha256"] != second.source_fact.payload[
+        "content_sha256"
+    ]
 
 
 def test_context_coordination_consumes_operational_scene_graph_source_fact(tmp_path: Path) -> None:

@@ -72,7 +72,7 @@ def _planning_context(
         sequence=0,
         event_kind="operational_scene_graph",
         payload={
-            "graph": {
+            "scene_graph": {
                 "mission_id": mission.mission_id,
                 "entities": [
                     {
@@ -87,7 +87,8 @@ def _planning_context(
                         "location": {"x": 0.0, "y": 0.0, "z": 10.0},
                     },
                 ],
-            }
+            },
+            "event_report": [],
         },
     )
     snapshot = MissionSnapshot(

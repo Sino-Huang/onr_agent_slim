@@ -315,8 +315,17 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
         scene_graph: TransportEvent,
     ) -> PlannerGenerationAttempt:
         assert snapshot.operational_scene_graph == scene_graph.event_id
-        graph = scene_graph.payload["graph"]
+        graph = scene_graph.payload["scene_graph"]
         assert isinstance(graph, Mapping) and graph["entities"]
+        environment_data = cast(
+            Mapping[str, object], scene_graph.to_dict()["payload"]
+        )
+        assert environment_data["event_report"] == json.loads(
+            (
+                Path(__file__).parents[1]
+                / "data/ships_report_and_trajectory_example/ships/events_report.json"
+            ).read_text(encoding="utf-8")
+        )
         return PlannerGenerationAttempt(
             attempt_id="attempt-1",
             decision_id=choice.decision_id,

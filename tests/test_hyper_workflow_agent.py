@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from langchain.tools import ToolRuntime
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -20,6 +21,10 @@ from onr.agents.hyper_workflow import (
     DeepAgentsHyperWorkflow,
     HyperWorkflowContext,
     create_hyper_workflow_agent,
+    load_planning_context,
+    persist_planner_assets,
+    planner_executor,
+    record_planning_intent,
 )
 from onr.application.minizinc_translation import MiniZincTranslation
 from onr.contracts.context_coordination import MissionSnapshot
@@ -154,7 +159,7 @@ def _scene_context() -> tuple[MissionInput, MissionSnapshot, TransportEvent]:
         sequence=0,
         event_kind="operational_scene_graph",
         payload={
-            "graph": {
+            "scene_graph": {
                 "mission_id": mission.mission_id,
                 "entities": [
                     {
@@ -169,7 +174,14 @@ def _scene_context() -> tuple[MissionInput, MissionSnapshot, TransportEvent]:
                         "location": {"x": 0.0, "y": 0.0, "z": 10.0},
                     },
                 ],
-            }
+            },
+            "event_report": [
+                {
+                    "time": 0.5,
+                    "event type": "intersection decision",
+                    "entity_id": 1,
+                }
+            ],
         },
     )
     snapshot = MissionSnapshot(
@@ -201,6 +213,95 @@ def _planner_evidence(tmp_path: Path) -> PlannerExecutionEvidence:
     return PlannerExecutionEvidence(directory, (model, data), stdout, stderr)
 
 
+def _runtime(context: HyperWorkflowContext) -> ToolRuntime[HyperWorkflowContext]:
+    return ToolRuntime(
+        state={"messages": []},
+        context=context,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="test-tool-call",
+        store=None,
+    )
+
+
+def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
+    tmp_path: Path,
+) -> None:
+    mission, snapshot, scene = _scene_context()
+    artifact_root = tmp_path / "planner-artifacts"
+    context = HyperWorkflowContext(
+        mission_input=mission,
+        mission_snapshot=snapshot,
+        scene_graph=scene,
+        artifact_root=artifact_root,
+        minizinc_translation=MiniZincTranslation(
+            RejectingMiniZincPlanner(),
+            artifact_root / "generation-attempts",
+            max_corrections=0,
+        ),
+    )
+    runtime = _runtime(context)
+
+    missing_intent = json.loads(cast(Any, load_planning_context).func(runtime=runtime))
+    assert missing_intent == {
+        "message": ("Call record_planning_intent, then retry load_planning_context."),
+        "missing": ["planning_intent", "planner_choice"],
+        "required_tool": "record_planning_intent",
+        "retry_tool": "load_planning_context",
+        "status": "prerequisite_missing",
+    }
+    assert context.planning_context_loaded is False
+
+    cast(Any, record_planning_intent).func(
+        mission_id=mission.mission_id,
+        source_authority=mission.source_authority,
+        objective="observe risky ships",
+        planning_profile="temporal",
+        planner_id="minizinc",
+        rationale="Observation feasibility depends on time and location.",
+        details={"observation_objective": "field of view coverage"},
+        runtime=runtime,
+    )
+
+    missing_context = json.loads(
+        cast(Any, persist_planner_assets).func(
+            attempt_number=1,
+            model_mzn="solve satisfy;\n",
+            data_dzn="horizon = 2;\n",
+            horizon=2,
+            maneuvers=[],
+            translator_id="hyper-minizinc",
+            translator_version="1.0.0",
+            runtime=runtime,
+        )
+    )
+    assert missing_context["status"] == "prerequisite_missing"
+    assert missing_context["required_tool"] == "load_planning_context"
+    assert not (artifact_root / "drafts").exists()
+
+    ready = json.loads(cast(Any, load_planning_context).func(runtime=runtime))
+    assert ready["status"] == "ready"
+    assert ready["planning_intent"]["objective"] == "observe risky ships"
+    assert ready["planner_choice"]["planner_choice"] == {
+        "planning_profile": "temporal",
+        "planner_id": "minizinc",
+    }
+    assert ready["mission_snapshot"] == snapshot.to_dict()
+    assert ready["environment_data"] == scene.to_dict()["payload"]
+    assert ready["environment_data"]["event_report"][0]["entity_id"] == 1
+    assert context.planning_context_loaded is True
+
+    missing_draft = json.loads(
+        cast(Any, planner_executor).func(
+            planner_id="minizinc",
+            asset_references=[],
+            runtime=runtime,
+        )
+    )
+    assert missing_draft["status"] == "prerequisite_missing"
+    assert missing_draft["required_tool"] == "persist_planner_assets"
+
+
 def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
     tmp_path: Path,
 ) -> None:
@@ -222,6 +323,7 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
         "details": {"observation_objective": "field of view coverage"},
     }
     responses = [
+        _tool_call("load_planning_context", {}, 0),
         _tool_call("write_todos", {"todos": _todos(0)}, 1),
         _tool_call(
             "read_file",
@@ -353,6 +455,14 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
     assert result.normalized_plan.mission_id == mission.mission_id
     assert result.normalized_plan.maneuvers[0].maneuver_id == "observe-ship-1"
     assert [todo["status"] for todo in result.todos] == ["completed"] * 5
+    early_context_result = next(
+        json.loads(cast(str, message.content))
+        for message in result.messages
+        if isinstance(message, ToolMessage)
+        and message.name == "load_planning_context"
+        and json.loads(cast(str, message.content))["status"] == "prerequisite_missing"
+    )
+    assert early_context_result["required_tool"] == "record_planning_intent"
     assert [record.event_kind for record in log.replay(mission.mission_id)] == [
         "workflow",
         "planning-intent",

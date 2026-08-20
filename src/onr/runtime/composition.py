@@ -987,7 +987,7 @@ class RuntimeComposition:
                 raise RuntimeError(
                     "maneuver feedback does not match the physical command"
                 )
-            graph = scene_graph.payload.get("graph")
+            graph = scene_graph.payload.get("scene_graph")
             expected_parameters = {
                 parameter.name: parameter.value for parameter in command.parameters
             }

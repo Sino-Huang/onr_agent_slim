@@ -78,6 +78,20 @@ def _canonical_json(value: object) -> str:
     )
 
 
+def _prerequisite_missing(
+    *, missing: tuple[str, ...], required_tool: str, retry_tool: str
+) -> str:
+    return _canonical_json(
+        {
+            "message": f"Call {required_tool}, then retry {retry_tool}.",
+            "missing": list(missing),
+            "required_tool": required_tool,
+            "retry_tool": retry_tool,
+            "status": "prerequisite_missing",
+        }
+    )
+
+
 @dataclass(slots=True)
 class HyperWorkflowContext:
     """Per-run dependencies and evidence available only through workflow tools."""
@@ -94,6 +108,7 @@ class HyperWorkflowContext:
     operational_log: Any = None
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
+    planning_context_loaded: bool = field(default=False, init=False)
     minizinc_problem: Any = field(default=None, init=False)
     draft_references: tuple[str, ...] = field(default=(), init=False)
     translation: Any = field(default=None, init=False)
@@ -205,6 +220,7 @@ def record_planning_intent(
     choice = PlannerChoiceRecord.from_planning_intent(intent)
     context.planning_intent = intent
     context.planner_choice = choice
+    context.planning_context_loaded = False
     _emit(
         context,
         "planning-intent",
@@ -234,16 +250,28 @@ def record_planning_intent(
 def load_planning_context(
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Load the current snapshot-authorized scene evidence for planner generation."""
+    """Load the complete snapshot-authorized context for planner generation.
+
+    Returns canonical JSON containing PlanningIntent, Planner Choice, MissionSnapshot,
+    and the complete flexible environment-data payload, or an actionable
+    missing-prerequisite result.
+    """
 
     context = _context(runtime)
-    if context.planner_choice is None:
-        raise ValueError("record PlanningIntent before loading planning context")
+    intent = context.planning_intent
+    choice = context.planner_choice
+    if intent is None or choice is None:
+        return _prerequisite_missing(
+            missing=("planning_intent", "planner_choice"),
+            required_tool="record_planning_intent",
+            retry_tool="load_planning_context",
+        )
     validate_operational_scene_graph(
         context.mission_input.mission_id,
         context.mission_snapshot,
         context.scene_graph,
     )
+    context.planning_context_loaded = True
     _emit(
         context,
         "planning-context",
@@ -259,8 +287,11 @@ def load_planning_context(
     )
     return _canonical_json(
         {
+            "status": "ready",
+            "planning_intent": intent.to_dict(),
+            "planner_choice": choice.to_dict(),
             "mission_snapshot": context.mission_snapshot.to_dict(),
-            "operational_scene_graph": context.scene_graph.to_dict(),
+            "environment_data": context.scene_graph.to_dict()["payload"],
         }
     )
 
@@ -291,13 +322,26 @@ def persist_planner_assets(
         translator_version: Public version of the asset generator.
 
     Returns:
-        Canonical JSON containing the two persisted asset references.
+        Canonical JSON containing the two persisted asset references, or an
+        actionable missing-prerequisite result.
     """
 
     context = _context(runtime)
     choice = context.planner_choice
-    if choice is None or choice.planner_choice != PlannerChoice("temporal", "minizinc"):
+    if context.planning_intent is None or choice is None:
+        return _prerequisite_missing(
+            missing=("planning_intent", "planner_choice"),
+            required_tool="record_planning_intent",
+            retry_tool="persist_planner_assets",
+        )
+    if choice.planner_choice != PlannerChoice("temporal", "minizinc"):
         raise ValueError("MiniZinc assets require the recorded MiniZinc Planner Choice")
+    if not context.planning_context_loaded:
+        return _prerequisite_missing(
+            missing=("planning_context",),
+            required_tool="load_planning_context",
+            retry_tool="persist_planner_assets",
+        )
     if isinstance(attempt_number, bool) or attempt_number < 1:
         raise ValueError("planner asset attempt number must be positive")
     if (
@@ -392,19 +436,35 @@ def planner_executor(
         asset_references: Exact model.mzn and data.dzn paths returned by persistence.
 
     Returns:
-        Canonical JSON with a verified result or sanitized rejection.
+        Canonical JSON with a verified result, sanitized rejection, or actionable
+        missing-prerequisite result.
     """
 
     context = _context(runtime)
     choice = context.planner_choice
     problem = context.minizinc_problem
-    if (
-        planner_id != "minizinc"
-        or choice is None
-        or choice.planner_choice != PlannerChoice("temporal", "minizinc")
-        or problem is None
+    if context.planning_intent is None or choice is None:
+        return _prerequisite_missing(
+            missing=("planning_intent", "planner_choice"),
+            required_tool="record_planning_intent",
+            retry_tool="planner_executor",
+        )
+    if planner_id != "minizinc" or choice.planner_choice != PlannerChoice(
+        "temporal", "minizinc"
     ):
         raise ValueError("planner executor has no matching MiniZinc draft")
+    if not context.planning_context_loaded:
+        return _prerequisite_missing(
+            missing=("planning_context",),
+            required_tool="load_planning_context",
+            retry_tool="planner_executor",
+        )
+    if problem is None:
+        return _prerequisite_missing(
+            missing=("minizinc_problem", "asset_references"),
+            required_tool="persist_planner_assets",
+            retry_tool="planner_executor",
+        )
     supplied = tuple(sorted(str(Path(item).resolve()) for item in asset_references))
     if supplied != context.draft_references:
         raise ValueError("planner executor asset references do not match the draft")

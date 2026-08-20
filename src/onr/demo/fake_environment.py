@@ -24,6 +24,10 @@ from onr.contracts.transport import Command, TransportEvent
 from onr.ports.transport import Subscription
 
 SUPPORTED_LIFECYCLES = ("accepted", "active", "completed", "failed", "cancelled")
+_DEFAULT_EVENT_REPORT_PATH = (
+    Path(__file__).parents[3]
+    / "data/ships_report_and_trajectory_example/ships/events_report.json"
+)
 
 
 def _atomic_write_json(path: Path, value: object) -> None:
@@ -72,6 +76,7 @@ class FakeEnvironment:
         context_topic: str = "normalized-plans",
         max_retries: int = 3,
         output_root: Path | str | None = None,
+        event_report_path: Path | str | None = None,
     ) -> None:
         if not isinstance(transport, FileTransport):
             raise TypeError("FakeEnvironment requires a FileTransport")
@@ -87,6 +92,7 @@ class FakeEnvironment:
             if output_root is not None
             else self.transport.root.parent / "environment"
         )
+        self.event_report_path = Path(event_report_path or _DEFAULT_EVENT_REPORT_PATH)
         self.subscription = Subscription(target_service, mission_id, command_topic, max_retries)
         self._results: dict[tuple[str, str], FakeEnvironmentResult] = {}
         self._scene_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
@@ -112,20 +118,16 @@ class FakeEnvironment:
             self.output_root / quote(self.mission_id, safe="._-") / "scene.json"
         )
         self.last_output_path = environment_file
-        environment = {
-            "mission_id": self.mission_id,
-            "plan_revision": 0,
-            "entities": self._entities_for_seed(f"{self.mission_id}:heartbeat"),
-        }
-        _atomic_write_json(environment_file, environment)
         graph = {
             "mission_id": self.mission_id,
             "plan_revision": 0,
             "maneuvers": [],
-            "entities": environment["entities"],
+            "entities": self._entities_for_seed(f"{self.mission_id}:heartbeat"),
             "environment_file": str(environment_file),
         }
-        scene_graph, source_fact = self._publish_scene_graph(graph, 0)
+        environment_data = self._environment_data(graph)
+        _atomic_write_json(environment_file, environment_data)
+        scene_graph, source_fact = self._publish_scene_graph(environment_data, 0)
         return FakeEnvironmentHeartbeat(
             scene_graph=scene_graph,
             source_fact=source_fact,
@@ -189,13 +191,6 @@ class FakeEnvironment:
     ) -> tuple[TransportEvent, TransportEvent, Path]:
         environment_file = self.output_root / quote(self.mission_id, safe="._-") / "scene.json"
         self.last_output_path = environment_file
-        environment = {
-            "mission_id": command.mission_id,
-            "plan_revision": command.plan_revision,
-            "command_id": command.command_id,
-            "entities": self._entities(command),
-        }
-        _atomic_write_json(environment_file, environment)
         graph = {
             "mission_id": command.mission_id,
             "plan_revision": command.plan_revision,
@@ -208,21 +203,33 @@ class FakeEnvironment:
                     },
                 }
             ],
-            "entities": environment["entities"],
+            "entities": self._entities(command),
             "environment_file": str(environment_file),
         }
+        environment_data = self._environment_data(graph)
+        _atomic_write_json(environment_file, environment_data)
         scene_event, source_fact = self._publish_scene_graph(
-            graph, command.plan_revision
+            environment_data, command.plan_revision
         )
         return scene_event, source_fact, environment_file
 
+    def _environment_data(self, graph: dict[str, object]) -> dict[str, object]:
+        event_report = json.loads(self.event_report_path.read_text(encoding="utf-8"))
+        return {
+            "scene_graph": graph,
+            "event_report": event_report,
+        }
+
     def _publish_scene_graph(
-        self, graph: dict[str, object], revision: int
+        self, environment_data: dict[str, object], revision: int
     ) -> tuple[TransportEvent, TransportEvent]:
-        graph_json = json.dumps(
-            graph, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        environment_json = json.dumps(
+            environment_data,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
         )
-        reference = hashlib.sha256(graph_json.encode("utf-8")).hexdigest()
+        reference = hashlib.sha256(environment_json.encode("utf-8")).hexdigest()
         cached = self._scene_facts.get(reference)
         if cached is not None:
             return cached
@@ -244,12 +251,7 @@ class FakeEnvironment:
                         self.scene_graph_topic, self.mission_id
                     ),
                     event_kind="operational_scene_graph",
-                    payload={
-                        "source": "operational_scene_graph",
-                        "revision": revision,
-                        "reference": scene_event_id,
-                        "graph": json.loads(graph_json),
-                    },
+                    payload=json.loads(environment_json),
                 ),
             )
         if source_fact is None:

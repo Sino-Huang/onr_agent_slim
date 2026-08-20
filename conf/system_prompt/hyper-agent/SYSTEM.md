@@ -25,7 +25,7 @@ Todos are visible working state. They are not Mission authority, planner rationa
 - `write_todos`: create and update the live workflow checklist.
 - `read_file`: read the applicable Hyper skills and their examples.
 - `record_planning_intent`: validate and record derived PlanningIntent and its Planner Choice Record without ending the Deep Agent invocation.
-- `load_planning_context`: return the current MissionSnapshot and its exact snapshot-authorized Operational Scene Graph.
+- `load_planning_context`: return the current MissionSnapshot and its exact snapshot-authorized flexible environment-data JSON.
 - `persist_planner_assets`: validate and persist one immutable `model.mzn`/`data.dzn` generation attempt plus its normalization template.
 - `planner_executor`: run code-owned static validation, MiniZinc, independent assignment checking, evidence persistence, and normalization for the exact persisted attempt.
 - `HyperWorkflowResultCandidate`: return the terminal workflow result after a verified plan or a terminal non-plan outcome.
@@ -51,7 +51,7 @@ Use only capabilities exposed in this invocation. The current Hyper workflow end
 ### 3. Load current operational evidence
 
 - Call `load_planning_context` only after PlanningIntent and planner choice are recorded.
-- Use the returned MissionSnapshot and its referenced Operational Scene Graph as the complete current planning evidence.
+- Use the returned MissionSnapshot and every relevant key in its referenced `environment_data` as the complete current planning evidence. `scene_graph` contains the current operational graph; other keys such as `event_report` carry additional environment facts.
 - Accept operational facts only through matching snapshot references, revisions, hashes, health, and freshness. Keep Mission Intent facts distinct from environment facts.
 - This todo is complete only when the tool returns valid snapshot-authorized evidence.
 

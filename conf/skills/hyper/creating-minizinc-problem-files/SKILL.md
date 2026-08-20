@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate planner-native model and data files from Mission Intent and the current Hyper heartbeat snapshot.
-version: '1.1.0'
+version: '1.2.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -9,7 +9,7 @@ version: '1.1.0'
 ## Procedure
 
 1. Keep the Hyper todo list explicit: parse Mission Intent into PlanningIntent, decide the planner, then generate planner problem files.
-2. Read the raw Mission Intent, accepted PlanningIntent, and the current Hyper heartbeat MissionSnapshot. Resolve operational facts only through the snapshot-referenced Operational Scene Graph and other authorized evidence.
+2. Read the raw Mission Intent, accepted PlanningIntent, and the current Hyper heartbeat MissionSnapshot. Resolve operational facts through every relevant key in the snapshot-authorized flexible `environment_data`; `scene_graph` is the current graph and `event_report` supplies reported events when present.
 3. Separate reusable constraints into model.mzn and current authoritative values into data.dzn. Preserve supplied entity IDs, positions, event times, risk values, units, and mission limits.
 4. Scale finite decimal risk values to integers once and record the scale in data.dzn; an explicit code-owned conversion keeps the objective reproducible.
 5. Produce one attempt-specific asset set. Record its translator identity/version, snapshot ID, references, SHA-256 values, and accepted or rejected outcome through the planning-evidence path.
@@ -20,11 +20,12 @@ version: '1.1.0'
 ## Few-shot example
 
 Read examples/risk-weighted-fov/model.mzn with
-examples/risk-weighted-fov/data.dzn. The pair models the scene-graph shape
+examples/risk-weighted-fov/data.dzn. The pair models the `scene_graph` shape
 emitted by FakeEnvironment: five ships have positions and supplied risk
-values, while the drone has a starting position. Event times and movement/FoV
-limits come from authorized mission inputs. The example is a shape guide;
-replace every value with the current Mission's evidence.
+values, while the drone has a starting position. Event times may come from the
+authorized `event_report`; movement/FoV limits come from authorized mission
+inputs. The example is a shape guide; replace every value with the current
+Mission's evidence.
 
 The example's normalization template has one abstract maneuver named
 `risk-weighted-observation`, starting at zero and lasting for the complete

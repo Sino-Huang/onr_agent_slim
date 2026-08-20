@@ -26,16 +26,13 @@ from onr.contracts.transport import TransportEvent
 
 
 def operational_scene_graph_sha256(scene_graph: TransportEvent) -> str:
-    """Hash the canonical graph content referenced by a scene event."""
+    """Hash the complete environment payload referenced by a scene event."""
 
     if not isinstance(scene_graph, TransportEvent):
         raise TypeError("scene evidence must be a TransportEvent")
     payload = scene_graph.to_dict()["payload"]
-    graph = payload.get("graph") if isinstance(payload, Mapping) else None
-    if not isinstance(graph, Mapping):
-        raise ValueError("Operational Scene Graph event is missing graph content")
     document = json.dumps(
-        graph,
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
