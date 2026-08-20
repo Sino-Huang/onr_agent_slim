@@ -2,14 +2,81 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
+from urllib.parse import quote
 
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.planning import NormalizedPlan, PlannerExecutionEvidence
-from onr.contracts.planning_evidence import PlannerChoiceRecord
+from onr.contracts.planning import (
+    NormalizedPlan,
+    PlannerExecutionEvidence,
+    VerifiableReference,
+)
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
+    TranslationAttemptOutcome,
+)
 from onr.contracts.transport import TransportEvent
+
+
+def operational_scene_graph_sha256(scene_graph: TransportEvent) -> str:
+    """Hash the canonical graph content referenced by a scene event."""
+
+    if not isinstance(scene_graph, TransportEvent):
+        raise TypeError("scene evidence must be a TransportEvent")
+    payload = scene_graph.to_dict()["payload"]
+    graph = payload.get("graph") if isinstance(payload, Mapping) else None
+    if not isinstance(graph, Mapping):
+        raise ValueError("Operational Scene Graph event is missing graph content")
+    document = json.dumps(
+        graph,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+
+def validate_operational_scene_graph(
+    mission_id: str,
+    snapshot: MissionSnapshot,
+    scene_graph: TransportEvent,
+) -> str:
+    """Validate snapshot identity, health, freshness, and content digest."""
+
+    source = "operational_scene_graph"
+    digest = operational_scene_graph_sha256(scene_graph)
+    if (
+        snapshot.mission_id != mission_id
+        or scene_graph.mission_id != mission_id
+        or scene_graph.event_kind != "operational_scene_graph"
+        or snapshot.source_references[source] != scene_graph.event_id
+        or snapshot.source_hashes[source] != digest
+        or snapshot.source_health[source] != "healthy"
+        or not snapshot.source_freshness[source]
+    ):
+        raise ValueError(
+            "planning requires snapshot-authorized Operational Scene Graph evidence"
+        )
+    return digest
+
+
+def verifiable_file_reference(path: Path) -> VerifiableReference | None:
+    """Bind an existing evidence file reference to its exact bytes."""
+
+    selected = Path(path).resolve()
+    try:
+        content = selected.read_bytes()
+    except OSError:
+        return None
+    return VerifiableReference(str(selected), hashlib.sha256(content).hexdigest())
 
 
 class PlannerCorrectionStage(StrEnum):
@@ -57,6 +124,64 @@ class PlannerGenerationContext:
             raise ValueError("generation attempt number must be positive")
 
 
+def create_generation_attempt_evidence(
+    context: PlannerGenerationContext,
+    *,
+    translator_id: str,
+    translator_version: str,
+    assets: Mapping[str, bytes],
+    outcome: TranslationAttemptOutcome | str,
+    artifact_root: Path,
+) -> PlannerGenerationAttempt:
+    """Persist one generated asset set and bind it to immutable public evidence."""
+
+    attempt_id = (
+        f"{context.planner_choice.decision_id}:generation:{context.attempt_number}"
+    )
+    directory = (
+        Path(artifact_root).resolve()
+        / hashlib.sha256(context.planner_choice.decision_id.encode("utf-8")).hexdigest()
+        / f"{context.attempt_number:03d}"
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    references: dict[str, str] = {}
+    digests: dict[str, str] = {}
+    for name, content in sorted(assets.items()):
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(content, bytes)
+        ):
+            raise ValueError("generation-attempt assets must map names to bytes")
+        path = directory / quote(name, safe="._-")
+        if path.is_file():
+            if path.read_bytes() != content:
+                raise ValueError("generation-attempt asset identity conflicts")
+        else:
+            path.write_bytes(content)
+        references[name] = str(path.resolve())
+        digests[name] = hashlib.sha256(content).hexdigest()
+    choice = context.planner_choice
+    return PlannerGenerationAttempt(
+        attempt_id=attempt_id,
+        decision_id=choice.decision_id,
+        mission_id=choice.mission_id,
+        mission_input_sha256=choice.mission_input_sha256,
+        planning_intent_sha256=choice.planning_intent_sha256,
+        planner_choice=choice.planner_choice,
+        rationale=choice.rationale,
+        mission_snapshot_id=(
+            f"{context.mission_input.mission_id}:snapshot:"
+            f"{context.mission_snapshot.version}"
+        ),
+        translator_id=translator_id,
+        translator_version=translator_version,
+        outcome=outcome,
+        asset_references=references,
+        asset_sha256=digests,
+    )
+
+
 class PlanningTranslationOutcome(StrEnum):
     """Terminal classification for a bounded planner translation run."""
 
@@ -72,6 +197,7 @@ class PlanningTranslationResult:
 
     outcome: PlanningTranslationOutcome | str
     attempt_count: int
+    generation_attempts: tuple[PlannerGenerationAttempt, ...]
     normalized_plan: NormalizedPlan | None = None
     correction_feedback: tuple[PlannerCorrectionFeedback, ...] = ()
     evidence: PlannerExecutionEvidence | None = None
@@ -80,12 +206,36 @@ class PlanningTranslationResult:
         outcome = PlanningTranslationOutcome(self.outcome)
         if isinstance(self.attempt_count, bool) or self.attempt_count < 1:
             raise ValueError("translation attempt count must be positive")
+        attempts = tuple(self.generation_attempts)
+        if len(attempts) != self.attempt_count or not all(
+            isinstance(item, PlannerGenerationAttempt) for item in attempts
+        ):
+            raise ValueError(
+                "translation requires one generation evidence record per attempt"
+            )
+        accepted = [
+            item
+            for item in attempts
+            if item.outcome is TranslationAttemptOutcome.ACCEPTED
+        ]
         if outcome is PlanningTranslationOutcome.VERIFIED:
             if self.normalized_plan is None:
                 raise ValueError("verified translation requires a Normalized Plan")
-        elif self.normalized_plan is not None:
-            raise ValueError("only verified translation may contain a Normalized Plan")
+            if accepted != [attempts[-1]]:
+                raise ValueError(
+                    "verified translation requires only its final attempt to be accepted"
+                )
+        else:
+            if self.normalized_plan is not None:
+                raise ValueError(
+                    "only verified translation may contain a Normalized Plan"
+                )
+            if accepted:
+                raise ValueError(
+                    "non-verified translation cannot accept generation attempts"
+                )
         object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "generation_attempts", attempts)
         object.__setattr__(self, "correction_feedback", tuple(self.correction_feedback))
 
 
@@ -95,4 +245,8 @@ __all__ = [
     "PlannerGenerationContext",
     "PlanningTranslationOutcome",
     "PlanningTranslationResult",
+    "create_generation_attempt_evidence",
+    "operational_scene_graph_sha256",
+    "validate_operational_scene_graph",
+    "verifiable_file_reference",
 ]

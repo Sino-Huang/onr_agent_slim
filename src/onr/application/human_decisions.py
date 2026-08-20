@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ContextManager
+
 from onr.contracts.human_decision import (
     HumanDecision,
     HumanDecisionAction,
@@ -33,6 +35,7 @@ _ACTIONS = {
 }
 _RESUME_ACTIONS = {
     HumanDecisionAction.RETRY_TRANSLATION,
+    HumanDecisionAction.REVISE_MISSION_INTENT,
     HumanDecisionAction.WAIT_FOR_SCENE_EVIDENCE,
     HumanDecisionAction.RETRY_PLANNER,
 }
@@ -45,6 +48,7 @@ class HumanDecisionCoordinator:
             "load_request_by_id",
             "load_checkpoint",
             "save_decision",
+            "resume_claim",
         ):
             if not callable(getattr(store, method, None)):
                 raise TypeError("Human Decision store is incomplete")
@@ -130,6 +134,14 @@ class HumanDecisionCoordinator:
             recorded,
             HumanDecisionDisposition.END,
         )
+
+    def resume_claim(
+        self,
+        resolution: HumanDecisionResolution,
+    ) -> ContextManager[bool]:
+        if resolution.disposition is not HumanDecisionDisposition.RESUME:
+            raise ValueError("only resume resolutions can claim continuation")
+        return self.store.resume_claim(resolution.decision)
 
 
 __all__ = ["HumanDecisionCoordinator"]

@@ -6,17 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
+from onr.adapters.inprocess_transport import InProcessTransport
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
-from onr.contracts.transport import (
-    TransportEvent,
-    create_normalized_plan_transport_event,
-    normalized_plan_transport_event_to_wire,
-)
 from onr.contracts.fsm import (
-    FSMExecutionRecord,
     FSMEvent,
+    FSMExecutionRecord,
     FSMStatus,
     ManeuverDecision,
     ManeuverFeedback,
@@ -25,17 +20,18 @@ from onr.contracts.fsm import (
 )
 from onr.contracts.planning import (
     ManeuverIntent,
-    MissionSpec,
     NormalizedPlan,
-    PlanProvenance,
     PlannerChoice,
     PlanningOutcome,
+    PlanProvenance,
     ScheduledManeuver,
-    SymbolicManeuver,
-    SymbolicMissionSpec,
     SymbolicPlanStep,
-    TemporalManeuver,
     VerifiableReference,
+)
+from onr.contracts.transport import (
+    TransportEvent,
+    create_normalized_plan_transport_event,
+    normalized_plan_transport_event_to_wire,
 )
 from onr.ports.transport import Subscription
 from onr.runtime.composition import RuntimeComposition
@@ -51,54 +47,49 @@ from onr.runtime.config import (
 )
 
 
+def _provenance(mission_id: str) -> PlanProvenance:
+    return PlanProvenance(
+        mission_id=mission_id,
+        source_authority="authority",
+        mission_intent=VerifiableReference(f"mission-input:{mission_id}", "1" * 64),
+        planning_decision=VerifiableReference(f"planner-choice:{mission_id}", "2" * 64),
+        operational_scene_graph=VerifiableReference(f"scene:{mission_id}", "3" * 64),
+        generated_assets={
+            "planner-input": VerifiableReference("planner-input", "4" * 64),
+        },
+        solver_evidence={
+            "planner-result": VerifiableReference("planner-result", "5" * 64),
+        },
+    )
+
+
 def _temporal_plan(revision: int = 1) -> NormalizedPlan:
     choice = PlannerChoice("temporal", "minizinc")
-    mission = MissionSpec(
-        mission_id="mission-fsm",
-        objective="test",
-        planner_choice=choice,
-        maneuvers=(
-            TemporalManeuver("survey", ManeuverIntent("survey"), (), 2),
-            TemporalManeuver("report", ManeuverIntent("report"), ("survey",), 1),
-        ),
-        horizon=5,
-        source_authority="authority",
-    )
     return NormalizedPlan(
-        mission,
-        revision,
-        f"snapshot-{revision}",
-        choice,
-        PlanningOutcome.SOLVED,
-        (
+        plan_revision=revision,
+        mission_snapshot_id=f"snapshot-{revision}",
+        planner_choice=choice,
+        outcome=PlanningOutcome.SOLVED,
+        maneuvers=(
             ScheduledManeuver("survey", ManeuverIntent("survey"), (), 0, 2),
             ScheduledManeuver("report", ManeuverIntent("report"), ("survey",), 2, 1),
         ),
+        provenance=_provenance("mission-fsm"),
     )
 
 
 def _symbolic_plan(revision: int = 1) -> NormalizedPlan:
     choice = PlannerChoice("symbolic", "fast-downward")
-    mission = SymbolicMissionSpec(
-        mission_id="mission-fsm-symbolic",
-        objective="test",
-        planner_choice=choice,
-        maneuvers=(
-            SymbolicManeuver("survey", ManeuverIntent("survey"), (), 1),
-            SymbolicManeuver("report", ManeuverIntent("report"), ("survey",), 1),
-        ),
-        source_authority="authority",
-    )
     return NormalizedPlan(
-        mission,
-        revision,
-        f"snapshot-symbolic-{revision}",
-        choice,
-        PlanningOutcome.SOLVED,
-        (
+        plan_revision=revision,
+        mission_snapshot_id=f"snapshot-symbolic-{revision}",
+        planner_choice=choice,
+        outcome=PlanningOutcome.SOLVED,
+        maneuvers=(
             SymbolicPlanStep(0, "survey", ManeuverIntent("survey"), (), 1),
             SymbolicPlanStep(1, "report", ManeuverIntent("report"), ("survey",), 1),
         ),
+        provenance=_provenance("mission-fsm-symbolic"),
     )
 
 
@@ -186,18 +177,18 @@ def test_runner_applies_only_enabled_events_and_publishes_status() -> None:
     assert unchanged.active_state == "state-0"
     updated = asyncio.run(runner.transition("advance:survey"))
     assert updated.active_state == "state-1"
-    assert transport.latest_event("fsm-status", plan.mission_spec.mission_id) is not None
+    assert transport.latest_event("fsm-status", plan.mission_id) is not None
 
 
 def test_runner_consumes_normalized_plan_transport_wire_event() -> None:
     plan = _temporal_plan()
-    subscription = Subscription("fsm", plan.mission_spec.mission_id, "normalized-plans")
+    subscription = Subscription("fsm", plan.mission_id, "normalized-plans")
     transport = InProcessTransport((subscription,))
     transport.publish_event("normalized-plans", _event(plan))
     consumer = transport.open_consumer(subscription)
     runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: 0)
     status = asyncio.run(runner.run_once(consumer))
-    assert status is not None and status.mission_id == plan.mission_spec.mission_id
+    assert status is not None and status.mission_id == plan.mission_id
     assert consumer.receive() is None
     consumer.close()
 
@@ -230,13 +221,13 @@ def test_runner_public_activate_apply_tick_and_event_idempotency() -> None:
     runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: now[0])
     initial = asyncio.run(runner.activate(_event(plan)))
     assert initial.enabled_transition_candidates == ()
-    before = transport.next_event_sequence("fsm-status", plan.mission_spec.mission_id)
+    before = transport.next_event_sequence("fsm-status", plan.mission_id)
     due = asyncio.run(runner.tick(0))
     assert due is not None and due.timer_due is True and due.active_state == "state-0"
-    after_first_tick = transport.next_event_sequence("fsm-status", plan.mission_spec.mission_id)
+    after_first_tick = transport.next_event_sequence("fsm-status", plan.mission_id)
     assert after_first_tick == before + 1
     asyncio.run(runner.tick(0))
-    assert transport.next_event_sequence("fsm-status", plan.mission_spec.mission_id) == after_first_tick
+    assert transport.next_event_sequence("fsm-status", plan.mission_id) == after_first_tick
     candidate = due.enabled_transition_candidates[0]
     event = FSMEvent("transition-1", "transition", {"event": candidate.event})
     applied = asyncio.run(runner.apply(candidate, event))
@@ -255,9 +246,9 @@ def test_same_revision_activation_is_idempotent_without_status_publication() -> 
     transport = InProcessTransport()
     runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: 0)
     asyncio.run(runner.activate(_event(plan, "plan-1")))
-    next_sequence = transport.next_event_sequence("fsm-status", plan.mission_spec.mission_id)
+    next_sequence = transport.next_event_sequence("fsm-status", plan.mission_id)
     asyncio.run(runner.activate(_event(plan, "plan-2")))
-    assert transport.next_event_sequence("fsm-status", plan.mission_spec.mission_id) == next_sequence
+    assert transport.next_event_sequence("fsm-status", plan.mission_id) == next_sequence
 
 
 def test_timer_due_marker_remains_authoritative_after_clock_change_and_restart() -> None:
@@ -266,7 +257,7 @@ def test_timer_due_marker_remains_authoritative_after_clock_change_and_restart()
     store = InMemoryFSMStateStore()
     transport = InProcessTransport()
     runner = FSMRunner(transport, store=store, clock=lambda: now[0])
-    initial = asyncio.run(runner.activate(_event(plan)))
+    asyncio.run(runner.activate(_event(plan)))
     due = asyncio.run(runner.tick(0))
     assert due is not None and due.timer_due
     now[0] = -1
@@ -364,12 +355,12 @@ def test_symbolic_apply_requires_authoritative_feedback_and_matching_decision() 
     runner = FSMRunner(InProcessTransport(), store=InMemoryFSMStateStore(), clock=lambda: 0)
     initial = asyncio.run(runner.activate(_event(plan)))
     candidate = initial.enabled_transition_candidates[0]
-    feedback = ManeuverFeedback("feedback-1", plan.mission_spec.mission_id, "survey", "completed")
+    feedback = ManeuverFeedback("feedback-1", plan.mission_id, "survey", "completed")
     wrong_mission = ManeuverDecision("decision-wrong", "other-mission", transition_event=candidate.event)
     assert asyncio.run(runner.apply(candidate, feedback, wrong_mission)).active_state == "state-0"
-    decision = ManeuverDecision("decision-1", plan.mission_spec.mission_id, transition_event=candidate.event)
+    decision = ManeuverDecision("decision-1", plan.mission_id, transition_event=candidate.event)
     assert asyncio.run(runner.apply(candidate, feedback)).active_state == "state-0"
-    assert asyncio.run(runner.apply(candidate, ManeuverFeedback("feedback-2", plan.mission_spec.mission_id, "survey", "completed"), decision)).active_state == "state-1"
+    assert asyncio.run(runner.apply(candidate, ManeuverFeedback("feedback-2", plan.mission_id, "survey", "completed"), decision)).active_state == "state-1"
 
 
 def test_restart_reconstructs_from_persisted_json_and_plan_swap_is_visible() -> None:
@@ -406,7 +397,6 @@ def test_file_json_store_reconstructs_without_python_runtime_state(tmp_path) -> 
 def _provenance_plan() -> NormalizedPlan:
     choice = PlannerChoice("temporal", "minizinc")
     return NormalizedPlan(
-        mission_spec=None,
         plan_revision=1,
         mission_snapshot_id="mission-fsm:snapshot:1",
         planner_choice=choice,

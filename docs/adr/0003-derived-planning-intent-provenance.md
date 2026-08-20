@@ -5,53 +5,48 @@
 
 ## Context
 
-Hyper needs an opt-in structured interpretation to select a planner without
-changing the source of mission authority. Existing runtime users still consume
-the legacy MissionSpec mode. Planner-native inputs, outputs, and verification
-evidence are produced later and need a provenance-binding record.
+Hyper needs a structured interpretation to select a planner without changing
+the source of mission authority. Every Mission Run now uses planner-native
+inputs and provenance-only Normalized Plans; the pre-planner mission
+specification path has been retired.
 
 ## Decision
 
-The raw MissionInput and operator Mission Intent remain authority. An opt-in
+The raw MissionInput and operator Mission Intent remain authority.
 PlanningIntent is derived, non-authoritative, and provenance-preserving: it
-must retain the source mission identity and authority reference and may contain
-only interpretation and flexible planner-selection facts in `details`. It must
-not contain planner-native assets or verification evidence.
+retains source mission identity and authority and contains only interpretation
+and flexible planner-selection facts in `details`. Planner-native assets and
+verification evidence are produced after planner choice.
 
 Hyper tracks interpretation, planner choice, and validation with todo tooling.
 Those todos are neither mission authority nor rationale. Hyper returns only its
-configured structured contract and, where supported, only a concise public
-rationale—not private reasoning. Legacy MissionSpec mode remains supported and
-does not replace raw source authority.
+PlanningIntent contract with a concise public rationale, never private
+reasoning.
 
-Use MiniZinc for timed scheduling or optimization. An opt-in PlanningIntent
-uses Fast Downward with PDDL, exactly `fast-downward`, for symbolic reachability;
-`null` remains only for legacy SymbolicMissionSpec compatibility where needed.
+Use MiniZinc for timed scheduling or optimization. PlanningIntent uses Fast
+Downward with PDDL, exactly `fast-downward`, for symbolic reachability.
 Risk-weighted objectives require risk scores from mission inputs or an explicit
 code-owned derivation, never an LLM invention.
 
 This reopens and supersedes ADR 0002's planner-signature non-goal only for
-future translator-owned, planner-native translation or signature evolution. It
+translator-owned, planner-native translation and signature evolution. It
 does not change ADR 0002's belief provenance boundary and does not make
-PlanningIntent or MissionSpec the source authority.
+PlanningIntent the source authority.
 
-## Future PlanningRecord
+## Plan provenance
 
-A future formal PlanningRecord will bind the MissionInput hash/reference; the
-accepted PlanningIntent hash for an opt-in flow; Planner Choice; concise public
-rationale; translator identity/version; generated planner asset
-references/hashes; solver evidence references/hashes; code-owned verification
-checks and outcome; and the NormalizedPlan reference/hash. Assets and evidence
-are PlanningRecord outputs, not PlanningIntent `details`.
+Every NormalizedPlan carries PlanProvenance binding mission identity and
+authority, PlanningIntent, Planner Choice, the authorized Operational Scene
+Graph, generated planner assets, and solver evidence through verifiable
+references and hashes.
 
-This ADR specifies the future provenance expectation only. It introduces no
-Python contract in this issue.
+The application creates no intermediate authoritative planning schema before
+external planning. Translators consume planner-native generated assets and
+produce a NormalizedPlan only after code-owned verification succeeds.
 
 ## Consequences
 
-- Consumers can opt into PlanningIntent while existing MissionSpec runtime
-  integrations remain compatible.
-- PlanningRecord, rather than PlanningIntent, is the provenance boundary for
-  planner assets, solver evidence, verification, and NormalizedPlan output.
-- Future planner-native translation may evolve without changing mission
-  authority or the public planning contract.
+- PlanningIntent is the sole Hyper planning interpretation contract.
+- PlanProvenance is the boundary for planner assets, solver evidence,
+  verification, and NormalizedPlan output.
+- Planner-native translation may evolve without changing raw mission authority.

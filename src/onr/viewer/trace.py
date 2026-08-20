@@ -2,25 +2,36 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, replace
-from datetime import datetime
 import hashlib
 import json
 import math
 import re
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-
 ReplayDisposition = Literal[
-    "normal", "duplicate", "replayed", "stale", "gap", "resynchronized",
-    "conflict", "malformed",
+    "normal",
+    "duplicate",
+    "replayed",
+    "stale",
+    "gap",
+    "resynchronized",
+    "conflict",
+    "malformed",
 ]
 _REPLAY_DISPOSITIONS = {
-    "normal", "duplicate", "replayed", "stale", "gap", "resynchronized",
-    "conflict", "malformed",
+    "normal",
+    "duplicate",
+    "replayed",
+    "stale",
+    "gap",
+    "resynchronized",
+    "conflict",
+    "malformed",
 }
 _ERROR_MESSAGES = {
     "malformed_json": "The public observation was not valid JSON.",
@@ -44,59 +55,152 @@ _SECRET_VALUE = re.compile(
 )
 
 _TRANSPORT_FIELDS = {
-    "schema_version", "event_id", "mission_id", "sequence", "event_kind", "payload",
+    "schema_version",
+    "event_id",
+    "mission_id",
+    "sequence",
+    "event_kind",
+    "payload",
 }
 _COMMAND_FIELDS = {
-    "schema_version", "command_id", "correlation_id", "mission_id", "target_service",
-    "command_kind", "payload",
+    "schema_version",
+    "command_id",
+    "correlation_id",
+    "mission_id",
+    "target_service",
+    "command_kind",
+    "payload",
 }
 _RECEIPT_FIELDS = {
-    "schema_version", "command_id", "correlation_id", "mission_id", "target_service", "status",
+    "schema_version",
+    "command_id",
+    "correlation_id",
+    "mission_id",
+    "target_service",
+    "status",
 }
 _OUTCOME_FIELDS = {
-    "schema_version", "command_id", "correlation_id", "mission_id", "status", "payload",
+    "schema_version",
+    "command_id",
+    "correlation_id",
+    "mission_id",
+    "status",
+    "payload",
 }
 _LOG_FIELDS = {
-    "schema_version", "record_id", "mission_id", "sequence", "event_time", "source",
-    "event_kind", "outcome", "details",
+    "schema_version",
+    "record_id",
+    "mission_id",
+    "sequence",
+    "event_time",
+    "source",
+    "event_kind",
+    "outcome",
+    "details",
 }
 _SUMMARY_FIELDS = {
-    "schema_version", "summary_id", "mission_id", "sequence", "created_at",
-    "input_start_sequence", "input_end_sequence", "prior_summary_ids", "summary",
+    "schema_version",
+    "summary_id",
+    "mission_id",
+    "sequence",
+    "created_at",
+    "input_start_sequence",
+    "input_end_sequence",
+    "prior_summary_ids",
+    "summary",
 }
 _SNAPSHOT_FIELDS = {
-    "schema_version", "mission_id", "version", "created_at", "plan_revision",
-    "plan_reference", "operational_scene_graph", "bayesian_belief_snapshot", "fsm_status",
-    "active_maneuver", "source_revisions", "source_references", "source_hashes", "source_health",
-    "source_freshness", "missing_sources",
+    "schema_version",
+    "mission_id",
+    "version",
+    "created_at",
+    "plan_revision",
+    "plan_reference",
+    "operational_scene_graph",
+    "bayesian_belief_snapshot",
+    "fsm_status",
+    "active_maneuver",
+    "source_revisions",
+    "source_references",
+    "source_hashes",
+    "source_health",
+    "source_freshness",
+    "missing_sources",
 }
 _STATECHART_FIELDS = {
-    "schema_version", "mission_id", "plan_revision", "mission_snapshot_id",
-    "planning_profile", "normalized_plan_sha256", "entry_state", "states", "transitions",
-    "timers", "trusted",
+    "schema_version",
+    "mission_id",
+    "plan_revision",
+    "mission_snapshot_id",
+    "planning_profile",
+    "normalized_plan_sha256",
+    "entry_state",
+    "states",
+    "transitions",
+    "timers",
+    "trusted",
 }
 _FSM_STATUS_FIELDS = {
-    "schema_version", "mission_id", "plan_revision", "statechart_revision", "active_state",
-    "transition_candidates", "timer_due", "status", "superseded_plan_revision",
-    "superseded_maneuver_ids", "last_applied_event", "timer_due_markers",
-    "lifecycle_facts", "retained_maneuver_ids",
+    "schema_version",
+    "mission_id",
+    "plan_revision",
+    "statechart_revision",
+    "active_state",
+    "transition_candidates",
+    "timer_due",
+    "status",
+    "superseded_plan_revision",
+    "superseded_maneuver_ids",
+    "last_applied_event",
+    "timer_due_markers",
+    "lifecycle_facts",
+    "retained_maneuver_ids",
 }
 _FSM_EXECUTION_FIELDS = {
-    "schema_version", "mission_id", "plan_revision", "statechart_revision", "active_state",
-    "active_configuration", "last_applied_event", "transition_history",
-    "superseded_plan_revision", "superseded_maneuver_ids", "retained_maneuver_ids",
-    "record_revision", "last_applied_event_identity", "applied_event_identities",
-    "timer_due_markers", "lifecycle_facts",
+    "schema_version",
+    "mission_id",
+    "plan_revision",
+    "statechart_revision",
+    "active_state",
+    "active_configuration",
+    "last_applied_event",
+    "transition_history",
+    "superseded_plan_revision",
+    "superseded_maneuver_ids",
+    "retained_maneuver_ids",
+    "record_revision",
+    "last_applied_event_identity",
+    "applied_event_identities",
+    "timer_due_markers",
+    "lifecycle_facts",
 }
 _MANEUVER_FEEDBACK_FIELDS = {
-    "schema_version", "feedback_id", "mission_id", "maneuver_id", "lifecycle",
-    "source_sequence", "source", "command_id", "correlation_id", "parent_id",
-    "plan_revision", "snapshot_id",
+    "schema_version",
+    "feedback_id",
+    "mission_id",
+    "maneuver_id",
+    "lifecycle",
+    "source_sequence",
+    "source",
+    "command_id",
+    "correlation_id",
+    "parent_id",
+    "plan_revision",
+    "snapshot_id",
 }
 _REPLAN_REQUEST_FIELDS = {
-    "schema_version", "request_id", "mission_id", "reason", "requester",
-    "observed_plan_revision", "source_revisions", "source_sequence",
-    "correlation_id", "parent_id", "status", "snapshot_id",
+    "schema_version",
+    "request_id",
+    "mission_id",
+    "reason",
+    "requester",
+    "observed_plan_revision",
+    "source_revisions",
+    "source_sequence",
+    "correlation_id",
+    "parent_id",
+    "status",
+    "snapshot_id",
 }
 
 # Component and authority are projection policy, never source-controlled identity.
@@ -115,39 +219,129 @@ _IDENTITY = {
     "replan_request": ("hyper-agent", "hyper-agent"),
 }
 _LOG_COMPONENTS = {
-    "hyper-agent": "hyper-agent", "context-coordination": "context-coordination",
-    "fsm-runner": "fsm-runner", "maneuver-control": "maneuver-control",
-    "maneuver-adapter": "maneuver-adapter", "transport": "transport",
-    "environment": "environment", "runtime": "runtime", "planner": "planner",
+    "hyper-agent": "hyper-agent",
+    "context-coordination": "context-coordination",
+    "fsm-runner": "fsm-runner",
+    "maneuver-control": "maneuver-control",
+    "maneuver-adapter": "maneuver-adapter",
+    "transport": "transport",
+    "environment": "environment",
+    "runtime": "runtime",
+    "planner": "planner",
 }
 _LOG_DETAIL_FIELDS = {
-    "adapter_submission", "command_id", "correlation_id", "environment", "error_type",
-    "event_id", "event_kind", "generated_assets", "lifecycle", "maneuver_id", "operation",
-    "plan_revision", "planner", "planning_decision_reference", "request_id", "revision",
-    "scene_graph_reference", "sequence", "service", "snapshot_id", "solver_evidence", "source",
-    "state", "status", "target_service", "topic", "transition", "transport_event_id",
-    "transport_sequence", "timer_due",
+    "adapter_submission",
+    "command_id",
+    "correlation_id",
+    "environment",
+    "error_type",
+    "event_id",
+    "event_kind",
+    "generated_assets",
+    "lifecycle",
+    "maneuver_id",
+    "operation",
+    "plan_revision",
+    "planner",
+    "planning_decision_reference",
+    "request_id",
+    "revision",
+    "scene_graph_reference",
+    "sequence",
+    "service",
+    "snapshot_id",
+    "solver_evidence",
+    "source",
+    "state",
+    "status",
+    "target_service",
+    "topic",
+    "transition",
+    "transport_event_id",
+    "transport_sequence",
+    "timer_due",
 }
 _COMMON_EVENT_PAYLOAD_FIELDS = {
-    "action", "active_maneuver", "active_state", "all_physical_actions", "associations", "catalogue",
-    "backend", "belief_id", "choice", "command_id", "component", "content_hash", "correlation_id",
-    "constraints", "content_sha256", "edges", "event", "event_id", "event_kind",
-    "feedback_loop", "fresh", "from", "health", "immutable_versions", "intent", "kind",
-    "input_event_id", "input_revision", "likelihood_given_risk", "likelihood_given_safe",
-    "maneuver_id", "mission_memory_isolated", "missing", "missing_fields", "nodes",
-    "marginals", "non_physical_choice", "normalized_plan", "objective", "operation", "outcome",
-    "parameters", "physical_actions", "plan_revision", "planner", "planner_choice",
+    "action",
+    "active_maneuver",
+    "active_state",
+    "all_physical_actions",
+    "associations",
+    "catalogue",
+    "backend",
+    "belief_id",
+    "choice",
+    "command_id",
+    "component",
+    "content_hash",
+    "correlation_id",
+    "constraints",
+    "content_sha256",
+    "edges",
+    "event",
+    "event_id",
+    "event_kind",
+    "feedback_loop",
+    "fresh",
+    "from",
+    "health",
+    "immutable_versions",
+    "intent",
+    "kind",
+    "input_event_id",
+    "input_revision",
+    "likelihood_given_risk",
+    "likelihood_given_safe",
+    "maneuver_id",
+    "mission_memory_isolated",
+    "missing",
+    "missing_fields",
+    "nodes",
+    "marginals",
+    "non_physical_choice",
+    "normalized_plan",
+    "objective",
+    "operation",
+    "outcome",
+    "parameters",
+    "physical_actions",
+    "plan_revision",
+    "planner",
+    "planner_choice",
     "probability",
-    "prior_summary_ids", "question", "question_id",
-    "redacted_fields", "reference", "resume_sequence", "revision", "role_skills",
-    "risk_type", "scene_graph", "snapshot_id", "source_freshness", "source_hashes", "source_health", "source_references",
-    "source_revisions", "state", "status", "summary", "target_service", "target_services",
-    "skills", "source", "to", "topic", "transition", "translation", "trusted", "version",
+    "prior_summary_ids",
+    "question",
+    "question_id",
+    "redacted_fields",
+    "reference",
+    "resume_sequence",
+    "revision",
+    "role_skills",
+    "risk_type",
+    "scene_graph",
+    "snapshot_id",
+    "source_freshness",
+    "source_hashes",
+    "source_health",
+    "source_references",
+    "source_revisions",
+    "state",
+    "status",
+    "summary",
+    "target_service",
+    "target_services",
+    "skills",
+    "source",
+    "to",
+    "topic",
+    "transition",
+    "translation",
+    "trusted",
+    "version",
 }
 _TRANSPORT_IDENTITIES = {
     "mission-overview": ("runtime", "mission-overview"),
     "hyper-agent": ("hyper-agent", "hyper-agent"),
-    "mission-specification": ("hyper-agent", "hyper-agent"),
     "planner-selection": ("planner", "planner"),
     "planner-execution": ("planner", "planner"),
     "normalized-plan": ("planner", "planner"),
@@ -176,12 +370,30 @@ _TRANSPORT_IDENTITIES = {
 }
 _ENVELOPE_FIELDS = {"schema_version", "observation_sequence", "observed_at", "record"}
 _COMMAND_PAYLOAD_FIELDS = {
-    "action", "intent", "maneuver_id", "mission_snapshot_id", "normalized_plan",
-    "parameters", "plan_revision", "planner_choice", "revision", "snapshot_id",
+    "action",
+    "intent",
+    "maneuver_id",
+    "mission_snapshot_id",
+    "normalized_plan",
+    "parameters",
+    "plan_revision",
+    "planner_choice",
+    "revision",
+    "snapshot_id",
 }
 _OUTCOME_PAYLOAD_FIELDS = {
-    "action", "command_id", "correlation_id", "event_id", "lifecycle", "maneuver_id",
-    "operation", "plan_revision", "result", "revision", "snapshot_id", "status",
+    "action",
+    "command_id",
+    "correlation_id",
+    "event_id",
+    "lifecycle",
+    "maneuver_id",
+    "operation",
+    "plan_revision",
+    "result",
+    "revision",
+    "snapshot_id",
+    "status",
 }
 
 
@@ -290,18 +502,27 @@ class TraceViewItem:
         if isinstance(self.schema_version, bool) or self.schema_version != 1:
             raise ValueError("unsupported trace view schema version")
         for value, label in (
-            (self.trace_id, "trace ID"), (self.event_id, "event ID"),
-            (self.mission_id, "mission ID"), (self.occurred_at, "occurred_at"),
-            (self.component, "component"), (self.authority, "authority"),
+            (self.trace_id, "trace ID"),
+            (self.event_id, "event ID"),
+            (self.mission_id, "mission ID"),
+            (self.occurred_at, "occurred_at"),
+            (self.component, "component"),
+            (self.authority, "authority"),
             (self.event_kind, "event kind"),
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"trace {label} must be non-empty")
-        if isinstance(self.sequence, bool) or not isinstance(self.sequence, int) or self.sequence < 0:
+        if (
+            isinstance(self.sequence, bool)
+            or not isinstance(self.sequence, int)
+            or self.sequence < 0
+        ):
             raise ValueError("trace sequence must be a non-negative integer")
         for value, label in (
-            (self.status, "status"), (self.outcome, "outcome"),
-            (self.correlation_id, "correlation ID"), (self.parent_id, "parent ID"),
+            (self.status, "status"),
+            (self.outcome, "outcome"),
+            (self.correlation_id, "correlation ID"),
+            (self.parent_id, "parent ID"),
         ):
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"trace {label} must be a string or null")
@@ -313,28 +534,47 @@ class TraceViewItem:
             or self.observation_sequence < 1
         ):
             raise ValueError("trace observation sequence must be positive or null")
-        if self.observed_at is not None and (not isinstance(self.observed_at, str) or not self.observed_at.strip()):
+        if self.observed_at is not None and (
+            not isinstance(self.observed_at, str) or not self.observed_at.strip()
+        ):
             raise ValueError("trace observed_at must be a non-empty string or null")
         if not isinstance(self.payload, Mapping):
             raise ValueError("trace payload must be a mapping")
         object.__setattr__(self, "payload", _json_safe(self.payload))
-        object.__setattr__(self, "redacted_fields", tuple(sorted(set(self.redacted_fields))))
-        object.__setattr__(self, "missing_fields", tuple(sorted(set(self.missing_fields))))
-        for label, values in (("redacted_fields", self.redacted_fields), ("missing_fields", self.missing_fields)):
+        object.__setattr__(
+            self, "redacted_fields", tuple(sorted(set(self.redacted_fields)))
+        )
+        object.__setattr__(
+            self, "missing_fields", tuple(sorted(set(self.missing_fields)))
+        )
+        for label, values in (
+            ("redacted_fields", self.redacted_fields),
+            ("missing_fields", self.missing_fields),
+        ):
             if any(not isinstance(item, str) for item in values):
                 raise ValueError(f"trace {label} must contain strings")
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": self.schema_version, "trace_id": self.trace_id,
-            "event_id": self.event_id, "mission_id": self.mission_id,
-            "sequence": self.sequence, "occurred_at": self.occurred_at,
-            "component": self.component, "authority": self.authority,
-            "event_kind": self.event_kind, "status": self.status, "outcome": self.outcome,
-            "correlation_id": self.correlation_id, "parent_id": self.parent_id,
-            "replay_disposition": self.replay_disposition, "payload": _plain(self.payload),
-            "observation_sequence": self.observation_sequence, "observed_at": self.observed_at,
-            "redacted_fields": list(self.redacted_fields), "missing_fields": list(self.missing_fields),
+            "schema_version": self.schema_version,
+            "trace_id": self.trace_id,
+            "event_id": self.event_id,
+            "mission_id": self.mission_id,
+            "sequence": self.sequence,
+            "occurred_at": self.occurred_at,
+            "component": self.component,
+            "authority": self.authority,
+            "event_kind": self.event_kind,
+            "status": self.status,
+            "outcome": self.outcome,
+            "correlation_id": self.correlation_id,
+            "parent_id": self.parent_id,
+            "replay_disposition": self.replay_disposition,
+            "payload": _plain(self.payload),
+            "observation_sequence": self.observation_sequence,
+            "observed_at": self.observed_at,
+            "redacted_fields": list(self.redacted_fields),
+            "missing_fields": list(self.missing_fields),
         }
 
     @classmethod
@@ -344,7 +584,11 @@ class TraceViewItem:
             data["event_id"] = data["trace_id"]
         if "trace_id" not in data and "event_id" in data:
             data["trace_id"] = data["event_id"]
-        return cls(**cast(Any, {key: data[key] for key in cls.__dataclass_fields__ if key in data}))
+        return cls(
+            **cast(
+                Any, {key: data[key] for key in cls.__dataclass_fields__ if key in data}
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,10 +631,19 @@ def _error(
         "evidence_hash": _digest(evidence_key),
     }
     return TraceViewItem(
-        trace_id=identifier, event_id=identifier, mission_id="unknown", sequence=0,
-        occurred_at="unknown", component="viewer", authority="non-authoritative",
-        event_kind="error", status="error", outcome="invalid",
-        replay_disposition=disposition, payload=body, missing_fields=("source_record",),
+        trace_id=identifier,
+        event_id=identifier,
+        mission_id="unknown",
+        sequence=0,
+        occurred_at="unknown",
+        component="viewer",
+        authority="non-authoritative",
+        event_kind="error",
+        status="error",
+        outcome="invalid",
+        replay_disposition=disposition,
+        payload=body,
+        missing_fields=("source_record",),
     )
 
 
@@ -435,12 +688,19 @@ def _safe_payload(
     isolation_marker = selected.pop("mission_memory_isolated", None)
     supplied = selected.get("redacted_fields", ())
     redactions = supplied if isinstance(supplied, (list, tuple)) else ()
-    safe, found = sanitize_payload(selected, redacted_fields=cast(Iterable[str], redactions))
+    safe, found = sanitize_payload(
+        selected, redacted_fields=cast(Iterable[str], redactions)
+    )
     if isinstance(isolation_marker, bool):
-        safe = cast(Mapping[str, object], _json_safe({
-            **cast(dict[str, object], _plain(safe)),
-            "mission_memory_isolated": isolation_marker,
-        }))
+        safe = cast(
+            Mapping[str, object],
+            _json_safe(
+                {
+                    **cast(dict[str, object], _plain(safe)),
+                    "mission_memory_isolated": isolation_marker,
+                }
+            ),
+        )
     return safe, found
 
 
@@ -452,7 +712,12 @@ class TraceProjection:
         records: Iterable[Mapping[str, object] | str] | Mapping[str, object] | str,
     ) -> tuple[TraceViewItem, ...]:
         if isinstance(records, Mapping) or isinstance(records, str):
-            records = cast(Any, records.splitlines() if isinstance(records, str) and "\n" in records else (records,))
+            records = cast(
+                Any,
+                records.splitlines()
+                if isinstance(records, str) and "\n" in records
+                else (records,),
+            )
 
         canonical: list[_CanonicalRecord] = []
         failures: list[TraceViewItem] = []
@@ -467,20 +732,24 @@ class TraceProjection:
                 except (TypeError, ValueError):
                     key = ("malformed_json", _digest(raw))
                     failure_counts[key] += 1
-                    failures.append(_error(
-                        "malformed_json",
-                        evidence_key=(*key, failure_counts[key]),
-                        category="malformed_json",
-                    ))
+                    failures.append(
+                        _error(
+                            "malformed_json",
+                            evidence_key=(*key, failure_counts[key]),
+                            category="malformed_json",
+                        )
+                    )
                     continue
             if not isinstance(raw, Mapping):
                 key = ("nonmapping", _digest(raw))
                 failure_counts[key] += 1
-                failures.append(_error(
-                    "non_mapping",
-                    evidence_key=(*key, failure_counts[key]),
-                    category="non_mapping",
-                ))
+                failures.append(
+                    _error(
+                        "non_mapping",
+                        evidence_key=(*key, failure_counts[key]),
+                        category="non_mapping",
+                    )
+                )
                 continue
             raw = cast(Mapping[str, object], raw)
             try:
@@ -498,11 +767,13 @@ class TraceProjection:
             except _RecordError as exc:
                 key = (exc.code, _digest(raw))
                 failure_counts[key] += 1
-                failures.append(_error(
-                    exc.code,
-                    evidence_key=(*key, failure_counts[key]),
-                    category=exc.code,
-                ))
+                failures.append(
+                    _error(
+                        exc.code,
+                        evidence_key=(*key, failure_counts[key]),
+                        category=exc.code,
+                    )
+                )
 
         if raw_source_kinds and (saw_envelope or len(raw_source_kinds) > 1):
             retained: list[_CanonicalRecord] = []
@@ -510,11 +781,16 @@ class TraceProjection:
                 if record.item.observation_sequence is not None:
                     retained.append(record)
                     continue
-                failures.append(_error(
-                    "envelope_required",
-                    evidence_key=(record.source_kind, _digest(record.item.to_dict())),
-                    category="envelope_required",
-                ))
+                failures.append(
+                    _error(
+                        "envelope_required",
+                        evidence_key=(
+                            record.source_kind,
+                            _digest(record.item.to_dict()),
+                        ),
+                        category="envelope_required",
+                    )
+                )
             canonical = retained
 
         canonical.sort(key=lambda record: self._canonical_key(record.item))
@@ -529,7 +805,9 @@ class TraceProjection:
 
     @staticmethod
     def _canonical_key(item: TraceViewItem) -> tuple[str, str]:
-        return item.event_id, json.dumps(item.to_dict(), sort_keys=True, separators=(",", ":"))
+        return item.event_id, json.dumps(
+            item.to_dict(), sort_keys=True, separators=(",", ":")
+        )
 
     @staticmethod
     def _source_fingerprint(item: TraceViewItem) -> str:
@@ -542,10 +820,18 @@ class TraceProjection:
     @staticmethod
     def _sort_key(item: TraceViewItem) -> tuple[str, int, int, str, str]:
         if item.observation_sequence is not None:
-            return item.mission_id, 0, item.observation_sequence, item.observed_at or "", item.event_id
+            return (
+                item.mission_id,
+                0,
+                item.observation_sequence,
+                item.observed_at or "",
+                item.event_id,
+            )
         return item.mission_id, 1, item.sequence, item.occurred_at, item.event_id
 
-    def _resolve_identities(self, records: list[_CanonicalRecord]) -> list[_CanonicalRecord]:
+    def _resolve_identities(
+        self, records: list[_CanonicalRecord]
+    ) -> list[_CanonicalRecord]:
         grouped: dict[str, list[_CanonicalRecord]] = defaultdict(list)
         for record in records:
             grouped[record.item.event_id].append(record)
@@ -553,60 +839,97 @@ class TraceProjection:
         for event_id in sorted(grouped):
             variants: dict[str, list[_CanonicalRecord]] = defaultdict(list)
             for record in grouped[event_id]:
-                fingerprint = record.source_fingerprint or self._source_fingerprint(record.item)
+                fingerprint = record.source_fingerprint or self._source_fingerprint(
+                    record.item
+                )
                 variants[fingerprint].append(record)
             winner_key = min(variants)
-            matching = sorted(variants[winner_key], key=lambda record: self._sort_key(record.item))
+            matching = sorted(
+                variants[winner_key], key=lambda record: self._sort_key(record.item)
+            )
             winner = matching[0]
             selected.append(winner)
             for index, record in enumerate(matching[1:], 1):
                 duplicate_id = f"duplicate:{event_id}:{index}"
                 duplicate = replace(
-                    record.item, trace_id=duplicate_id, event_id=duplicate_id,
+                    record.item,
+                    trace_id=duplicate_id,
+                    event_id=duplicate_id,
                     replay_disposition="duplicate",
-                    payload={**cast(dict[str, object], _plain(record.item.payload)), "source_event_id": event_id},
+                    payload={
+                        **cast(dict[str, object], _plain(record.item.payload)),
+                        "source_event_id": event_id,
+                    },
                 )
                 selected.append(replace(record, item=duplicate))
             for fingerprint in sorted(set(variants) - {winner_key}):
                 conflict = _error(
                     "invalid_record",
-                    evidence_key=(event_id, fingerprint), disposition="conflict",
+                    evidence_key=(event_id, fingerprint),
+                    disposition="conflict",
                     category="invalid_record",
                 )
                 selected.append(_CanonicalRecord(conflict, winner.source_kind))
         return selected
 
-    def _mark_replay_and_stale(self, records: list[_CanonicalRecord]) -> list[_CanonicalRecord]:
+    def _mark_replay_and_stale(
+        self, records: list[_CanonicalRecord]
+    ) -> list[_CanonicalRecord]:
         resync_floor: dict[tuple[str, str], int] = {}
         for record in records:
             if record.resync_sequence is not None:
-                stream_kind = "observation" if record.item.observation_sequence is not None else record.source_kind
+                stream_kind = (
+                    "observation"
+                    if record.item.observation_sequence is not None
+                    else record.source_kind
+                )
                 key = (record.item.mission_id, stream_kind)
-                resync_floor[key] = max(resync_floor.get(key, 0), record.resync_sequence)
+                resync_floor[key] = max(
+                    resync_floor.get(key, 0), record.resync_sequence
+                )
 
         streams: dict[tuple[str, str, int], list[int]] = defaultdict(list)
         marked = list(records)
         for index, record in enumerate(marked):
             item = record.item
             if record.resync_sequence is not None:
-                marked[index] = replace(record, item=replace(item, replay_disposition="resynchronized"))
+                marked[index] = replace(
+                    record, item=replace(item, replay_disposition="resynchronized")
+                )
                 continue
-            stream_kind = "observation" if item.observation_sequence is not None else record.source_kind
-            source_sequence = item.observation_sequence if item.observation_sequence is not None else item.sequence
+            stream_kind = (
+                "observation"
+                if item.observation_sequence is not None
+                else record.source_kind
+            )
+            source_sequence = (
+                item.observation_sequence
+                if item.observation_sequence is not None
+                else item.sequence
+            )
             floor = resync_floor.get((item.mission_id, stream_kind))
             if (
-                record.ordered and floor is not None and source_sequence < floor
+                record.ordered
+                and floor is not None
+                and source_sequence < floor
                 and item.replay_disposition == "normal"
             ):
-                marked[index] = replace(record, item=replace(item, replay_disposition="stale"))
+                marked[index] = replace(
+                    record, item=replace(item, replay_disposition="stale")
+                )
             if record.ordered and item.replay_disposition == "normal":
                 streams[(item.mission_id, stream_kind, source_sequence)].append(index)
         for indexes in streams.values():
             if len(indexes) > 1:
-                for index in sorted(indexes, key=lambda value: marked[value].item.event_id)[1:]:
+                for index in sorted(
+                    indexes, key=lambda value: marked[value].item.event_id
+                )[1:]:
                     item = marked[index].item
                     if item.replay_disposition == "normal":
-                        marked[index] = replace(marked[index], item=replace(item, replay_disposition="replayed"))
+                        marked[index] = replace(
+                            marked[index],
+                            item=replace(item, replay_disposition="replayed"),
+                        )
         return marked
 
     def _gap_evidence(self, records: list[_CanonicalRecord]) -> list[TraceViewItem]:
@@ -614,12 +937,30 @@ class TraceProjection:
         resync_floor: dict[tuple[str, str], int] = {}
         for record in records:
             if record.resync_sequence is not None:
-                stream_kind = "observation" if record.item.observation_sequence is not None else record.source_kind
+                stream_kind = (
+                    "observation"
+                    if record.item.observation_sequence is not None
+                    else record.source_kind
+                )
                 key = (record.item.mission_id, stream_kind)
-                resync_floor[key] = max(resync_floor.get(key, 1), record.resync_sequence)
-            source_sequence = record.item.observation_sequence if record.item.observation_sequence is not None else record.item.sequence
-            stream_kind = "observation" if record.item.observation_sequence is not None else record.source_kind
-            if record.ordered and record.item.event_kind != "error" and source_sequence > 0:
+                resync_floor[key] = max(
+                    resync_floor.get(key, 1), record.resync_sequence
+                )
+            source_sequence = (
+                record.item.observation_sequence
+                if record.item.observation_sequence is not None
+                else record.item.sequence
+            )
+            stream_kind = (
+                "observation"
+                if record.item.observation_sequence is not None
+                else record.source_kind
+            )
+            if (
+                record.ordered
+                and record.item.event_kind != "error"
+                and source_sequence > 0
+            ):
                 streams[(record.item.mission_id, stream_kind)].add(source_sequence)
         gaps: list[TraceViewItem] = []
         for (mission_id, source_kind), seen in sorted(streams.items()):
@@ -630,11 +971,14 @@ class TraceProjection:
             missing = sorted(set(range(floor, max(relevant) + 1)) - relevant)
             if not missing:
                 continue
-            gaps.append(_error(
-                "invalid_record",
-                evidence_key=(mission_id, source_kind, missing), disposition="gap",
-                category="invalid_record",
-            ))
+            gaps.append(
+                _error(
+                    "invalid_record",
+                    evidence_key=(mission_id, source_kind, missing),
+                    disposition="gap",
+                    category="invalid_record",
+                )
+            )
         return gaps
 
     def _observation(self, raw: Mapping[str, object]) -> _CanonicalRecord:
@@ -658,7 +1002,9 @@ class TraceProjection:
                 observed_at=observed_at,
             ),
             ordered=True,
-            resync_sequence=(observation_sequence if adapted.resync_sequence is not None else None),
+            resync_sequence=(
+                observation_sequence if adapted.resync_sequence is not None else None
+            ),
             source_fingerprint=self._source_fingerprint(adapted.item),
         )
 
@@ -712,11 +1058,21 @@ class TraceProjection:
     ) -> TraceViewItem:
         mapped_component, authority = _IDENTITY[source_kind]
         return TraceViewItem(
-            trace_id=event_id, event_id=event_id, mission_id=mission_id, sequence=sequence,
-            occurred_at=occurred_at, component=component or mapped_component, authority=authority,
-            event_kind=event_kind, status=status, outcome=outcome,
-            correlation_id=correlation_id, parent_id=parent_id, payload=payload,
-            redacted_fields=redactions, missing_fields=missing,
+            trace_id=event_id,
+            event_id=event_id,
+            mission_id=mission_id,
+            sequence=sequence,
+            occurred_at=occurred_at,
+            component=component or mapped_component,
+            authority=authority,
+            event_kind=event_kind,
+            status=status,
+            outcome=outcome,
+            correlation_id=correlation_id,
+            parent_id=parent_id,
+            payload=payload,
+            redacted_fields=redactions,
+            missing_fields=missing,
         )
 
     def _transport_event(self, raw: Mapping[str, object]) -> _CanonicalRecord:
@@ -732,25 +1088,53 @@ class TraceProjection:
         sequence = _integer(raw, "sequence")
         event_kind = _text(raw, "event_kind")
         source_payload = _mapping(raw, "payload")
-        payload, redactions = _safe_payload(source_payload, _COMMON_EVENT_PAYLOAD_FIELDS)
-        status = payload.get("status") if isinstance(payload.get("status"), str) else None
-        outcome = payload.get("outcome") if isinstance(payload.get("outcome"), str) else None
-        correlation = payload.get("correlation_id") if isinstance(payload.get("correlation_id"), str) else None
+        payload, redactions = _safe_payload(
+            source_payload, _COMMON_EVENT_PAYLOAD_FIELDS
+        )
+        status = (
+            payload.get("status") if isinstance(payload.get("status"), str) else None
+        )
+        outcome = (
+            payload.get("outcome") if isinstance(payload.get("outcome"), str) else None
+        )
+        correlation = (
+            payload.get("correlation_id")
+            if isinstance(payload.get("correlation_id"), str)
+            else None
+        )
         supplied_missing = payload.get("missing_fields", ())
-        missing = tuple(item for item in supplied_missing if isinstance(item, str)) if isinstance(supplied_missing, tuple) else ()
+        missing = (
+            tuple(item for item in supplied_missing if isinstance(item, str))
+            if isinstance(supplied_missing, tuple)
+            else ()
+        )
         resync: int | None = None
         if event_kind in {"resync", "resynchronized", "stream-resynchronized"}:
             candidate = payload.get("resume_sequence", sequence)
-            if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 0:
+            if (
+                isinstance(candidate, bool)
+                or not isinstance(candidate, int)
+                or candidate < 0
+            ):
                 raise _RecordError("invalid_record")
             resync = candidate
         item = self._base(
-            "transport_event", event_id=event_id, mission_id=mission_id, sequence=sequence,
-            occurred_at="unknown", event_kind=event_kind, payload=payload,
-            redactions=redactions, missing=missing, status=cast(str | None, status),
-            outcome=cast(str | None, outcome), correlation_id=cast(str | None, correlation),
+            "transport_event",
+            event_id=event_id,
+            mission_id=mission_id,
+            sequence=sequence,
+            occurred_at="unknown",
+            event_kind=event_kind,
+            payload=payload,
+            redactions=redactions,
+            missing=missing,
+            status=cast(str | None, status),
+            outcome=cast(str | None, outcome),
+            correlation_id=cast(str | None, correlation),
         )
-        component, authority = _TRANSPORT_IDENTITIES.get(event_kind, _IDENTITY["transport_event"])
+        component, authority = _TRANSPORT_IDENTITIES.get(
+            event_kind, _IDENTITY["transport_event"]
+        )
         item = replace(item, component=component, authority=authority)
         snapshot_version = source_payload.get("version")
         if (
@@ -783,13 +1167,25 @@ class TraceProjection:
         mission_id = _text(raw, "mission_id")
         target = _text(raw, "target_service")
         kind = _text(raw, "command_kind")
-        payload, redactions = _safe_payload(_mapping(raw, "payload"), _COMMAND_PAYLOAD_FIELDS)
-        public = {"target_service": target, "command_kind": kind, **cast(dict[str, object], _plain(payload))}
+        payload, redactions = _safe_payload(
+            _mapping(raw, "payload"), _COMMAND_PAYLOAD_FIELDS
+        )
+        public = {
+            "target_service": target,
+            "command_kind": kind,
+            **cast(dict[str, object], _plain(payload)),
+        }
         event_id = f"command:{command_id}"
         item = self._base(
-            "command", event_id=event_id, mission_id=mission_id, sequence=0,
-            occurred_at="unknown", event_kind="command", payload=public,
-            redactions=redactions, correlation_id=correlation,
+            "command",
+            event_id=event_id,
+            mission_id=mission_id,
+            sequence=0,
+            occurred_at="unknown",
+            event_kind="command",
+            payload=public,
+            redactions=redactions,
+            correlation_id=correlation,
         )
         return _CanonicalRecord(item, "command")
 
@@ -809,9 +1205,16 @@ class TraceProjection:
         if status != "accepted":
             raise _RecordError("invalid_record")
         item = self._base(
-            "command_receipt", event_id=f"receipt:{command_id}", mission_id=mission_id,
-            sequence=0, occurred_at="unknown", event_kind="command-receipt", status=status,
-            outcome="accepted", correlation_id=correlation, parent_id=f"command:{command_id}",
+            "command_receipt",
+            event_id=f"receipt:{command_id}",
+            mission_id=mission_id,
+            sequence=0,
+            occurred_at="unknown",
+            event_kind="command-receipt",
+            status=status,
+            outcome="accepted",
+            correlation_id=correlation,
+            parent_id=f"command:{command_id}",
             payload={"command_id": command_id, "target_service": target},
         )
         return _CanonicalRecord(item, "command_receipt")
@@ -830,12 +1233,22 @@ class TraceProjection:
         status = _text(raw, "status")
         if status not in {"accepted", "completed", "failed"}:
             raise _RecordError("invalid_record")
-        payload, redactions = _safe_payload(_mapping(raw, "payload"), _OUTCOME_PAYLOAD_FIELDS)
+        payload, redactions = _safe_payload(
+            _mapping(raw, "payload"), _OUTCOME_PAYLOAD_FIELDS
+        )
         item = self._base(
-            "command_outcome", event_id=f"outcome:{command_id}", mission_id=mission_id,
-            sequence=0, occurred_at="unknown", event_kind="command-outcome", status=status,
-            outcome=status, correlation_id=correlation, parent_id=f"command:{command_id}",
-            payload=payload, redactions=redactions,
+            "command_outcome",
+            event_id=f"outcome:{command_id}",
+            mission_id=mission_id,
+            sequence=0,
+            occurred_at="unknown",
+            event_kind="command-outcome",
+            status=status,
+            outcome=status,
+            correlation_id=correlation,
+            parent_id=f"command:{command_id}",
+            payload=payload,
+            redactions=redactions,
         )
         return _CanonicalRecord(item, "command_outcome")
 
@@ -854,15 +1267,35 @@ class TraceProjection:
         source = _text(raw, "source")
         event_kind = _text(raw, "event_kind")
         outcome = _text(raw, "outcome")
-        payload, redactions = _safe_payload(_mapping(raw, "details"), _LOG_DETAIL_FIELDS)
-        missing = ("summary",) if event_kind in {"summary-unavailable", "summary-missing"} else ()
-        status = payload.get("status") if isinstance(payload.get("status"), str) else None
-        correlation = payload.get("correlation_id") if isinstance(payload.get("correlation_id"), str) else None
+        payload, redactions = _safe_payload(
+            _mapping(raw, "details"), _LOG_DETAIL_FIELDS
+        )
+        missing = (
+            ("summary",)
+            if event_kind in {"summary-unavailable", "summary-missing"}
+            else ()
+        )
+        status = (
+            payload.get("status") if isinstance(payload.get("status"), str) else None
+        )
+        correlation = (
+            payload.get("correlation_id")
+            if isinstance(payload.get("correlation_id"), str)
+            else None
+        )
         item = self._base(
-            "operational_log", event_id=event_id, mission_id=mission_id, sequence=sequence,
-            occurred_at=occurred, event_kind=event_kind, payload=payload,
-            redactions=redactions, missing=missing, status=cast(str | None, status),
-            outcome=outcome, correlation_id=cast(str | None, correlation),
+            "operational_log",
+            event_id=event_id,
+            mission_id=mission_id,
+            sequence=sequence,
+            occurred_at=occurred,
+            event_kind=event_kind,
+            payload=payload,
+            redactions=redactions,
+            missing=missing,
+            status=cast(str | None, status),
+            outcome=outcome,
+            correlation_id=cast(str | None, correlation),
             component=_LOG_COMPONENTS.get(source, "runtime"),
         )
         return _CanonicalRecord(item, "operational_log", True)
@@ -883,16 +1316,28 @@ class TraceProjection:
         end = _integer(raw, "input_end_sequence", minimum=start)
         summary = _text(raw, "summary")
         prior = raw.get("prior_summary_ids")
-        if not isinstance(prior, (list, tuple)) or any(not isinstance(item, str) or not item for item in prior):
+        if not isinstance(prior, (list, tuple)) or any(
+            not isinstance(item, str) or not item for item in prior
+        ):
             raise _RecordError("invalid_record")
-        payload, redactions = sanitize_payload({
-            "summary": summary, "input_start_sequence": start, "input_end_sequence": end,
-            "prior_summary_ids": list(prior),
-        })
+        payload, redactions = sanitize_payload(
+            {
+                "summary": summary,
+                "input_start_sequence": start,
+                "input_end_sequence": end,
+                "prior_summary_ids": list(prior),
+            }
+        )
         item = self._base(
-            "summary", event_id=event_id, mission_id=mission_id, sequence=sequence,
-            occurred_at=occurred, event_kind="summary", outcome="available",
-            payload=payload, redactions=redactions,
+            "summary",
+            event_id=event_id,
+            mission_id=mission_id,
+            sequence=sequence,
+            occurred_at=occurred,
+            event_kind="summary",
+            outcome="available",
+            payload=payload,
+            redactions=redactions,
         )
         return _CanonicalRecord(item, "summary", True)
 
@@ -923,18 +1368,24 @@ class TraceProjection:
         ):
             raise _RecordError("invalid_record")
         try:
-            ManeuverFeedback.from_dict({
-                "schema_version": 1,
-                "feedback_id": feedback_id,
-                "mission_id": mission_id,
-                "maneuver_id": maneuver_id,
-                "lifecycle": lifecycle,
-                "payload": {
-                    **optional_text,
-                    "source": source,
-                    **({"plan_revision": plan_revision} if plan_revision is not None else {}),
-                },
-            })
+            ManeuverFeedback.from_dict(
+                {
+                    "schema_version": 1,
+                    "feedback_id": feedback_id,
+                    "mission_id": mission_id,
+                    "maneuver_id": maneuver_id,
+                    "lifecycle": lifecycle,
+                    "payload": {
+                        **optional_text,
+                        "source": source,
+                        **(
+                            {"plan_revision": plan_revision}
+                            if plan_revision is not None
+                            else {}
+                        ),
+                    },
+                }
+            )
         except (TypeError, ValueError) as exc:
             raise _RecordError("invalid_record") from exc
         public_payload = {
@@ -942,11 +1393,19 @@ class TraceProjection:
             "maneuver_id": maneuver_id,
             "lifecycle": lifecycle,
             "source": source,
-            **({key: value for key, value in optional_text.items() if key in {"command_id", "snapshot_id"}}),
+            **(
+                {
+                    key: value
+                    for key, value in optional_text.items()
+                    if key in {"command_id", "snapshot_id"}
+                }
+            ),
             **({"plan_revision": plan_revision} if plan_revision is not None else {}),
         }
         payload, redactions = sanitize_payload(public_payload)
-        correlation, _ = sanitize_payload({"value": optional_text.get("correlation_id")})
+        correlation, _ = sanitize_payload(
+            {"value": optional_text.get("correlation_id")}
+        )
         parent, _ = sanitize_payload({"value": optional_text.get("parent_id")})
         item = self._base(
             "maneuver_feedback",
@@ -961,7 +1420,9 @@ class TraceProjection:
             parent_id=cast(str | None, parent.get("value")),
             payload=payload,
             redactions=redactions,
-            component="maneuver-control" if source == "maneuver-control" else "environment",
+            component="maneuver-control"
+            if source == "maneuver-control"
+            else "environment",
         )
         if source == "maneuver-control":
             item = replace(item, authority="maneuver-control-feedback")
@@ -981,16 +1442,18 @@ class TraceProjection:
         if not isinstance(source_revisions, Mapping):
             raise _RecordError("invalid_record")
         try:
-            request = ReplanRequest.from_dict({
-                "request_id": request_id,
-                "mission_id": mission_id,
-                "reason": reason,
-                "requester": requester,
-                "observed_plan_revision": revision,
-                "source_revisions": source_revisions,
-                "coalesced_request_ids": [],
-                "coalesced_reasons": [],
-            })
+            request = ReplanRequest.from_dict(
+                {
+                    "request_id": request_id,
+                    "mission_id": mission_id,
+                    "reason": reason,
+                    "requester": requester,
+                    "observed_plan_revision": revision,
+                    "source_revisions": source_revisions,
+                    "coalesced_request_ids": [],
+                    "coalesced_reasons": [],
+                }
+            )
         except (TypeError, ValueError) as exc:
             raise _RecordError("invalid_record") from exc
         optional_text: dict[str, str] = {}
@@ -1001,18 +1464,28 @@ class TraceProjection:
                     raise _RecordError("invalid_record")
                 optional_text[key] = value
         if optional_text.get("status", "requested") not in {
-            "requested", "pending", "coalesced"
+            "requested",
+            "pending",
+            "coalesced",
         }:
             raise _RecordError("invalid_record")
-        payload, redactions = sanitize_payload({
-            "request_id": request.request_id,
-            "reason": request.reason,
-            "requester": request.requester,
-            "observed_plan_revision": request.observed_plan_revision,
-            "source_revisions": dict(request.source_revisions),
-            **({"snapshot_id": optional_text["snapshot_id"]} if "snapshot_id" in optional_text else {}),
-        })
-        correlation, _ = sanitize_payload({"value": optional_text.get("correlation_id")})
+        payload, redactions = sanitize_payload(
+            {
+                "request_id": request.request_id,
+                "reason": request.reason,
+                "requester": request.requester,
+                "observed_plan_revision": request.observed_plan_revision,
+                "source_revisions": dict(request.source_revisions),
+                **(
+                    {"snapshot_id": optional_text["snapshot_id"]}
+                    if "snapshot_id" in optional_text
+                    else {}
+                ),
+            }
+        )
+        correlation, _ = sanitize_payload(
+            {"value": optional_text.get("correlation_id")}
+        )
         parent, _ = sanitize_payload({"value": optional_text.get("parent_id")})
         status = optional_text.get("status", "requested")
         item = self._base(
@@ -1047,20 +1520,37 @@ class TraceProjection:
         version = _integer(raw, "version", minimum=1)
         occurred = _text(raw, "created_at")
         missing_sources = raw.get("missing_sources")
-        if not isinstance(missing_sources, (list, tuple)) or any(not isinstance(item, str) for item in missing_sources):
+        if not isinstance(missing_sources, (list, tuple)) or any(
+            not isinstance(item, str) for item in missing_sources
+        ):
             raise _RecordError("invalid_record")
-        fields = expected - {"schema_version", "mission_id", "version", "created_at", "missing_sources"}
+        fields = expected - {
+            "schema_version",
+            "mission_id",
+            "version",
+            "created_at",
+            "missing_sources",
+        }
         payload, redactions = _safe_payload(raw, fields)
         item = self._base(
-            "mission_snapshot", event_id=f"mission-snapshot:{mission_id}:{version}",
-            mission_id=mission_id, sequence=version, occurred_at=occurred,
-            event_kind="mission-snapshot", payload=payload, redactions=redactions,
+            "mission_snapshot",
+            event_id=f"mission-snapshot:{mission_id}:{version}",
+            mission_id=mission_id,
+            sequence=version,
+            occurred_at=occurred,
+            event_kind="mission-snapshot",
+            payload=payload,
+            redactions=redactions,
             missing=tuple(f"source:{item}" for item in missing_sources),
         )
         return _CanonicalRecord(item, "mission_snapshot")
 
     def _statechart(self, raw: Mapping[str, object]) -> _CanonicalRecord:
-        expected = _STATECHART_FIELDS if "timers" in raw else (_STATECHART_FIELDS - {"timers"}) | {"deadlines"}
+        expected = (
+            _STATECHART_FIELDS
+            if "timers" in raw
+            else (_STATECHART_FIELDS - {"timers"}) | {"deadlines"}
+        )
         _exact(raw, expected, "Statechart")
         from onr.contracts.fsm import Statechart
 
@@ -1075,9 +1565,14 @@ class TraceProjection:
         fields = expected - {"schema_version", "mission_id", "plan_revision"}
         payload, redactions = _safe_payload(raw, fields)
         item = self._base(
-            "statechart", event_id=f"statechart:{mission_id}:{revision}", mission_id=mission_id,
-            sequence=revision, occurred_at="unknown", event_kind="statechart",
-            payload=payload, redactions=redactions,
+            "statechart",
+            event_id=f"statechart:{mission_id}:{revision}",
+            mission_id=mission_id,
+            sequence=revision,
+            occurred_at="unknown",
+            event_kind="statechart",
+            payload=payload,
+            redactions=redactions,
         )
         return _CanonicalRecord(item, "statechart")
 
@@ -1092,12 +1587,23 @@ class TraceProjection:
         mission_id = _text(raw, "mission_id")
         revision = _integer(raw, "statechart_revision")
         status = _text(raw, "status")
-        fields = _FSM_STATUS_FIELDS - {"schema_version", "mission_id", "statechart_revision", "status"}
+        fields = _FSM_STATUS_FIELDS - {
+            "schema_version",
+            "mission_id",
+            "statechart_revision",
+            "status",
+        }
         payload, redactions = _safe_payload(raw, fields)
         item = self._base(
-            "fsm_status", event_id=f"fsm-status:{mission_id}:{revision}:{_digest(raw)}",
-            mission_id=mission_id, sequence=revision, occurred_at="unknown", event_kind="fsm-status",
-            status=status, payload=payload, redactions=redactions,
+            "fsm_status",
+            event_id=f"fsm-status:{mission_id}:{revision}:{_digest(raw)}",
+            mission_id=mission_id,
+            sequence=revision,
+            occurred_at="unknown",
+            event_kind="fsm-status",
+            status=status,
+            payload=payload,
+            redactions=redactions,
         )
         return _CanonicalRecord(item, "fsm_status")
 
@@ -1111,12 +1617,21 @@ class TraceProjection:
             raise _RecordError("invalid_record") from exc
         mission_id = _text(raw, "mission_id")
         revision = _integer(raw, "record_revision", minimum=1)
-        fields = _FSM_EXECUTION_FIELDS - {"schema_version", "mission_id", "record_revision"}
+        fields = _FSM_EXECUTION_FIELDS - {
+            "schema_version",
+            "mission_id",
+            "record_revision",
+        }
         payload, redactions = _safe_payload(raw, fields)
         item = self._base(
-            "fsm_execution", event_id=f"fsm-execution:{mission_id}:{revision}",
-            mission_id=mission_id, sequence=revision, occurred_at="unknown",
-            event_kind="fsm-execution-record", payload=payload, redactions=redactions,
+            "fsm_execution",
+            event_id=f"fsm-execution:{mission_id}:{revision}",
+            mission_id=mission_id,
+            sequence=revision,
+            occurred_at="unknown",
+            event_kind="fsm-execution-record",
+            payload=payload,
+            redactions=redactions,
         )
         return _CanonicalRecord(item, "fsm_execution")
 

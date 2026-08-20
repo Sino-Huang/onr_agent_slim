@@ -4,13 +4,14 @@ from typing import Any
 import pytest
 import yaml
 
-from onr.runtime import HeartbeatsConfig, RuntimeConfig, load_runtime_config
-from onr.runtime import create_runtime
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport
-from onr.contracts.planning import ManeuverIntent, MissionSpec, NormalizedPlan, PlannerChoice, PlanningOutcome, TemporalManeuver
-from onr.contracts.transport import Command, TransportEvent
-from onr.ports.transport import Subscription
+from onr.runtime import (
+    HeartbeatsConfig,
+    RuntimeConfig,
+    create_runtime,
+    load_runtime_config,
+)
 
 
 def _shipped_runtime_values() -> dict[str, Any]:
@@ -129,30 +130,6 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     file_runtime = create_runtime(repo_root=tmp_path, config_path=config)
     assert isinstance(file_runtime.transport, FileTransport)
 
-    subscriptions = (
-        Subscription("planner", "mission", "plan"),
-        Subscription("reader", "mission", "plans"),
-    )
-    runtime = create_runtime(repo_root=tmp_path, config_path=config, subscriptions=subscriptions)
-    mission = MissionSpec(
-        mission_id="mission",
-        objective="test",
-        planner_choice=PlannerChoice("temporal", "minizinc"),
-        maneuvers=(TemporalManeuver("survey", ManeuverIntent("survey"), (), 1),),
-        horizon=2,
-        source_authority="authority",
-    )
-    normalized = NormalizedPlan(mission, 1, "snapshot", mission.planner_choice, PlanningOutcome.UNSOLVABLE)
-    command = Command(1, "runtime-command", "correlation", "mission", "planner", "plan", {})
-    outcome = runtime.run_planning_command(command, lambda _: normalized, topic="plans")
-    assert outcome.status == "completed"
-    reader = runtime.transport.open_consumer(subscriptions[1])
-    delivery = reader.receive()
-    assert delivery is not None
-    assert isinstance(delivery.message, TransportEvent)
-    assert delivery.message.event_kind == "normalized-plan"
-    delivery.ack()
-    reader.close()
 
 
 def test_runtime_config_direct_construction_uses_shipped_agent_defaults() -> None:

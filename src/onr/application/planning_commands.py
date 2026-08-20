@@ -10,8 +10,8 @@ from onr.contracts.transport import (
     Command,
     CommandOutcome,
     NormalizedPlanTransportEvent,
-    normalized_plan_transport_event_to_wire,
     create_normalized_plan_transport_event,
+    normalized_plan_transport_event_to_wire,
 )
 from onr.ports.operational_log import OperationalLog
 
@@ -46,7 +46,7 @@ class PlanningCommandHandler:
         try:
             result = self._execute_planner(command)
             normalized_plan = self._normalized_plan(result)
-            if normalized_plan.mission_spec.mission_id != command.mission_id:
+            if normalized_plan.mission_id != command.mission_id:
                 raise ValueError("planner result mission ID does not match command mission ID")
             event_id = f"normalized-plan:{command.command_id}"
             sequence = command.payload.get("sequence")

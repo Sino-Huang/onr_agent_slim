@@ -12,13 +12,12 @@ from onr.contracts.context_coordination import (
     mission_snapshot_from_transport_event,
 )
 from onr.contracts.planning import (
-    MissionSpec,
-    ManeuverIntent,
+    NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
     PlanningProfile,
-    TemporalManeuver,
-    NormalizedPlan,
+    PlanProvenance,
+    VerifiableReference,
 )
 from onr.contracts.transport import (
     TransportEvent,
@@ -29,27 +28,24 @@ from onr.ports.transport import Subscription
 
 
 def _plan(revision: int = 1) -> NormalizedPlan:
-    mission = MissionSpec(
-        mission_id="mission-context",
-        objective="survey",
-        planner_choice=PlannerChoice(PlanningProfile.TEMPORAL, "minizinc"),
-        maneuvers=(
-            TemporalManeuver(
-                maneuver_id="survey",
-                intent=ManeuverIntent("survey"),
-                dependencies=(),
-                duration=1,
-            ),
-        ),
-        horizon=2,
-        source_authority="mission-control",
-    )
     return NormalizedPlan(
-        mission,
-        revision,
-        f"plan-snapshot-{revision}",
-        mission.planner_choice,
-        PlanningOutcome.UNSOLVABLE,
+        plan_revision=revision,
+        mission_snapshot_id=f"plan-snapshot-{revision}",
+        planner_choice=PlannerChoice(PlanningProfile.TEMPORAL, "minizinc"),
+        outcome=PlanningOutcome.UNSOLVABLE,
+        provenance=PlanProvenance(
+            mission_id="mission-context",
+            source_authority="mission-control",
+            mission_intent=VerifiableReference("mission-input:context", "1" * 64),
+            planning_decision=VerifiableReference("planner-choice:context", "2" * 64),
+            operational_scene_graph=VerifiableReference("scene:context", "3" * 64),
+            generated_assets={
+                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
+            },
+            solver_evidence={
+                "stdout": VerifiableReference("solver.stdout", "5" * 64),
+            },
+        ),
     )
 
 

@@ -9,12 +9,10 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from onr.agents import (
-    DeepAgentsPlanningIntentInterpreter,
     PLANNING_INTENT_SCHEMA,
-    create_hyper_agent,
+    DeepAgentsPlanningIntentInterpreter,
     create_planning_intent_agent,
 )
-from onr.agents.hyper_agent import MISSION_SPEC_SCHEMA
 from onr.agents.structured_output import StructuredOutputRetriesExhausted
 from onr.contracts import PlanningIntent
 from onr.contracts.hyper_agent import MissionInput
@@ -173,7 +171,7 @@ def test_planning_intent_interpreter_caps_four_retries_at_five_invokes() -> None
     assert len(agent.calls) == 5
 
 
-def test_planning_intent_factory_uses_its_schema_without_changing_hyper_factory(
+def test_planning_intent_factory_uses_its_schema_and_todo_middleware(
     monkeypatch,
 ) -> None:
     import deepagents
@@ -187,11 +185,9 @@ def test_planning_intent_factory_uses_its_schema_without_changing_hyper_factory(
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
 
     create_planning_intent_agent(model=object())
-    create_hyper_agent(model=object())
 
-    planning_intent_kwargs, hyper_kwargs = created
+    (planning_intent_kwargs,) = created
     assert planning_intent_kwargs["response_format"] is PLANNING_INTENT_SCHEMA
-    assert hyper_kwargs["response_format"] is MISSION_SPEC_SCHEMA
     middleware = planning_intent_kwargs["middleware"]
     assert isinstance(middleware, list)
     assert [type(item) for item in middleware] == [TodoListMiddleware]

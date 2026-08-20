@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -67,6 +70,29 @@ class FileHumanDecisionStore:
         )
         self._save_immutable(path, decision.to_canonical_json())
         return HumanDecision.from_json(path.read_text(encoding="utf-8"))
+
+    @contextmanager
+    def resume_claim(self, decision: HumanDecision) -> Iterator[bool]:
+        """Serialize resume application and commit only successful continuation."""
+
+        directory = self._directory(decision.mission_id, decision.mission_run_id)
+        lock_path = directory / "resume.lock"
+        completed_path = directory / "resume-completed.json"
+        content = decision.to_canonical_json()
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                if completed_path.is_file():
+                    if completed_path.read_text(encoding="utf-8") != content:
+                        raise ValueError(
+                            "durable Human Decision resume completion conflicts"
+                        )
+                    yield False
+                    return
+                yield True
+                self._save_immutable(completed_path, content)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def load_decision(
         self, mission_id: str, mission_run_id: str

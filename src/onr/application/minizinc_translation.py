@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Callable
 
-from onr.application.temporal_planning import normalize_temporal_assignments
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planner_translation import (
@@ -16,15 +17,25 @@ from onr.contracts.planner_translation import (
     PlannerGenerationContext,
     PlanningTranslationOutcome,
     PlanningTranslationResult,
+    create_generation_attempt_evidence,
+    operational_scene_graph_sha256,
+    validate_operational_scene_graph,
+    verifiable_file_reference,
 )
 from onr.contracts.planning import (
-    MissionSpec,
     NormalizedPlan,
     PlannerExecutionResult,
     PlanningOutcome,
+    PlanProvenance,
+    ScheduledManeuver,
     TemporalManeuver,
+    VerifiableReference,
 )
-from onr.contracts.planning_evidence import PlannerChoiceRecord
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
+    TranslationAttemptOutcome,
+)
 from onr.contracts.transport import TransportEvent
 from onr.ports.planning import MiniZincPlannerExecutor
 
@@ -71,7 +82,11 @@ class MiniZincTranslation:
     """Run bounded correction and expose only independently verified optimal plans."""
 
     def __init__(
-        self, planner: MiniZincPlannerExecutor, *, max_corrections: int = 2
+        self,
+        planner: MiniZincPlannerExecutor,
+        attempt_artifact_root: Path | str,
+        *,
+        max_corrections: int = 2,
     ) -> None:
         if (
             isinstance(max_corrections, bool)
@@ -84,6 +99,7 @@ class MiniZincTranslation:
         ):
             raise TypeError("MiniZinc planner must expose check and execute")
         self._planner = planner
+        self.attempt_artifact_root = Path(attempt_artifact_root).resolve()
         self.max_corrections = max_corrections
 
     def plan(
@@ -100,6 +116,7 @@ class MiniZincTranslation:
         generate = self._generator(generator)
         feedback: PlannerCorrectionFeedback | None = None
         feedback_history: list[PlannerCorrectionFeedback] = []
+        generation_attempts: list[PlannerGenerationAttempt] = []
         last_evidence = None
 
         for attempt_number in range(1, self.max_corrections + 2):
@@ -115,12 +132,26 @@ class MiniZincTranslation:
             if not isinstance(problem, MiniZincProblem) or not self._static_check(
                 problem
             ):
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 feedback = PlannerCorrectionFeedback(PlannerCorrectionStage.STATIC)
                 feedback_history.append(feedback)
                 continue
 
             execution = self._planner.execute(problem.assets)
             if not isinstance(execution, PlannerExecutionResult):
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 feedback = PlannerCorrectionFeedback(
                     PlannerCorrectionStage.SOLUTION_CHECKER
                 )
@@ -128,16 +159,32 @@ class MiniZincTranslation:
                 continue
             last_evidence = execution.evidence
             if execution.outcome is PlanningOutcome.UNSOLVABLE:
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.UNSOLVABLE,
                     attempt_number,
+                    tuple(generation_attempts),
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
                 )
             if execution.outcome is PlanningOutcome.TIMEOUT:
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.TIMEOUT,
                     attempt_number,
+                    tuple(generation_attempts),
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
                 )
@@ -145,18 +192,34 @@ class MiniZincTranslation:
                 mission_input,
                 planner_choice,
                 snapshot,
+                scene_graph,
                 problem,
                 execution,
                 plan_revision,
             )
             if normalized is not None:
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.ACCEPTED,
+                    )
+                )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.VERIFIED,
                     attempt_number,
+                    tuple(generation_attempts),
                     normalized_plan=normalized,
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
                 )
+            generation_attempts.append(
+                self._generation_attempt(
+                    request,
+                    problem,
+                    TranslationAttemptOutcome.REJECTED,
+                )
+            )
             feedback = PlannerCorrectionFeedback(
                 PlannerCorrectionStage.SOLUTION_CHECKER
             )
@@ -165,8 +228,32 @@ class MiniZincTranslation:
         return PlanningTranslationResult(
             PlanningTranslationOutcome.REPAIR_EXHAUSTED,
             self.max_corrections + 1,
+            tuple(generation_attempts),
             correction_feedback=tuple(feedback_history),
             evidence=last_evidence,
+        )
+
+    def _generation_attempt(
+        self,
+        context: PlannerGenerationContext,
+        problem: object,
+        outcome: TranslationAttemptOutcome,
+    ) -> PlannerGenerationAttempt:
+        if isinstance(problem, MiniZincProblem):
+            translator_id = problem.translator_id
+            translator_version = problem.translator_version
+            assets = problem.assets
+        else:
+            translator_id = "invalid-generator-output"
+            translator_version = "0"
+            assets = {}
+        return create_generation_attempt_evidence(
+            context,
+            translator_id=translator_id,
+            translator_version=translator_version,
+            assets=assets,
+            outcome=outcome,
+            artifact_root=self.attempt_artifact_root,
         )
 
     def _static_check(self, problem: MiniZincProblem) -> bool:
@@ -181,28 +268,82 @@ class MiniZincTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
+        scene_graph: TransportEvent,
         problem: MiniZincProblem,
         execution: PlannerExecutionResult,
         plan_revision: int,
     ) -> NormalizedPlan | None:
-        if execution.outcome is not PlanningOutcome.SOLVED:
+        if (
+            execution.outcome is not PlanningOutcome.SOLVED
+            or execution.evidence is None
+        ):
             return None
-        try:
-            mission_spec = MissionSpec(
-                mission_id=mission_input.mission_id,
-                objective=mission_input.mission_text,
-                planner_choice=planner_choice.planner_choice,
-                maneuvers=problem.maneuvers,
-                horizon=problem.horizon,
-                source_authority=mission_input.source_authority,
+        assignments = {item.maneuver_id: item for item in execution.assignments}
+        declared = {item.maneuver_id: item for item in problem.maneuvers}
+        if len(assignments) != len(execution.assignments) or set(assignments) != set(
+            declared
+        ):
+            return None
+        maneuvers = tuple(
+            ScheduledManeuver(
+                maneuver_id=maneuver_id,
+                intent=maneuver.intent,
+                dependencies=maneuver.dependencies,
+                start=assignments[maneuver_id].start,
+                duration=assignments[maneuver_id].duration,
             )
-        except (TypeError, ValueError):
+            for maneuver_id, maneuver in declared.items()
+            if assignments[maneuver_id].duration == maneuver.duration
+            and assignments[maneuver_id].start + assignments[maneuver_id].duration
+            <= problem.horizon
+        )
+        if len(maneuvers) != len(declared):
             return None
-        maneuvers = normalize_temporal_assignments(mission_spec, execution.assignments)
-        if maneuvers is None:
+        scheduled = {item.maneuver_id: item for item in maneuvers}
+        if any(
+            scheduled[item.maneuver_id].start
+            < scheduled[dependency].start + scheduled[dependency].duration
+            for item in problem.maneuvers
+            for dependency in item.dependencies
+        ):
             return None
+        solver_reference = verifiable_file_reference(execution.evidence.stdout_path)
+        if solver_reference is None:
+            return None
+        artifact_paths = {path.name: path for path in execution.evidence.artifact_paths}
+        generated_assets: dict[str, VerifiableReference] = {}
+        for name, content in problem.assets.items():
+            path = artifact_paths.get(name)
+            reference = verifiable_file_reference(path) if path is not None else None
+            if (
+                reference is None
+                or reference.sha256 != hashlib.sha256(content).hexdigest()
+            ):
+                return None
+            generated_assets[name] = reference
+        provenance = PlanProvenance(
+            mission_id=mission_input.mission_id,
+            source_authority=mission_input.source_authority,
+            mission_intent=VerifiableReference(
+                f"mission-input:{mission_input.mission_id}",
+                planner_choice.mission_input_sha256,
+            ),
+            planning_decision=VerifiableReference(
+                planner_choice.decision_id,
+                hashlib.sha256(
+                    planner_choice.to_canonical_json().encode("utf-8")
+                ).hexdigest(),
+            ),
+            operational_scene_graph=VerifiableReference(
+                scene_graph.event_id,
+                operational_scene_graph_sha256(scene_graph),
+            ),
+            generated_assets=generated_assets,
+            solver_evidence={
+                "planner-result": solver_reference,
+            },
+        )
         return NormalizedPlan(
-            mission_spec=mission_spec,
             plan_revision=plan_revision,
             mission_snapshot_id=(
                 f"{mission_input.mission_id}:snapshot:{snapshot.version}"
@@ -210,6 +351,7 @@ class MiniZincTranslation:
             planner_choice=planner_choice.planner_choice,
             outcome=PlanningOutcome.SOLVED,
             maneuvers=maneuvers,
+            provenance=provenance,
         )
 
     @staticmethod
@@ -232,6 +374,11 @@ class MiniZincTranslation:
     ) -> None:
         if planner_choice.mission_id != mission_input.mission_id:
             raise ValueError("Planner Choice does not match Mission Input")
+        mission_input_sha256 = hashlib.sha256(
+            mission_input.to_canonical_json().encode("utf-8")
+        ).hexdigest()
+        if planner_choice.mission_input_sha256 != mission_input_sha256:
+            raise ValueError("Planner Choice does not bind the supplied Mission Input")
         if (
             str(planner_choice.planner_choice.planning_profile) != "temporal"
             or planner_choice.planner_choice.planner_id != "minizinc"
@@ -239,18 +386,9 @@ class MiniZincTranslation:
             raise ValueError(
                 "MiniZinc translation requires the MiniZinc Planner Choice"
             )
-        source = "operational_scene_graph"
-        if (
-            snapshot.mission_id != mission_input.mission_id
-            or scene_graph.mission_id != mission_input.mission_id
-            or scene_graph.event_kind != "operational_scene_graph"
-            or snapshot.source_references[source] != scene_graph.event_id
-            or snapshot.source_health[source] != "healthy"
-            or not snapshot.source_freshness[source]
-        ):
-            raise ValueError(
-                "MiniZinc translation requires snapshot-authorized scene evidence"
-            )
+        validate_operational_scene_graph(
+            mission_input.mission_id, snapshot, scene_graph
+        )
 
 
 __all__ = ["MiniZincProblem", "MiniZincTranslation"]

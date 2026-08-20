@@ -10,6 +10,7 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planner_translation import (
     PlannerGenerationContext,
     PlanningTranslationOutcome,
+    operational_scene_graph_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -72,6 +73,9 @@ def test_real_generated_minizinc_assets_require_optimal_checked_solution(
         created_at="time-1",
         operational_scene_graph=scene.event_id,
         source_revisions={"operational_scene_graph": 1},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
         source_health={"operational_scene_graph": "healthy"},
         source_freshness={"operational_scene_graph": True},
     )
@@ -98,7 +102,8 @@ def test_real_generated_minizinc_assets_require_optimal_checked_solution(
         )
 
     result = MiniZincTranslation(
-        MiniZincExecutor(minizinc, tmp_path / "artifacts", timeout_seconds=10)
+        MiniZincExecutor(minizinc, tmp_path / "artifacts", timeout_seconds=10),
+        tmp_path / "generation-attempts",
     ).plan(
         mission_input,
         choice,
@@ -110,8 +115,37 @@ def test_real_generated_minizinc_assets_require_optimal_checked_solution(
 
     assert result.outcome is PlanningTranslationOutcome.VERIFIED
     assert result.attempt_count == 1
+    assert len(result.generation_attempts) == 1
+    attempt = result.generation_attempts[0]
+    assert str(attempt.outcome) == "accepted"
+    for name, reference in attempt.asset_references.items():
+        assert (
+            hashlib.sha256(Path(reference).read_bytes()).hexdigest()
+            == (attempt.asset_sha256[name])
+        )
     assert len(requests) == 1
     assert result.normalized_plan is not None
+    assert result.normalized_plan.provenance is not None
+    provenance = result.normalized_plan.provenance
+    assert provenance.mission_intent.reference == (
+        f"mission-input:{mission_input.mission_id}"
+    )
+    assert provenance.mission_intent.sha256 == choice.mission_input_sha256
+    assert provenance.operational_scene_graph.sha256 == (
+        operational_scene_graph_sha256(scene)
+    )
+    for name, reference in provenance.generated_assets.items():
+        assert Path(reference.reference).name == name
+        assert (
+            hashlib.sha256(Path(reference.reference).read_bytes()).hexdigest()
+            == reference.sha256
+        )
+    solver_reference = provenance.solver_evidence["planner-result"]
+    assert (
+        hashlib.sha256(Path(solver_reference.reference).read_bytes()).hexdigest()
+        == solver_reference.sha256
+    )
+    assert "mission_spec" not in result.normalized_plan.to_dict()
     assert result.normalized_plan.maneuvers[0].maneuver_id == "survey"
     assert isinstance(result.normalized_plan.maneuvers[0], ScheduledManeuver)
     assert result.normalized_plan.maneuvers[0].start == 0

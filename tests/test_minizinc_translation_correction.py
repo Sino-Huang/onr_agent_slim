@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from pathlib import Path
 
 from onr.application.minizinc_translation import MiniZincProblem, MiniZincTranslation
 from onr.contracts.context_coordination import MissionSnapshot
@@ -10,10 +11,12 @@ from onr.contracts.planner_translation import (
     PlannerCorrectionStage,
     PlannerGenerationContext,
     PlanningTranslationOutcome,
+    operational_scene_graph_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
     PlannerChoice,
+    PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlanningOutcome,
     TemporalAssignment,
@@ -87,6 +90,9 @@ def _planning_context() -> tuple[
         created_at="time-2",
         operational_scene_graph=scene.event_id,
         source_revisions={"operational_scene_graph": 2},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
         source_health={"operational_scene_graph": "healthy"},
         source_freshness={"operational_scene_graph": True},
     )
@@ -110,7 +116,28 @@ def _problem(model: bytes = b"solve minimize 0;") -> MiniZincProblem:
     )
 
 
-def test_static_rejection_gets_sanitized_feedback_before_verified_plan() -> None:
+def _evidence(tmp_path: Path) -> PlannerExecutionEvidence:
+    directory = tmp_path / "planner-run"
+    directory.mkdir(exist_ok=True)
+    stdout = directory / "solver.stdout"
+    stderr = directory / "solver.stderr"
+    model = directory / "model.mzn"
+    data = directory / "data.dzn"
+    model.write_bytes(b"solve minimize 0;")
+    data.write_bytes(b"horizon = 3;")
+    stdout.write_bytes(b'{"status":"optimal"}')
+    stderr.write_bytes(b"")
+    return PlannerExecutionEvidence(
+        directory,
+        (model, data),
+        stdout,
+        stderr,
+    )
+
+
+def test_static_rejection_gets_sanitized_feedback_before_verified_plan(
+    tmp_path: Path,
+) -> None:
     mission_input, choice, snapshot, scene = _planning_context()
     generator = RecordingGenerator([_problem(b"invalid"), _problem()])
     planner = FakeMiniZincPlanner(
@@ -119,11 +146,16 @@ def test_static_rejection_gets_sanitized_feedback_before_verified_plan() -> None
             PlannerExecutionResult(
                 PlanningOutcome.SOLVED,
                 (TemporalAssignment("survey", 0, 2),),
+                _evidence(tmp_path),
             )
         ],
     )
 
-    result = MiniZincTranslation(planner, max_corrections=1).plan(
+    result = MiniZincTranslation(
+        planner,
+        tmp_path / "generation-attempts",
+        max_corrections=1,
+    ).plan(
         mission_input,
         choice,
         snapshot,
@@ -134,6 +166,15 @@ def test_static_rejection_gets_sanitized_feedback_before_verified_plan() -> None
 
     assert result.outcome is PlanningTranslationOutcome.VERIFIED
     assert result.attempt_count == 2
+    assert [str(item.outcome) for item in result.generation_attempts] == [
+        "rejected",
+        "accepted",
+    ]
+    for attempt in result.generation_attempts:
+        assert set(attempt.asset_references) == {"model.mzn", "data.dzn"}
+        for name, reference in attempt.asset_references.items():
+            content = Path(reference).read_bytes()
+            assert hashlib.sha256(content).hexdigest() == attempt.asset_sha256[name]
     assert result.normalized_plan is not None
     assert result.normalized_plan.outcome is PlanningOutcome.SOLVED
     assert result.normalized_plan.mission_snapshot_id == "mission-1:snapshot:2"
@@ -147,7 +188,9 @@ def test_static_rejection_gets_sanitized_feedback_before_verified_plan() -> None
     assert len(planner.executed_assets) == 1
 
 
-def test_solution_checker_rejection_receives_sanitized_feedback_before_retry() -> None:
+def test_solution_checker_rejection_receives_sanitized_feedback_before_retry(
+    tmp_path: Path,
+) -> None:
     mission_input, choice, snapshot, scene = _planning_context()
     generator = RecordingGenerator([_problem(), _problem()])
     planner = FakeMiniZincPlanner(
@@ -156,15 +199,21 @@ def test_solution_checker_rejection_receives_sanitized_feedback_before_retry() -
             PlannerExecutionResult(
                 PlanningOutcome.SOLVED,
                 (TemporalAssignment("survey", 0, 1),),
+                _evidence(tmp_path),
             ),
             PlannerExecutionResult(
                 PlanningOutcome.SOLVED,
                 (TemporalAssignment("survey", 0, 2),),
+                _evidence(tmp_path),
             ),
         ],
     )
 
-    result = MiniZincTranslation(planner, max_corrections=1).plan(
+    result = MiniZincTranslation(
+        planner,
+        tmp_path / "generation-attempts",
+        max_corrections=1,
+    ).plan(
         mission_input,
         choice,
         snapshot,
@@ -184,7 +233,7 @@ def test_solution_checker_rejection_receives_sanitized_feedback_before_retry() -
     assert len(planner.executed_assets) == 2
 
 
-def test_static_correction_stops_at_configured_bound() -> None:
+def test_static_correction_stops_at_configured_bound(tmp_path: Path) -> None:
     mission_input, choice, snapshot, scene = _planning_context()
     generator = RecordingGenerator([_problem(), _problem(), _problem()])
     planner = FakeMiniZincPlanner(
@@ -192,7 +241,11 @@ def test_static_correction_stops_at_configured_bound() -> None:
         executions=[],
     )
 
-    result = MiniZincTranslation(planner, max_corrections=1).plan(
+    result = MiniZincTranslation(
+        planner,
+        tmp_path / "generation-attempts",
+        max_corrections=1,
+    ).plan(
         mission_input,
         choice,
         snapshot,
@@ -212,7 +265,9 @@ def test_static_correction_stops_at_configured_bound() -> None:
     assert planner.executed_assets == []
 
 
-def test_unsolvable_minizinc_result_never_becomes_a_normalized_plan() -> None:
+def test_unsolvable_minizinc_result_never_becomes_a_normalized_plan(
+    tmp_path: Path,
+) -> None:
     mission_input, choice, snapshot, scene = _planning_context()
     generator = RecordingGenerator([_problem()])
     planner = FakeMiniZincPlanner(
@@ -220,7 +275,10 @@ def test_unsolvable_minizinc_result_never_becomes_a_normalized_plan() -> None:
         executions=[PlannerExecutionResult(PlanningOutcome.UNSOLVABLE)],
     )
 
-    result = MiniZincTranslation(planner).plan(
+    result = MiniZincTranslation(
+        planner,
+        tmp_path / "generation-attempts",
+    ).plan(
         mission_input,
         choice,
         snapshot,

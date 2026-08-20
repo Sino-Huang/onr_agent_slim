@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import onr.runtime.cli as runtime_cli
 from onr.adapters.file_transport import FileTransport
 from onr.contracts.hyper_agent import MissionInput
-import onr.runtime.cli as runtime_cli
+from onr.contracts.planning import (
+    ManeuverIntent,
+    NormalizedPlan,
+    PlannerChoice,
+    PlanningOutcome,
+    PlanProvenance,
+    ScheduledManeuver,
+    VerifiableReference,
+)
 from onr.runtime.lease import RuntimeLeaseStore
 
 
@@ -27,17 +36,42 @@ def _mission_file(tmp_path: Path, **overrides: object) -> Path:
     return path
 
 
-def _role_prompt_files(tmp_path: Path) -> tuple[str, str]:
-    hyper_prompt = "Temporary hyper-agent role prompt."
+def _plan_file(tmp_path: Path) -> Path:
+    plan = NormalizedPlan(
+        plan_revision=3,
+        mission_snapshot_id="mission:demo:snapshot:1",
+        planner_choice=PlannerChoice("temporal", "minizinc"),
+        outcome=PlanningOutcome.SOLVED,
+        maneuvers=(
+            ScheduledManeuver(
+                maneuver_id="survey",
+                intent=ManeuverIntent("survey"),
+                dependencies=(),
+                start=0,
+                duration=1,
+            ),
+        ),
+        provenance=PlanProvenance(
+            mission_id="mission:demo",
+            source_authority="demo-operator",
+            mission_intent=VerifiableReference("planning-intent:demo", "1" * 64),
+            planning_decision=VerifiableReference("planner-choice:demo", "2" * 64),
+            operational_scene_graph=VerifiableReference("scene:demo", "3" * 64),
+            generated_assets={"model.mzn": VerifiableReference("model.mzn", "4" * 64)},
+            solver_evidence={"result": VerifiableReference("result", "5" * 64)},
+        ),
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(plan.to_canonical_json(), encoding="utf-8")
+    return path
+
+
+def _role_prompt_files(tmp_path: Path) -> str:
     maneuver_prompt = "Temporary maneuver-control role prompt."
-    for role, prompt in (
-        ("hyper-agent", hyper_prompt),
-        ("maneuver-control", maneuver_prompt),
-    ):
-        path = tmp_path / "conf/system_prompt" / role / "SYSTEM.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(prompt, encoding="utf-8")
-    return hyper_prompt, maneuver_prompt
+    path = tmp_path / "conf/system_prompt/maneuver-control/SYSTEM.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(maneuver_prompt, encoding="utf-8")
+    return maneuver_prompt
 
 
 def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
@@ -71,7 +105,12 @@ def test_example_mission_requests_windmill_area_rule_check() -> None:
 
 def test_demo_environment_flag_is_explicitly_required(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as exc:
-        runtime_cli.main(["--mission-file", str(_mission_file(tmp_path))])
+        runtime_cli.main(
+            [
+                "--mission-file", str(_mission_file(tmp_path)),
+                "--plan-file", str(_plan_file(tmp_path)),
+            ]
+        )
     assert exc.value.code == 2
 
 
@@ -185,9 +224,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         def verify_llm_reachability(self) -> None:
             calls.append("verify")
 
-        def create_planners(self, root: Path) -> dict[str, object]:
-            calls.append(("planners", root))
-            return {"temporal": "planner"}
 
         def create_chat_model(
             self,
@@ -200,9 +236,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             calls.append(("model", debug_scope, mission_id, model))
             return model
 
-        def create_hyper_agent(self, **kwargs: object) -> object:
-            calls.append(("hyper", kwargs))
-            return "hyper-agent"
 
         def create_maneuver_control(self, adapter: object, **kwargs: object) -> object:
             calls.append(("maneuver", adapter, kwargs))
@@ -216,23 +249,16 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             calls.append(("fsm", kwargs))
             return "fsm-runner"
 
-        def create_bayesian_belief_service(self, **kwargs: object) -> object:
-            calls.append(("belief", kwargs))
-            return "belief-service"
 
         def run_mission(self, mission: MissionInput, **kwargs: object) -> object:
             calls.append(("run", mission, kwargs))
             assert kwargs["environment_step"]() == "demo-evidence"  # type: ignore[operator]
             return SimpleNamespace(
-                authority=SimpleNamespace(mission_id=mission.mission_id),
-                plan=SimpleNamespace(plan_revision=3),
+                plan=kwargs["plan"],
                 command=SimpleNamespace(
                     command_id="command-demo", maneuver_id="maneuver-demo"
                 ),
                 final_status=SimpleNamespace(active_state="state-1", status="active"),
-                belief_snapshot=SimpleNamespace(
-                    belief_revision=1, content_sha256="a" * 64
-                ),
             )
 
     class FakeEnvironment:
@@ -243,7 +269,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             return "demo-evidence"
 
     runtime = FakeRuntime()
-    hyper_prompt, maneuver_prompt = _role_prompt_files(tmp_path)
+    maneuver_prompt = _role_prompt_files(tmp_path)
     monkeypatch.setattr(
         runtime_cli,
         "_create_runtime",
@@ -257,17 +283,16 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         )
         or FakeEnvironment(),
     )
-    planner_root = tmp_path / "planner-artifacts"
     result = runtime_cli.main(
         [
             "--mission-file",
             str(_mission_file(tmp_path)),
+            "--plan-file",
+            str(_plan_file(tmp_path)),
             "--repo-root",
             str(tmp_path),
             "--config-path",
             "runtime.yaml",
-            "--planner-artifacts",
-            str(planner_root),
             "--demo-environment",
         ]
     )
@@ -282,45 +307,33 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         "final_state": "state-1",
         "final_status": "active",
         "environment_file": None,
-        "belief_revision": 1,
-        "belief_sha256": "a" * 64,
     }
     assert calls[0] == (
         "runtime",
         {"repo_root": tmp_path, "config_path": Path("runtime.yaml")},
     )
-    assert ("planners", planner_root) in calls
     model_calls = [
         item for item in calls if isinstance(item, tuple) and item[0] == "model"
     ]
     assert [(item[1], item[2]) for item in model_calls] == [
-        ("hyper-agent", "mission:demo"),
         ("maneuver-control", "mission:demo"),
         ("mission-summary", "mission:demo"),
     ]
-    assert len({id(item[3]) for item in model_calls}) == 3
-    hyper_call = next(
-        item for item in calls if isinstance(item, tuple) and item[0] == "hyper"
-    )
+    assert len({id(item[3]) for item in model_calls}) == 2
     maneuver_call = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "maneuver"
     )
-    skill_catalog = hyper_call[1]["skill_catalog"]
-    assert maneuver_call[2]["skill_catalog"] is skill_catalog
+    skill_catalog = maneuver_call[2]["skill_catalog"]
     assert skill_catalog.root == tmp_path / "conf/skills"
-    assert hyper_call[1]["backend_root"] == tmp_path
     assert maneuver_call[2]["backend_root"] == tmp_path
-    assert hyper_call[1]["model"] is models["hyper-agent"]
     assert maneuver_call[2]["model"] is models["maneuver-control"]
-    assert hyper_call[1]["system_prompt"] == f"You are agent drone-1. {hyper_prompt}"
     assert maneuver_call[2]["system_prompt"] == (
         f"You are agent drone-1. {maneuver_prompt}"
     )
     run_call = next(item for item in calls if isinstance(item, tuple) and item[0] == "run")
     assert run_call[2]["model"] is models["mission-summary"]
-    assert run_call[2]["hyper_agent"] == "hyper-agent"
+    assert run_call[2]["plan"].mission_id == "mission:demo"
     assert run_call[2]["maneuver_control"] == "maneuver-control"
-    assert run_call[2]["bayesian_belief_service"] == "belief-service"
     assert "environment" in calls
 
 
@@ -335,7 +348,11 @@ def test_cli_failure_is_nonzero_actionable_and_safe(
 
     monkeypatch.setattr(runtime_cli, "_create_runtime", fail_runtime)
     result = runtime_cli.main(
-        ["--mission-file", str(mission_path), "--demo-environment"]
+        [
+            "--mission-file", str(mission_path),
+            "--plan-file", str(_plan_file(tmp_path)),
+            "--demo-environment",
+        ]
     )
 
     captured = capsys.readouterr()
@@ -359,6 +376,8 @@ def test_cli_reports_system_prompt_loading_failure(
         [
             "--mission-file",
             str(_mission_file(tmp_path)),
+            "--plan-file",
+            str(_plan_file(tmp_path)),
             "--repo-root",
             str(tmp_path),
             "--demo-environment",

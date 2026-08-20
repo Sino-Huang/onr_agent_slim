@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Mapping, Sequence, cast
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
-from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.maneuver_control import ManeuverCommand
+from onr.contracts.planning import NormalizedPlan
 from onr.demo.fake_environment import FakeEnvironment
 from onr.runtime.composition import RuntimeComposition, RuntimeRunResult
 from onr.runtime.lease import RuntimeLeaseStore
-
 
 _MISSION_FIELDS = {"mission_id", "mission_text", "source_authority"}
 _MAX_MISSION_BYTES = 1024 * 1024
@@ -60,6 +59,19 @@ def load_mission_file(path: Path | str) -> MissionInput:
         mission_text=fields["mission_text"],
         source_authority=fields["source_authority"],
     )
+
+
+def load_plan_file(path: Path | str) -> NormalizedPlan:
+    """Load one provenance-only Normalized Plan document."""
+
+    selected = Path(path)
+    try:
+        if selected.stat().st_size > _MAX_MISSION_BYTES:
+            raise ValueError("plan file is too large")
+        document = selected.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("plan file cannot be read as JSON") from exc
+    return NormalizedPlan.from_json(document)
 
 
 def _create_runtime(*, repo_root: Path, config_path: Path | None) -> RuntimeComposition:
@@ -105,23 +117,13 @@ def _safe_result(
     result: RuntimeRunResult, *, environment_file: Path | None = None
 ) -> dict[str, object]:
     return {
-        "mission_id": result.authority.mission_id,
+        "mission_id": result.plan.mission_id,
         "plan_revision": result.plan.plan_revision,
         "command_id": result.command.command_id,
         "maneuver_id": result.command.maneuver_id,
         "final_state": result.final_status.active_state,
         "final_status": result.final_status.status,
         "environment_file": str(environment_file) if environment_file is not None else None,
-        "belief_revision": (
-            result.belief_snapshot.belief_revision
-            if result.belief_snapshot is not None
-            else None
-        ),
-        "belief_sha256": (
-            result.belief_snapshot.content_sha256
-            if result.belief_snapshot is not None
-            else None
-        ),
     }
 
 
@@ -130,11 +132,9 @@ def _parser() -> argparse.ArgumentParser:
         description="Run one configured ONR mission with the deterministic demo environment"
     )
     parser.add_argument("--mission-file", type=Path, required=True)
+    parser.add_argument("--plan-file", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--config-path", type=Path)
-    parser.add_argument(
-        "--planner-artifacts", type=Path, default=Path("var/planner-artifacts")
-    )
     parser.add_argument(
         "--demo-environment",
         action="store_true",
@@ -149,6 +149,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     stage = "mission input"
     try:
         mission_input = load_mission_file(args.mission_file)
+        stage = "normalized plan"
+        plan = load_plan_file(args.plan_file)
+        if plan.mission_id != mission_input.mission_id:
+            raise ValueError("plan mission ID does not match Mission Input")
+        if plan.source_authority != mission_input.source_authority:
+            raise ValueError("plan source authority does not match Mission Input")
+
         repo_root = Path(args.repo_root).resolve()
         config_path = Path(args.config_path) if args.config_path is not None else None
         prior_var_exists = (repo_root / "var").exists()
@@ -174,19 +181,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stage = "system prompt loading"
         prompt_root = repo_root / "conf/system_prompt"
-        hyper_prompt = load_system_prompt(prompt_root, "hyper-agent")
         maneuver_prompt = load_system_prompt(prompt_root, "maneuver-control")
 
-        stage = "planner and model composition"
-        artifact_root = Path(args.planner_artifacts)
-        if not artifact_root.is_absolute():
-            artifact_root = repo_root / artifact_root
-        planners = runtime.create_planners(artifact_root.resolve())
+        stage = "model composition"
         skill_catalog = FilesystemRoleSkillCatalog(repo_root / "conf/skills")
-        hyper_model = runtime.create_chat_model(
-            mission_id=mission_input.mission_id,
-            debug_scope="hyper-agent",
-        )
         maneuver_model = runtime.create_chat_model(
             mission_id=mission_input.mission_id,
             debug_scope="maneuver-control",
@@ -194,14 +192,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary_model = runtime.create_chat_model(
             mission_id=mission_input.mission_id,
             debug_scope="mission-summary",
-        )
-        hyper_agent = runtime.create_hyper_agent(
-            planners=planners,
-            model=hyper_model,
-            mission_id=mission_input.mission_id,
-            system_prompt=f"You are agent {runtime.config.agent_name}. {hyper_prompt}",
-            skill_catalog=skill_catalog,
-            backend_root=repo_root,
         )
         maneuver_control = runtime.create_maneuver_control(
             _DemoManeuverAdapter(),
@@ -215,14 +205,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             mission_id=mission_input.mission_id
         )
         fsm_runner = runtime.create_fsm_runner(mission_id=mission_input.mission_id)
-        belief_service = runtime.create_bayesian_belief_service(
-            mission_id=mission_input.mission_id,
-            keys=tuple(
-                BeliefKey(f"ship-{index}", "collision") for index in range(1, 4)
-            ),
-            particle_count=512,
-            seed=0,
-        )
         environment = _create_demo_environment(
             runtime,
             mission_input.mission_id,
@@ -232,12 +214,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage = "mission execution"
         result = runtime.run_mission(
             mission_input,
-            hyper_agent=hyper_agent,
+            plan=plan,
             context_coordination=context_coordination,
             fsm_runner=fsm_runner,
             maneuver_control=maneuver_control,
             environment_step=environment.run_once,
-            bayesian_belief_service=belief_service,
             model=summary_model,
         )
         print(
@@ -258,7 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-__all__ = ["load_mission_file", "main"]
+__all__ = ["load_mission_file", "load_plan_file", "main"]
 
 
 if __name__ == "__main__":

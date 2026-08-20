@@ -2,29 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import FrozenInstanceError
 from collections.abc import Mapping, MutableMapping
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
-from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
-from onr.application.context_coordination import ContextCoordination
-from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
-from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
-from onr.application.planning_commands import PlanningCommandHandler
 import onr.agents.maneuver_control as maneuver_control_agent
+from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
 from onr.agents.maneuver_control import (
     MANEUVER_CONTROL_DECISION_SCHEMA,
     DeepAgentsDecisionProvider,
     create_maneuver_control_agent,
 )
 from onr.agents.structured_output import StructuredOutputRetriesExhausted
-from onr.application.symbolic_planning import SymbolicPlanning
-from onr.application.temporal_planning import TemporalPlanning
+from onr.application.context_coordination import ContextCoordination
+from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
+from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
+from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.context_coordination import MissionSnapshot
-from onr.contracts.fsm import FSMStatus, ManeuverDecision, ManeuverFeedback, TransitionCandidate
+from onr.contracts.fsm import (
+    FSMStatus,
+    ManeuverDecision,
+    ManeuverFeedback,
+    TransitionCandidate,
+)
 from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverCommand,
@@ -35,17 +38,13 @@ from onr.contracts.maneuver_control import (
 from onr.contracts.planning import (
     ManeuverIntent,
     ManeuverParameter,
-    MissionSpec,
     NormalizedPlan,
     PlannerChoice,
-    PlannerExecutionResult,
     PlanningOutcome,
-    SymbolicActionCall,
-    SymbolicManeuver,
-    SymbolicMissionSpec,
-    SymbolicPlannerExecutionResult,
-    TemporalAssignment,
-    TemporalManeuver,
+    PlanProvenance,
+    ScheduledManeuver,
+    SymbolicPlanStep,
+    VerifiableReference,
 )
 from onr.contracts.transport import (
     Command,
@@ -578,68 +577,42 @@ class AlternatingDecisionProvider:
         return decision
 
 
-class FakeTemporalExecutor:
-    def __init__(self, result: PlannerExecutionResult) -> None:
-        self.result = result
-
-    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
-        _ = assets
-        return self.result
-
-
-class FakeSymbolicExecutor:
-    def __init__(self, result: SymbolicPlannerExecutionResult) -> None:
-        self.result = result
-
-    def execute(self, assets: Mapping[str, bytes]) -> SymbolicPlannerExecutionResult:
-        _ = assets
-        return self.result
-
-
 def _normalized_plan(planning_profile: str) -> NormalizedPlan:
     intent = ManeuverIntent(
         PhysicalAction.NAVIGATE,
         (ManeuverParameter("waypoint", "area-7"),),
     )
-    if planning_profile == "temporal":
-        choice = PlannerChoice("temporal", "minizinc")
-        mission = MissionSpec(
-            "mission-temporal",
-            "navigate",
-            choice,
-            (TemporalManeuver("survey", intent, (), 1),),
-            2,
-            "authority",
-        )
-        result = TemporalPlanning(
-            FakeTemporalExecutor(
-                PlannerExecutionResult(
-                    PlanningOutcome.SOLVED,
-                    (TemporalAssignment("survey", 0, 1),),
-                )
-            )
-        ).plan(mission, 7, "snapshot-7")
-        return result.normalized_plan
-
-    choice = PlannerChoice("symbolic", "fast-downward")
-    mission = SymbolicMissionSpec(
-        "mission-symbolic",
-        "navigate",
-        choice,
-        (SymbolicManeuver("survey", intent, (), 1),),
-        "authority",
-        1,
+    temporal = planning_profile == "temporal"
+    choice = PlannerChoice(
+        "temporal" if temporal else "symbolic",
+        "minizinc" if temporal else "fast-downward",
     )
-    result = SymbolicPlanning(
-        FakeSymbolicExecutor(
-            SymbolicPlannerExecutionResult(
-                PlanningOutcome.SOLVED,
-                (SymbolicActionCall("survey"),),
-                1,
-            )
-        )
-    ).plan(mission, 7, "snapshot-7")
-    return result.normalized_plan
+    mission_id = "mission-temporal" if temporal else "mission-symbolic"
+    maneuver = (
+        ScheduledManeuver("survey", intent, (), 0, 1)
+        if temporal
+        else SymbolicPlanStep(0, "survey", intent, (), 1)
+    )
+    return NormalizedPlan(
+        plan_revision=7,
+        mission_snapshot_id="snapshot-7",
+        planner_choice=choice,
+        outcome=PlanningOutcome.SOLVED,
+        maneuvers=(maneuver,),
+        provenance=PlanProvenance(
+            mission_id=mission_id,
+            source_authority="authority",
+            mission_intent=VerifiableReference("mission-input:1", "1" * 64),
+            planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
+            operational_scene_graph=VerifiableReference("scene:1", "3" * 64),
+            generated_assets={
+                "planner-input": VerifiableReference("planner-input", "4" * 64),
+            },
+            solver_evidence={
+                "planner-result": VerifiableReference("planner-result", "5" * 64),
+            },
+        ),
+    )
 
 
 def _snapshot(mission_id: str, revision: int) -> MissionSnapshot:
@@ -678,7 +651,7 @@ def test_plan_revision_reaches_one_authoritative_maneuver_once(
     """Run the real planner-normalization/context/FSM/transport vertical seam."""
 
     normalized = _normalized_plan(planning_profile)
-    mission_id = normalized.mission_spec.mission_id
+    mission_id = normalized.mission_id
     revision = normalized.plan_revision
     planning_subscription = Subscription("planner", mission_id, "plan")
     context_subscription = ContextCoordination.subscription_for(mission_id)
@@ -812,7 +785,7 @@ def test_physical_decision_matches_enabled_fsm_maneuver_and_plan() -> None:
     plan = _normalized_plan("symbolic")
     mismatch = ManeuverControlDecision(
         "mismatch",
-        plan.mission_spec.mission_id,
+        plan.mission_id,
         plan.plan_revision,
         maneuver_id="survey",
         action="land",
@@ -822,8 +795,8 @@ def test_physical_decision_matches_enabled_fsm_maneuver_and_plan() -> None:
     )
     with pytest.raises(ValueError, match="does not match the normalized plan"):
         plan_control.decide(
-            _snapshot(plan.mission_spec.mission_id, plan.plan_revision),
-            _status(plan.mission_spec.mission_id, plan.plan_revision),
+            _snapshot(plan.mission_id, plan.plan_revision),
+            _status(plan.mission_id, plan.plan_revision),
             plan=plan,
         )
 
@@ -980,10 +953,10 @@ def test_adapter_submission_does_not_advance_fsm_without_feedback() -> None:
         )
     )
     candidate = initial.transition_candidates[0]
-    snapshot = _snapshot(plan.mission_spec.mission_id, plan.plan_revision)
+    snapshot = _snapshot(plan.mission_id, plan.plan_revision)
     decision = ManeuverControlDecision(
         "physical-decision",
-        plan.mission_spec.mission_id,
+        plan.mission_id,
         plan.plan_revision,
         maneuver_id="survey",
         physical_intent=plan.maneuvers[0].intent,
@@ -996,20 +969,20 @@ def test_adapter_submission_does_not_advance_fsm_without_feedback() -> None:
     unchanged = asyncio.run(
         runner.apply(
             candidate,
-            ManeuverDecision("transition-decision", plan.mission_spec.mission_id, transition_event=candidate.event),
+            ManeuverDecision("transition-decision", plan.mission_id, transition_event=candidate.event),
         )
     )
     assert unchanged.active_state == initial.active_state
     assert unchanged.lifecycle_facts == {}
-    assert transport.latest_event("maneuver-feedback", plan.mission_spec.mission_id) is None
+    assert transport.latest_event("maneuver-feedback", plan.mission_id) is None
 
     moved = asyncio.run(
         runner.apply(
             candidate,
             ManeuverFeedback(
-                "feedback-1", plan.mission_spec.mission_id, "survey", "completed"
+                "feedback-1", plan.mission_id, "survey", "completed"
             ),
-            ManeuverDecision("transition-decision", plan.mission_spec.mission_id, transition_event=candidate.event),
+            ManeuverDecision("transition-decision", plan.mission_id, transition_event=candidate.event),
         )
     )
     assert moved.active_state == candidate.target

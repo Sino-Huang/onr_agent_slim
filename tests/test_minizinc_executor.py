@@ -5,16 +5,7 @@ from pathlib import Path
 import pytest
 
 from onr.adapters.minizinc import MiniZincExecutor
-from onr.application.minizinc import translate_minizinc
-from onr.contracts.planning import (
-    ManeuverIntent,
-    MissionSpec,
-    PlannerChoice,
-    PlanningOutcome,
-    TemporalAssignment,
-    TemporalManeuver,
-)
-
+from onr.contracts.planning import PlanningOutcome, TemporalAssignment
 
 _SOLVED_PAYLOAD = {
     "assignments": [
@@ -26,6 +17,7 @@ _EXPECTED_ASSIGNMENTS = (
     TemporalAssignment(maneuver_id="survey", start=0, duration=4),
     TemporalAssignment(maneuver_id="return-to-base", start=4, duration=2),
 )
+_PLANNER_ASSETS = {"model.mzn": b"model", "data.dzn": b"data"}
 
 
 def _emit(*events: object) -> str:
@@ -109,31 +101,6 @@ def test_minizinc_executor_maps_json_stream_to_public_results(
     expected_assignments: tuple[TemporalAssignment, ...],
     tmp_path: Path,
 ) -> None:
-    planner_choice = PlannerChoice(
-        planning_profile="temporal",
-        planner_id="minizinc",
-    )
-    mission_spec = MissionSpec(
-        mission_id="mission-1",
-        objective="Survey the operating area and return",
-        planner_choice=planner_choice,
-        maneuvers=(
-            TemporalManeuver(
-                maneuver_id="survey",
-                intent=ManeuverIntent(action="survey"),
-                dependencies=(),
-                duration=4,
-            ),
-            TemporalManeuver(
-                maneuver_id="return-to-base",
-                intent=ManeuverIntent(action="return-to-base"),
-                dependencies=("survey",),
-                duration=2,
-            ),
-        ),
-        horizon=10,
-        source_authority="mission-control",
-    )
     executor = MiniZincExecutor(
         executable=Path(sys.executable),
         artifact_root=tmp_path / "artifacts",
@@ -141,12 +108,14 @@ def test_minizinc_executor_maps_json_stream_to_public_results(
         timeout_seconds=timeout_seconds,
     )
 
-    result = executor.execute(translate_minizinc(mission_spec))
+    result = executor.execute(_PLANNER_ASSETS)
 
     assert result.outcome is expected_outcome
     assert result.assignments == expected_assignments
     assert result.evidence is not None
-    assert result.evidence.artifact_directory.parent == (tmp_path / "artifacts").resolve()
+    assert (
+        result.evidence.artifact_directory.parent == (tmp_path / "artifacts").resolve()
+    )
     assert {path.name for path in result.evidence.artifact_paths} == {
         "model.mzn",
         "data.dzn",
@@ -161,7 +130,7 @@ def test_minizinc_executor_persists_relative_solver_artifacts_in_run_directory(
     script = (
         "from pathlib import Path;"
         "Path('relative-solver-artifact.txt').write_text('artifact', encoding='utf-8');"
-        "print('{\"type\": \"status\", \"status\": \"UNSATISFIABLE\"}')"
+        'print(\'{"type": "status", "status": "UNSATISFIABLE"}\')'
     )
     result = MiniZincExecutor(
         executable=Path(sys.executable),
@@ -174,7 +143,6 @@ def test_minizinc_executor_persists_relative_solver_artifacts_in_run_directory(
     artifact = result.evidence.artifact_directory / "relative-solver-artifact.txt"
     assert artifact.read_text(encoding="utf-8") == "artifact"
     assert artifact in result.evidence.artifact_paths
-
 
 
 def test_minizinc_executor_static_check_uses_real_model_and_data_parser(

@@ -27,7 +27,7 @@ class FileMissionMemoryStore:
 
     The adapter deliberately has no unscoped read or write operation.  The
     application can therefore use it for context without making it a source
-    of Mission Snapshot or Mission Specification authority.
+    of Mission Snapshot or planning authority.
     """
 
     def __init__(self, root: Path) -> None:
@@ -54,5 +54,6 @@ class FileMissionMemoryStore:
         if not isinstance(contents, str):
             raise TypeError("Mission Memory contents must be text")
         _atomic_write(self.memory_path(mission_id, role), contents)
+
 
 __all__ = ["FileMissionMemoryStore"]

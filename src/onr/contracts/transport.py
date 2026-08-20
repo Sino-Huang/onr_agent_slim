@@ -328,12 +328,7 @@ class NormalizedPlanTransportEvent:
     sequence: int
     payload: NormalizedPlanTransportPayload
     event_kind: str = field(default="normalized-plan", init=False)
-    contract_revision: int = field(default=1, init=False)
-
-    def __post_init__(self) -> None:
-        if self.payload.normalized_plan.provenance is not None:
-            object.__setattr__(self, "contract_revision", 2)
-
+    contract_revision: int = field(default=2, init=False)
 
     @property
     def mission_id(self) -> str:

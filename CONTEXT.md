@@ -10,10 +10,10 @@ _Avoid_: Task, job
 
 **Mission Intent**:
 The raw operator-authored natural-language input supplied in a Mission Activation. Together with its `MissionInput` envelope, it remains the source authority from which Hyper derives planning representations; it is not part of the shared public observation feed.
-_Avoid_: Public trace record, Mission Specification
+_Avoid_: Public trace record, derived plan
 
 **Planning Intent**:
-An opt-in, structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It preserves source provenance and may hold flexible planner-selection facts in `details`, but never planner assets or verification evidence; it does not amend the Mission Intent or MissionInput.
+A structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It preserves source provenance and may hold flexible planner-selection facts in `details`, but never planner assets or verification evidence; it does not amend the Mission Intent or MissionInput.
 _Avoid_: Source authority, planner-native asset, verification record
 
 **Mission Run**:
@@ -45,7 +45,7 @@ An operator console's authenticated local session that owns the Mission Run it a
 _Avoid_: Runtime Host session, observer session
 
 **Hyper Agent**:
-The planning authority that interprets a Mission, chooses a planner, and owns plan revision.
+The planning agent that derives Planning Intent, chooses a planner, and publishes scene-backed generation evidence.
 _Avoid_: Main agent, controller
 
 **Maneuver Control Agent**:
@@ -117,19 +117,15 @@ A single-recipient request to an agent or service that produces an accepted, com
 _Avoid_: Event, broadcast
 
 **Source Authority**:
-The identified authority from which a Mission Specification originates and whose intent its derived plans preserve.
+The identified authority from which MissionInput originates and whose intent derived planning artifacts preserve.
 _Avoid_: Planner, executor
-
-**Mission Specification**:
-The existing immutable structured runtime description of a Mission, its objective, constraints, and chosen planning profile. It remains supported as the legacy runtime mode; opting into PlanningIntent does not change the raw MissionInput or operator Mission Intent as source authority.
-_Avoid_: Prompt, untyped mission
 
 **Planning Profile**:
 The declared planning semantics for one plan revision: temporal scheduling or symbolic sequential planning.
 _Avoid_: Implicit hybrid, planner setting
 
 **Planner Choice**:
-The semantic selection of the eligible planner derived from an opt-in PlanningIntent or the legacy MissionSpec mode.
+The semantic selection of the eligible planner derived from PlanningIntent.
 _Avoid_: Executable path, solver command
 
 **Planner Choice Record**:
@@ -146,7 +142,7 @@ _Avoid_: Mission authority, planner-selection input
 
 **Plan Provenance**:
 A reference-only binding from one Normalized Plan to its Mission Intent, Planning Decision, Operational Scene Graph, generated assets, and solver evidence, with a content digest for every reference.
-_Avoid_: Embedded Mission Specification, PlanningIntent details
+_Avoid_: Embedded planning authority, PlanningIntent details
 
 **Operational Scene Graph**:
 The agent-visible representation of operational entities, attributes, predicates, and relationships used for planning.
@@ -177,7 +173,7 @@ A direct caller request considered for one agent invocation without becoming dur
 _Avoid_: Mission fact, snapshot update
 
 **Hyper Heartbeat**:
-A periodic Hyper Agent invocation that evaluates whether the latest operational scene and belief warrant replanning.
+A periodic Hyper Agent invocation that uses the latest snapshot-authorized operational evidence for planner selection and generation.
 _Avoid_: Maneuver heartbeat, plan revision
 
 **Replan Request**:

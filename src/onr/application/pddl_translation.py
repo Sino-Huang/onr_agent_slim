@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Callable
 
-from onr.application.symbolic_planning import normalize_symbolic_actions
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planner_translation import (
@@ -16,15 +17,25 @@ from onr.contracts.planner_translation import (
     PlannerGenerationContext,
     PlanningTranslationOutcome,
     PlanningTranslationResult,
+    create_generation_attempt_evidence,
+    operational_scene_graph_sha256,
+    validate_operational_scene_graph,
+    verifiable_file_reference,
 )
 from onr.contracts.planning import (
     NormalizedPlan,
     PlanningOutcome,
+    PlanProvenance,
     SymbolicManeuver,
-    SymbolicMissionSpec,
     SymbolicPlannerExecutionResult,
+    SymbolicPlanStep,
+    VerifiableReference,
 )
-from onr.contracts.planning_evidence import PlannerChoiceRecord
+from onr.contracts.planning_evidence import (
+    PlannerChoiceRecord,
+    PlannerGenerationAttempt,
+    TranslationAttemptOutcome,
+)
 from onr.contracts.transport import TransportEvent
 from onr.ports.planning import FastDownwardPlannerExecutor, SymbolicPlanValidator
 
@@ -74,6 +85,7 @@ class PDDLTranslation:
         self,
         planner: FastDownwardPlannerExecutor,
         validator: SymbolicPlanValidator,
+        attempt_artifact_root: Path | str,
         *,
         max_corrections: int = 2,
     ) -> None:
@@ -91,6 +103,7 @@ class PDDLTranslation:
             raise TypeError("symbolic plan validator must expose validate")
         self._planner = planner
         self._validator = validator
+        self.attempt_artifact_root = Path(attempt_artifact_root).resolve()
         self.max_corrections = max_corrections
 
     def plan(
@@ -107,6 +120,7 @@ class PDDLTranslation:
         generate = self._generator(generator)
         feedback: PlannerCorrectionFeedback | None = None
         feedback_history: list[PlannerCorrectionFeedback] = []
+        generation_attempts: list[PlannerGenerationAttempt] = []
         last_evidence = None
 
         for attempt_number in range(1, self.max_corrections + 2):
@@ -120,12 +134,26 @@ class PDDLTranslation:
             )
             problem = generate(request)
             if not isinstance(problem, PDDLProblem) or not self._static_check(problem):
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 feedback = PlannerCorrectionFeedback(PlannerCorrectionStage.STATIC)
                 feedback_history.append(feedback)
                 continue
 
             execution = self._planner.execute(problem.assets)
             if not isinstance(execution, SymbolicPlannerExecutionResult):
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 feedback = PlannerCorrectionFeedback(
                     PlannerCorrectionStage.SOLUTION_CHECKER
                 )
@@ -133,16 +161,32 @@ class PDDLTranslation:
                 continue
             last_evidence = execution.evidence
             if execution.outcome is PlanningOutcome.UNSOLVABLE:
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.UNSOLVABLE,
                     attempt_number,
+                    tuple(generation_attempts),
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
                 )
             if execution.outcome is PlanningOutcome.TIMEOUT:
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.REJECTED,
+                    )
+                )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.TIMEOUT,
                     attempt_number,
+                    tuple(generation_attempts),
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
                 )
@@ -150,18 +194,34 @@ class PDDLTranslation:
                 mission_input,
                 planner_choice,
                 snapshot,
+                scene_graph,
                 problem,
                 execution,
                 plan_revision,
             )
             if normalized is not None:
+                generation_attempts.append(
+                    self._generation_attempt(
+                        request,
+                        problem,
+                        TranslationAttemptOutcome.ACCEPTED,
+                    )
+                )
                 return PlanningTranslationResult(
                     PlanningTranslationOutcome.VERIFIED,
                     attempt_number,
+                    tuple(generation_attempts),
                     normalized_plan=normalized,
                     correction_feedback=tuple(feedback_history),
                     evidence=last_evidence,
                 )
+            generation_attempts.append(
+                self._generation_attempt(
+                    request,
+                    problem,
+                    TranslationAttemptOutcome.REJECTED,
+                )
+            )
             feedback = PlannerCorrectionFeedback(
                 PlannerCorrectionStage.SOLUTION_CHECKER
             )
@@ -170,8 +230,32 @@ class PDDLTranslation:
         return PlanningTranslationResult(
             PlanningTranslationOutcome.REPAIR_EXHAUSTED,
             self.max_corrections + 1,
+            tuple(generation_attempts),
             correction_feedback=tuple(feedback_history),
             evidence=last_evidence,
+        )
+
+    def _generation_attempt(
+        self,
+        context: PlannerGenerationContext,
+        problem: object,
+        outcome: TranslationAttemptOutcome,
+    ) -> PlannerGenerationAttempt:
+        if isinstance(problem, PDDLProblem):
+            translator_id = problem.translator_id
+            translator_version = problem.translator_version
+            assets = problem.assets
+        else:
+            translator_id = "invalid-generator-output"
+            translator_version = "0"
+            assets = {}
+        return create_generation_attempt_evidence(
+            context,
+            translator_id=translator_id,
+            translator_version=translator_version,
+            assets=assets,
+            outcome=outcome,
+            artifact_root=self.attempt_artifact_root,
         )
 
     def _static_check(self, problem: PDDLProblem) -> bool:
@@ -186,6 +270,7 @@ class PDDLTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
+        scene_graph: TransportEvent,
         problem: PDDLProblem,
         execution: SymbolicPlannerExecutionResult,
         plan_revision: int,
@@ -196,33 +281,98 @@ class PDDLTranslation:
             or self._validator.validate(execution.evidence) is not True
         ):
             return None
-        try:
-            mission_spec = SymbolicMissionSpec(
-                mission_id=mission_input.mission_id,
-                objective=mission_input.mission_text,
-                planner_choice=planner_choice.planner_choice,
-                maneuvers=problem.maneuvers,
-                source_authority=mission_input.source_authority,
-                domain_revision=problem.domain_revision,
+        declared = {item.maneuver_id.lower(): item for item in problem.maneuvers}
+        if len(declared) != len(problem.maneuvers) or len(
+            execution.action_calls
+        ) != len(declared):
+            return None
+        seen: set[str] = set()
+        maneuvers: list[SymbolicPlanStep] = []
+        for step_index, action_call in enumerate(execution.action_calls):
+            action_name = action_call.action.lower()
+            maneuver = declared.get(action_name)
+            if (
+                maneuver is None
+                or action_name in seen
+                or action_call.arguments
+                or any(
+                    dependency.lower() not in seen
+                    for dependency in maneuver.dependencies
+                )
+            ):
+                return None
+            seen.add(action_name)
+            maneuvers.append(
+                SymbolicPlanStep(
+                    step_index=step_index,
+                    maneuver_id=maneuver.maneuver_id,
+                    intent=maneuver.intent,
+                    dependencies=maneuver.dependencies,
+                    cost=maneuver.cost,
+                )
             )
-        except (TypeError, ValueError):
+        if sum(item.cost for item in maneuvers) != execution.total_plan_cost:
             return None
-        maneuvers = normalize_symbolic_actions(
-            mission_spec,
-            execution.action_calls,
-            execution.total_plan_cost,
+        solver_reference = verifiable_file_reference(execution.evidence.stdout_path)
+        artifact_paths = {path.name: path for path in execution.evidence.artifact_paths}
+        accepted_plan_path = artifact_paths.get("sas_plan")
+        accepted_plan_reference = (
+            verifiable_file_reference(accepted_plan_path)
+            if accepted_plan_path is not None
+            else None
         )
-        if maneuvers is None:
+        validator_reference = verifiable_file_reference(
+            execution.evidence.artifact_directory / "validator.stdout"
+        )
+        if (
+            solver_reference is None
+            or accepted_plan_reference is None
+            or validator_reference is None
+        ):
             return None
+        generated_assets: dict[str, VerifiableReference] = {}
+        for name, content in problem.assets.items():
+            path = artifact_paths.get(name)
+            reference = verifiable_file_reference(path) if path is not None else None
+            if (
+                reference is None
+                or reference.sha256 != hashlib.sha256(content).hexdigest()
+            ):
+                return None
+            generated_assets[name] = reference
+        provenance = PlanProvenance(
+            mission_id=mission_input.mission_id,
+            source_authority=mission_input.source_authority,
+            mission_intent=VerifiableReference(
+                f"mission-input:{mission_input.mission_id}",
+                planner_choice.mission_input_sha256,
+            ),
+            planning_decision=VerifiableReference(
+                planner_choice.decision_id,
+                hashlib.sha256(
+                    planner_choice.to_canonical_json().encode("utf-8")
+                ).hexdigest(),
+            ),
+            operational_scene_graph=VerifiableReference(
+                scene_graph.event_id,
+                operational_scene_graph_sha256(scene_graph),
+            ),
+            generated_assets=generated_assets,
+            solver_evidence={
+                "accepted-plan": accepted_plan_reference,
+                "planner-result": solver_reference,
+                "validator-result": validator_reference,
+            },
+        )
         return NormalizedPlan(
-            mission_spec=mission_spec,
             plan_revision=plan_revision,
             mission_snapshot_id=(
                 f"{mission_input.mission_id}:snapshot:{snapshot.version}"
             ),
             planner_choice=planner_choice.planner_choice,
             outcome=PlanningOutcome.SOLVED,
-            maneuvers=maneuvers,
+            maneuvers=tuple(maneuvers),
+            provenance=provenance,
         )
 
     @staticmethod
@@ -245,6 +395,11 @@ class PDDLTranslation:
     ) -> None:
         if planner_choice.mission_id != mission_input.mission_id:
             raise ValueError("Planner Choice does not match Mission Input")
+        mission_input_sha256 = hashlib.sha256(
+            mission_input.to_canonical_json().encode("utf-8")
+        ).hexdigest()
+        if planner_choice.mission_input_sha256 != mission_input_sha256:
+            raise ValueError("Planner Choice does not bind the supplied Mission Input")
         if (
             str(planner_choice.planner_choice.planning_profile) != "symbolic"
             or planner_choice.planner_choice.planner_id != "fast-downward"
@@ -252,18 +407,9 @@ class PDDLTranslation:
             raise ValueError(
                 "PDDL translation requires the Fast Downward Planner Choice"
             )
-        source = "operational_scene_graph"
-        if (
-            snapshot.mission_id != mission_input.mission_id
-            or scene_graph.mission_id != mission_input.mission_id
-            or scene_graph.event_kind != "operational_scene_graph"
-            or snapshot.source_references[source] != scene_graph.event_id
-            or snapshot.source_health[source] != "healthy"
-            or not snapshot.source_freshness[source]
-        ):
-            raise ValueError(
-                "PDDL translation requires snapshot-authorized scene evidence"
-            )
+        validate_operational_scene_graph(
+            mission_input.mission_id, snapshot, scene_graph
+        )
 
 
 __all__ = ["PDDLProblem", "PDDLTranslation"]

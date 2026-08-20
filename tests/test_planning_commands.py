@@ -4,27 +4,41 @@ from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.planning import (
-    ManeuverIntent,
-    MissionSpec,
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    TemporalManeuver,
+    PlanProvenance,
+    VerifiableReference,
 )
 from onr.contracts.transport import Command
 from onr.ports.transport import Subscription
 
 
-def test_planning_command_is_effective_once_and_correlated() -> None:
-    mission = MissionSpec(
-        mission_id="mission",
-        objective="test",
+def _plan(mission_id: str, revision: int) -> NormalizedPlan:
+    return NormalizedPlan(
+        plan_revision=revision,
+        mission_snapshot_id=f"snapshot-{revision}",
         planner_choice=PlannerChoice("temporal", "minizinc"),
-        maneuvers=(TemporalManeuver("survey", ManeuverIntent("survey"), (), 1),),
-        horizon=2,
-        source_authority="authority",
+        outcome=PlanningOutcome.UNSOLVABLE,
+        provenance=PlanProvenance(
+            mission_id=mission_id,
+            source_authority="authority",
+            mission_intent=VerifiableReference(f"mission-input:{mission_id}", "1" * 64),
+            planning_decision=VerifiableReference(f"planner-choice:{mission_id}", "2" * 64),
+            operational_scene_graph=VerifiableReference(f"scene:{mission_id}", "3" * 64),
+            generated_assets={
+                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
+            },
+            solver_evidence={
+                "stdout": VerifiableReference("solver.stdout", "5" * 64),
+            },
+        ),
     )
-    normalized = NormalizedPlan(mission, 0, "snapshot", mission.planner_choice, PlanningOutcome.UNSOLVABLE)
+
+
+
+def test_planning_command_is_effective_once_and_correlated() -> None:
+    normalized = _plan("mission", 0)
     subscriptions = (
         Subscription("planner", "mission", "plan"),
         Subscription("reader", "mission", "plans"),
@@ -73,15 +87,7 @@ def test_planning_command_rejects_result_for_another_mission() -> None:
     transport = InProcessTransport((command_subscription,))
     consumer = transport.open_consumer(command_subscription)
     transport.send_command(Command(1, "mismatch-command", "correlation", "mission", "planner", "plan", {}))
-    other_mission = MissionSpec(
-        mission_id="other-mission",
-        objective="test",
-        planner_choice=PlannerChoice("temporal", "minizinc"),
-        maneuvers=(TemporalManeuver("survey", ManeuverIntent("survey"), (), 1),),
-        horizon=2,
-        source_authority="authority",
-    )
-    result = NormalizedPlan(other_mission, 1, "snapshot", other_mission.planner_choice, PlanningOutcome.UNSOLVABLE)
+    result = _plan("other-mission", 1)
     outcome = PlanningCommandHandler(transport, lambda _: result).run_once(consumer)
     assert outcome is not None and outcome.status == "failed"
     assert transport.next_event_sequence("normalized-plans", "mission") == 0
@@ -90,15 +96,7 @@ def test_planning_command_rejects_result_for_another_mission() -> None:
 
 
 def test_file_planning_command_restarts_without_repeating_planner(tmp_path: Path) -> None:
-    mission = MissionSpec(
-        mission_id="file-mission",
-        objective="test",
-        planner_choice=PlannerChoice("temporal", "minizinc"),
-        maneuvers=(TemporalManeuver("survey", ManeuverIntent("survey"), (), 1),),
-        horizon=2,
-        source_authority="authority",
-    )
-    normalized = NormalizedPlan(mission, 7, "snapshot-7", mission.planner_choice, PlanningOutcome.UNSOLVABLE)
+    normalized = _plan("file-mission", 7)
     subscriptions = (
         Subscription("planner", "file-mission", "plan"),
         Subscription("reader", "file-mission", "plans"),

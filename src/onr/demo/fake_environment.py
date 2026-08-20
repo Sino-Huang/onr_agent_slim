@@ -9,9 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 from dataclasses import dataclass
 from pathlib import Path
-import random
 from urllib.parse import quote
 
 from onr.adapters.file_transport import FileTransport
@@ -22,7 +22,6 @@ from onr.contracts.fsm import ManeuverFeedback
 from onr.contracts.maneuver_control import ManeuverCommand
 from onr.contracts.transport import Command, TransportEvent
 from onr.ports.transport import Subscription
-
 
 SUPPORTED_LIFECYCLES = ("accepted", "active", "completed", "failed", "cancelled")
 
@@ -265,6 +264,7 @@ class FakeEnvironment:
                         self.context_topic, self.mission_id
                     ),
                     reference=scene_event_id,
+                    content_sha256=reference,
                 ),
             )
         self._scene_facts[reference] = (scene_event, source_fact)

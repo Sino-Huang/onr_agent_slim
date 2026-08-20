@@ -1,6 +1,6 @@
 """Persistence port for Human Decision pause and resume records."""
 
-from typing import Protocol
+from typing import ContextManager, Protocol
 
 from onr.contracts.human_decision import (
     HumanDecision,
@@ -21,6 +21,10 @@ class HumanDecisionStore(Protocol):
     ) -> RunCheckpoint | None: ...
 
     def save_decision(self, decision: HumanDecision) -> HumanDecision: ...
+
+    def resume_claim(self, decision: HumanDecision) -> ContextManager[bool]:
+        """Serialize resume application and commit only successful continuation."""
+        ...
 
 
 __all__ = ["HumanDecisionStore"]

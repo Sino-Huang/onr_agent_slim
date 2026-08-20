@@ -11,6 +11,7 @@ from onr.contracts.planner_translation import (
     PlannerCorrectionStage,
     PlannerGenerationContext,
     PlanningTranslationOutcome,
+    operational_scene_graph_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -60,7 +61,16 @@ class RecordingValidator:
 
     def validate(self, evidence: PlannerExecutionEvidence) -> bool:
         self.evidence.append(evidence)
-        return self.results.pop(0)
+        result = self.results.pop(0)
+        (evidence.artifact_directory / "validator.stdout").write_text(
+            "Plan valid\n" if result else "Plan invalid\n",
+            encoding="utf-8",
+        )
+        (evidence.artifact_directory / "validator.stderr").write_text(
+            "",
+            encoding="utf-8",
+        )
+        return result
 
 
 def _planning_context() -> tuple[
@@ -98,6 +108,9 @@ def _planning_context() -> tuple[
         created_at="time-3",
         operational_scene_graph=scene.event_id,
         source_revisions={"operational_scene_graph": 3},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
         source_health={"operational_scene_graph": "healthy"},
         source_freshness={"operational_scene_graph": True},
     )
@@ -132,6 +145,14 @@ def _problem(domain: bytes = b"(define (domain generated))") -> PDDLProblem:
 
 def _solved_execution(tmp_path: Path) -> SymbolicPlannerExecutionResult:
     directory = tmp_path / "planner-run"
+    directory.mkdir(exist_ok=True)
+    (directory / "domain.pddl").write_bytes(b"(define (domain generated))")
+    (directory / "problem.pddl").write_bytes(b"(define (problem generated))")
+    (directory / "solver.stdout").write_bytes(b"survey\nreturn-to-base\n")
+    (directory / "solver.stderr").write_bytes(b"")
+    (directory / "sas_plan").write_bytes(
+        b"(survey)\n(return-to-base)\n; cost = 7 (unit cost)\n"
+    )
     return SymbolicPlannerExecutionResult(
         PlanningOutcome.SOLVED,
         (
@@ -166,6 +187,7 @@ def test_static_pddl_rejection_gets_sanitized_feedback_before_val_verified_plan(
     result = PDDLTranslation(
         planner,
         validator,
+        tmp_path / "generation-attempts",
         max_corrections=1,
     ).plan(
         mission_input,
@@ -178,6 +200,15 @@ def test_static_pddl_rejection_gets_sanitized_feedback_before_val_verified_plan(
 
     assert result.outcome is PlanningTranslationOutcome.VERIFIED
     assert result.attempt_count == 2
+    assert [str(item.outcome) for item in result.generation_attempts] == [
+        "rejected",
+        "accepted",
+    ]
+    for attempt in result.generation_attempts:
+        assert set(attempt.asset_references) == {"domain.pddl", "problem.pddl"}
+        for name, reference in attempt.asset_references.items():
+            content = Path(reference).read_bytes()
+            assert hashlib.sha256(content).hexdigest() == attempt.asset_sha256[name]
     assert result.normalized_plan is not None
     assert result.normalized_plan.mission_snapshot_id == "mission-symbolic-1:snapshot:3"
     assert len(generator.requests) == 2
@@ -203,6 +234,7 @@ def test_val_rejection_gets_sanitized_feedback_before_regeneration(
     result = PDDLTranslation(
         planner,
         validator,
+        tmp_path / "generation-attempts",
         max_corrections=1,
     ).plan(
         mission_input,
@@ -236,6 +268,7 @@ def test_val_correction_stops_at_configured_bound(tmp_path: Path) -> None:
     result = PDDLTranslation(
         planner,
         validator,
+        tmp_path / "generation-attempts",
         max_corrections=1,
     ).plan(
         mission_input,
@@ -273,7 +306,11 @@ def test_unsolvable_pddl_result_never_reaches_val_or_normalized_plan(
     )
     validator = RecordingValidator([])
 
-    result = PDDLTranslation(planner, validator).plan(
+    result = PDDLTranslation(
+        planner,
+        validator,
+        tmp_path / "generation-attempts",
+    ).plan(
         mission_input,
         choice,
         snapshot,

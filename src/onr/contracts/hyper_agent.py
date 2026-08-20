@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, cast
-
-from onr.contracts.planning import MissionSpec, SymbolicMissionSpec
-
+from typing import Any
 
 _HYPER_AGENT_TOKEN = object()
 
@@ -94,67 +90,6 @@ class MissionInput:
     def to_canonical_json(self) -> str:
         return _canonical(self.to_dict())
 
-
-@dataclass(frozen=True, slots=True)
-class FrozenMissionSpec:
-    """Validated, auditable authority for one immutable Mission Specification."""
-
-    mission_input: MissionInput
-    mission_spec: MissionSpec | SymbolicMissionSpec
-    revision: int
-    canonical_document: str
-    sha256: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.mission_input, MissionInput):
-            raise ValueError("mission input must be a MissionInput")
-        if not isinstance(self.mission_spec, (MissionSpec, SymbolicMissionSpec)):
-            raise ValueError("mission spec must be a validated MissionSpec")
-        _positive_int(self.revision, "mission specification revision")
-        if self.mission_input.mission_id != self.mission_spec.mission_id:
-            raise ValueError("mission input and mission specification IDs must match")
-        if self.mission_input.source_authority != self.mission_spec.source_authority:
-            raise ValueError("mission input and mission specification authorities must match")
-        if not isinstance(self.canonical_document, str) or not self.canonical_document:
-            raise ValueError("canonical document must be a non-empty string")
-        expected_document = self.mission_spec.to_canonical_json()
-        if self.canonical_document != expected_document:
-            raise ValueError("canonical document does not match the validated Mission Specification")
-        expected_hash = hashlib.sha256(self.canonical_document.encode("utf-8")).hexdigest()
-        if self.sha256 is not None and self.sha256 != expected_hash:
-            raise ValueError("SHA-256 does not match the canonical document")
-        object.__setattr__(self, "sha256", expected_hash)
-
-    @property
-    def spec(self) -> MissionSpec | SymbolicMissionSpec:
-        return self.mission_spec
-
-    @property
-    def canonical_json(self) -> str:
-        return self.canonical_document
-
-    @property
-    def content_hash(self) -> str:
-        return cast(str, self.sha256)
-
-    @property
-    def mission_id(self) -> str:
-        return self.mission_input.mission_id
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "mission_input": self.mission_input.to_dict(),
-            "mission_spec": self.mission_spec.to_dict(),
-            "revision": self.revision,
-            "canonical_document": self.canonical_document,
-            "sha256": self.sha256,
-        }
-
-    def to_canonical_json(self) -> str:
-        return _canonical(self.to_dict())
-
-
-MissionAuthorityRecord = FrozenMissionSpec
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,4 +6,4 @@ Planner Asset Generators may propose MiniZinc or PDDL files and a normalization 
 
 Fast Downward's translation-only mode supplies the PDDL static gate. A returned symbolic plan remains non-executable until an independent VAL process accepts the exact persisted domain, problem, and plan artifacts and the code-owned action checker joins every action and cost to the generated normalization template.
 
-During the migration, the translator constructs the legacy Mission Specification compatibility envelope only after external solver execution succeeds. It never publishes or uses that envelope as pre-planner authority; issue #45 removes the compatibility form after provenance-only plan consumers have migrated.
+After external solver execution and code-owned verification succeed, the translator constructs Plan Provenance and a provenance-only Normalized Plan directly.

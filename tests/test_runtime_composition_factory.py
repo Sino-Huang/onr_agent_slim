@@ -2,19 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import onr.runtime.composition as composition_module
+from onr.adapters.inprocess_transport import InProcessTransport
 from onr.agents import (
     DeepAgentsDecisionProvider,
-    DeepAgentsMissionInterpreter,
     DeepAgentsPlanningIntentInterpreter,
 )
-from onr.adapters.fast_downward import FastDownwardExecutor
-from onr.adapters.inprocess_transport import InProcessTransport
-from onr.adapters.minizinc import MiniZincExecutor
-from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.human_decisions import HumanDecisionCoordinator
+from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
-from onr.application.symbolic_planning import SymbolicPlanning
-from onr.application.temporal_planning import TemporalPlanning
 from onr.runtime import (
     HeartbeatsConfig,
     LLMConfig,
@@ -26,7 +22,6 @@ from onr.runtime import (
     StorageConfig,
     TransportConfig,
 )
-import onr.runtime.composition as composition_module
 from onr.runtime.config import AgentConfig, AgentsConfig, OutputStructureRetryConfig
 
 
@@ -122,11 +117,6 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     )
     monkeypatch.setattr(
         composition_module,
-        "create_deep_hyper_agent",
-        lambda **kwargs: deep_models.append(kwargs["model"]) or object(),
-    )
-    monkeypatch.setattr(
-        composition_module,
         "create_planning_intent_agent",
         lambda **kwargs: deep_models.append(kwargs["model"]) or object(),
     )
@@ -142,10 +132,9 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
         {"mission_id": None, "debug_scope": "hyper-agent"},
         {"mission_id": "mission", "debug_scope": "maneuver-control"},
     ]
-    assert len(deep_models) == 5
+    assert len(deep_models) == 4
     assert isinstance(deep_models[1], FakeChatModel)
-    assert isinstance(deep_models[2], FakeChatModel)
-    assert isinstance(deep_models[4], FakeChatModel)
+    assert isinstance(deep_models[3], FakeChatModel)
 
     explicit = object()
     runtime.create_hyper_agent(model=explicit)
@@ -153,7 +142,7 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     provider = object()
     runtime.create_maneuver_control(_FakeAdapter(), decision_provider=provider)
     assert len(factory_calls) == 2
-    assert len(deep_models) == 7
+    assert len(deep_models) == 5
 
 
 def test_verify_llm_reachability_uses_configured_values(monkeypatch) -> None:
@@ -175,21 +164,6 @@ def test_verify_llm_reachability_uses_configured_values(monkeypatch) -> None:
             },
         )
     ]
-
-
-def test_create_planners_uses_configured_executables_and_artifact_roots(tmp_path) -> None:
-    planners = _runtime().create_planners(tmp_path / "planner-artifacts")
-
-    assert isinstance(planners["temporal"], TemporalPlanning)
-    assert isinstance(planners["symbolic"], SymbolicPlanning)
-    temporal_executor = planners["temporal"]._executor
-    symbolic_executor = planners["symbolic"]._executor
-    assert isinstance(temporal_executor, MiniZincExecutor)
-    assert isinstance(symbolic_executor, FastDownwardExecutor)
-    assert symbolic_executor.executable == Path(__file__)
-    assert temporal_executor.executable == Path(__file__)
-    assert temporal_executor.artifact_root == (tmp_path / "planner-artifacts" / "temporal").resolve()
-    assert symbolic_executor.artifact_root == (tmp_path / "planner-artifacts" / "symbolic").resolve()
 
 
 def test_create_minizinc_translation_uses_configured_correction_bound(tmp_path) -> None:
@@ -243,11 +217,6 @@ def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> N
 
 def test_default_hyper_agent_uses_configured_interpreter_retry_limit(monkeypatch) -> None:
     monkeypatch.setattr(
-        composition_module,
-        "create_deep_hyper_agent",
-        lambda **_kwargs: object(),
-    )
-    monkeypatch.setattr(
         composition_module, "create_planning_intent_agent", lambda **_kwargs: object()
     )
 
@@ -255,11 +224,7 @@ def test_default_hyper_agent_uses_configured_interpreter_retry_limit(monkeypatch
         model=object()
     )
 
-    assert isinstance(service.interpreter, DeepAgentsMissionInterpreter)
-    assert service.interpreter.max_retries == 7
-    assert isinstance(
-        service.planning_intent_interpreter, DeepAgentsPlanningIntentInterpreter
-    )
+    assert isinstance(service.planning_intent_interpreter, DeepAgentsPlanningIntentInterpreter)
     assert service.planning_intent_interpreter.max_retries == 7
 
 
@@ -288,7 +253,7 @@ def test_explicit_agent_providers_bypass_default_retry_wiring(monkeypatch) -> No
     def fail(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("default provider construction must not run")
 
-    monkeypatch.setattr(composition_module, "DeepAgentsMissionInterpreter", fail)
+    monkeypatch.setattr(composition_module, "DeepAgentsPlanningIntentInterpreter", fail)
     monkeypatch.setattr(composition_module, "DeepAgentsDecisionProvider", fail)
     monkeypatch.setattr(composition_module.RuntimeComposition, "create_chat_model", fail)
 
@@ -300,5 +265,5 @@ def test_explicit_agent_providers_bypass_default_retry_wiring(monkeypatch) -> No
         _FakeAdapter(), decision_provider=decision_provider
     )
 
-    assert hyper_agent.interpreter is interpreter
+    assert hyper_agent.planning_intent_interpreter is interpreter
     assert maneuver_control.decision_provider is decision_provider

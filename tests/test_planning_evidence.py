@@ -6,10 +6,17 @@ import pytest
 
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.operational_log import InProcessOperationalLog
+from onr.application.bayesian_belief import belief_artifact_reference
 from onr.application.hyper_agent import HyperAgent, PlanningHeartbeatOutcome
 from onr.contracts import PlanningIntent
+from onr.contracts.bayesian_belief import (
+    BayesianBeliefSnapshot,
+    BeliefKey,
+    BeliefMarginal,
+)
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.planner_translation import operational_scene_graph_sha256
 from onr.contracts.planning import PlannerChoice
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
@@ -60,10 +67,57 @@ def _scene_snapshot(
         created_at="time-7",
         operational_scene_graph=event_id,
         source_revisions={"operational_scene_graph": 7},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
         source_health={"operational_scene_graph": "healthy"},
         source_freshness={"operational_scene_graph": True},
     )
     return snapshot, scene
+
+
+def _scene_snapshot_with_belief(
+    belief_revision: int,
+    *,
+    snapshot_version: int,
+) -> tuple[MissionSnapshot, TransportEvent, BayesianBeliefSnapshot]:
+    _, scene = _scene_snapshot()
+    belief = BayesianBeliefSnapshot.create(
+        mission_id=scene.mission_id,
+        belief_revision=belief_revision,
+        input_event_id=f"belief-input:{belief_revision}",
+        input_revision=belief_revision,
+        created_at=f"2026-08-20T00:00:0{belief_revision}+00:00",
+        marginals=(
+            BeliefMarginal(BeliefKey("ship-1", "hostile"), 0.1 * belief_revision),
+        ),
+    )
+    snapshot = MissionSnapshot(
+        mission_id=scene.mission_id,
+        version=snapshot_version,
+        created_at=f"time-{snapshot_version}",
+        operational_scene_graph=scene.event_id,
+        bayesian_belief_snapshot=belief_artifact_reference(
+            belief.mission_id, belief.content_sha256
+        ),
+        source_revisions={
+            "operational_scene_graph": 7,
+            "bayesian_belief_snapshot": belief.belief_revision,
+        },
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene),
+            "bayesian_belief_snapshot": belief.content_sha256,
+        },
+        source_health={
+            "operational_scene_graph": "healthy",
+            "bayesian_belief_snapshot": "healthy",
+        },
+        source_freshness={
+            "operational_scene_graph": True,
+            "bayesian_belief_snapshot": True,
+        },
+    )
+    return snapshot, scene, belief
 
 
 def _attempt(
@@ -114,7 +168,6 @@ def test_hyper_records_planner_choice_without_creating_a_mission_spec() -> None:
     assert choice.planner_choice == PlannerChoice("temporal", "minizinc")
     assert choice.rationale == intent.rationale
     assert hyper.planner_choice("mission-1") == choice
-    assert hyper.authority("mission-1") is None
 
     event = transport.latest_event("planning-evidence", "mission-1")
     assert event is not None
@@ -222,9 +275,7 @@ def test_planner_choice_and_attempt_identity_are_idempotent() -> None:
         asset_sha256={"model.mzn": "d" * 64},
     )
     with pytest.raises(ValueError, match="different generation attempt"):
-        hyper.planning_heartbeat(
-            mission_input, snapshot, scene, lambda *_: conflicting
-        )
+        hyper.planning_heartbeat(mission_input, snapshot, scene, lambda *_: conflicting)
 
 
 def test_accepted_attempt_requires_asset_references_and_hashes() -> None:
@@ -254,9 +305,7 @@ def test_planning_heartbeat_rejects_another_missions_attempt() -> None:
     )
 
     with pytest.raises(ValueError, match="current Planner Choice"):
-        hyper.planning_heartbeat(
-            first_input, snapshot, scene, lambda *_: wrong_mission
-        )
+        hyper.planning_heartbeat(first_input, snapshot, scene, lambda *_: wrong_mission)
 
 
 def test_planning_heartbeat_reports_missing_scene_without_starting_planning() -> None:
@@ -298,6 +347,9 @@ def test_planning_heartbeat_reports_stale_scene_without_starting_planning() -> N
         created_at="time-7",
         operational_scene_graph=scene.event_id,
         source_revisions={"operational_scene_graph": 7},
+        source_hashes={
+            "operational_scene_graph": operational_scene_graph_sha256(scene)
+        },
         source_health={"operational_scene_graph": "healthy"},
         source_freshness={"operational_scene_graph": False},
     )
@@ -320,3 +372,89 @@ def test_planning_heartbeat_reports_stale_scene_without_starting_planning() -> N
     assert result.planner_choice is None
     assert result.attempt is None
     assert calls == []
+
+
+def test_planning_heartbeat_rejects_scene_content_outside_snapshot_digest() -> None:
+    mission_input = _mission_input()
+    intent = _planning_intent(mission_input)
+    snapshot, scene = _scene_snapshot()
+    tampered = TransportEvent(
+        schema_version=scene.schema_version,
+        event_id=scene.event_id,
+        mission_id=scene.mission_id,
+        sequence=scene.sequence,
+        event_kind=scene.event_kind,
+        payload={
+            "graph": {"mission_id": scene.mission_id, "entities": [{"id": "tampered"}]}
+        },
+    )
+    hyper = HyperAgent(lambda _: intent)
+
+    def generate(*_: object) -> PlannerGenerationAttempt:
+        raise AssertionError("generation must not start with tampered scene evidence")
+
+    with pytest.raises(ValueError, match="snapshot-authorized"):
+        hyper.planning_heartbeat(mission_input, snapshot, tampered, generate)
+
+
+def test_planning_heartbeat_requires_snapshot_authorized_typed_belief() -> None:
+    mission_input = _mission_input()
+    intent = _planning_intent(mission_input)
+    snapshot, scene, _ = _scene_snapshot_with_belief(
+        1,
+        snapshot_version=7,
+    )
+    hyper = HyperAgent(lambda _: intent)
+
+    def generate(*_: object) -> PlannerGenerationAttempt:
+        raise AssertionError("generation must not start without typed belief evidence")
+
+    with pytest.raises(ValueError, match="requires a typed artifact"):
+        hyper.planning_heartbeat(mission_input, snapshot, scene, generate)
+
+
+def test_changed_belief_revision_drives_a_new_planning_attempt() -> None:
+    mission_input = _mission_input()
+    intent = _planning_intent(mission_input)
+    first_snapshot, scene, first_belief = _scene_snapshot_with_belief(
+        1,
+        snapshot_version=7,
+    )
+    second_snapshot, _, second_belief = _scene_snapshot_with_belief(
+        2,
+        snapshot_version=8,
+    )
+    hyper = HyperAgent(lambda _: intent)
+    generated_for: list[int] = []
+
+    def generate(
+        choice: PlannerChoiceRecord,
+        snapshot: MissionSnapshot,
+        _: TransportEvent,
+    ) -> PlannerGenerationAttempt:
+        generated_for.append(snapshot.version)
+        return _attempt(
+            choice,
+            attempt_id=f"attempt-{snapshot.version}",
+            outcome="rejected",
+            mission_snapshot_id=f"{choice.mission_id}:snapshot:{snapshot.version}",
+        )
+
+    first = hyper.planning_heartbeat(
+        mission_input,
+        first_snapshot,
+        scene,
+        generate,
+        first_belief,
+    )
+    second = hyper.planning_heartbeat(
+        mission_input,
+        second_snapshot,
+        scene,
+        generate,
+        second_belief,
+    )
+
+    assert first.belief_snapshot == first_belief
+    assert second.belief_snapshot == second_belief
+    assert generated_for == [7, 8]

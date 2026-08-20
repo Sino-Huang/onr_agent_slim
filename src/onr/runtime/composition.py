@@ -12,85 +12,88 @@ from typing import Any, Callable, cast
 
 from langchain_openai import ChatOpenAI
 
-from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
+from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.human_decisions import FileHumanDecisionStore
 from onr.adapters.inprocess_transport import InProcessTransport
-from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.minizinc import MiniZincExecutor
-from onr.adapters.operational_log import FileOperationalLog
 from onr.adapters.mission_log_summarizer import (
     FileMissionLogSummarizer,
     SummarizationError,
 )
+from onr.adapters.mission_memory import FileMissionMemoryStore
+from onr.adapters.operational_log import FileOperationalLog
 from onr.adapters.val import VALPlanValidator
 from onr.adapters.vllm_reachability import probe_vllm_reachability
-from onr.application.context_coordination import ContextCoordination
+from onr.agents.hyper_agent import (
+    DeepAgentsPlanningIntentInterpreter,
+    create_planning_intent_agent,
+)
+from onr.agents.maneuver_control import (
+    DeepAgentsDecisionProvider,
+)
+from onr.agents.maneuver_control import (
+    create_maneuver_control_agent as create_deep_maneuver_control_agent,
+)
 from onr.application.bayesian_belief import (
     BayesianBeliefManager,
     BayesianBeliefService,
 )
+from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
 from onr.application.human_decisions import HumanDecisionCoordinator
 from onr.application.hyper_agent import (
     HyperAgent,
-    HyperHeartbeatResult,
     HyperPlanningHeartbeatResult,
     PlanningHeartbeatOutcome,
 )
+from onr.application.maneuver_control import ManeuverControl
 from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
-from onr.application.maneuver_control import ManeuverControl
-from onr.application.symbolic_planning import SymbolicPlanning
-from onr.application.planning_commands import PlanningCommandHandler
-from onr.application.temporal_planning import TemporalPlanning
-from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.bayesian_belief import (
-    BayesianBeliefSnapshot,
     BeliefKey,
     ForbiddenBeliefCombination,
 )
+from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverDecision, ManeuverFeedback
-from onr.contracts.hyper_agent import FrozenMissionSpec, MissionInput
+from onr.contracts.human_decision import (
+    HumanDecision,
+    HumanDecisionDisposition,
+    HumanDecisionRequest,
+    HumanDecisionResolution,
+    RunCheckpoint,
+)
+from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecision
+from onr.contracts.planner_translation import (
+    PlanningTranslationOutcome,
+    PlanningTranslationResult,
+)
 from onr.contracts.planning import NormalizedPlan, PlanningOutcome
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
     PlannerGenerationAttempt,
 )
 from onr.contracts.transport import (
-    Command,
-    CommandOutcome,
     TransportEvent,
     create_normalized_plan_transport_event,
 )
 from onr.ports.maneuver import ManeuverAdapter
-from onr.ports.operational_log import OperationalLog
 from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
+from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Subscription
-from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime.agent_debug import AgentDebugRecorder
+from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime.lease import RuntimeLeaseStore
 from onr.runtime.llm_debug import LLMResponseRecorder
-from onr.agents.hyper_agent import (
-    DeepAgentsMissionInterpreter,
-    DeepAgentsPlanningIntentInterpreter,
-    create_hyper_agent as create_deep_hyper_agent,
-    create_planning_intent_agent,
-)
-from onr.agents.maneuver_control import (
-    DeepAgentsDecisionProvider,
-    create_maneuver_control_agent as create_deep_maneuver_control_agent,
-)
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeRunResult:
     """Evidence returned by one synchronous, file-backed runtime run."""
 
-    authority: FrozenMissionSpec | None
     plan: NormalizedPlan
     context_snapshot: MissionSnapshot
     status_before_feedback: FSMStatus
@@ -99,9 +102,6 @@ class RuntimeRunResult:
     scene_graph: TransportEvent
     feedback: ManeuverFeedback
     final_status: FSMStatus
-    belief_snapshot: BayesianBeliefSnapshot | None = None
-    belief_context_snapshot: MissionSnapshot | None = None
-    belief_heartbeat: HyperHeartbeatResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +111,20 @@ class PlanningMissionRunResult:
     outcome: PlanningHeartbeatOutcome
     planner_choice: PlannerChoiceRecord | None = None
     attempt: PlannerGenerationAttempt | None = None
+    generation_attempts: tuple[PlannerGenerationAttempt, ...] = ()
     context_snapshot: MissionSnapshot | None = None
     scene_graph: TransportEvent | None = None
+    translation: PlanningTranslationResult | None = None
+    human_decision_request: HumanDecisionRequest | None = None
+    execution: RuntimeRunResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningMissionDecisionResult:
+    """Recorded operator resolution and any deterministically resumed run."""
+
+    resolution: HumanDecisionResolution
+    resumed_run: PlanningMissionRunResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +167,9 @@ class RuntimeComposition:
     def runtime_session(self):
         """Publish a read-only runtime lease for the duration of one run."""
         lease = self.lease
-        if lease is None:  # guarded by __post_init__; keeps the optional injection type narrow.
+        if (
+            lease is None
+        ):  # guarded by __post_init__; keeps the optional injection type narrow.
             raise RuntimeError("runtime lease was not initialized")
         with lease.session():
             yield lease
@@ -229,35 +243,6 @@ class RuntimeComposition:
         self,
         mission_input: MissionInput,
         *,
-        hyper_agent: HyperAgent,
-        context_coordination: ContextCoordination,
-        fsm_runner: FSMRunner,
-        maneuver_control: ManeuverControl,
-        environment_step: Callable[[], object],
-        bayesian_belief_service: BayesianBeliefService | None = None,
-        summarizer: MissionLogSummarizer | None = None,
-        model: Any | None = None,
-    ) -> RuntimeRunResult:
-        """Run one mission while publishing a bounded, non-authoritative lease."""
-        with self.mission_session(
-            mission_input.mission_id,
-            summarizer=summarizer,
-            model=model,
-        ):
-            return self._run_mission(
-                mission_input,
-                hyper_agent=hyper_agent,
-                context_coordination=context_coordination,
-                fsm_runner=fsm_runner,
-                maneuver_control=maneuver_control,
-                environment_step=environment_step,
-                bayesian_belief_service=bayesian_belief_service,
-            )
-
-    def run_provenance_mission(
-        self,
-        mission_input: MissionInput,
-        *,
         plan: NormalizedPlan,
         context_coordination: ContextCoordination,
         fsm_runner: FSMRunner,
@@ -275,12 +260,11 @@ class RuntimeComposition:
         ):
             return self._run_mission(
                 mission_input,
-                hyper_agent=None,
                 context_coordination=context_coordination,
                 fsm_runner=fsm_runner,
                 maneuver_control=maneuver_control,
                 environment_step=environment_step,
-                initial_plan=plan,
+                plan=plan,
             )
 
     def _logger(self) -> OperationalLog:
@@ -365,30 +349,7 @@ class RuntimeComposition:
         selected = summarizer or self.create_mission_log_summarizer()
         return selected.heartbeat(mission_id)
 
-    def create_planners(self, artifact_root: Path) -> dict[object, object]:
-        """Compose both configured real planner facades with persistent artifacts."""
-
-        root = Path(artifact_root).expanduser().resolve()
-        return {
-            "temporal": TemporalPlanning(
-                MiniZincExecutor(
-                    executable=self.config.planners.temporal.entrypoint,
-                    artifact_root=root / "temporal",
-                    timeout_seconds=self.config.planners.temporal.timeout_seconds,
-                )
-            ),
-            "symbolic": SymbolicPlanning(
-                FastDownwardExecutor(
-                    executable=self.config.planners.symbolic.entrypoint,
-                    artifact_root=root / "symbolic",
-                    timeout_seconds=self.config.planners.symbolic.timeout_seconds,
-                )
-            ),
-        }
-
-    def create_minizinc_translation(
-        self, artifact_root: Path
-    ) -> MiniZincTranslation:
+    def create_minizinc_translation(self, artifact_root: Path) -> MiniZincTranslation:
         """Compose generated MiniZinc correction with the configured real planner."""
 
         planner = self.config.planners.temporal
@@ -398,6 +359,7 @@ class RuntimeComposition:
                 artifact_root=artifact_root,
                 timeout_seconds=planner.timeout_seconds,
             ),
+            artifact_root / "generation-attempts",
             max_corrections=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries
             ),
@@ -420,6 +382,7 @@ class RuntimeComposition:
                 executable=validator,
                 timeout_seconds=planner.timeout_seconds,
             ),
+            artifact_root / "generation-attempts",
             max_corrections=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries
             ),
@@ -431,33 +394,6 @@ class RuntimeComposition:
         return HumanDecisionCoordinator(
             FileHumanDecisionStore(self.config.storage.root / "human-decisions")
         )
-
-    def run_planning_command(
-        self,
-        command: Command,
-        planner: object,
-        *,
-        topic: str = "normalized-plans",
-    ) -> CommandOutcome:
-        """Deliver one command through the configured transport and subscriber."""
-
-        subscription = Subscription(
-            service_id=command.target_service,
-            mission_id=command.mission_id,
-            topic=command.command_kind,
-        )
-        consumer = self.transport.open_consumer(subscription)
-        try:
-            self.transport.send_command(command)
-            handler = PlanningCommandHandler(
-                self.transport, planner, topic=topic, operational_log=self._logger()
-            )
-            outcome = handler.run_once(consumer)
-            if outcome is None:
-                raise RuntimeError("planning command was not delivered")
-            return outcome
-        finally:
-            consumer.close()
 
     def create_fsm_runner(
         self,
@@ -474,7 +410,9 @@ class RuntimeComposition:
             service_id=self.config.services.fsm_runner,
         )
         if subscription not in self.transport.subscriptions:
-            self.transport.subscriptions = self.transport.subscriptions + (subscription,)
+            self.transport.subscriptions = self.transport.subscriptions + (
+                subscription,
+            )
         return FSMRunner(
             self.transport,
             store=JsonFSMStateStore(self.config.storage.root / "fsm" / mission_id),
@@ -501,7 +439,9 @@ class RuntimeComposition:
             service_id=self.config.services.context_coordination,
         )
         if subscription not in self.transport.subscriptions:
-            self.transport.subscriptions = self.transport.subscriptions + (subscription,)
+            self.transport.subscriptions = self.transport.subscriptions + (
+                subscription,
+            )
         return ContextCoordination(
             cast(Any, self.transport),
             mission_id,
@@ -547,31 +487,50 @@ class RuntimeComposition:
             )
         else:
             manager = BayesianBeliefManager.from_checkpoint(checkpoint)
-            if selected_keys is not None and tuple(sorted(selected_keys)) != manager.keys:
-                raise ValueError("configured belief keys do not match the durable checkpoint")
-            if selected_constraints is not None and tuple(
-                sorted(selected_constraints, key=lambda item: item.constraint_id)
-            ) != manager.constraints:
-                raise ValueError("configured belief constraints do not match the durable checkpoint")
+            if (
+                selected_keys is not None
+                and tuple(sorted(selected_keys)) != manager.keys
+            ):
+                raise ValueError(
+                    "configured belief keys do not match the durable checkpoint"
+                )
+            if (
+                selected_constraints is not None
+                and tuple(
+                    sorted(selected_constraints, key=lambda item: item.constraint_id)
+                )
+                != manager.constraints
+            ):
+                raise ValueError(
+                    "configured belief constraints do not match the durable checkpoint"
+                )
             if particle_count is not None and particle_count != manager.particle_count:
-                raise ValueError("configured particle count does not match the durable checkpoint")
+                raise ValueError(
+                    "configured particle count does not match the durable checkpoint"
+                )
             if transition_probability is not None:
                 if isinstance(transition_probability, bool) or not isinstance(
                     transition_probability, (int, float)
                 ):
-                    raise ValueError("configured transition probability must be numeric")
+                    raise ValueError(
+                        "configured transition probability must be numeric"
+                    )
                 if float(transition_probability) != manager.transition_probability:
                     raise ValueError(
                         "configured transition probability does not match the durable checkpoint"
                     )
             if seed is not None:
-                raise ValueError("seed cannot be supplied when resuming a durable checkpoint")
+                raise ValueError(
+                    "seed cannot be supplied when resuming a durable checkpoint"
+                )
         subscription = BayesianBeliefService.subscription_for(
             mission_id,
             observation_topic=observation_topic,
         )
         if subscription not in self.transport.subscriptions:
-            self.transport.subscriptions = self.transport.subscriptions + (subscription,)
+            self.transport.subscriptions = self.transport.subscriptions + (
+                subscription,
+            )
         return BayesianBeliefService(
             manager,
             store,
@@ -600,14 +559,18 @@ class RuntimeComposition:
 
         if decision_provider is None:
             if mission_id is None:
-                raise ValueError("create_maneuver_control requires a provider or model and Mission ID")
+                raise ValueError(
+                    "create_maneuver_control requires a provider or model and Mission ID"
+                )
             if model is None:
                 model = self.create_chat_model(
                     mission_id=mission_id,
                     debug_scope="maneuver-control",
                 )
             if memory_store is None:
-                memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
+                memory_store = FileMissionMemoryStore(
+                    self.config.storage.root / "mission-memory"
+                )
             context_backend_root = backend_root
             if context_backend_root is None and skill_catalog is not None:
                 context_backend_root = self.config.storage.root
@@ -635,24 +598,17 @@ class RuntimeComposition:
     def create_hyper_agent(
         self,
         interpreter: object | None = None,
-        planner: object | None = None,
         *,
-        planning_intent_interpreter: object | None = None,
-        planners: dict[object, object] | None = None,
-        temporal_planner: object | None = None,
-        symbolic_planner: object | None = None,
         model: Any | None = None,
         system_prompt: str | None = None,
-        mission_spec_topic: str = "mission-specifications",
-        normalized_plan_topic: str = "normalized-plans",
-        replan_topic: str = "replan-requests",
         mission_id: str | None = None,
         memory_store: object | None = None,
         skill_catalog: object | None = None,
         skill_version: str | None = None,
         backend_root: Path | None = None,
+        planning_evidence_topic: str = "planning-evidence",
     ) -> HyperAgent:
-        """Compose Hyper Agent with injected interpretation and planning seams."""
+        """Compose Hyper Agent with a PlanningIntent interpreter."""
 
         if interpreter is None:
             if model is None:
@@ -661,12 +617,14 @@ class RuntimeComposition:
                     debug_scope="hyper-agent",
                 )
             if mission_id is not None and memory_store is None:
-                memory_store = FileMissionMemoryStore(self.config.storage.root / "mission-memory")
+                memory_store = FileMissionMemoryStore(
+                    self.config.storage.root / "mission-memory"
+                )
             context_backend_root = backend_root
             if context_backend_root is None and skill_catalog is not None:
                 context_backend_root = self.config.storage.root
-            interpreter = DeepAgentsMissionInterpreter(
-                create_deep_hyper_agent(
+            interpreter = DeepAgentsPlanningIntentInterpreter(
+                create_planning_intent_agent(
                     model=model,
                     system_prompt=system_prompt,
                     mission_id=mission_id,
@@ -675,47 +633,14 @@ class RuntimeComposition:
                     skill_version=skill_version,
                     backend_root=context_backend_root,
                 ),
-                max_retries=self.config.agents.hyper_agent.output_structure_retry.max_retries,
+                max_retries=(
+                    self.config.agents.hyper_agent.output_structure_retry.max_retries
+                ),
             )
-            if planning_intent_interpreter is None:
-                planning_intent_interpreter = DeepAgentsPlanningIntentInterpreter(
-                    create_planning_intent_agent(
-                        model=model,
-                        system_prompt=system_prompt,
-                        mission_id=mission_id,
-                        memory_store=memory_store,
-                        skill_catalog=skill_catalog,
-                        skill_version=skill_version,
-                        backend_root=context_backend_root,
-                    ),
-                    max_retries=(
-                        self.config.agents.hyper_agent.output_structure_retry.max_retries
-                    ),
-                )
-        selected = planners
-        if selected is None and (temporal_planner is not None or symbolic_planner is not None):
-            selected = {}
-            if temporal_planner is not None:
-                selected["temporal"] = temporal_planner
-            if symbolic_planner is not None:
-                selected["symbolic"] = symbolic_planner
-        if mission_id is not None:
-            subscription = Subscription(
-                service_id=self.config.services.hyper_agent,
-                mission_id=mission_id,
-                topic=replan_topic,
-            )
-            if subscription not in self.transport.subscriptions:
-                self.transport.subscriptions = self.transport.subscriptions + (subscription,)
         return HyperAgent(
-            interpreter=interpreter,
-            planning_intent_interpreter=planning_intent_interpreter,
-            planner=planner,
-            planners=selected,
+            interpreter,
             transport=self.transport,
-            mission_spec_topic=mission_spec_topic,
-            normalized_plan_topic=normalized_plan_topic,
-            replan_topic=replan_topic,
+            planning_evidence_topic=planning_evidence_topic,
             operational_log=self._logger(),
         )
 
@@ -723,13 +648,11 @@ class RuntimeComposition:
         self,
         mission_input: MissionInput,
         *,
-        hyper_agent: HyperAgent | None,
         context_coordination: ContextCoordination,
         fsm_runner: FSMRunner,
         maneuver_control: ManeuverControl,
         environment_step: Callable[[], object],
-        bayesian_belief_service: BayesianBeliefService | None = None,
-        initial_plan: NormalizedPlan | None = None,
+        plan: NormalizedPlan,
     ) -> RuntimeRunResult:
         """Run one deterministic MissionInput-to-authoritative-feedback seam."""
 
@@ -737,6 +660,8 @@ class RuntimeComposition:
             raise TypeError("run_mission requires a MissionInput")
         if not callable(environment_step):
             raise TypeError("environment_step must be callable")
+        if not isinstance(plan, NormalizedPlan):
+            raise TypeError("run_mission requires a NormalizedPlan")
         mission_id = mission_input.mission_id
         logger = self._logger()
         logger.emit(
@@ -747,47 +672,33 @@ class RuntimeComposition:
             details={"operation": "run_mission"},
         )
         if context_coordination.subscription.mission_id != mission_id:
-            raise ValueError("Context Coordination mission ID does not match MissionInput")
+            raise ValueError(
+                "Context Coordination mission ID does not match MissionInput"
+            )
         fsm_subscription = fsm_runner.subscription or FSMRunner.subscription_for(
             mission_id,
             service_id=self.config.services.fsm_runner,
         )
         if fsm_subscription.mission_id != mission_id:
             raise ValueError("FSM Runner mission ID does not match MissionInput")
-        if (
-            bayesian_belief_service is not None
-            and bayesian_belief_service.manager.mission_id != mission_id
-        ):
-            raise ValueError("Bayesian belief service mission ID does not match MissionInput")
-        if (
-            bayesian_belief_service is not None
-            and bayesian_belief_service.context_topic != context_coordination.input_topic
-        ):
-            raise ValueError("Bayesian belief output topic must be Context Coordination input")
 
         required_subscriptions = (
-            Subscription(
-                self.config.services.hyper_agent,
-                mission_id,
-                hyper_agent.replan_topic if hyper_agent is not None else "replan-requests",
-            ),
             context_coordination.subscription,
             fsm_subscription,
             Subscription(maneuver_control.target_service, mission_id, "maneuver"),
-            Subscription("runtime-scene-observer", mission_id, "operational-scene-graph"),
+            Subscription(
+                "runtime-planning-scene-observer", mission_id, "operational-scene-graph"
+            ),
             Subscription("runtime-feedback-observer", mission_id, "maneuver-feedback"),
-            Subscription("runtime-status-observer", mission_id, fsm_runner.status_topic),
+            Subscription(
+                "runtime-status-observer", mission_id, fsm_runner.status_topic
+            ),
         )
         for subscription in required_subscriptions:
             if subscription not in self.transport.subscriptions:
-                self.transport.subscriptions = self.transport.subscriptions + (subscription,)
-        if (
-            bayesian_belief_service is not None
-            and bayesian_belief_service.subscription not in self.transport.subscriptions
-        ):
-            self.transport.subscriptions = self.transport.subscriptions + (
-                bayesian_belief_service.subscription,
-            )
+                self.transport.subscriptions = self.transport.subscriptions + (
+                    subscription,
+                )
 
         def consume_event(consumer: Any, event_kind: str) -> TransportEvent:
             delivery = consumer.receive()
@@ -799,7 +710,10 @@ class RuntimeComposition:
                     "runtime",
                     "error",
                     "failed",
-                    details={"operation": "consume_transport_event", "error_type": "RuntimeError"},
+                    details={
+                        "operation": "consume_transport_event",
+                        "error_type": "RuntimeError",
+                    },
                 )
                 raise RuntimeError(f"expected a {event_kind} transport event")
             if delivery.message.event_kind != event_kind:
@@ -809,7 +723,10 @@ class RuntimeComposition:
                     "runtime",
                     "error",
                     "failed",
-                    details={"operation": "consume_transport_event", "error_type": "RuntimeError"},
+                    details={
+                        "operation": "consume_transport_event",
+                        "error_type": "RuntimeError",
+                    },
                 )
                 raise RuntimeError(
                     f"expected a {event_kind} transport event, got {delivery.message.event_kind}"
@@ -841,109 +758,44 @@ class RuntimeComposition:
                 self.transport.open_consumer(fsm_subscription)
             )
             scene_consumer = consumers.enter_context(
-                self.transport.open_consumer(required_subscriptions[4])
+                self.transport.open_consumer(required_subscriptions[3])
             )
             feedback_consumer = consumers.enter_context(
-                self.transport.open_consumer(required_subscriptions[5])
+                self.transport.open_consumer(required_subscriptions[4])
             )
             status_consumer = consumers.enter_context(
-                self.transport.open_consumer(required_subscriptions[6])
-            )
-            belief_consumer = (
-                consumers.enter_context(
-                    self.transport.open_consumer(bayesian_belief_service.subscription)
-                )
-                if bayesian_belief_service is not None
-                else None
+                self.transport.open_consumer(required_subscriptions[5])
             )
 
-            authority: FrozenMissionSpec | None = None
             planning_details: dict[str, object] = {"operation": "initial_plan"}
-            if initial_plan is None:
-                if hyper_agent is None:
-                    raise RuntimeError("legacy Mission Run requires a Hyper Agent")
-                authority = hyper_agent.freeze_mission(mission_input)
-                if authority.mission_id != mission_id:
-                    raise RuntimeError("Hyper Agent did not return frozen mission authority")
-                if authority.content_hash != authority.sha256:
-                    raise RuntimeError("frozen mission authority hash is invalid")
-                logger.emit(
-                    mission_id,
-                    "runtime",
-                    "agent",
-                    "completed",
-                    details={
-                        "operation": "freeze_mission",
-                        "revision": authority.revision,
-                    },
-                )
-                seed = MissionSnapshot(
-                    mission_id=mission_id,
-                    version=1,
-                    created_at="runtime-seed",
-                )
-                heartbeat = hyper_agent.heartbeat(
-                    seed,
-                    mission_id=mission_id,
-                    snapshot_id=f"{mission_id}:snapshot:0",
-                )
-                logger.emit(
-                    mission_id,
-                    "runtime",
-                    "heartbeat",
-                    "completed",
-                    details={
-                        "operation": "hyper_heartbeat",
-                        "plan_revision": heartbeat.plan_revision,
-                    },
-                )
-                plan = heartbeat.plan
-                if (
-                    not isinstance(plan, NormalizedPlan)
-                    or plan.mission_spec != authority.mission_spec
-                ):
-                    raise RuntimeError(
-                        "initial Hyper heartbeat plan does not match frozen authority"
-                    )
-            else:
-                plan = initial_plan
-                provenance = plan.provenance
-                if (
-                    provenance is None
-                    or plan.mission_id != mission_id
-                    or plan.source_authority != mission_input.source_authority
-                ):
-                    raise RuntimeError(
-                        "provenance plan does not match Mission Input authority"
-                    )
-                topic = context_coordination.input_topic
-                event = create_normalized_plan_transport_event(
-                    plan,
-                    event_id=f"normalized-plan:{mission_id}:{plan.plan_revision}",
-                    sequence=self.transport.next_event_sequence(topic, mission_id),
-                )
-                self.transport.publish_event(topic, event)
-                planning_details.update(
-                    {
-                        "planning_decision_reference": (
-                            provenance.planning_decision.reference
-                        ),
-                        "scene_graph_reference": (
-                            provenance.operational_scene_graph.reference
-                        ),
-                        "generated_assets": ",".join(
-                            sorted(provenance.generated_assets)
-                        ),
-                        "solver_evidence": ",".join(
-                            sorted(provenance.solver_evidence)
-                        ),
-                    }
-                )
+            provenance = plan.provenance
             if (
-                not isinstance(plan, NormalizedPlan)
-                or plan.outcome is not PlanningOutcome.SOLVED
-                or len(plan.maneuvers) != 1
+                plan.mission_id != mission_id
+                or plan.source_authority != mission_input.source_authority
             ):
+                raise RuntimeError(
+                    "provenance plan does not match Mission Input authority"
+                )
+            topic = context_coordination.input_topic
+            event = create_normalized_plan_transport_event(
+                plan,
+                event_id=f"normalized-plan:{mission_id}:{plan.plan_revision}",
+                sequence=self.transport.next_event_sequence(topic, mission_id),
+            )
+            self.transport.publish_event(topic, event)
+            planning_details.update(
+                {
+                    "planning_decision_reference": (
+                        provenance.planning_decision.reference
+                    ),
+                    "scene_graph_reference": (
+                        provenance.operational_scene_graph.reference
+                    ),
+                    "generated_assets": ",".join(sorted(provenance.generated_assets)),
+                    "solver_evidence": ",".join(sorted(provenance.solver_evidence)),
+                }
+            )
+            if plan.outcome is not PlanningOutcome.SOLVED or len(plan.maneuvers) != 1:
                 raise RuntimeError("Mission Run requires one solved maneuver")
             planning_details["plan_revision"] = plan.plan_revision
             logger.emit(
@@ -955,8 +807,13 @@ class RuntimeComposition:
             )
 
             plan_snapshot = context_coordination.run_once(context_consumer)
-            if plan_snapshot is None or plan_snapshot.plan_revision != plan.plan_revision:
-                raise RuntimeError("Context Coordination did not publish the normalized-plan snapshot")
+            if (
+                plan_snapshot is None
+                or plan_snapshot.plan_revision != plan.plan_revision
+            ):
+                raise RuntimeError(
+                    "Context Coordination did not publish the normalized-plan snapshot"
+                )
             activated = run_async(fsm_runner.run_once(fsm_consumer))
             if not isinstance(activated, FSMStatus):
                 raise RuntimeError("FSM Runner did not activate the normalized plan")
@@ -970,7 +827,10 @@ class RuntimeComposition:
                 "runtime",
                 "fsm",
                 "activated",
-                details={"plan_revision": activated.plan_revision, "state": activated.active_state},
+                details={
+                    "plan_revision": activated.plan_revision,
+                    "state": activated.active_state,
+                },
             )
 
             invocation_id = f"maneuver-heartbeat:{mission_id}:{plan.plan_revision}"
@@ -989,7 +849,8 @@ class RuntimeComposition:
                 or command.mission_id != mission_id
                 or command.plan_revision != plan.plan_revision
                 or command.maneuver_id != plan.maneuvers[0].maneuver_id
-                or command.mission_snapshot_id != f"{mission_id}:snapshot:{plan_snapshot.version}"
+                or command.mission_snapshot_id
+                != f"{mission_id}:snapshot:{plan_snapshot.version}"
             ):
                 raise RuntimeError("Maneuver Control did not emit one physical command")
             logger.emit(
@@ -1012,7 +873,10 @@ class RuntimeComposition:
                     "runtime",
                     "error",
                     "failed",
-                    details={"operation": "environment_step", "error_type": type(exc).__name__},
+                    details={
+                        "operation": "environment_step",
+                        "error_type": type(exc).__name__,
+                    },
                 )
                 raise
             logger.emit(
@@ -1033,7 +897,9 @@ class RuntimeComposition:
                 or feedback.payload.get("command_id") != command.command_id
                 or feedback.payload.get("correlation_id") != command.correlation_id
             ):
-                raise RuntimeError("maneuver feedback does not match the physical command")
+                raise RuntimeError(
+                    "maneuver feedback does not match the physical command"
+                )
             graph = scene_graph.payload.get("graph")
             expected_parameters = {
                 parameter.name: parameter.value for parameter in command.parameters
@@ -1054,7 +920,9 @@ class RuntimeComposition:
                 or maneuver.get("action") != command.action
                 or maneuver.get("parameters") != expected_parameters
             ):
-                raise RuntimeError("operational scene graph does not match the physical command")
+                raise RuntimeError(
+                    "operational scene graph does not match the physical command"
+                )
 
             context_snapshot = context_coordination.run_once(context_consumer)
             if (
@@ -1062,10 +930,14 @@ class RuntimeComposition:
                 or context_snapshot.plan_revision != plan.plan_revision
                 or context_snapshot.operational_scene_graph != scene_graph.event_id
             ):
-                raise RuntimeError("Context Coordination did not consume the scene graph source fact")
+                raise RuntimeError(
+                    "Context Coordination did not consume the scene graph source fact"
+                )
 
             if status_before_feedback.active_state != activated.active_state:
-                raise RuntimeError("FSM active state changed before authoritative feedback")
+                raise RuntimeError(
+                    "FSM active state changed before authoritative feedback"
+                )
             candidate = next(
                 (
                     item
@@ -1092,83 +964,41 @@ class RuntimeComposition:
                     maneuver_decision=transition_decision,
                 )
             )
-            if not isinstance(applied, FSMStatus) or applied.active_state == status_before_feedback.active_state:
-                raise RuntimeError("FSM did not advance after authoritative maneuver feedback")
-            final_status = FSMStatus.from_dict(consume_event(status_consumer, "fsm-status").payload)
+            if (
+                not isinstance(applied, FSMStatus)
+                or applied.active_state == status_before_feedback.active_state
+            ):
+                raise RuntimeError(
+                    "FSM did not advance after authoritative maneuver feedback"
+                )
+            final_status = FSMStatus.from_dict(
+                consume_event(status_consumer, "fsm-status").payload
+            )
             if final_status != applied:
-                raise RuntimeError("final FSM status evidence does not match the applied transition")
+                raise RuntimeError(
+                    "final FSM status evidence does not match the applied transition"
+                )
             logger.emit(
                 mission_id,
                 "runtime",
                 "fsm",
                 "transitioned",
-                details={"state": final_status.active_state, "status": final_status.status},
+                details={
+                    "state": final_status.active_state,
+                    "status": final_status.status,
+                },
             )
 
-            belief_snapshot: BayesianBeliefSnapshot | None = None
-            belief_context_snapshot: MissionSnapshot | None = None
-            belief_heartbeat: HyperHeartbeatResult | None = None
-            if bayesian_belief_service is not None:
-                if hyper_agent is None:
-                    raise RuntimeError("Bayesian belief replan requires a Hyper Agent")
-                if belief_consumer is None:
-                    raise RuntimeError("Bayesian belief consumer was not composed")
-                belief_snapshot = bayesian_belief_service.run_once(belief_consumer)
-                if belief_snapshot is None:
-                    raise RuntimeError("Bayesian belief service did not consume an observation")
-                belief_context_snapshot = context_coordination.run_once(context_consumer)
-                if (
-                    belief_context_snapshot is None
-                    or belief_context_snapshot.source_revisions[
-                        "bayesian_belief_snapshot"
-                    ]
-                    != belief_snapshot.belief_revision
-                    or belief_context_snapshot.source_hashes[
-                        "bayesian_belief_snapshot"
-                    ]
-                    != belief_snapshot.content_sha256
-                ):
-                    raise RuntimeError("Context Coordination did not authorize the belief artifact")
-                reference = belief_context_snapshot.source_references[
-                    "bayesian_belief_snapshot"
-                ]
-                content_hash = belief_context_snapshot.source_hashes[
-                    "bayesian_belief_snapshot"
-                ]
-                if reference is None or content_hash is None:
-                    raise RuntimeError("belief artifact provenance is incomplete")
-                durable_belief = bayesian_belief_service.load_snapshot_reference(
-                    reference, content_hash
-                )
-                if durable_belief != belief_snapshot:
-                    raise RuntimeError("durable Bayesian belief artifact does not match the update")
-                belief_heartbeat = hyper_agent.heartbeat(
-                    belief_context_snapshot,
-                    mission_id=mission_id,
-                    snapshot_id=(
-                        f"{mission_id}:snapshot:{belief_context_snapshot.version}"
-                    ),
-                    belief_snapshot=durable_belief,
-                )
-                if belief_heartbeat.plan_revision != plan.plan_revision + 1:
-                    raise RuntimeError("belief-backed Hyper heartbeat did not replan normally")
-
             return RuntimeRunResult(
-                authority=authority,
                 plan=plan,
-                context_snapshot=belief_context_snapshot or context_snapshot,
+                context_snapshot=context_snapshot,
                 status_before_feedback=status_before_feedback,
                 decision=decision,
                 command=command,
                 scene_graph=scene_graph,
                 feedback=feedback,
                 final_status=final_status,
-                belief_snapshot=belief_snapshot,
-                belief_context_snapshot=belief_context_snapshot,
-                belief_heartbeat=belief_heartbeat,
             )
-
-
 
     def run_planning_mission(
         self,
@@ -1181,25 +1011,192 @@ class RuntimeComposition:
             [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
             PlannerGenerationAttempt,
         ],
+        translator: object,
+        asset_generator: object,
+        human_decision_coordinator: HumanDecisionCoordinator,
+        fsm_runner: FSMRunner,
+        maneuver_control: ManeuverControl,
+        environment_step: Callable[[], object],
+        bayesian_belief_service: BayesianBeliefService | None = None,
         summarizer: MissionLogSummarizer | None = None,
         model: Any | None = None,
     ) -> PlanningMissionRunResult:
-        """Run scene-backed planner selection/generation without a MissionSpec."""
+        """Run scene-backed planner selection and planner-native generation."""
 
         with self.mission_session(
             mission_input.mission_id,
             summarizer=summarizer,
             model=model,
         ):
-            return self._run_planning_mission(
+            preparation = self._prepare_planning_mission(
                 mission_input,
                 hyper_agent=hyper_agent,
                 context_coordination=context_coordination,
                 environment_heartbeat=environment_heartbeat,
                 generate=generate,
+                bayesian_belief_service=bayesian_belief_service,
             )
 
-    def _run_planning_mission(
+            return self._complete_planning_mission(
+                mission_input,
+                preparation=preparation,
+                hyper_agent=hyper_agent,
+                translator=translator,
+                asset_generator=asset_generator,
+                human_decision_coordinator=human_decision_coordinator,
+                context_coordination=context_coordination,
+                fsm_runner=fsm_runner,
+                maneuver_control=maneuver_control,
+                environment_step=environment_step,
+            )
+
+    def _complete_planning_mission(
+        self,
+        mission_input: MissionInput,
+        *,
+        preparation: PlanningMissionRunResult,
+        hyper_agent: HyperAgent,
+        translator: object,
+        asset_generator: object,
+        human_decision_coordinator: HumanDecisionCoordinator,
+        context_coordination: ContextCoordination,
+        fsm_runner: FSMRunner,
+        maneuver_control: ManeuverControl,
+        environment_step: Callable[[], object],
+    ) -> PlanningMissionRunResult:
+        previous_revision = (
+            preparation.context_snapshot.plan_revision
+            if preparation.context_snapshot is not None
+            else None
+        )
+        plan_revision = (previous_revision or 0) + 1
+        if not isinstance(human_decision_coordinator, HumanDecisionCoordinator):
+            raise TypeError("planning Mission Run requires Human Decision coordination")
+
+        mission_id = mission_input.mission_id
+        checkpoint = RunCheckpoint(
+            checkpoint_id=f"planning-checkpoint:{mission_id}:{plan_revision}",
+            mission_id=mission_id,
+            mission_run_id=f"planning-run:{mission_id}:{plan_revision}",
+            continuation=f"translate-and-execute:{plan_revision}",
+        )
+
+        def paused(
+            outcome: object,
+            evidence_references: tuple[str, ...],
+            translation: PlanningTranslationResult | None = None,
+        ) -> PlanningMissionRunResult:
+            translated_attempts = (
+                translation.generation_attempts if translation is not None else ()
+            )
+            generation_attempts = preparation.generation_attempts + translated_attempts
+            request = human_decision_coordinator.pause_for_outcome(
+                outcome,
+                checkpoint,
+                correlation_id=f"planning:{mission_id}:{plan_revision}",
+                evidence_references=evidence_references,
+            )
+            return PlanningMissionRunResult(
+                outcome=preparation.outcome,
+                planner_choice=preparation.planner_choice,
+                attempt=(generation_attempts[-1] if generation_attempts else None),
+                generation_attempts=generation_attempts,
+                context_snapshot=preparation.context_snapshot,
+                scene_graph=preparation.scene_graph,
+                translation=translation,
+                human_decision_request=request,
+            )
+
+        if preparation.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE:
+            scene_reference = (
+                preparation.scene_graph.event_id
+                if preparation.scene_graph is not None
+                else f"scene-evidence:{mission_id}:missing"
+            )
+            return paused(preparation.outcome, (scene_reference,))
+        if (
+            preparation.planner_choice is None
+            or preparation.attempt is None
+            or preparation.context_snapshot is None
+            or preparation.scene_graph is None
+        ):
+            raise RuntimeError("planning preparation evidence is incomplete")
+
+        plan_method = getattr(translator, "plan", None)
+        if not callable(plan_method):
+            raise TypeError("planner translator must expose plan")
+        translation = plan_method(
+            mission_input,
+            preparation.planner_choice,
+            preparation.context_snapshot,
+            preparation.scene_graph,
+            asset_generator,
+            plan_revision=plan_revision,
+        )
+        if not isinstance(translation, PlanningTranslationResult):
+            raise TypeError("planner translator returned an invalid result")
+        published_attempts = tuple(
+            hyper_agent.publish_generation_attempt(
+                attempt,
+                preparation.planner_choice,
+            )
+            for attempt in translation.generation_attempts
+        )
+        if published_attempts != translation.generation_attempts:
+            raise RuntimeError(
+                "published correction attempts do not match translation evidence"
+            )
+        latest_attempt = published_attempts[-1]
+        if translation.outcome is not PlanningTranslationOutcome.VERIFIED:
+            references = list(latest_attempt.asset_references.values())
+            if translation.evidence is not None:
+                references.extend(
+                    str(path)
+                    for path in (
+                        *translation.evidence.artifact_paths,
+                        translation.evidence.stdout_path,
+                        translation.evidence.stderr_path,
+                    )
+                )
+            if not references:
+                references.append(latest_attempt.attempt_id)
+            return paused(
+                translation.outcome,
+                tuple(sorted(set(references))),
+                translation,
+            )
+
+        plan = translation.normalized_plan
+        if plan is None:
+            raise RuntimeError("verified translation did not provide a plan")
+        generated_asset_hashes = {
+            name: reference.sha256
+            for name, reference in plan.provenance.generated_assets.items()
+        }
+        if generated_asset_hashes != dict(latest_attempt.asset_sha256):
+            raise RuntimeError(
+                "verified plan assets do not match Hyper generation evidence"
+            )
+        execution = self._run_mission(
+            mission_input,
+            plan=plan,
+            context_coordination=context_coordination,
+            fsm_runner=fsm_runner,
+            maneuver_control=maneuver_control,
+            environment_step=environment_step,
+        )
+        return PlanningMissionRunResult(
+            outcome=preparation.outcome,
+            planner_choice=preparation.planner_choice,
+            attempt=latest_attempt,
+            generation_attempts=(preparation.generation_attempts + published_attempts),
+            context_snapshot=preparation.context_snapshot,
+            scene_graph=preparation.scene_graph,
+            translation=translation,
+            execution=execution,
+        )
+
+    def _prepare_planning_mission(
         self,
         mission_input: MissionInput,
         *,
@@ -1210,14 +1207,19 @@ class RuntimeComposition:
             [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
             PlannerGenerationAttempt,
         ],
+        bayesian_belief_service: BayesianBeliefService | None = None,
     ) -> PlanningMissionRunResult:
         if not isinstance(mission_input, MissionInput):
             raise TypeError("run_planning_mission requires a MissionInput")
         if not callable(environment_heartbeat) or not callable(generate):
-            raise TypeError("planning Mission Run requires environment and generation callables")
+            raise TypeError(
+                "planning Mission Run requires environment and generation callables"
+            )
         mission_id = mission_input.mission_id
         if context_coordination.subscription.mission_id != mission_id:
-            raise ValueError("Context Coordination mission ID does not match MissionInput")
+            raise ValueError(
+                "Context Coordination mission ID does not match MissionInput"
+            )
 
         scene_subscription = Subscription(
             "runtime-planning-scene-observer",
@@ -1237,7 +1239,9 @@ class RuntimeComposition:
             details={"operation": "run_planning_mission"},
         )
         with (
-            self.transport.open_consumer(context_coordination.subscription) as context_consumer,
+            self.transport.open_consumer(
+                context_coordination.subscription
+            ) as context_consumer,
             self.transport.open_consumer(scene_subscription) as scene_consumer,
         ):
             environment_heartbeat()
@@ -1279,15 +1283,44 @@ class RuntimeComposition:
                     context_snapshot=snapshot,
                     scene_graph=scene_graph,
                 )
+            belief_source = "bayesian_belief_snapshot"
+            belief_revision = snapshot.source_revisions[belief_source]
+            belief_reference = snapshot.source_references[belief_source]
+            belief_hash = snapshot.source_hashes[belief_source]
+            belief_snapshot = None
+            if any(
+                value is not None
+                for value in (belief_revision, belief_reference, belief_hash)
+            ):
+                if (
+                    belief_revision is None
+                    or belief_reference is None
+                    or belief_hash is None
+                ):
+                    raise ValueError("MissionSnapshot belief provenance is incomplete")
+                if bayesian_belief_service is None:
+                    raise ValueError(
+                        "planning requires the durable Bayesian belief service"
+                    )
+                belief_snapshot = bayesian_belief_service.load_snapshot_reference(
+                    belief_reference,
+                    belief_hash,
+                )
             heartbeat = hyper_agent.planning_heartbeat(
                 mission_input,
                 snapshot,
                 scene_graph,
                 generate,
+                belief_snapshot,
             )
             if not isinstance(heartbeat, HyperPlanningHeartbeatResult):
-                raise RuntimeError("Hyper Agent did not publish planning heartbeat evidence")
-            if heartbeat.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE:
+                raise RuntimeError(
+                    "Hyper Agent did not publish planning heartbeat evidence"
+                )
+            if (
+                heartbeat.outcome
+                is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+            ):
                 logger.emit(
                     mission_id,
                     "runtime",
@@ -1319,10 +1352,39 @@ class RuntimeComposition:
                 planner_choice=heartbeat.planner_choice,
                 outcome=heartbeat.outcome,
                 attempt=heartbeat.attempt,
+                generation_attempts=(heartbeat.attempt,),
                 context_snapshot=snapshot,
                 scene_graph=scene_graph,
             )
 
+    def resolve_planning_mission(
+        self,
+        decision: HumanDecision,
+        *,
+        human_decision_coordinator: HumanDecisionCoordinator,
+        resume: Callable[[RunCheckpoint], PlanningMissionRunResult],
+    ) -> PlanningMissionDecisionResult:
+        """Apply an operator decision, resuming only from its persisted checkpoint."""
+
+        if not isinstance(human_decision_coordinator, HumanDecisionCoordinator):
+            raise TypeError("planning Mission Run requires Human Decision coordination")
+        if not callable(resume):
+            raise TypeError("planning Mission Run resume callback must be callable")
+        resolution = human_decision_coordinator.record(decision)
+        if resolution.disposition is HumanDecisionDisposition.END:
+            return PlanningMissionDecisionResult(resolution)
+        checkpoint = resolution.checkpoint
+        if checkpoint is None:
+            raise RuntimeError("resume resolution did not provide a Run Checkpoint")
+        with human_decision_coordinator.resume_claim(resolution) as claimed:
+            if not claimed:
+                return PlanningMissionDecisionResult(resolution)
+            resumed_run = resume(checkpoint)
+            if not isinstance(resumed_run, PlanningMissionRunResult):
+                raise TypeError(
+                    "planning Mission Run resume callback returned an invalid result"
+                )
+            return PlanningMissionDecisionResult(resolution, resumed_run)
 
 
 def create_runtime(

@@ -9,8 +9,8 @@ from dataclasses import dataclass, replace
 from typing import Callable, Protocol, cast
 
 from onr.contracts.fsm import (
-    FSMExecutionRecord,
     FSMEvent,
+    FSMExecutionRecord,
     FSMStatus,
     ManeuverDecision,
     ManeuverFeedback,
@@ -18,19 +18,8 @@ from onr.contracts.fsm import (
     TransitionCandidate,
 )
 from onr.contracts.planning import (
-    ManeuverIntent,
-    ManeuverParameter,
-    MissionSpec,
     NormalizedPlan,
     PlannerChoice,
-    PlanningOutcome,
-    PlanningProfile,
-    JsonScalar,
-    ScheduledManeuver,
-    SymbolicManeuver,
-    SymbolicMissionSpec,
-    SymbolicPlanStep,
-    TemporalManeuver,
 )
 from onr.contracts.transport import (
     NormalizedPlanTransportEvent,
@@ -65,131 +54,6 @@ def _int_field(value: Mapping[str, object], key: str, label: str) -> int:
     return item
 
 
-def _scalar(value: object, label: str) -> JsonScalar:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value
-    raise ValueError(f"{label} must be a JSON scalar")
-
-
-def _strings(value: object, label: str) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{label} must be an array of strings")
-    return tuple(value)
-
-
-def _objects(value: object, label: str) -> tuple[Mapping[str, object], ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{label} must be an array")
-    return tuple(_object(item, label) for item in value)
-
-
-def _intent(value: object) -> ManeuverIntent:
-    intent = _object(value, "normalized maneuver intent")
-    if set(intent) != {"action", "parameters"}:
-        raise ValueError("normalized maneuver intent is invalid")
-    parameters = _object(intent["parameters"], "normalized maneuver parameters")
-    return ManeuverIntent(
-        action=_text_field(intent, "action", "maneuver action"),
-        parameters=tuple(
-            ManeuverParameter(name=name, value=_scalar(parameter, "maneuver parameter"))
-            for name, parameter in parameters.items()
-        ),
-    )
-
-
-def _normalized_plan(value: object) -> NormalizedPlan:
-    """Rehydrate only the existing validated planning contract from transport JSON."""
-
-    return NormalizedPlan.from_dict(_object(value, "normalized plan payload"))
-
-    plan = _object(value, "normalized plan payload")
-    expected = {
-        "mission_spec",
-        "plan_revision",
-        "mission_snapshot_id",
-        "planner_choice",
-        "outcome",
-        "maneuvers",
-    }
-    if set(plan) != expected:
-        raise ValueError("normalized plan contains unknown or missing fields")
-    spec = _object(plan["mission_spec"], "normalized plan mission specification")
-    choice = PlannerChoice.from_dict(_object(plan["planner_choice"], "planner choice"))
-    spec_choice = PlannerChoice.from_dict(_object(spec["planner_choice"], "mission planner choice"))
-    if choice != spec_choice:
-        raise ValueError("normalized plan planner choices do not match")
-    intents = _objects(plan["maneuvers"], "normalized plan maneuvers")
-    spec_maneuvers = _objects(spec["maneuvers"], "mission specification maneuvers")
-    if choice.planning_profile is PlanningProfile.TEMPORAL:
-        mission = MissionSpec(
-            mission_id=_text_field(spec, "mission_id", "mission ID"),
-            objective=_text_field(spec, "objective", "mission objective"),
-            planner_choice=spec_choice,
-            maneuvers=tuple(
-                TemporalManeuver(
-                    maneuver_id=_text_field(item, "maneuver_id", "maneuver ID"),
-                    intent=_intent(item["intent"]),
-                    dependencies=_strings(item["dependencies"], "maneuver dependencies"),
-                    duration=_int_field(item, "duration", "maneuver duration"),
-                )
-                for item in spec_maneuvers
-            ),
-            horizon=_int_field(spec, "horizon", "mission horizon"),
-            source_authority=_text_field(spec, "source_authority", "source authority"),
-        )
-        maneuvers = tuple(
-            ScheduledManeuver(
-                maneuver_id=_text_field(item, "maneuver_id", "scheduled maneuver ID"),
-                intent=_intent(item["intent"]),
-                dependencies=_strings(item["dependencies"], "scheduled dependencies"),
-                start=_int_field(item, "start", "scheduled start"),
-                duration=_int_field(item, "duration", "scheduled duration"),
-            )
-            for item in intents
-        )
-    else:
-        mission = SymbolicMissionSpec(
-            mission_id=_text_field(spec, "mission_id", "mission ID"),
-            objective=_text_field(spec, "objective", "mission objective"),
-            planner_choice=spec_choice,
-            maneuvers=tuple(
-                SymbolicManeuver(
-                    maneuver_id=_text_field(item, "maneuver_id", "maneuver ID"),
-                    intent=_intent(item["intent"]),
-                    dependencies=_strings(item["dependencies"], "maneuver dependencies"),
-                    cost=_int_field(item, "cost", "maneuver cost"),
-                )
-                for item in spec_maneuvers
-            ),
-            source_authority=_text_field(spec, "source_authority", "source authority"),
-            domain_revision=(
-                _int_field(spec, "domain_revision", "domain revision")
-                if "domain_revision" in spec
-                else 1
-            ),
-        )
-        maneuvers = tuple(
-            SymbolicPlanStep(
-                step_index=_int_field(item, "step_index", "symbolic step index"),
-                maneuver_id=_text_field(item, "maneuver_id", "symbolic maneuver ID"),
-                intent=_intent(item["intent"]),
-                dependencies=_strings(item["dependencies"], "symbolic dependencies"),
-                cost=_int_field(item, "cost", "symbolic step cost"),
-            )
-            for item in intents
-        )
-    return NormalizedPlan(
-        mission_spec=mission,
-        plan_revision=_int_field(plan, "plan_revision", "plan revision"),
-        mission_snapshot_id=_text_field(plan, "mission_snapshot_id", "mission snapshot ID"),
-        planner_choice=choice,
-        outcome=PlanningOutcome(_text_field(plan, "outcome", "planning outcome")),
-        maneuvers=maneuvers,
-    )
-
-
 def _plan_from_message(message: object) -> NormalizedPlan:
     if isinstance(message, NormalizedPlanTransportEvent):
         return message.normalized_plan
@@ -210,7 +74,9 @@ def _plan_from_message(message: object) -> NormalizedPlan:
         }
         if not required.issubset(payload):
             raise ValueError("normalized-plan transport payload is missing provenance")
-        plan = _normalized_plan(payload["normalized_plan"])
+        plan = NormalizedPlan.from_dict(
+            _object(payload["normalized_plan"], "normalized plan payload")
+        )
         document = payload["normalized_plan_document"]
         digest = payload["normalized_plan_sha256"]
         if not isinstance(document, str) or not isinstance(digest, str):
@@ -382,25 +248,40 @@ class FSMRunner:
 
         if hasattr(consumer_or_message, "receive"):
             receiver = cast(_Receivable, consumer_or_message)
-            delivery = receiver.receive()
-            if delivery is None:
-                return None
-            try:
-                result = await self.handle(delivery.message)
-            except Exception:
-                delivery.nack()
-                if self.operational_log is not None:
-                    mission_id = self.subscription.mission_id if self.subscription is not None else "unknown"
-                    self.operational_log.emit(
-                        mission_id,
-                        "fsm-runner",
-                        "error",
-                        "failed",
-                        details={"operation": "run_once", "error_type": "fsm_error"},
-                    )
-                raise
-            delivery.ack()
-            return result
+            while True:
+                delivery = receiver.receive()
+                if delivery is None:
+                    return None
+                message = delivery.message
+                if (
+                    isinstance(message, TransportEvent)
+                    and message.event_kind != "normalized-plan"
+                ):
+                    delivery.ack()
+                    continue
+                try:
+                    result = await self.handle(message)
+                except Exception:
+                    delivery.nack()
+                    if self.operational_log is not None:
+                        mission_id = (
+                            self.subscription.mission_id
+                            if self.subscription is not None
+                            else "unknown"
+                        )
+                        self.operational_log.emit(
+                            mission_id,
+                            "fsm-runner",
+                            "error",
+                            "failed",
+                            details={
+                                "operation": "run_once",
+                                "error_type": "fsm_error",
+                            },
+                        )
+                    raise
+                delivery.ack()
+                return result
         return await self.handle(consumer_or_message)
 
     async def transition(

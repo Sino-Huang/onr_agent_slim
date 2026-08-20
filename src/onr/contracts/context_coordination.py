@@ -9,7 +9,6 @@ from typing import Any, Mapping
 
 from onr.contracts.transport import TransportEvent
 
-
 MISSION_SNAPSHOT_SOURCES = (
     "plan",
     "operational_scene_graph",
@@ -311,6 +310,7 @@ def create_source_fact_event(
     reference: str | None = None,
     health: str | bool = "healthy",
     fresh: bool = True,
+    content_sha256: str | None = None,
 ) -> TransportEvent:
     """Create a generic, JSON-safe source revision/health fact event."""
 
@@ -324,6 +324,12 @@ def create_source_fact_event(
     health = _text(health, "source health")
     if not isinstance(fresh, bool):
         raise ValueError("source freshness must be boolean")
+    if content_sha256 is not None and (
+        not isinstance(content_sha256, str)
+        or len(content_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in content_sha256)
+    ):
+        raise ValueError("source content hash must be a lowercase SHA-256 digest")
     return TransportEvent(
         schema_version=1,
         event_id=event_id,
@@ -336,6 +342,9 @@ def create_source_fact_event(
             "reference": _reference(reference, "source reference"),
             "health": health,
             "fresh": fresh,
+            **(
+                {"content_sha256": content_sha256} if content_sha256 is not None else {}
+            ),
         },
     )
 

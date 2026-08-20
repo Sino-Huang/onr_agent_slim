@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Any, cast
+from typing import Any, Callable, cast
 
 from onr.contracts.context_coordination import (
     MISSION_SNAPSHOT_SOURCES,
     MissionSnapshot,
     create_source_fact_event,
-    mission_snapshot_to_transport_event,
     mission_snapshot_from_transport_event,
+    mission_snapshot_to_transport_event,
     normalize_source_name,
 )
 from onr.contracts.transport import (
@@ -19,8 +19,8 @@ from onr.contracts.transport import (
     TransportEvent,
     normalized_plan_transport_event_to_wire,
 )
-from onr.ports.transport import Subscription
 from onr.ports.operational_log import OperationalLog
+from onr.ports.transport import Subscription
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +189,7 @@ class ContextCoordination:
         reference: str | None = None,
         health: str | bool = "healthy",
         fresh: bool = True,
+        content_sha256: str | None = None,
     ) -> TransportEvent:
         """Publish a revision/health fact for a non-plan authority source."""
 
@@ -205,6 +206,7 @@ class ContextCoordination:
             reference=reference,
             health=health,
             fresh=fresh,
+            content_sha256=content_sha256,
         )
         return self._transport.publish_event(self.input_topic, event)
 

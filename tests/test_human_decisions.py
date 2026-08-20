@@ -150,6 +150,31 @@ def test_recorded_human_decision_resumes_or_ends_deterministically(tmp_path) -> 
     assert resumed.disposition is HumanDecisionDisposition.RESUME
     assert resumed.checkpoint == checkpoint
 
+    revise_checkpoint = RunCheckpoint(
+        "checkpoint-revise",
+        "mission-revise",
+        "run-revise",
+        "planning",
+    )
+    revise_request = coordinator.pause(
+        HumanDecisionCategory.UNSOLVABLE,
+        revise_checkpoint,
+        correlation_id="unsolvable-plan",
+        evidence_references=("artifacts/mission-revise/solver.stdout",),
+    )
+    revised = coordinator.record(
+        HumanDecision(
+            "decision-revise",
+            revise_request.request_id,
+            revise_request.mission_id,
+            revise_request.mission_run_id,
+            HumanDecisionAction.REVISE_MISSION_INTENT,
+        )
+    )
+
+    assert revised.disposition is HumanDecisionDisposition.RESUME
+    assert revised.checkpoint == revise_checkpoint
+
     end_checkpoint = RunCheckpoint(
         "checkpoint-2",
         "mission-2",
