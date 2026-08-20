@@ -894,13 +894,151 @@ def test_runtime_diagram_inspects_real_components_edges_and_debug_conversation(
             expect(page.locator("#inspectorBody")).to_contain_text(
                 "persist_planner_assets"
             )
-            expect(page.locator("#inspectorBody")).to_contain_text("Input / request")
+            expect(page.locator("#inspectorBody")).to_contain_text(
+                "New input / request"
+            )
             expect(page.locator("#inspectorBody")).to_contain_text("Provider reasoning")
             expect(page.locator("#inspectorBody")).to_contain_text(
                 "Output / content / tool calls"
             )
             assert page.locator(".conversation-list").evaluate(
                 "element => element.scrollHeight > element.clientHeight"
+            )
+        finally:
+            context.close()
+
+
+def test_conversation_inspector_omits_cumulative_request_history(
+    chromium_browser: Browser, tmp_path: Path
+) -> None:
+    with _viewer_server(tmp_path, active=False) as (url, _, _):
+        context, page = _page(chromium_browser, width=1440, height=1000)
+        try:
+            first_messages = [
+                {"role": "system", "content": "repeated system prompt"},
+                {"role": "user", "content": "repeated mission request"},
+            ]
+            previous_tool_call = {
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "previous_tool_call",
+                    "arguments": "{}",
+                },
+            }
+            second_messages = [
+                *first_messages,
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "function_call": None,
+                    "tool_calls": [previous_tool_call],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-1",
+                    "content": "fresh tool result",
+                },
+            ]
+            page.route(
+                "**/api/runtime",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "available": True,
+                            "active": False,
+                            "mission_ids": ["mission-conversation"],
+                        }
+                    ),
+                ),
+            )
+            page.route(
+                "**/api/trace?mission_id=mission-conversation",
+                lambda route: route.fulfill(
+                    content_type="application/json", body='{"items":[]}'
+                ),
+            )
+            page.route(
+                "**/api/debug?mission_id=mission-conversation",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "enabled": True,
+                            "profiles": [],
+                            "invocations": [],
+                            "conversations": [
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 1,
+                                    "input": first_messages,
+                                    "output": {
+                                        "content": None,
+                                        "function_call": None,
+                                        "tool_calls": [previous_tool_call],
+                                    },
+                                },
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 2,
+                                    "input": second_messages,
+                                    "output": {
+                                        "content": "next answer",
+                                        "function_call": None,
+                                        "tool_calls": [],
+                                    },
+                                },
+                                {
+                                    "role": "hyper-agent",
+                                    "sequence": 3,
+                                    "input": [
+                                        *second_messages,
+                                        {
+                                            "role": "assistant",
+                                            "content": "next answer",
+                                        },
+                                        {
+                                            "role": "user",
+                                            "content": "fresh recovery request",
+                                        },
+                                    ],
+                                    "output": {
+                                        "content": "recovered answer",
+                                        "function_call": None,
+                                        "tool_calls": [],
+                                    },
+                                },
+                            ],
+                        }
+                    ),
+                ),
+            )
+
+            page.goto(url, wait_until="networkidle")
+            page.locator(".node[data-component='hyper-agent']").click()
+
+            cards = page.locator(".conversation")
+            expect(cards).to_have_count(3)
+            second_input = cards.nth(1).locator(".exchange.input")
+            expect(second_input.locator("strong")).to_have_text("New input / request")
+            expect(second_input.locator("pre")).to_contain_text("fresh tool result")
+            expect(second_input.locator("pre")).not_to_contain_text(
+                "repeated system prompt"
+            )
+            expect(second_input.locator("pre")).not_to_contain_text(
+                "repeated mission request"
+            )
+            expect(second_input.locator("pre")).not_to_contain_text(
+                "previous_tool_call"
+            )
+            third_input = cards.nth(2).locator(".exchange.input")
+            expect(third_input.locator("pre")).to_contain_text(
+                "fresh recovery request"
+            )
+            expect(third_input.locator("pre")).not_to_contain_text("next answer")
+            expect(third_input.locator("pre")).not_to_contain_text(
+                "fresh tool result"
             )
         finally:
             context.close()
