@@ -17,6 +17,7 @@ from onr.contracts.planning import (
     ManeuverIntent,
     PlannerChoice,
     PlannerExecutionEvidence,
+    PlannerStaticCheckResult,
     PlanningOutcome,
     SymbolicActionCall,
     SymbolicManeuver,
@@ -45,9 +46,14 @@ class FakeFastDownwardPlanner:
         self.checks = checks
         self.executions = executions
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         _ = assets
-        return self.checks.pop(0)
+        accepted = self.checks.pop(0)
+        return PlannerStaticCheckResult(
+            accepted,
+            0 if accepted else 1,
+            stderr="Fast Downward parse error: invalid domain" if not accepted else "",
+        )
 
     def execute(self, assets: Mapping[str, bytes]) -> SymbolicPlannerExecutionResult:
         _ = assets
@@ -173,7 +179,7 @@ def _solved_execution(tmp_path: Path) -> SymbolicPlannerExecutionResult:
     )
 
 
-def test_static_pddl_rejection_gets_sanitized_feedback_before_val_verified_plan(
+def test_static_pddl_rejection_gets_exact_feedback_before_val_verified_plan(
     tmp_path: Path,
 ) -> None:
     mission_input, choice, snapshot, scene = _planning_context()
@@ -215,7 +221,14 @@ def test_static_pddl_rejection_gets_sanitized_feedback_before_val_verified_plan(
     feedback = generator.requests[1].correction_feedback
     assert feedback is not None
     assert feedback.stage is PlannerCorrectionStage.STATIC
-    assert "invalid" not in feedback.message
+    assert feedback.message == "Fast Downward parse error: invalid domain"
+    assert set(feedback.diagnostic_references) == {"stdout", "stderr"}
+    assert Path(feedback.diagnostic_references["stdout"]).read_text(
+        encoding="utf-8"
+    ) == ""
+    assert Path(feedback.diagnostic_references["stderr"]).read_text(
+        encoding="utf-8"
+    ) == "Fast Downward parse error: invalid domain"
     assert len(validator.evidence) == 1
 
 

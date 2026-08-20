@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Protocol
 
 from onr.contracts.planning import (
+    PlannerStaticCheckResult,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     SymbolicPlannerExecutionResult,
@@ -15,8 +16,8 @@ class MiniZincPlannerExecutor(Protocol):
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult: ...
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
-        """Return whether MiniZinc accepts the model instance."""
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        """Return MiniZinc acceptance plus exact process diagnostics."""
         ...
 
 
@@ -27,8 +28,8 @@ class FastDownwardPlannerExecutor(Protocol):
         self, assets: Mapping[str, bytes]
     ) -> SymbolicPlannerExecutionResult: ...
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
-        """Return whether Fast Downward translates the PDDL."""
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        """Return Fast Downward acceptance plus exact process diagnostics."""
         ...
 
 

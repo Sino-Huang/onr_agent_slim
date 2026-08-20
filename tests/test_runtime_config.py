@@ -34,7 +34,7 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.debug is True
     assert config.llm.provider == "vllm"
     assert config.llm.base_url == "http://127.0.0.1:11411/v1"
-    assert config.llm.model == "google/gemma-4-31B-it"
+    assert config.llm.model == "Qwen/Qwen3.8-27B-FP8"
     assert config.llm.api_key == "EMPTY"
     assert config.planners.temporal.entrypoint == root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
     assert config.planners.symbolic.entrypoint == root / "modules/downward/fast-downward.py"

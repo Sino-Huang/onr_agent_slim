@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate planner-native model and data files from Mission Intent and the current Hyper heartbeat snapshot.
-version: '1.4.0'
+version: '1.7.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -9,11 +9,11 @@ version: '1.4.0'
 ## Procedure
 
 1. Keep the Hyper todo list explicit: parse Mission Intent into PlanningIntent, decide the planner, then generate planner problem files.
-2. Read the raw Mission Intent, accepted PlanningIntent, and `load_planning_context`. Keep source roles distinct: `static_info` supplies report events, `scene_graph` supplies current drone state/capabilities, and `belief_snapshot` supplies entity risks.
+2. Read the raw Mission Intent, accepted PlanningIntent, and `load_planning_context`. Inspect the current `environment_data` payload before choosing planner fields: its names and nesting are flexible and may change between environment adapters. Keep environment facts and `belief_snapshot` facts distinct, joining them only through identifiers present in the current evidence.
 3. Separate reusable constraints into model.mzn and current authorized values into data.dzn. Preserve supplied entity IDs, positions, event times, risks, units, and mission limits.
 4. Scale finite decimal times, coordinates, and probabilities to integers once and record each scale in data.dzn.
-5. Produce one attempt-specific asset set. Use `write_file` to create complete `model.mzn` and `data.dzn` at the exact `planner_asset_locations` returned by `load_planning_context`.
-6. When `correction_feedback` is present, treat its sanitized validation stage and message as the complete diagnosis. Generate a fresh asset set that corrects that failure within the runtime's retry bound.
+5. Produce one attempt-specific asset set. Use one `write_file` response to create complete `model.mzn`, wait for its tool result, then use a separate `write_file` response to create complete `data.dzn` at the exact `planner_asset_locations` returned by `load_planning_context`. Include every current record needed by the chosen planning semantics.
+6. When `correction_feedback` is present, read its exact MiniZinc error and diagnostic references. Generate a fresh asset set that corrects the cited failure within the runtime's retry bound.
 7. Use the same maneuver IDs in MiniZinc output and the normalization template. Emit only the `assignments` JSON object expected by the independent solution checker. Put solver-selected waypoint values in each assignment's `parameters` object.
 8. Pass those exact file locations and the normalization template to `persist_planner_assets`; it freezes the files and returns immutable references for `planner_executor`.
 9. Complete the generation todo only after static validation succeeds, MiniZinc reports an optimal solution, the independent solution checker accepts it, and every generated datum is traceable to Mission Intent or snapshot evidence.
@@ -26,9 +26,19 @@ version: '1.4.0'
 Use an example as a shape guide. Replace every value with the current Mission's
 snapshot-authorized evidence.
 
+## Must Not Do
+
+- Do not write an untyped assignment such as `max_velocity = 20;` in `model.mzn`. Declare every model parameter with its MiniZinc type, such as `int: max_velocity;`, and put the current value `max_velocity = 20;` in `data.dzn`.
+- Do not assign the same parameter in both files. Keep declarations and reusable constraints in `model.mzn`; keep snapshot-authorized values in `data.dzn`.
+- Do not use placeholders, representative samples, or truncated event lists. Encode every required record from the authorized planning context.
+- Do not repeat a rejected construct. Use the exact `correction_message` and `diagnostic_references` from `planner_executor` to repair the cited file and location.
+- Do not assume environment keys such as `static_info`, `scene_graph`, `entities`, or `location` exist. Inspect the payload returned for this episode and map its actual structure into planner data.
+- Do not copy example data values into a generated attempt. Examples provide MiniZinc structure; current values must come from the authorized planning context.
+- Do not emit both complete planner files in one model response. Write and confirm `model.mzn` before generating `data.dzn` so each tool call remains bounded.
+
 ## Event-information patrol example
 
-The example consumes all 253 unchanged `static_info` events. It normalizes time
+For the example payload, the model consumes all 253 report events. It normalizes time
 to half-second ticks and horizontal positions to metres, derives 155 unique
 candidate opportunities, and chooses four chronological dwell stops.
 

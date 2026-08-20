@@ -18,7 +18,7 @@ from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planner_translation import environment_data_sha256
-from onr.contracts.planning import PlannerExecutionResult
+from onr.contracts.planning import PlannerExecutionResult, PlannerStaticCheckResult
 from onr.contracts.transport import TransportEvent
 from onr.runtime import RuntimeComposition
 
@@ -30,9 +30,13 @@ class RejectingPlanner:
     def __init__(self) -> None:
         self.checked_assets: list[dict[str, bytes]] = []
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         self.checked_assets.append(dict(assets))
-        return False
+        return PlannerStaticCheckResult(
+            False,
+            1,
+            stderr="MiniZinc rejected the live-test model.",
+        )
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         _ = assets

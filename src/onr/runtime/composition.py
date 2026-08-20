@@ -314,8 +314,8 @@ class RuntimeComposition:
             model=llm.model,
             api_key=cast(Any, llm.api_key),
             temperature=llm.temperature,
-            timeout=120.0,
-            max_retries=1,
+            timeout=300.0,
+            max_retries=0,
             **options,
         )
         if recorder is not None:

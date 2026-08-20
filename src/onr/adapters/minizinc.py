@@ -14,6 +14,7 @@ from typing import cast
 from onr.contracts.planning import (
     JsonScalar,
     ManeuverParameter,
+    PlannerStaticCheckResult,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlanningOutcome,
@@ -58,11 +59,15 @@ class MiniZincExecutor:
         object.__setattr__(self, "artifact_root", artifact_root)
         object.__setattr__(self, "arguments", arguments)
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
-        """Return whether MiniZinc accepts the generated model instance."""
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        """Return MiniZinc acceptance plus its exact process output."""
 
         if set(assets) != {"model.mzn", "data.dzn"}:
-            return False
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stderr="MiniZinc static check requires model.mzn and data.dzn.",
+            )
         try:
             artifact_root = Path(self.artifact_root)
             artifact_root.mkdir(parents=True, exist_ok=True)
@@ -84,9 +89,28 @@ class MiniZincExecutor:
                     text=True,
                     timeout=self.timeout_seconds,
                 )
-        except (OSError, TypeError, ValueError, UnicodeError, subprocess.TimeoutExpired):
-            return False
-        return completed.returncode == 0
+        except subprocess.TimeoutExpired as exc:
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stdout=_output_text(exc.stdout),
+                stderr=(
+                    _output_text(exc.stderr)
+                    or f"MiniZinc static check timed out after {self.timeout_seconds} seconds."
+                ),
+            )
+        except (OSError, TypeError, ValueError, UnicodeError) as exc:
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stderr=f"{type(exc).__name__}: {exc}",
+            )
+        return PlannerStaticCheckResult(
+            completed.returncode == 0,
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         try:

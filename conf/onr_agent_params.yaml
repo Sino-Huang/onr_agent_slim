@@ -3,7 +3,7 @@ debug: true
 llm:
   provider: vllm
   base_url: http://127.0.0.1:11411/v1
-  model: google/gemma-4-31B-it
+  model: Qwen/Qwen3.8-27B-FP8
   api_key: EMPTY
   temperature: 0
 planners:

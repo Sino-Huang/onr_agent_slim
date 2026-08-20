@@ -184,18 +184,24 @@ def test_minizinc_executor_static_check_uses_real_model_and_data_parser(
     )
     executor = MiniZincExecutor(minizinc, tmp_path / "artifacts")
 
-    assert executor.check(
+    accepted = executor.check(
         {
             "model.mzn": (example / "model.mzn").read_bytes(),
             "data.dzn": (example / "data.dzn").read_bytes(),
         }
     )
-    assert not executor.check(
+    rejected = executor.check(
         {
             "model.mzn": b"this is not MiniZinc;",
             "data.dzn": b"horizon = 3;",
         }
     )
+    assert accepted.accepted is True
+    assert accepted.return_code == 0
+    assert rejected.accepted is False
+    assert rejected.return_code == 1
+    assert "syntax error" in rejected.error_message
+    assert rejected.error_message == rejected.stderr.strip()
 
 
 def test_event_information_patrol_example_is_optimal_and_preserves_waypoints(
@@ -226,7 +232,7 @@ def test_event_information_patrol_example_is_optimal_and_preserves_waypoints(
         minizinc, tmp_path / "patrol-artifacts", timeout_seconds=30
     )
 
-    assert executor.check(assets)
+    assert executor.check(assets).accepted is True
     result = executor.execute(assets)
 
     assert result.outcome is PlanningOutcome.SOLVED

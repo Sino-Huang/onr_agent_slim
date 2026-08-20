@@ -16,6 +16,7 @@ from onr.contracts.planner_translation import (
 from onr.contracts.planning import (
     ManeuverIntent,
     ManeuverParameter,
+    PlannerStaticCheckResult,
     PlannerChoice,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
@@ -47,9 +48,14 @@ class FakeMiniZincPlanner:
         self.executions = executions
         self.executed_assets: list[Mapping[str, bytes]] = []
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         _ = assets
-        return self.checks.pop(0)
+        accepted = self.checks.pop(0)
+        return PlannerStaticCheckResult(
+            accepted,
+            0 if accepted else 1,
+            stderr="MiniZinc syntax error: invalid model" if not accepted else "",
+        )
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         self.executed_assets.append(assets)
@@ -136,7 +142,7 @@ def _evidence(tmp_path: Path) -> PlannerExecutionEvidence:
     )
 
 
-def test_static_rejection_gets_sanitized_feedback_before_verified_plan(
+def test_static_rejection_gets_exact_feedback_before_verified_plan(
     tmp_path: Path,
 ) -> None:
     mission_input, choice, snapshot, scene = _planning_context()
@@ -191,8 +197,14 @@ def test_static_rejection_gets_sanitized_feedback_before_verified_plan(
     feedback = generator.requests[1].correction_feedback
     assert feedback is not None
     assert feedback.stage is PlannerCorrectionStage.STATIC
-    assert feedback.message == "Generated planner assets failed static validation."
-    assert "invalid" not in feedback.message
+    assert feedback.message == "MiniZinc syntax error: invalid model"
+    assert set(feedback.diagnostic_references) == {"stdout", "stderr"}
+    assert Path(feedback.diagnostic_references["stdout"]).read_text(
+        encoding="utf-8"
+    ) == ""
+    assert Path(feedback.diagnostic_references["stderr"]).read_text(
+        encoding="utf-8"
+    ) == "MiniZinc syntax error: invalid model"
     assert len(planner.executed_assets) == 1
 
     assert result.normalized_plan.maneuvers[0].intent.to_dict()["parameters"] == {

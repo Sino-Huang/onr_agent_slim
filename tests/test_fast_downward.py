@@ -150,15 +150,21 @@ def test_fast_downward_static_check_uses_real_pddl_translator(tmp_path) -> None:
         timeout_seconds=10,
     )
 
-    assert executor.check(
+    accepted = executor.check(
         {
             "domain.pddl": (benchmark / "domain.pddl").read_bytes(),
             "problem.pddl": (benchmark / "prob01.pddl").read_bytes(),
         }
     )
-    assert not executor.check(
+    rejected = executor.check(
         {
             "domain.pddl": b"this is not PDDL",
             "problem.pddl": b"(define (problem invalid))",
         }
     )
+    assert accepted.accepted is True
+    assert accepted.return_code == 0
+    assert rejected.accepted is False
+    assert rejected.return_code != 0
+    assert rejected.error_message
+    assert rejected.error_message in (rejected.stderr.strip(), rejected.stdout.strip())

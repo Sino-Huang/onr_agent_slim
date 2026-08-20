@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
+from pydantic import Field
 
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.adapters.operational_log import InProcessOperationalLog
@@ -21,11 +22,14 @@ from onr.adapters.system_prompts import load_system_prompt
 from onr.agents.hyper_workflow import (
     DeepAgentsHyperWorkflow,
     HyperWorkflowContext,
+    _allowed_workflow_tools,
+    _normalize_provider_tool_value,
     create_hyper_workflow_agent,
     load_planning_context,
     persist_planner_assets,
     planner_executor,
     record_planning_intent,
+    submit_statechart_draft,
 )
 from onr.application.bayesian_belief import belief_artifact_reference
 from onr.application.minizinc_translation import MiniZincTranslation
@@ -39,6 +43,7 @@ from onr.contracts.planner_translation import (
 from onr.contracts.planning import (
     PlannerExecutionEvidence,
     PlannerExecutionResult,
+    PlannerStaticCheckResult,
     PlanningOutcome,
     TemporalAssignment,
 )
@@ -51,17 +56,25 @@ _STAGES = (
     "Parse Mission Intent into PlanningIntent",
     "Decide and record the MiniZinc planner inside PlanningIntent",
     "Load the current snapshot-authorized operational evidence",
-    "Generate and write MiniZinc problem files",
+    "Write MiniZinc problem files from the current operational evidence",
     "Persist the written MiniZinc problem files",
     "Run MiniZinc and repair rejected translations",
     "Generate a semantic Statechart from the verified NormalizedPlan",
     "Validate and repair the Statechart",
 )
+_REFLECTIVE_TOOLS = {
+    "record_planning_intent",
+    "load_planning_context",
+    "persist_planner_assets",
+    "planner_executor",
+    "submit_statechart_draft",
+}
 
 
 class ScriptedWorkflowModel(BaseChatModel):
     responses: list[AIMessage]
     response_index: int = 0
+    bound_tool_names: list[frozenset[str]] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -86,7 +99,13 @@ class ScriptedWorkflowModel(BaseChatModel):
         tool_choice: str | None = None,
         **kwargs: Any,
     ) -> ScriptedWorkflowModel:
-        _ = tools, tool_choice, kwargs
+        _ = tool_choice, kwargs
+        names = {
+            cast(str, item.name)
+            for item in cast(list[object], tools)
+            if isinstance(getattr(item, "name", None), str)
+        }
+        self.bound_tool_names.append(frozenset(names))
         return self
 
 
@@ -94,9 +113,13 @@ class RejectingMiniZincPlanner:
     def __init__(self) -> None:
         self.checked_assets: list[dict[str, bytes]] = []
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         self.checked_assets.append(dict(assets))
-        return False
+        return PlannerStaticCheckResult(
+            False,
+            1,
+            stderr="MiniZinc rejected the scripted model.",
+        )
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         _ = assets
@@ -108,9 +131,17 @@ class VerifiedMiniZincPlanner:
         self.evidence = evidence
         self.check_count = 0
 
-    def check(self, assets: Mapping[str, bytes]) -> bool:
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         self.check_count += 1
-        return self.check_count == 2 and set(assets) == {"model.mzn", "data.dzn"}
+        accepted = self.check_count == 2 and set(assets) == {
+            "model.mzn",
+            "data.dzn",
+        }
+        return PlannerStaticCheckResult(
+            accepted,
+            0 if accepted else 1,
+            stderr="MiniZinc rejected the first scripted model." if not accepted else "",
+        )
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         for path in self.evidence.artifact_paths:
@@ -123,6 +154,11 @@ class VerifiedMiniZincPlanner:
 
 
 def _tool_call(name: str, args: dict[str, object], index: int) -> AIMessage:
+    if name in _REFLECTIVE_TOOLS:
+        args = {
+            **args,
+            "reflection": f"Proceeding with the {name} workflow stage.",
+        }
     return AIMessage(
         content="",
         tool_calls=[
@@ -231,6 +267,79 @@ def _runtime(context: HyperWorkflowContext) -> ToolRuntime[HyperWorkflowContext]
     )
 
 
+def test_hyper_domain_tools_require_public_reflection() -> None:
+    for workflow_tool in (
+        record_planning_intent,
+        load_planning_context,
+        persist_planner_assets,
+        planner_executor,
+        submit_statechart_draft,
+    ):
+        schema = cast(Any, workflow_tool).tool_call_schema.model_json_schema()
+        assert "reflection" in schema["required"]
+        assert "private reasoning" in schema["properties"]["reflection"][
+            "description"
+        ]
+
+
+def test_provider_quote_markers_are_removed_from_statechart_context_keys() -> None:
+    assert _normalize_provider_tool_value(
+        {
+            "states": ["at-initial-location"],
+            "state_context": {
+                '<|"|>at-initial-location<|"|>': {"phase": "stationary"}
+            },
+        }
+    ) == {
+        "states": ["at-initial-location"],
+        "state_context": {"at-initial-location": {"phase": "stationary"}},
+    }
+
+
+def test_event_patrol_generation_phase_exposes_llm_file_writers(
+    tmp_path: Path,
+) -> None:
+    original_mission, snapshot, scene = _scene_context()
+    mission = MissionInput(
+        original_mission.mission_id,
+        "Patrol the environment and account for every reported event.",
+        original_mission.source_authority,
+    )
+    artifact_root = tmp_path / "planner-artifacts"
+    context = HyperWorkflowContext(
+        mission_input=mission,
+        mission_snapshot=snapshot,
+        environment_event=scene,
+        artifact_root=artifact_root,
+        minizinc_translation=MiniZincTranslation(
+            RejectingMiniZincPlanner(),
+            artifact_root / "generation-attempts",
+            max_corrections=0,
+        ),
+    )
+    runtime = _runtime(context)
+    cast(Any, record_planning_intent).func(
+        mission_id=mission.mission_id,
+        source_authority=mission.source_authority,
+        objective="account for every reported event",
+        planning_profile="temporal",
+        planner_id="minizinc",
+        rationale="Event capture depends on time, travel, and field of view.",
+        details={"optimization_goal": "information gain"},
+        reflection="Recording the event patrol planning decision.",
+        runtime=runtime,
+    )
+    cast(Any, load_planning_context).func(
+        reflection="Loading the current flexible environment payload.",
+        runtime=runtime,
+    )
+
+    allowed = _allowed_workflow_tools(context)
+
+    assert {"write_file", "edit_file", "persist_planner_assets"} <= allowed
+    assert "materialize_event_information_patrol" not in allowed
+
+
 def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     tmp_path: Path,
 ) -> None:
@@ -277,7 +386,12 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     )
     runtime = _runtime(context)
 
-    missing_intent = json.loads(cast(Any, load_planning_context).func(runtime=runtime))
+    missing_intent = json.loads(
+        cast(Any, load_planning_context).func(
+            reflection="Checking whether planning prerequisites are recorded.",
+            runtime=runtime,
+        )
+    )
     assert missing_intent == {
         "message": ("Call record_planning_intent, then retry load_planning_context."),
         "missing": ["planning_intent", "planner_choice"],
@@ -287,6 +401,24 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     }
     assert context.planning_context_loaded is False
 
+    rejected_intent = json.loads(
+        cast(Any, record_planning_intent).func(
+            mission_id=mission.mission_id,
+            source_authority=mission.source_authority,
+            objective="observe risky ships",
+            planning_profile="temporal",
+            planner_id="minizinc",
+            rationale="Observation feasibility depends on time and location.",
+            details={"objective": "field of view coverage"},
+            reflection="Recording the temporal planning decision.",
+            runtime=runtime,
+        )
+    )
+    assert rejected_intent["status"] == "rejected"
+    assert "reserved top-level keys" in rejected_intent["correction_message"]
+    assert rejected_intent["retry_tool"] == "record_planning_intent"
+    assert context.planning_intent is None
+
     recorded = json.loads(cast(Any, record_planning_intent).func(
         mission_id=mission.mission_id,
         source_authority=mission.source_authority,
@@ -295,6 +427,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
         planner_id="minizinc",
         rationale="Observation feasibility depends on time and location.",
         details={"observation_objective": "field of view coverage"},
+        reflection="Recording the temporal planning decision.",
         runtime=runtime,
     ))
     assert recorded["status"] == "accepted"
@@ -309,6 +442,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
             maneuvers=[],
             translator_id="hyper-minizinc",
             translator_version="1.0.0",
+            reflection="Checking whether the planner context is ready.",
             runtime=runtime,
         )
     )
@@ -316,7 +450,12 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     assert missing_context["required_tool"] == "load_planning_context"
     assert not (artifact_root / "drafts").exists()
 
-    ready = json.loads(cast(Any, load_planning_context).func(runtime=runtime))
+    ready = json.loads(
+        cast(Any, load_planning_context).func(
+            reflection="Loading the snapshot-authorized planning evidence.",
+            runtime=runtime,
+        )
+    )
     assert ready["status"] == "ready"
     assert ready["planning_intent"]["objective"] == "observe risky ships"
     assert ready["planner_choice"]["planner_choice"] == {
@@ -345,6 +484,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
         planner_id="minizinc",
         rationale="Observation feasibility depends on time and location.",
         details={"observation_objective": "field of view coverage"},
+        reflection="Confirming the recorded planning decision.",
         runtime=runtime,
     ))
     assert duplicate["status"] == "already_recorded"
@@ -355,6 +495,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
         cast(Any, planner_executor).func(
             planner_id="minizinc",
             asset_references=[],
+            reflection="Checking whether a persisted planner draft is ready.",
             runtime=runtime,
         )
     )
@@ -569,8 +710,9 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
         state_machine_factory=PythonStateMachineFactory(),
         operational_log=log,
     )
+    model = ScriptedWorkflowModel(responses=responses)
     graph = create_hyper_workflow_agent(
-        model=ScriptedWorkflowModel(responses=responses),
+        model=model,
         system_prompt=load_system_prompt(
             _REPO_ROOT / "conf/system_prompt", "hyper-agent"
         ),
@@ -626,6 +768,10 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
         "verified",
         "completed",
     ]
+    after_intent_tools = model.bound_tool_names[5]
+    assert "record_planning_intent" not in after_intent_tools
+    assert "load_planning_context" in after_intent_tools
+    assert "HyperWorkflowResultCandidate" not in after_intent_tools
 
 
 def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
@@ -788,14 +934,21 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
         for message in result.messages
         if isinstance(message, ToolMessage) and message.name == "planner_executor"
     ]
+    check_stdout = workspace / "minizinc-check.stdout"
+    check_stderr = workspace / "minizinc-check.stderr"
+    assert check_stdout.is_file()
+    assert check_stderr.is_file()
+    assert "syntax error" in check_stderr.read_text(encoding="utf-8")
     assert planner_results == [
         {
             "attempt_id": result.translation.generation_attempts[-1].attempt_id,
             "attempt_outcome": "rejected",
-            "correction_message": (
-                "Generated planner assets failed static validation."
-            ),
+            "correction_message": check_stderr.read_text(encoding="utf-8").strip(),
             "correction_stage": "static",
+            "diagnostic_references": {
+                "stderr": str(check_stderr.resolve()),
+                "stdout": str(check_stdout.resolve()),
+            },
             "outcome": "repair_exhausted",
             "planner_id": "minizinc",
             "retries_remaining": 0,

@@ -5,14 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import quote
 
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import (
+    PlannerStaticCheckResult,
     NormalizedPlan,
     PlannerExecutionEvidence,
     VerifiableReference,
@@ -91,15 +93,27 @@ _CORRECTION_MESSAGES = {
 
 @dataclass(frozen=True, slots=True)
 class PlannerCorrectionFeedback:
-    """Sanitized correction returned to a planner-asset generator."""
+    """Planner correction returned to a planner-asset generator."""
 
     stage: PlannerCorrectionStage | str
+    static_check: PlannerStaticCheckResult | None = None
+    diagnostic_references: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "stage", PlannerCorrectionStage(self.stage))
+        stage = PlannerCorrectionStage(self.stage)
+        if self.static_check is not None and stage is not PlannerCorrectionStage.STATIC:
+            raise ValueError("planner check diagnostics require static correction")
+        object.__setattr__(self, "stage", stage)
+        object.__setattr__(
+            self,
+            "diagnostic_references",
+            MappingProxyType(dict(self.diagnostic_references)),
+        )
 
     @property
     def message(self) -> str:
+        if self.static_check is not None:
+            return self.static_check.error_message
         return _CORRECTION_MESSAGES[PlannerCorrectionStage(self.stage)]
 
 
@@ -177,6 +191,25 @@ def create_generation_attempt_evidence(
     )
 
 
+def persist_static_check_diagnostics(
+    attempt: PlannerGenerationAttempt,
+    result: PlannerStaticCheckResult,
+    *,
+    prefix: str,
+) -> Mapping[str, str]:
+    """Persist exact checker streams beside one immutable generation attempt."""
+
+    if not attempt.asset_references:
+        return MappingProxyType({})
+    directory = Path(next(iter(attempt.asset_references.values()))).resolve().parent
+    references = {}
+    for stream, contents in (("stdout", result.stdout), ("stderr", result.stderr)):
+        path = directory / f"{prefix}-check.{stream}"
+        path.write_text(contents, encoding="utf-8")
+        references[stream] = str(path.resolve())
+    return MappingProxyType(references)
+
+
 class PlanningTranslationOutcome(StrEnum):
     """Terminal classification for a bounded planner translation run."""
 
@@ -242,6 +275,7 @@ __all__ = [
     "PlanningTranslationResult",
     "create_generation_attempt_evidence",
     "environment_data_sha256",
+    "persist_static_check_diagnostics",
     "validate_environment_data",
     "verifiable_file_reference",
 ]

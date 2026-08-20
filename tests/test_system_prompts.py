@@ -53,7 +53,7 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
         "Parse Mission Intent into PlanningIntent.",
         "Decide and record the MiniZinc planner inside PlanningIntent.",
         "Load the current snapshot-authorized operational evidence.",
-        "Generate and write MiniZinc problem files.",
+        "Write MiniZinc problem files from the current operational evidence.",
         "Persist the written MiniZinc problem files.",
         "Run MiniZinc and repair rejected translations.",
     )
@@ -64,9 +64,13 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     assert "Never batch several completions" in prompt
     assert "`outcome: execution_ready`" in prompt
     assert "verified NormalizedPlan" in prompt
-    assert "`environment_data.static_info`" in prompt
-    assert "`environment_data.scene_graph`" in prompt
+    assert "payload is flexible" in prompt
+    assert "rather than assuming a fixed environment schema" in prompt
+    assert "Never generate both complete files in the same response" in prompt
     assert "`belief_snapshot`" in prompt
+    assert "required `reflection` argument" in prompt
+    assert "not private reasoning" in prompt
+    assert "exact MiniZinc error" in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",

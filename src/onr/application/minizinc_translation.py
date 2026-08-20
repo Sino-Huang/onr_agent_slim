@@ -19,11 +19,13 @@ from onr.contracts.planner_translation import (
     PlanningTranslationResult,
     create_generation_attempt_evidence,
     environment_data_sha256,
+    persist_static_check_diagnostics,
     validate_environment_data,
     verifiable_file_reference,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
+    PlannerStaticCheckResult,
     NormalizedPlan,
     PlannerExecutionResult,
     PlanningOutcome,
@@ -140,9 +142,7 @@ class MiniZincTranslation:
                 correction_feedback=feedback,
             )
             problem = generate(request)
-            if not isinstance(problem, MiniZincProblem) or not self._static_check(
-                problem
-            ):
+            if not isinstance(problem, MiniZincProblem):
                 generation_attempts.append(
                     self._generation_attempt(
                         request,
@@ -151,6 +151,26 @@ class MiniZincTranslation:
                     )
                 )
                 feedback = PlannerCorrectionFeedback(PlannerCorrectionStage.STATIC)
+                feedback_history.append(feedback)
+                continue
+            static_check = self._static_check(problem)
+            if not static_check.accepted:
+                attempt = self._generation_attempt(
+                    request,
+                    problem,
+                    TranslationAttemptOutcome.REJECTED,
+                )
+                generation_attempts.append(attempt)
+                diagnostic_references = persist_static_check_diagnostics(
+                    attempt,
+                    static_check,
+                    prefix="minizinc",
+                )
+                feedback = PlannerCorrectionFeedback(
+                    PlannerCorrectionStage.STATIC,
+                    static_check=static_check,
+                    diagnostic_references=diagnostic_references,
+                )
                 feedback_history.append(feedback)
                 continue
 
@@ -267,12 +287,19 @@ class MiniZincTranslation:
             artifact_root=self.attempt_artifact_root,
         )
 
-    def _static_check(self, problem: MiniZincProblem) -> bool:
+    def _static_check(self, problem: MiniZincProblem) -> PlannerStaticCheckResult:
         if set(problem.assets) != _REQUIRED_ASSETS or any(
             not content for content in problem.assets.values()
         ):
-            return False
-        return self._planner.check(problem.assets) is True
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stderr="MiniZinc static check requires non-empty model.mzn and data.dzn.",
+            )
+        result = self._planner.check(problem.assets)
+        if not isinstance(result, PlannerStaticCheckResult):
+            raise TypeError("MiniZinc planner check returned an invalid result")
+        return result
 
     @staticmethod
     def _normalize(

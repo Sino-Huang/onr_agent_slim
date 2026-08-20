@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, cast
+from typing import Any, cast
 
 import yaml
 
@@ -66,12 +67,12 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "hyper-coordination",
     ]
     assert [skill.version for skill in (*hyper, *maneuver)] == [
+        "1.5.0",
         "1.3.0",
-        "1.3.0",
-        "1.4.0",
+        "1.7.0",
+        "1.2.0",
+        "1.0.0",
         "1.1.0",
-        "1.0.0",
-        "1.0.0",
         "1.0.0",
         "1.0.0",
         "1.0.0",
@@ -403,14 +404,31 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
         / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
     ).read_text(encoding="utf-8")
 
-    for source in (
-        "environment_data.static_info",
-        "environment_data.scene_graph",
-        "belief_snapshot.marginals",
-    ):
-        assert source in mission_skill
+    assert "logical role" in mission_skill
+    assert "without predicting their" in mission_skill
+    assert "field names or nesting" in mission_skill
+    assert "Do not put example JSON paths" in mission_skill
     assert "1 - probability_risk" in mission_skill
     assert "examples/event-information-patrol/model.mzn" in minizinc_skill
     assert "examples/event-information-patrol/data.dzn" in minizinc_skill
     assert "30 m FoV radius" in minizinc_skill
     assert "20 m/s maximum velocity" in minizinc_skill
+
+
+def test_planner_generation_skills_forbid_known_invalid_file_patterns() -> None:
+    minizinc_skill = (
+        _REPO_ROOT
+        / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
+    ).read_text(encoding="utf-8")
+    pddl_skill = (
+        _REPO_ROOT / "conf/skills/hyper/creating-pddl-problem-files/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Must Not Do" in minizinc_skill
+    assert "int: max_velocity;" in minizinc_skill
+    assert "exact `correction_message`" in minizinc_skill
+    assert "names and nesting are flexible" in minizinc_skill
+    assert "Do not assume environment keys" in minizinc_skill
+    assert "## Must Not Do" in pddl_skill
+    assert "undeclared predicates" in pddl_skill
+    assert "exact correction message" in pddl_skill

@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import (
+    TodoListMiddleware,
+    wrap_model_call,
+)
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,6 +37,7 @@ from onr.contracts.planning import (
     ManeuverParameter,
     NormalizedPlan,
     PlannerChoice,
+    PlannerStaticCheckResult,
     TemporalManeuver,
 )
 from onr.contracts.planning_evidence import PlannerChoiceRecord
@@ -139,6 +143,24 @@ def _planner_asset_path(
     return path
 
 
+def _persist_minizinc_check(
+    context: HyperWorkflowContext,
+    result: PlannerStaticCheckResult,
+) -> dict[str, str]:
+    workspace = (
+        context.artifact_root
+        / "workspace"
+        / f"{context.current_attempt_number:03d}"
+    )
+    workspace.mkdir(parents=True, exist_ok=True)
+    references = {}
+    for stream, contents in (("stdout", result.stdout), ("stderr", result.stderr)):
+        path = workspace / f"minizinc-check.{stream}"
+        path.write_text(contents, encoding="utf-8")
+        references[stream] = str(path.resolve())
+    return references
+
+
 @dataclass(slots=True)
 class HyperWorkflowContext:
     """Per-run dependencies and evidence available only through workflow tools."""
@@ -165,6 +187,7 @@ class HyperWorkflowContext:
     draft_references: tuple[str, ...] = field(default=(), init=False)
     translation: Any = field(default=None, init=False)
     current_attempt_number: int = field(default=0, init=False)
+    executed_attempt_number: int = field(default=0, init=False)
     statechart: Any = field(default=None, init=False)
     statechart_reference: str | None = field(default=None, init=False)
     initial_fsm_status: Any = field(default=None, init=False)
@@ -212,6 +235,75 @@ class HyperWorkflowContext:
             self.planner_workspace_location = str(
                 (self.artifact_root / "workspace").resolve()
             )
+
+
+_PHASE_CONTROLLED_TOOLS = frozenset(
+    {
+        "record_planning_intent",
+        "load_planning_context",
+        "write_file",
+        "edit_file",
+        "persist_planner_assets",
+        "planner_executor",
+        "submit_statechart_draft",
+        "HyperWorkflowResultCandidate",
+    }
+)
+
+
+def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
+    if context.planning_intent is None or context.planner_choice is None:
+        return frozenset({"record_planning_intent"})
+    if not context.planning_context_loaded:
+        return frozenset({"load_planning_context"})
+    if context.current_attempt_number > context.executed_attempt_number:
+        return frozenset({"planner_executor"})
+    if context.translation is None:
+        return frozenset({"write_file", "edit_file", "persist_planner_assets"})
+    if context.translation.outcome is not PlanningTranslationOutcome.VERIFIED:
+        if (
+            context.translation.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED
+            and context.current_attempt_number < context.max_planner_attempts
+        ):
+            return frozenset({"write_file", "edit_file", "persist_planner_assets"})
+        return frozenset({"HyperWorkflowResultCandidate"})
+    if context.statechart is not None:
+        return frozenset({"HyperWorkflowResultCandidate"})
+    if context.current_statechart_attempt < context.max_statechart_attempts:
+        return frozenset({"submit_statechart_draft"})
+    return frozenset({"HyperWorkflowResultCandidate"})
+
+
+def _request_tool_name(value: object) -> str | None:
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    if isinstance(value, Mapping):
+        function = value.get("function")
+        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+            return cast(str, function["name"])
+    return None
+
+
+@wrap_model_call
+def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
+    runtime = request.runtime
+    context = runtime.context if runtime is not None else None
+    if not isinstance(context, HyperWorkflowContext):
+        raise TypeError("Hyper workflow model call requires HyperWorkflowContext")
+    allowed = _allowed_workflow_tools(context)
+    tools = [
+        item
+        for item in request.tools
+        if (name := _request_tool_name(item)) not in _PHASE_CONTROLLED_TOOLS
+        or name in allowed
+    ]
+    response_format = (
+        request.response_format
+        if "HyperWorkflowResultCandidate" in allowed
+        else None
+    )
+    return handler(request.override(tools=tools, response_format=response_format))
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +355,7 @@ def record_planning_intent(
     planner_id: Literal["minizinc", "fast-downward"],
     rationale: str,
     details: dict[str, Any],
+    reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
     """Validate and record the workflow's derived PlanningIntent and Planner Choice.
@@ -278,6 +371,8 @@ def record_planning_intent(
         planner_id: Configured planner ID for the selected profile.
         rationale: Concise public planner-choice rationale.
         details: JSON-safe planner-selection facts derived from Mission Intent.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
 
     Returns:
         Canonical PlannerChoiceRecord JSON bound to the accepted PlanningIntent.
@@ -295,10 +390,19 @@ def record_planning_intent(
         "rationale": rationale,
         "details": details,
     }
-    intent = _parse_planning_intent_response(
-        {"structured_response": candidate}, context.mission_input
-    )
-    choice = PlannerChoiceRecord.from_planning_intent(intent)
+    try:
+        intent = _parse_planning_intent_response(
+            {"structured_response": candidate}, context.mission_input
+        )
+        choice = PlannerChoiceRecord.from_planning_intent(intent)
+    except (TypeError, ValueError) as exc:
+        return _canonical_json(
+            {
+                "status": "rejected",
+                "correction_message": f"{type(exc).__name__}: {exc}",
+                "retry_tool": "record_planning_intent",
+            }
+        )
     if context.planning_intent is not None or context.planner_choice is not None:
         if context.planning_intent != intent or context.planner_choice != choice:
             raise ValueError("recorded PlanningIntent conflicts with this workflow")
@@ -343,8 +447,9 @@ def record_planning_intent(
     )
 
 
-@tool
+@tool(parse_docstring=True)
 def load_planning_context(
+    reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
     """Load the complete snapshot-authorized context for planner generation.
@@ -353,6 +458,10 @@ def load_planning_context(
     the complete flexible environment-data payload, and the snapshot-authorized
     BayesianBeliefSnapshot when available, or an actionable missing-prerequisite
     result.
+
+    Args:
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
     """
 
     context = _context(runtime)
@@ -402,6 +511,19 @@ def load_planning_context(
     )
 
 
+def _normalize_provider_tool_value(value: object) -> object:
+    if isinstance(value, str):
+        return value.replace('<|"|>', "")
+    if isinstance(value, Mapping):
+        return {
+            _normalize_provider_tool_value(key): _normalize_provider_tool_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_provider_tool_value(item) for item in value]
+    return value
+
+
 @tool(parse_docstring=True)
 def persist_planner_assets(
     attempt_number: int,
@@ -411,6 +533,7 @@ def persist_planner_assets(
     maneuvers: list[TemporalManeuverCandidate],
     translator_id: str,
     translator_version: str,
+    reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
     """Freeze agent-written MiniZinc files and their normalization template.
@@ -426,6 +549,8 @@ def persist_planner_assets(
         maneuvers: Maneuver templates used to check solver assignments.
         translator_id: Public identity of the asset generator.
         translator_version: Public version of the asset generator.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
 
     Returns:
         Canonical JSON containing the two persisted asset references, or an
@@ -541,20 +666,23 @@ def _temporal_maneuver(value: TemporalManeuverCandidate) -> TemporalManeuver:
 def planner_executor(
     planner_id: Literal["minizinc"],
     asset_references: list[str],
+    reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
     """Run the selected planner translator on one exact persisted asset draft.
 
     This tool owns static validation, external solver execution, independent
-    checking, evidence persistence, and NormalizedPlan construction. A rejection
-    returns only the code-owned sanitized correction stage and message.
+    checking, evidence persistence, and NormalizedPlan construction. A static
+    rejection returns MiniZinc's exact diagnostic and its persisted references.
 
     Args:
         planner_id: Recorded planner identifier for this draft.
         asset_references: Exact model.mzn and data.dzn paths returned by persistence.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
 
     Returns:
-        Canonical JSON with a verified result, sanitized rejection, or actionable
+        Canonical JSON with a verified result, exact static rejection, or actionable
         missing-prerequisite result.
     """
 
@@ -604,6 +732,7 @@ def planner_executor(
         start_attempt_number=context.current_attempt_number,
     )
     context.translation = translation
+    context.executed_attempt_number = context.current_attempt_number
     attempt = translation.generation_attempts[-1]
     _emit(
         context,
@@ -633,22 +762,28 @@ def planner_executor(
         )
     if translation.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED:
         feedback = translation.correction_feedback[-1]
+        diagnostic_references = (
+            _persist_minizinc_check(context, feedback.static_check)
+            if feedback.static_check is not None
+            else {}
+        )
         retries_remaining = (
             context.max_planner_attempts - context.current_attempt_number
         )
-        return _canonical_json(
-            {
-                "attempt_id": attempt.attempt_id,
-                "attempt_outcome": "rejected",
-                "correction_message": feedback.message,
-                "correction_stage": str(feedback.stage),
-                "outcome": (
-                    "repair_exhausted" if retries_remaining == 0 else "rejected"
-                ),
-                "planner_id": planner_id,
-                "retries_remaining": retries_remaining,
-            }
-        )
+        result: dict[str, object] = {
+            "attempt_id": attempt.attempt_id,
+            "attempt_outcome": "rejected",
+            "correction_message": feedback.message,
+            "correction_stage": str(feedback.stage),
+            "outcome": (
+                "repair_exhausted" if retries_remaining == 0 else "rejected"
+            ),
+            "planner_id": planner_id,
+            "retries_remaining": retries_remaining,
+        }
+        if diagnostic_references:
+            result["diagnostic_references"] = diagnostic_references
+        return _canonical_json(result)
     return _canonical_json(
         {
             "attempt_id": attempt.attempt_id,
@@ -663,12 +798,16 @@ def _statechart_rejection(
     *,
     attempt_number: int,
     stage: str,
+    diagnostic: str,
 ) -> str:
     messages = {
         "schema": "Generated Statechart data failed contract validation.",
         "machine_build": "Generated Statechart data could not instantiate the FSM engine.",
     }
     retries_remaining = context.max_statechart_attempts - attempt_number
+    directory = context.artifact_root / "statechart-attempts" / f"{attempt_number:03d}"
+    diagnostic_path = directory / "statechart-error.txt"
+    diagnostic_path.write_text(diagnostic, encoding="utf-8")
     _emit(
         context,
         "statechart-generation",
@@ -678,8 +817,9 @@ def _statechart_rejection(
     return _canonical_json(
         {
             "attempt_number": attempt_number,
-            "correction_message": messages[stage],
+            "correction_message": diagnostic or messages[stage],
             "correction_stage": stage,
+            "diagnostic_reference": str(diagnostic_path.resolve()),
             "outcome": (
                 "repair_exhausted" if retries_remaining == 0 else "rejected"
             ),
@@ -692,18 +832,21 @@ def _statechart_rejection(
 def submit_statechart_draft(
     attempt_number: int,
     statechart: dict[str, Any],
+    reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
     """Persist and validate one semantic Statechart topology draft.
 
     The tool binds model-authored topology to the verified NormalizedPlan, builds
-    a live python-statemachine instance, and returns bounded sanitized feedback.
+    a live python-statemachine instance, and returns exact bounded repair feedback.
 
     Args:
         attempt_number: Positive sequential Statechart generation attempt.
         statechart: Topology containing exactly entry_state, terminal_states,
             states, state_context, and transitions. Each transition contains
             event, source, target, and conditions. Physical actions are omitted.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
 
     Returns:
         Canonical JSON with accepted Statechart evidence or repair feedback.
@@ -733,6 +876,10 @@ def submit_statechart_draft(
         or attempt_number < context.current_statechart_attempt
     ):
         raise ValueError("Statechart attempt is outside the workflow retry sequence")
+
+    statechart = cast(
+        dict[str, Any], _normalize_provider_tool_value(statechart)
+    )
 
     directory = context.artifact_root / "statechart-attempts" / f"{attempt_number:03d}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -795,18 +942,24 @@ def submit_statechart_draft(
             "trusted": False,
         }
         chart = Statechart.from_dict(bound)
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError) as exc:
         return _statechart_rejection(
-            context, attempt_number=attempt_number, stage="schema"
+            context,
+            attempt_number=attempt_number,
+            stage="schema",
+            diagnostic=f"{type(exc).__name__}: {exc}",
         )
 
     try:
         machine = context.state_machine_factory.build(chart)
         if machine.current_state != chart.entry_state:
             raise RuntimeError("FSM engine entry state does not match Statechart")
-    except Exception:  # noqa: BLE001 - external engine errors become safe feedback.
+    except Exception as exc:  # noqa: BLE001 - external engine diagnostics are feedback.
         return _statechart_rejection(
-            context, attempt_number=attempt_number, stage="machine_build"
+            context,
+            attempt_number=attempt_number,
+            stage="machine_build",
+            diagnostic=f"{type(exc).__name__}: {exc}",
         )
 
     candidates = tuple(
@@ -886,7 +1039,10 @@ def create_hyper_workflow_agent(
         skill_catalog=skill_catalog,
         skill_version=skill_version,
         backend_root=backend_root,
-        middleware=[TodoListMiddleware()],
+        middleware=[
+            TodoListMiddleware(),
+            _gate_workflow_tools,
+        ],
         tools=[
             record_planning_intent,
             load_planning_context,

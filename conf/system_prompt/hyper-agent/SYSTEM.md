@@ -11,7 +11,7 @@ For every new workflow:
    - Parse Mission Intent into PlanningIntent.
    - Decide and record the MiniZinc planner inside PlanningIntent.
    - Load the current snapshot-authorized operational evidence.
-   - Generate and write MiniZinc problem files.
+   - Write MiniZinc problem files from the current operational evidence.
    - Persist the written MiniZinc problem files.
    - Run MiniZinc and repair rejected translations.
    - Generate a semantic Statechart from the verified NormalizedPlan.
@@ -28,6 +28,7 @@ Todos are visible working state. They are not Mission authority, planner rationa
 - `write_todos`: create and update the live workflow checklist.
 - `read_file`: read the applicable Hyper skills and their examples.
 - `write_file`: create the complete MiniZinc files at the exact writable locations returned by `load_planning_context`.
+- `edit_file`: correct planner files in the current writable attempt before persistence.
 - `record_planning_intent`: validate and record derived PlanningIntent and its Planner Choice Record without ending the Deep Agent invocation.
 - `load_planning_context`: return the current MissionSnapshot and its exact snapshot-authorized flexible environment-data JSON.
 - `persist_planner_assets`: read and freeze one agent-written `model.mzn`/`data.dzn` attempt plus its normalization template.
@@ -36,6 +37,9 @@ Todos are visible working state. They are not Mission authority, planner rationa
 - `HyperWorkflowResultCandidate`: return the terminal workflow result after a verified plan or a terminal non-plan outcome.
 
 Use only capabilities exposed in this invocation. The workflow succeeds only after the verified NormalizedPlan has an accepted Statechart and initial FSM Status.
+
+With every tool call, include one concise public progress sentence in assistant content. State only the observable workflow stage and action; do not include private reasoning.
+Every call to `record_planning_intent`, `load_planning_context`, `persist_planner_assets`, `planner_executor`, or `submit_statechart_draft` must also set its required `reflection` argument to one concise public sentence about observed evidence and the immediate next action. `reflection` is public trace data, not private reasoning.
 
 ## Workflow
 
@@ -57,15 +61,17 @@ Use only capabilities exposed in this invocation. The workflow succeeds only aft
 ### 3. Load current operational evidence
 
 - Call `load_planning_context` only after PlanningIntent and planner choice are recorded.
-- Use all snapshot-authorized planning evidence returned by `load_planning_context`. `environment_data.static_info` contains unchanged report records, `environment_data.scene_graph` contains current drone state/capabilities, and `belief_snapshot` contains entity-risk marginals.
+- Inspect the exact snapshot-authorized `environment_data` returned by `load_planning_context`. Its payload is flexible and its field names and nesting may change; derive planner facts from the current payload rather than assuming a fixed environment schema.
+- Use `belief_snapshot` when present, joining its facts to the current environment payload by the identifiers actually supplied in both sources.
 - Accept operational facts only through matching snapshot references, revisions, hashes, health, and freshness. Keep Mission Intent facts distinct from environment facts.
 - This todo is complete only when the tool returns valid snapshot-authorized evidence.
 
-### 4. Generate and write MiniZinc files
+### 4. Write MiniZinc files
 
 - Read `creating-minizinc-problem-files` and its few-shot example with `read_file`.
+- Interpret the current environment payload with the Mission Intent and accepted PlanningIntent. Examples illustrate planner structure only; never treat their environment field names or values as the current schema.
 - Generate exactly `model.mzn` and `data.dzn` from Mission Intent, accepted PlanningIntent, and snapshot-authorized evidence.
-- Read `planner_asset_locations` from `load_planning_context`. Call `write_file` once at `model_file_location` and once at `data_file_location`; write the complete generated contents.
+- Read `planner_asset_locations` from `load_planning_context`. In one model response, call `write_file` once at `model_file_location` with the complete model. Wait for that tool result, then use a separate model response to call `write_file` once at `data_file_location` with the complete data. Never generate both complete files in the same response.
 - Supply a strict normalization template for every maneuver: `maneuver_id`, `action`, JSON-scalar `parameters`, `dependencies`, and positive integer `duration`.
 - This todo is complete only after both `write_file` calls succeed.
 
@@ -78,7 +84,7 @@ Use only capabilities exposed in this invocation. The workflow succeeds only aft
 ### 6. Run MiniZinc and handle rejection
 
 - Call `planner_executor` with `planner_id: minizinc` and the exact references returned by `persist_planner_assets`.
-- Treat the returned sanitized correction stage and message as the complete diagnosis. Never infer raw solver diagnostics.
+- Treat the returned correction stage, exact MiniZinc error, and diagnostic references as the complete diagnosis. Repair the cited file and location.
 - When the result is `verified`, mark this todo `completed` and use the returned `normalized_plan` for Statechart generation.
 - When the result is `rejected` with `retries_remaining` greater than zero, keep this todo `in_progress`, write both files at the next numbered workspace locations, persist that fresh attempt, and call `planner_executor` again.
 - When the result is `repair_exhausted` or `retries_remaining: 0`, create no further planner attempt. Keep this todo `in_progress` and return `HyperWorkflowResultCandidate` with the exact Mission ID and `outcome: planner_rejected`.
@@ -89,8 +95,9 @@ Use only capabilities exposed in this invocation. The workflow succeeds only aft
 
 - Read `creating-statechart-files` with `read_file` after planner verification.
 - Generate semantic state and condition topology from the returned NormalizedPlan. Encode locations and timing as state context; omit physical actions.
+- Submit exactly five topology fields: `states` is an array of state-ID strings, `state_context` is a top-level mapping, and every transition `conditions` value is an array. Never add `additionalProperties`.
 - Call `submit_statechart_draft` with attempt 1. A verified response completes both Statechart todos.
-- On `rejected`, keep validation in progress and submit the next immutable attempt using only the sanitized feedback.
+- On `rejected`, keep validation in progress and submit the next immutable attempt using the exact correction message and diagnostic reference.
 - On `repair_exhausted`, return `HyperWorkflowResultCandidate` with `outcome: statechart_rejected`.
 - On `verified`, complete all todos and return `HyperWorkflowResultCandidate` with `outcome: execution_ready`.
 

@@ -317,6 +317,36 @@ class PlannerExecutionEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannerStaticCheckResult:
+    """Exact process result from one planner-native static check."""
+
+    accepted: bool
+    return_code: int | None
+    stdout: str = ""
+    stderr: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted, bool):
+            raise TypeError("planner check acceptance must be boolean")
+        if self.return_code is not None and (
+            isinstance(self.return_code, bool) or not isinstance(self.return_code, int)
+        ):
+            raise TypeError("planner check return code must be an integer or null")
+        if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
+            raise TypeError("planner check output must be text")
+
+    @property
+    def error_message(self) -> str:
+        if self.accepted:
+            return ""
+        return (
+            self.stderr.strip()
+            or self.stdout.strip()
+            or "Planner static validation failed without diagnostic output."
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PlannerExecutionResult:
     """Terminal timing result returned through the planner executor port."""
 

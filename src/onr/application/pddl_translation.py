@@ -19,11 +19,13 @@ from onr.contracts.planner_translation import (
     PlanningTranslationResult,
     create_generation_attempt_evidence,
     environment_data_sha256,
+    persist_static_check_diagnostics,
     validate_environment_data,
     verifiable_file_reference,
 )
 from onr.contracts.planning import (
     NormalizedPlan,
+    PlannerStaticCheckResult,
     PlanningOutcome,
     PlanProvenance,
     SymbolicManeuver,
@@ -135,7 +137,7 @@ class PDDLTranslation:
                 correction_feedback=feedback,
             )
             problem = generate(request)
-            if not isinstance(problem, PDDLProblem) or not self._static_check(problem):
+            if not isinstance(problem, PDDLProblem):
                 generation_attempts.append(
                     self._generation_attempt(
                         request,
@@ -144,6 +146,26 @@ class PDDLTranslation:
                     )
                 )
                 feedback = PlannerCorrectionFeedback(PlannerCorrectionStage.STATIC)
+                feedback_history.append(feedback)
+                continue
+            static_check = self._static_check(problem)
+            if not static_check.accepted:
+                attempt = self._generation_attempt(
+                    request,
+                    problem,
+                    TranslationAttemptOutcome.REJECTED,
+                )
+                generation_attempts.append(attempt)
+                diagnostic_references = persist_static_check_diagnostics(
+                    attempt,
+                    static_check,
+                    prefix="fast-downward",
+                )
+                feedback = PlannerCorrectionFeedback(
+                    PlannerCorrectionStage.STATIC,
+                    static_check=static_check,
+                    diagnostic_references=diagnostic_references,
+                )
                 feedback_history.append(feedback)
                 continue
 
@@ -260,12 +282,22 @@ class PDDLTranslation:
             artifact_root=self.attempt_artifact_root,
         )
 
-    def _static_check(self, problem: PDDLProblem) -> bool:
+    def _static_check(self, problem: PDDLProblem) -> PlannerStaticCheckResult:
         if set(problem.assets) != _REQUIRED_ASSETS or any(
             not content for content in problem.assets.values()
         ):
-            return False
-        return self._planner.check(problem.assets) is True
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stderr=(
+                    "Fast Downward static check requires non-empty "
+                    "domain.pddl and problem.pddl."
+                ),
+            )
+        result = self._planner.check(problem.assets)
+        if not isinstance(result, PlannerStaticCheckResult):
+            raise TypeError("Fast Downward planner check returned an invalid result")
+        return result
 
     def _normalize(
         self,
