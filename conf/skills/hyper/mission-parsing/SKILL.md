@@ -1,7 +1,7 @@
 ---
 name: mission-parsing
 description: Apply when deriving PlanningIntent from MissionInput while preserving source authority.
-version: '1.2.0'
+version: '1.3.0'
 ---
 
 # Mission Parsing
@@ -16,21 +16,42 @@ version: '1.2.0'
 6. Apply `planner-selection`: named ships or actions do not make a mission symbolic. If drone position at event times, travel timing, FoV coverage, time windows, or weighted coverage determines feasibility or value, select MiniZinc.
 7. Return only through the configured structured response tool, with no extra fields, prose, Markdown, or unstructured JSON. Include a concise public rationale only where the contract provides a field for it; never expose private reasoning.
 
-## Example: ships risk-weighted FoV coverage
+## Mission patterns
 
-`data/ships_report_and_trajectory_example/ships/events_report.json` contains
-ship event records with `time`, `position`, `event information`, `event type`,
-and `entity_id`. A mission to maximize field-of-view observation coverage
-weighted by per-ship risk is temporal optimization, so select MiniZinc under
-the `planner-selection` rule. Risk scores must be supplied in MissionInput or
-obtained by an explicit code-owned derivation; do not invent them.
+### Report event-accounting patrol
+
+When `mission_text` asks to patrol the environment and confirm that events in the
+report are accounted for, derive a temporal MiniZinc intent to choose a route and
+dwell schedule that maximizes captured information gain.
+
+Use the snapshot-authorized sources by role:
+
+- `environment_data.static_info` supplies the unchanged event records: time,
+  position, event type/information, and responsible `entity_id`.
+- `environment_data.scene_graph` supplies the drone's current position,
+  `max_velocity`, and `fov_radius`.
+- `belief_snapshot.marginals` supplies `probability_risk` for each report entity's
+  `event-risk` key.
+
+An event is captured only when its time lies in a selected dwell interval and its
+position is within the FoV radius of that stop. Its scaled value is
+`1 - probability_risk`; maximize the sum over captured events. Put this objective
+and the three source roles in `PlanningIntent.details`; load their current values
+later through `load_planning_context`.
+
+### Ships risk-weighted FoV coverage
+
+A mission to maximize field-of-view observation coverage weighted directly by
+per-ship risk is temporal optimization, so select MiniZinc. Risk scores must be
+supplied by authorized evidence or an explicit code-owned derivation; do not
+invent them.
 
 ## Durable Context
 
 - The agent decides which useful, durable mission facts merit retention.
 - Store those facts only in Hyper's isolated per-Mission durable memory namespace.
 - Never write them to shared writable memory, another Mission namespace, or hidden Mission 1 ground-truth storage.
-- Memory is context only. It must never replace or modify PlanningIntent, plans, scene/belief, lifecycle, or FSM execution artifacts.
+- Memory is context only. It must never replace or modify PlanningIntent, plans, environment/belief evidence, lifecycle, or FSM execution artifacts.
 - V1 has no standalone memory-hygiene skill; apply these carry-forward rules here.
 
 ## Gotchas

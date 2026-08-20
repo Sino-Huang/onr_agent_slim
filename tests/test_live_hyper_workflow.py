@@ -88,7 +88,7 @@ def _planning_context(
                     },
                 ],
             },
-            "event_report": [],
+            "static_info": [],
         },
     )
     snapshot = MissionSnapshot(

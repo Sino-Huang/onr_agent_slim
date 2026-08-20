@@ -59,6 +59,7 @@ from onr.application.maneuver_control import ManeuverControl
 from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
 from onr.contracts.bayesian_belief import (
+    BayesianBeliefSnapshot,
     BeliefKey,
     ForbiddenBeliefCombination,
 )
@@ -708,13 +709,18 @@ class RuntimeComposition:
         environment_event: TransportEvent,
         *,
         artifact_root: Path,
+        belief_snapshot: BayesianBeliefSnapshot | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""
 
+        validated_belief = HyperAgent.validate_belief_provenance(
+            mission_snapshot, belief_snapshot
+        )
         return HyperWorkflowContext(
             mission_input=mission_input,
             mission_snapshot=mission_snapshot,
             environment_event=environment_event,
+            belief_snapshot=validated_belief,
             artifact_root=artifact_root,
             minizinc_translation=self.create_minizinc_translation(
                 artifact_root,

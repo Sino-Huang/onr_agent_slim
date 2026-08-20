@@ -223,7 +223,7 @@ class FakeEnvironment:
         event_report = json.loads(self.event_report_path.read_text(encoding="utf-8"))
         return {
             "scene_graph": graph,
-            "event_report": event_report,
+            "static_info": event_report,
         }
 
     def _publish_environment_data(
@@ -311,6 +311,8 @@ class FakeEnvironment:
                 "type": "drone",
                 "area": "windmill area",
                 "location": location(),
+                "max_velocity": 20,
+                "fov_radius": 30,
             }
         )
         return entities

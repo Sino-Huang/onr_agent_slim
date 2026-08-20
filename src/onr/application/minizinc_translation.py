@@ -23,6 +23,7 @@ from onr.contracts.planner_translation import (
     verifiable_file_reference,
 )
 from onr.contracts.planning import (
+    ManeuverIntent,
     NormalizedPlan,
     PlannerExecutionResult,
     PlanningOutcome,
@@ -294,21 +295,34 @@ class MiniZincTranslation:
             declared
         ):
             return None
-        maneuvers = tuple(
-            ScheduledManeuver(
-                maneuver_id=maneuver_id,
-                intent=maneuver.intent,
-                dependencies=maneuver.dependencies,
-                start=assignments[maneuver_id].start,
-                duration=assignments[maneuver_id].duration,
-            )
-            for maneuver_id, maneuver in declared.items()
-            if assignments[maneuver_id].duration == maneuver.duration
-            and assignments[maneuver_id].start + assignments[maneuver_id].duration
-            <= problem.horizon
-        )
-        if len(maneuvers) != len(declared):
-            return None
+        maneuvers_list = []
+        for maneuver_id, maneuver in declared.items():
+            assignment = assignments[maneuver_id]
+            if (
+                assignment.duration != maneuver.duration
+                or assignment.start + assignment.duration > problem.horizon
+            ):
+                return None
+            template_names = {item.name for item in maneuver.intent.parameters}
+            if template_names.intersection(item.name for item in assignment.parameters):
+                return None
+            try:
+                intent = ManeuverIntent(
+                    maneuver.intent.action,
+                    maneuver.intent.parameters + assignment.parameters,
+                )
+                scheduled_maneuver = ScheduledManeuver(
+                    maneuver_id=maneuver_id,
+                    intent=intent,
+                    dependencies=maneuver.dependencies,
+                    start=assignment.start,
+                    duration=assignment.duration,
+                )
+            except ValueError:
+                return None
+            maneuvers_list.append(scheduled_maneuver)
+        maneuvers = tuple(maneuvers_list)
+
         scheduled = {item.maneuver_id: item for item in maneuvers}
         if any(
             scheduled[item.maneuver_id].start

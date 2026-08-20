@@ -320,7 +320,7 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
         environment_data = cast(
             Mapping[str, object], environment_event.to_dict()["payload"]
         )
-        assert environment_data["event_report"] == json.loads(
+        assert environment_data["static_info"] == json.loads(
             (
                 Path(__file__).parents[1]
                 / "data/ships_report_and_trajectory_example/ships/events_report.json"

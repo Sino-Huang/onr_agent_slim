@@ -77,7 +77,7 @@ def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_
     assert result is not None
     assert result.command == command
     assert result.environment_event.event_kind == "environment_data"
-    assert set(result.environment_event.payload) == {"scene_graph", "event_report"}
+    assert set(result.environment_event.payload) == {"scene_graph", "static_info"}
     assert result.source_fact.event_kind == "source-fact"
     assert result.source_fact.payload["source"] == "environment_data"
     assert result.source_fact.payload["reference"] == result.environment_event.event_id
@@ -94,7 +94,7 @@ def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_
         dict[str, Any], json.loads(result.environment_file.read_text(encoding="utf-8"))
     )
     assert environment == result.environment_event.to_dict()["payload"]
-    assert environment["event_report"] == json.loads(
+    assert environment["static_info"] == json.loads(
         _EVENT_REPORT_PATH.read_text(encoding="utf-8")
     )
     graph = cast(dict[str, Any], environment["scene_graph"])
@@ -108,7 +108,10 @@ def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_
         isinstance(entity["risk"], float) and 0.0 <= entity["risk"] <= 1.0
         for entity in ships
     )
-    assert "risk" not in next(entity for entity in entities if entity["type"] == "drone")
+    drone = next(entity for entity in entities if entity["type"] == "drone")
+    assert "risk" not in drone
+    assert drone["max_velocity"] == 20
+    assert drone["fov_radius"] == 30
     assert all(
         set(entity["location"]) == {"x", "y", "z"}
         and all(
@@ -157,7 +160,10 @@ def test_environment_heartbeat_publishes_data_before_any_maneuver(
     heartbeat_payload = cast(
         dict[str, Any], heartbeat.environment_event.to_dict()["payload"]
     )
-    assert heartbeat_payload["event_report"] == json.loads(
+    drone = next(entity for entity in entities if entity["type"] == "drone")
+    assert drone["max_velocity"] == 20
+    assert drone["fov_radius"] == 30
+    assert heartbeat_payload["static_info"] == json.loads(
         _EVENT_REPORT_PATH.read_text(encoding="utf-8")
     )
     assert heartbeat.source_fact.payload["reference"] == heartbeat.environment_event.event_id
@@ -172,7 +178,7 @@ def test_environment_heartbeat_publishes_data_before_any_maneuver(
     assert environment.run_once() is None
 
 
-def test_event_report_content_participates_in_environment_identity(
+def test_static_info_content_participates_in_environment_identity(
     tmp_path: Path,
 ) -> None:
     mission_id = "mission-1"
@@ -198,8 +204,8 @@ def test_event_report_content_participates_in_environment_identity(
 
     first_payload = cast(dict[str, Any], first.environment_event.to_dict()["payload"])
     second_payload = cast(dict[str, Any], second.environment_event.to_dict()["payload"])
-    assert first_payload["event_report"] == [{"event": "first"}]
-    assert second_payload["event_report"] == [{"event": "second"}]
+    assert first_payload["static_info"] == [{"event": "first"}]
+    assert second_payload["static_info"] == [{"event": "second"}]
     assert first.environment_event.event_id != second.environment_event.event_id
     assert first.source_fact.payload["content_sha256"] != second.source_fact.payload[
         "content_sha256"

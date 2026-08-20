@@ -15,6 +15,7 @@ from onr.contracts.planner_translation import (
 )
 from onr.contracts.planning import (
     ManeuverIntent,
+    ManeuverParameter,
     PlannerChoice,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
@@ -145,7 +146,14 @@ def test_static_rejection_gets_sanitized_feedback_before_verified_plan(
         executions=[
             PlannerExecutionResult(
                 PlanningOutcome.SOLVED,
-                (TemporalAssignment("survey", 0, 2),),
+                (
+                    TemporalAssignment(
+                        "survey",
+                        0,
+                        2,
+                        (ManeuverParameter("x", 120), ManeuverParameter("y", -45)),
+                    ),
+                ),
                 _evidence(tmp_path),
             )
         ],
@@ -186,6 +194,11 @@ def test_static_rejection_gets_sanitized_feedback_before_verified_plan(
     assert feedback.message == "Generated planner assets failed static validation."
     assert "invalid" not in feedback.message
     assert len(planner.executed_assets) == 1
+
+    assert result.normalized_plan.maneuvers[0].intent.to_dict()["parameters"] == {
+        "x": 120,
+        "y": -45,
+    }
 
 
 def test_solution_checker_rejection_receives_sanitized_feedback_before_retry(

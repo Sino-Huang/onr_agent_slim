@@ -1,5 +1,5 @@
 {
   "mission_id": "mission:demo",
-  "mission_text": "Please check whether the ships around the windmill area follow the rules.",
+  "mission_text": "Please patrol the environment and confirm that all the events mentioned in the event report are accounted for.",
   "source_authority": "demo-operator"
 }

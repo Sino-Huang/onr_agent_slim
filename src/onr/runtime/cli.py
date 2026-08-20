@@ -13,10 +13,12 @@ from typing import cast
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
+from onr.application.bayesian_belief import belief_artifact_reference
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.maneuver_control import ManeuverCommand
+from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.demo.fake_environment import FakeEnvironment
 from onr.runtime.composition import RuntimeComposition, RuntimeRunResult
 from onr.runtime.lease import RuntimeLeaseStore
@@ -205,14 +207,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stage = "environment heartbeat"
         heartbeat = environment.heartbeat()
+        belief_snapshot = create_fake_entity_risk_snapshot(mission_input.mission_id)
+        context_coordination.publish_source_fact(
+            "bayesian_belief_snapshot",
+            belief_snapshot.belief_revision,
+            reference=belief_artifact_reference(
+                belief_snapshot.mission_id, belief_snapshot.content_sha256
+            ),
+            content_sha256=belief_snapshot.content_sha256,
+        )
         with runtime.transport.open_consumer(
             context_coordination.subscription
         ) as context_consumer:
+            context_coordination.run_once(context_consumer)
             planning_snapshot = context_coordination.run_once(context_consumer)
         if (
             not isinstance(planning_snapshot, MissionSnapshot)
             or planning_snapshot.environment_data
             != heartbeat.environment_event.event_id
+            or planning_snapshot.bayesian_belief_snapshot
+            != belief_artifact_reference(
+                belief_snapshot.mission_id, belief_snapshot.content_sha256
+            )
         ):
             raise RuntimeError(
                 "Context Coordination did not publish the planning snapshot"
@@ -231,6 +247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             planning_snapshot,
             heartbeat.environment_event,
             artifact_root=planner_artifacts,
+            belief_snapshot=belief_snapshot,
         )
         hyper_result = hyper_workflow.run(
             hyper_context,

@@ -26,6 +26,7 @@ from onr.agents.hyper_workflow import (
     planner_executor,
     record_planning_intent,
 )
+from onr.application.bayesian_belief import belief_artifact_reference
 from onr.application.minizinc_translation import MiniZincTranslation
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
@@ -42,6 +43,7 @@ from onr.contracts.planning import (
 )
 from onr.contracts.planning_evidence import TranslationAttemptOutcome
 from onr.contracts.transport import TransportEvent
+from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 
 _REPO_ROOT = Path(__file__).parents[1]
 _STAGES = (
@@ -166,16 +168,17 @@ def _scene_context() -> tuple[MissionInput, MissionSnapshot, TransportEvent]:
                         "id": "ship-1",
                         "type": "ship",
                         "location": {"x": 12.0, "y": 4.0, "z": 0.0},
-                        "risk": 0.8,
                     },
                     {
                         "id": "drone-1",
                         "type": "drone",
                         "location": {"x": 0.0, "y": 0.0, "z": 10.0},
+                        "max_velocity": 20,
+                        "fov_radius": 30,
                     },
                 ],
             },
-            "event_report": [
+            "static_info": [
                 {
                     "time": 0.5,
                     "event type": "intersection decision",
@@ -228,11 +231,38 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     tmp_path: Path,
 ) -> None:
     mission, snapshot, scene = _scene_context()
+    belief = create_fake_entity_risk_snapshot(mission.mission_id)
+    snapshot = MissionSnapshot(
+        mission_id=mission.mission_id,
+        version=2,
+        created_at="2026-08-20T00:00:01+00:00",
+        environment_data=scene.event_id,
+        bayesian_belief_snapshot=belief_artifact_reference(
+            belief.mission_id, belief.content_sha256
+        ),
+        source_revisions={
+            "environment_data": 0,
+            "bayesian_belief_snapshot": belief.belief_revision,
+        },
+        source_hashes={
+            "environment_data": environment_data_sha256(scene),
+            "bayesian_belief_snapshot": belief.content_sha256,
+        },
+        source_health={
+            "environment_data": "healthy",
+            "bayesian_belief_snapshot": "healthy",
+        },
+        source_freshness={
+            "environment_data": True,
+            "bayesian_belief_snapshot": True,
+        },
+    )
     artifact_root = tmp_path / "planner-artifacts"
     context = HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
         environment_event=scene,
+        belief_snapshot=belief,
         artifact_root=artifact_root,
         minizinc_translation=MiniZincTranslation(
             RejectingMiniZincPlanner(),
@@ -288,7 +318,12 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     }
     assert ready["mission_snapshot"] == snapshot.to_dict()
     assert ready["environment_data"] == scene.to_dict()["payload"]
-    assert ready["environment_data"]["event_report"][0]["entity_id"] == 1
+    assert ready["environment_data"]["static_info"][0]["entity_id"] == 1
+    drone = ready["environment_data"]["scene_graph"]["entities"][1]
+    assert drone["location"] == {"x": 0.0, "y": 0.0, "z": 10.0}
+    assert drone["max_velocity"] == 20
+    assert drone["fov_radius"] == 30
+    assert ready["belief_snapshot"] == belief.to_dict()
     assert context.planning_context_loaded is True
 
     missing_draft = json.loads(

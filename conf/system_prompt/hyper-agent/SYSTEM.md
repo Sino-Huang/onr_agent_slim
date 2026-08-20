@@ -51,7 +51,7 @@ Use only capabilities exposed in this invocation. The current Hyper workflow end
 ### 3. Load current operational evidence
 
 - Call `load_planning_context` only after PlanningIntent and planner choice are recorded.
-- Use the returned MissionSnapshot and every relevant key in its referenced `environment_data` as the complete current planning evidence. `scene_graph` contains the current operational graph; other keys such as `event_report` carry additional environment facts.
+- Use all snapshot-authorized planning evidence returned by `load_planning_context`. `environment_data.static_info` contains unchanged report records, `environment_data.scene_graph` contains current drone state/capabilities, and `belief_snapshot` contains entity-risk marginals.
 - Accept operational facts only through matching snapshot references, revisions, hashes, health, and freshness. Keep Mission Intent facts distinct from environment facts.
 - This todo is complete only when the tool returns valid snapshot-authorized evidence.
 

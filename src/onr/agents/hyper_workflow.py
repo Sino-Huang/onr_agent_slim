@@ -19,6 +19,7 @@ from onr.agents.hyper_agent import (
     _parse_planning_intent_response,
 )
 from onr.application.minizinc_translation import MiniZincProblem, MiniZincTranslation
+from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
@@ -104,6 +105,7 @@ class HyperWorkflowContext:
     environment_event: Any
     artifact_root: Path
     minizinc_translation: Any
+    belief_snapshot: Any = None
     max_planner_attempts: int = 1
     operational_log: Any = None
     planning_intent: Any = field(default=None, init=False)
@@ -121,6 +123,12 @@ class HyperWorkflowContext:
             raise TypeError("Hyper workflow requires a MissionSnapshot")
         if not isinstance(self.environment_event, TransportEvent):
             raise TypeError("Hyper workflow requires an environment event")
+        if self.belief_snapshot is not None and not isinstance(
+            self.belief_snapshot, BayesianBeliefSnapshot
+        ):
+            raise TypeError(
+                "Hyper workflow belief evidence must be a BayesianBeliefSnapshot"
+            )
         if not isinstance(self.minizinc_translation, MiniZincTranslation):
             raise TypeError("Hyper workflow requires MiniZinc translation")
         if self.operational_log is not None and not callable(
@@ -253,8 +261,9 @@ def load_planning_context(
     """Load the complete snapshot-authorized context for planner generation.
 
     Returns canonical JSON containing PlanningIntent, Planner Choice, MissionSnapshot,
-    and the complete flexible environment-data payload, or an actionable
-    missing-prerequisite result.
+    the complete flexible environment-data payload, and the snapshot-authorized
+    BayesianBeliefSnapshot when available, or an actionable missing-prerequisite
+    result.
     """
 
     context = _context(runtime)
@@ -292,6 +301,11 @@ def load_planning_context(
             "planner_choice": choice.to_dict(),
             "mission_snapshot": context.mission_snapshot.to_dict(),
             "environment_data": context.environment_event.to_dict()["payload"],
+            "belief_snapshot": (
+                context.belief_snapshot.to_dict()
+                if context.belief_snapshot is not None
+                else None
+            ),
         }
     )
 

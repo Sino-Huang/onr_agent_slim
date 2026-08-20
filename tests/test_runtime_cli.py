@@ -11,6 +11,7 @@ import pytest
 
 import onr.runtime.cli as runtime_cli
 from onr.adapters.file_transport import FileTransport
+from onr.application.bayesian_belief import belief_artifact_reference
 from onr.contracts.context_coordination import (
     MissionSnapshot,
     create_source_fact_event,
@@ -28,6 +29,7 @@ from onr.contracts.planning import (
     VerifiableReference,
 )
 from onr.contracts.transport import TransportEvent
+from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.ports.transport import Subscription
 from onr.runtime.lease import RuntimeLeaseStore
 
@@ -104,11 +106,11 @@ def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
         runtime_cli.load_mission_file(_mission_file(tmp_path, source_authority=3))
 
 
-def test_example_mission_requests_windmill_area_rule_check() -> None:
+def test_example_mission_requests_event_accounting_patrol() -> None:
     mission = runtime_cli.load_mission_file(Path("examples/mission.json"))
 
     assert mission.mission_text == (
-        "Please check whether the ships around the windmill area follow the rules."
+        "Please patrol the environment and confirm that all the events mentioned in the event report are accounted for."
     )
 
 
@@ -231,17 +233,42 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         event_kind="environment_data",
         payload={"graph": {"mission_id": "mission:demo", "entities": []}},
     )
-    snapshot = MissionSnapshot(
+    environment_snapshot = MissionSnapshot(
         mission_id="mission:demo",
         version=1,
         created_at="2026-08-20T00:00:00+00:00",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 0},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
+        source_hashes={"environment_data": environment_data_sha256(scene)},
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
+    )
+    belief = create_fake_entity_risk_snapshot("mission:demo")
+    belief_reference = belief_artifact_reference(
+        belief.mission_id, belief.content_sha256
+    )
+    snapshot = MissionSnapshot(
+        mission_id="mission:demo",
+        version=2,
+        created_at="2026-08-20T00:00:01+00:00",
+        environment_data=scene.event_id,
+        bayesian_belief_snapshot=belief_reference,
+        source_revisions={
+            "environment_data": 0,
+            "bayesian_belief_snapshot": belief.belief_revision,
+        },
+        source_hashes={
+            "environment_data": environment_data_sha256(scene),
+            "bayesian_belief_snapshot": belief.content_sha256,
+        },
+        source_health={
+            "environment_data": "healthy",
+            "bayesian_belief_snapshot": "healthy",
+        },
+        source_freshness={
+            "environment_data": True,
+            "bayesian_belief_snapshot": True,
+        },
     )
 
     class FakeHyperWorkflow:
@@ -255,17 +282,40 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
 
     class FakeContextCoordination:
         def __init__(self, transport: FileTransport) -> None:
+            self.transport = transport
             self.subscription = Subscription(
                 "context-coordination", "mission:demo", "normalized-plans"
             )
             transport.subscriptions += (self.subscription,)
+            self.snapshots = iter((environment_snapshot, snapshot))
+
+        def publish_source_fact(
+            self,
+            source: str,
+            revision: int,
+            *,
+            reference: str,
+            content_sha256: str,
+        ) -> object:
+            event = create_source_fact_event(
+                "mission:demo",
+                source,
+                revision,
+                event_id="source-fact:mission:demo:belief:1",
+                sequence=self.transport.next_event_sequence(
+                    "normalized-plans", "mission:demo"
+                ),
+                reference=reference,
+                content_sha256=content_sha256,
+            )
+            return self.transport.publish_event("normalized-plans", event)
 
         def run_once(self, consumer: object) -> MissionSnapshot:
             delivery = consumer.receive()  # type: ignore[attr-defined]
             assert delivery is not None
             delivery.ack()
             calls.append("heartbeat-snapshot")
-            return snapshot
+            return next(self.snapshots)
 
     class FakeRuntime:
         def __init__(self) -> None:
@@ -420,6 +470,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert hyper_context_call[4]["artifact_root"] == (
         tmp_path / "var/planner-artifacts"
     )
+    assert hyper_context_call[4]["belief_snapshot"] == belief
     hyper_run = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "hyper-run"
     )

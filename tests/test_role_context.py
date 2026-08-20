@@ -64,9 +64,9 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "hyper-coordination",
     ]
     assert [skill.version for skill in (*hyper, *maneuver)] == [
-        "1.2.0",
         "1.3.0",
-        "1.2.0",
+        "1.3.0",
+        "1.3.0",
         "1.1.0",
         "1.0.0",
         "1.0.0",
@@ -350,3 +350,25 @@ def test_role_context_policy_allows_only_current_memory_and_denies_skills_and_ot
     assert permissions[-1].mode == "deny"
     assert permissions[-1].paths == ["/**"]
     assert permissions[-2].mode == "allow"
+
+
+def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
+    mission_skill = (
+        _REPO_ROOT / "conf/skills/hyper/mission-parsing/SKILL.md"
+    ).read_text(encoding="utf-8")
+    minizinc_skill = (
+        _REPO_ROOT
+        / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    for source in (
+        "environment_data.static_info",
+        "environment_data.scene_graph",
+        "belief_snapshot.marginals",
+    ):
+        assert source in mission_skill
+    assert "1 - probability_risk" in mission_skill
+    assert "examples/event-information-patrol/model.mzn" in minizinc_skill
+    assert "examples/event-information-patrol/data.dzn" in minizinc_skill
+    assert "30 m FoV radius" in minizinc_skill
+    assert "20 m/s maximum velocity" in minizinc_skill

@@ -9,14 +9,16 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from onr.contracts.planning import (
+    JsonScalar,
+    ManeuverParameter,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlanningOutcome,
     TemporalAssignment,
 )
-
 
 _MINIZINC_ARGUMENTS = (
     "--solver",
@@ -259,17 +261,24 @@ def _parse_assignments(value: object) -> tuple[TemporalAssignment, ...] | None:
 
     assignments = []
     for raw_assignment in raw_assignments:
-        if not isinstance(raw_assignment, dict) or set(raw_assignment) != {
-            "maneuver_id",
-            "start",
-            "duration",
-        }:
+        if not isinstance(raw_assignment, dict):
+            return None
+        required = {"maneuver_id", "start", "duration"}
+        if set(raw_assignment) not in (required, required | {"parameters"}):
             return None
         maneuver_id = raw_assignment["maneuver_id"]
         start = raw_assignment["start"]
         duration = raw_assignment["duration"]
-        if not isinstance(maneuver_id, str) or not _is_int(start) or not _is_int(
-            duration
+        raw_parameters = raw_assignment.get("parameters", {})
+        if not isinstance(raw_parameters, dict) or not all(
+            isinstance(name, str) for name in raw_parameters
+        ):
+            return None
+
+        if (
+            not isinstance(maneuver_id, str)
+            or not _is_int(start)
+            or not _is_int(duration)
         ):
             return None
         try:
@@ -277,8 +286,12 @@ def _parse_assignments(value: object) -> tuple[TemporalAssignment, ...] | None:
                 maneuver_id=maneuver_id,
                 start=start,
                 duration=duration,
+                parameters=tuple(
+                    ManeuverParameter(name, cast(JsonScalar, parameter_value))
+                    for name, parameter_value in raw_parameters.items()
+                ),
             )
-        except ValueError:
+        except (TypeError, ValueError):
             return None
         assignments.append(assignment)
     return tuple(assignments)

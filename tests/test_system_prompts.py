@@ -63,8 +63,9 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     assert "Never batch several completions" in prompt
     assert "`outcome: plan_ready`" in prompt
     assert "verified NormalizedPlan" in prompt
-    assert "`environment_data`" in prompt
-    assert "`event_report`" in prompt
+    assert "`environment_data.static_info`" in prompt
+    assert "`environment_data.scene_graph`" in prompt
+    assert "`belief_snapshot`" in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",

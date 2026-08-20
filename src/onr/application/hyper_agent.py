@@ -171,7 +171,7 @@ class HyperAgent:
             raise TypeError("planning heartbeat requires a MissionSnapshot")
         if snapshot.mission_id != mission_input.mission_id:
             raise ValueError("planning heartbeat Mission IDs do not match")
-        validated_belief = self._validate_belief_provenance(snapshot, belief_snapshot)
+        validated_belief = self.validate_belief_provenance(snapshot, belief_snapshot)
         snapshot_id = f"{mission_input.mission_id}:snapshot:{snapshot.version}"
         source = "environment_data"
         if (
@@ -238,7 +238,7 @@ class HyperAgent:
         )
 
     @staticmethod
-    def _validate_belief_provenance(
+    def validate_belief_provenance(
         snapshot: MissionSnapshot,
         belief: BayesianBeliefSnapshot | None,
     ) -> BayesianBeliefSnapshot | None:

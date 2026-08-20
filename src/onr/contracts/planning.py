@@ -270,6 +270,7 @@ class TemporalAssignment:
     maneuver_id: str
     start: int
     duration: int
+    parameters: tuple[ManeuverParameter, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.maneuver_id, str) or not _MANEUVER_ID.fullmatch(
@@ -282,6 +283,17 @@ class TemporalAssignment:
             raise ValueError("assignment duration must be an integer")
         if self.start < 0 or self.duration <= 0:
             raise ValueError("assignment timing must be non-negative and positive")
+        parameters = tuple(self.parameters)
+        if not all(isinstance(item, ManeuverParameter) for item in parameters):
+            raise ValueError("assignment parameters must be ManeuverParameter records")
+        names = [item.name for item in parameters]
+        if len(names) != len(set(names)):
+            raise ValueError("assignment parameter names must be unique")
+        object.__setattr__(
+            self,
+            "parameters",
+            tuple(sorted(parameters, key=lambda item: item.name)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
