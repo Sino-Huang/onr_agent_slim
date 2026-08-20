@@ -15,7 +15,7 @@ from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.planner_translation import operational_scene_graph_sha256
+from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.transport import TransportEvent
 from onr.runtime import (
     HeartbeatsConfig,
@@ -292,20 +292,20 @@ def test_runtime_builds_single_attempt_workflow_planner_context(
         event_id="scene-1",
         mission_id=mission.mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"entities": []}},
     )
     snapshot = MissionSnapshot(
         mission_id=mission.mission_id,
         version=1,
         created_at="2026-08-20T00:00:00+00:00",
-        operational_scene_graph=scene.event_id,
-        source_revisions={"operational_scene_graph": 1},
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 1},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": True},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
 
     context = _runtime(hyper_max_retries=7).create_hyper_workflow_context(

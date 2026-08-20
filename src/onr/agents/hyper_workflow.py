@@ -1,4 +1,4 @@
-"""One Deep Agent workflow for scene-backed planning and planner correction."""
+"""One Deep Agent workflow for environment-backed planning and correction."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
-    validate_operational_scene_graph,
+    validate_environment_data,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -101,7 +101,7 @@ class HyperWorkflowContext:
     # concrete interface validation and the model never sees these fields.
     mission_input: Any
     mission_snapshot: Any
-    scene_graph: Any
+    environment_event: Any
     artifact_root: Path
     minizinc_translation: Any
     max_planner_attempts: int = 1
@@ -119,8 +119,8 @@ class HyperWorkflowContext:
             raise TypeError("Hyper workflow requires a MissionInput")
         if not isinstance(self.mission_snapshot, MissionSnapshot):
             raise TypeError("Hyper workflow requires a MissionSnapshot")
-        if not isinstance(self.scene_graph, TransportEvent):
-            raise TypeError("Hyper workflow requires an Operational Scene Graph")
+        if not isinstance(self.environment_event, TransportEvent):
+            raise TypeError("Hyper workflow requires an environment event")
         if not isinstance(self.minizinc_translation, MiniZincTranslation):
             raise TypeError("Hyper workflow requires MiniZinc translation")
         if self.operational_log is not None and not callable(
@@ -266,10 +266,10 @@ def load_planning_context(
             required_tool="record_planning_intent",
             retry_tool="load_planning_context",
         )
-    validate_operational_scene_graph(
+    validate_environment_data(
         context.mission_input.mission_id,
         context.mission_snapshot,
-        context.scene_graph,
+        context.environment_event,
     )
     context.planning_context_loaded = True
     _emit(
@@ -281,7 +281,7 @@ def load_planning_context(
                 f"{context.mission_input.mission_id}:snapshot:"
                 f"{context.mission_snapshot.version}"
             ),
-            "scene_graph_reference": context.scene_graph.event_id,
+            "environment_data_reference": context.environment_event.event_id,
             "revision": context.mission_snapshot.version,
         },
     )
@@ -291,7 +291,7 @@ def load_planning_context(
             "planning_intent": intent.to_dict(),
             "planner_choice": choice.to_dict(),
             "mission_snapshot": context.mission_snapshot.to_dict(),
-            "environment_data": context.scene_graph.to_dict()["payload"],
+            "environment_data": context.environment_event.to_dict()["payload"],
         }
     )
 
@@ -480,7 +480,7 @@ def planner_executor(
         context.mission_input,
         choice,
         context.mission_snapshot,
-        context.scene_graph,
+        context.environment_event,
         lambda request: problem,
         plan_revision=(context.mission_snapshot.plan_revision or 0) + 1,
         start_attempt_number=context.current_attempt_number,

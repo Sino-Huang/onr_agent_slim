@@ -16,7 +16,7 @@ from onr.contracts.bayesian_belief import (
 )
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.planner_translation import operational_scene_graph_sha256
+from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import PlannerChoice
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
@@ -45,7 +45,7 @@ def _planning_intent(mission_input: MissionInput) -> PlanningIntent:
         mission_input_sha256=hashlib.sha256(
             mission_input.to_canonical_json().encode("utf-8")
         ).hexdigest(),
-        details={"risk_source": "operational_scene_graph"},
+        details={"risk_source": "environment_data"},
     )
 
 
@@ -58,20 +58,20 @@ def _scene_snapshot(
         event_id=event_id,
         mission_id=mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"mission_id": mission_id, "entities": []}},
     )
     snapshot = MissionSnapshot(
         mission_id=mission_id,
         version=7,
         created_at="time-7",
-        operational_scene_graph=event_id,
-        source_revisions={"operational_scene_graph": 7},
+        environment_data=event_id,
+        source_revisions={"environment_data": 7},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": True},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
     return snapshot, scene
 
@@ -96,24 +96,24 @@ def _scene_snapshot_with_belief(
         mission_id=scene.mission_id,
         version=snapshot_version,
         created_at=f"time-{snapshot_version}",
-        operational_scene_graph=scene.event_id,
+        environment_data=scene.event_id,
         bayesian_belief_snapshot=belief_artifact_reference(
             belief.mission_id, belief.content_sha256
         ),
         source_revisions={
-            "operational_scene_graph": 7,
+            "environment_data": 7,
             "bayesian_belief_snapshot": belief.belief_revision,
         },
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene),
+            "environment_data": environment_data_sha256(scene),
             "bayesian_belief_snapshot": belief.content_sha256,
         },
         source_health={
-            "operational_scene_graph": "healthy",
+            "environment_data": "healthy",
             "bayesian_belief_snapshot": "healthy",
         },
         source_freshness={
-            "operational_scene_graph": True,
+            "environment_data": True,
             "bayesian_belief_snapshot": True,
         },
     )
@@ -308,7 +308,7 @@ def test_planning_heartbeat_rejects_another_missions_attempt() -> None:
         hyper.planning_heartbeat(first_input, snapshot, scene, lambda *_: wrong_mission)
 
 
-def test_planning_heartbeat_reports_missing_scene_without_starting_planning() -> None:
+def test_planning_heartbeat_reports_missing_environment_data_without_starting_planning() -> None:
     mission_input = _mission_input()
     intent = _planning_intent(mission_input)
     snapshot = MissionSnapshot(
@@ -321,7 +321,7 @@ def test_planning_heartbeat_reports_missing_scene_without_starting_planning() ->
 
     def generate(*args: object) -> PlannerGenerationAttempt:
         calls.append(args)
-        raise AssertionError("generation must not start without scene evidence")
+        raise AssertionError("generation must not start without environment data")
 
     result = hyper.planning_heartbeat(
         mission_input,
@@ -330,14 +330,14 @@ def test_planning_heartbeat_reports_missing_scene_without_starting_planning() ->
         generate,
     )
 
-    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.planner_choice is None
     assert result.attempt is None
     assert calls == []
     assert hyper.planner_choice(mission_input.mission_id) is None
 
 
-def test_planning_heartbeat_reports_stale_scene_without_starting_planning() -> None:
+def test_planning_heartbeat_reports_stale_environment_data_without_starting_planning() -> None:
     mission_input = _mission_input()
     intent = _planning_intent(mission_input)
     _, scene = _scene_snapshot()
@@ -345,20 +345,20 @@ def test_planning_heartbeat_reports_stale_scene_without_starting_planning() -> N
         mission_id=mission_input.mission_id,
         version=7,
         created_at="time-7",
-        operational_scene_graph=scene.event_id,
-        source_revisions={"operational_scene_graph": 7},
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 7},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": False},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": False},
     )
     calls: list[object] = []
     hyper = HyperAgent(lambda _: intent)
 
     def generate(*args: object) -> PlannerGenerationAttempt:
         calls.append(args)
-        raise AssertionError("generation must not start with stale scene evidence")
+        raise AssertionError("generation must not start with stale environment data")
 
     result = hyper.planning_heartbeat(
         mission_input,
@@ -367,14 +367,14 @@ def test_planning_heartbeat_reports_stale_scene_without_starting_planning() -> N
         generate,
     )
 
-    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.mission_snapshot_id == "mission-1:snapshot:7"
     assert result.planner_choice is None
     assert result.attempt is None
     assert calls == []
 
 
-def test_planning_heartbeat_rejects_scene_content_outside_snapshot_digest() -> None:
+def test_planning_heartbeat_rejects_environment_data_outside_snapshot_digest() -> None:
     mission_input = _mission_input()
     intent = _planning_intent(mission_input)
     snapshot, scene = _scene_snapshot()
@@ -391,7 +391,7 @@ def test_planning_heartbeat_rejects_scene_content_outside_snapshot_digest() -> N
     hyper = HyperAgent(lambda _: intent)
 
     def generate(*_: object) -> PlannerGenerationAttempt:
-        raise AssertionError("generation must not start with tampered scene evidence")
+        raise AssertionError("generation must not start with tampered environment data")
 
     with pytest.raises(ValueError, match="snapshot-authorized"):
         hyper.planning_heartbeat(mission_input, snapshot, tampered, generate)

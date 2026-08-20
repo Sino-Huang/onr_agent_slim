@@ -10,7 +10,7 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planner_translation import (
     PlannerGenerationContext,
     PlanningTranslationOutcome,
-    operational_scene_graph_sha256,
+    environment_data_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -64,20 +64,20 @@ def test_real_generated_minizinc_assets_require_optimal_checked_solution(
         event_id="scene-real-generated",
         mission_id=mission_input.mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"entities": [{"entity_id": "drone-1"}]}},
     )
     snapshot = MissionSnapshot(
         mission_id=mission_input.mission_id,
         version=1,
         created_at="time-1",
-        operational_scene_graph=scene.event_id,
-        source_revisions={"operational_scene_graph": 1},
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 1},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": True},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
     requests: list[PlannerGenerationContext] = []
 
@@ -85,7 +85,7 @@ def test_real_generated_minizinc_assets_require_optimal_checked_solution(
         requests.append(request)
         assert request.mission_input == mission_input
         assert request.mission_snapshot == snapshot
-        assert request.scene_graph == scene
+        assert request.environment_event == scene
         return MiniZincProblem(
             assets={"model.mzn": _MODEL, "data.dzn": b"duration = 2;"},
             maneuvers=(
@@ -131,8 +131,8 @@ def test_real_generated_minizinc_assets_require_optimal_checked_solution(
         f"mission-input:{mission_input.mission_id}"
     )
     assert provenance.mission_intent.sha256 == choice.mission_input_sha256
-    assert provenance.operational_scene_graph.sha256 == (
-        operational_scene_graph_sha256(scene)
+    assert provenance.environment_data.sha256 == (
+        environment_data_sha256(scene)
     )
     for name, reference in provenance.generated_assets.items():
         assert Path(reference.reference).name == name

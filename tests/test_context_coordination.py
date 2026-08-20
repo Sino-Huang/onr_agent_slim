@@ -38,7 +38,7 @@ def _plan(revision: int = 1) -> NormalizedPlan:
             source_authority="mission-control",
             mission_intent=VerifiableReference("mission-input:context", "1" * 64),
             planning_decision=VerifiableReference("planner-choice:context", "2" * 64),
-            operational_scene_graph=VerifiableReference("scene:context", "3" * 64),
+            environment_data=VerifiableReference("scene:context", "3" * 64),
             generated_assets={
                 "model.mzn": VerifiableReference("model.mzn", "4" * 64),
             },
@@ -130,7 +130,7 @@ def test_context_coordination_does_not_publish_unchanged_facts_and_tracks_health
     with transport.open_consumer(coordination.subscription) as source_consumer, transport.open_consumer(
         output_subscription
     ) as output_consumer:
-        coordination.publish_source_fact("operational_scene_graph", 3, reference="scene-3")
+        coordination.publish_source_fact("environment_data", 3, reference="scene-3")
         assert _deliver(coordination, source_consumer) is not None
         first = output_consumer.receive()
         assert first is not None
@@ -138,7 +138,7 @@ def test_context_coordination_does_not_publish_unchanged_facts_and_tracks_health
         first_snapshot = mission_snapshot_from_transport_event(cast(TransportEvent, first.message))
         first.ack()
 
-        coordination.publish_source_fact("operational_scene_graph", 3, reference="scene-3")
+        coordination.publish_source_fact("environment_data", 3, reference="scene-3")
         assert _deliver(coordination, source_consumer) is None
         assert output_consumer.receive() is None
 
@@ -150,14 +150,14 @@ def test_context_coordination_does_not_publish_unchanged_facts_and_tracks_health
                 "mission-context",
                 2,
                 "source-health",
-                {"source": "operational_scene_graph", "health": "degraded"},
+                {"source": "environment_data", "health": "degraded"},
             ),
         )
         changed = _deliver(coordination, source_consumer)
         assert changed is not None
         assert changed.version == first_snapshot.version + 1
-        assert changed.source_health["operational_scene_graph"] == "degraded"
-        assert changed.source_freshness["operational_scene_graph"] is True
+        assert changed.source_health["environment_data"] == "degraded"
+        assert changed.source_freshness["environment_data"] is True
 
 
 def test_context_coordination_restores_latest_snapshot_and_preserves_reference_on_health_only_update() -> None:
@@ -181,7 +181,7 @@ def test_context_coordination_restores_latest_snapshot_and_preserves_reference_o
     first_source = first_transport.open_consumer(first.subscription)
     assert first.run_once(first_source) is not None
     first.publish_source_fact(
-        "operational_scene_graph", 7, reference="scene-7", health="healthy"
+        "environment_data", 7, reference="scene-7", health="healthy"
     )
     assert first.run_once(first_source) is not None
     first_source.close()
@@ -191,16 +191,16 @@ def test_context_coordination_restores_latest_snapshot_and_preserves_reference_o
     )
     restarted = ContextCoordination(restarted_transport, "mission-context")
     restarted.publish_source_fact(
-        "operational_scene_graph", 7, health="degraded"
+        "environment_data", 7, health="degraded"
     )
     restarted_source = restarted_transport.open_consumer(restarted.subscription)
     changed = restarted.run_once(restarted_source)
     assert changed is not None
     assert changed.version == 3
     assert changed.plan_revision == 5
-    assert changed.source_revisions["operational_scene_graph"] == 7
-    assert changed.source_references["operational_scene_graph"] == "scene-7"
-    assert changed.source_health["operational_scene_graph"] == "degraded"
+    assert changed.source_revisions["environment_data"] == 7
+    assert changed.source_references["environment_data"] == "scene-7"
+    assert changed.source_health["environment_data"] == "degraded"
     latest = restarted_transport.latest_event(
         restarted.snapshot_topic, "mission-context", event_kind="mission-snapshot"
     )
@@ -208,7 +208,7 @@ def test_context_coordination_restores_latest_snapshot_and_preserves_reference_o
     assert latest.event_id == "mission-snapshot:mission-context:3"
 
     restarted.publish_source_fact(
-        "operational_scene_graph", 6, reference="old-scene", health="healthy"
+        "environment_data", 6, reference="old-scene", health="healthy"
     )
     assert restarted.run_once(restarted_source) is None
     restarted_source.close()
@@ -253,7 +253,7 @@ def test_context_coordination_nacks_malformed_relevant_events_until_dead_letter(
         "mission-context",
         1,
         "source-fact",
-        {"source": "operational_scene_graph", "health": "healthy"},
+        {"source": "environment_data", "health": "healthy"},
     )
     transport.publish_event(coordination.input_topic, malformed_source)
     assert coordination.run_once(source_consumer) is None

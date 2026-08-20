@@ -24,8 +24,8 @@ _ACTIONS = {
         HumanDecisionAction.REVISE_MISSION_INTENT,
         HumanDecisionAction.END_MISSION_RUN,
     ),
-    HumanDecisionCategory.INSUFFICIENT_SCENE_EVIDENCE: (
-        HumanDecisionAction.WAIT_FOR_SCENE_EVIDENCE,
+    HumanDecisionCategory.INSUFFICIENT_ENVIRONMENT_DATA: (
+        HumanDecisionAction.WAIT_FOR_ENVIRONMENT_DATA,
         HumanDecisionAction.END_MISSION_RUN,
     ),
     HumanDecisionCategory.TIMEOUT: (
@@ -36,7 +36,7 @@ _ACTIONS = {
 _RESUME_ACTIONS = {
     HumanDecisionAction.RETRY_TRANSLATION,
     HumanDecisionAction.REVISE_MISSION_INTENT,
-    HumanDecisionAction.WAIT_FOR_SCENE_EVIDENCE,
+    HumanDecisionAction.WAIT_FOR_ENVIRONMENT_DATA,
     HumanDecisionAction.RETRY_PLANNER,
 }
 
@@ -67,8 +67,8 @@ class HumanDecisionCoordinator:
         categories = {
             "repair_exhausted": (HumanDecisionCategory.TRANSLATION_REPAIR_EXHAUSTED),
             "unsolvable": HumanDecisionCategory.UNSOLVABLE,
-            "insufficient_scene_evidence": (
-                HumanDecisionCategory.INSUFFICIENT_SCENE_EVIDENCE
+            "insufficient_environment_data": (
+                HumanDecisionCategory.INSUFFICIENT_ENVIRONMENT_DATA
             ),
             "timeout": HumanDecisionCategory.TIMEOUT,
         }

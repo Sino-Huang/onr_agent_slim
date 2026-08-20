@@ -32,7 +32,7 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
-    operational_scene_graph_sha256,
+    environment_data_sha256,
 )
 from onr.contracts.planning import (
     PlannerExecutionEvidence,
@@ -157,7 +157,7 @@ def _scene_context() -> tuple[MissionInput, MissionSnapshot, TransportEvent]:
         event_id="scene-workflow-1",
         mission_id=mission.mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={
             "scene_graph": {
                 "mission_id": mission.mission_id,
@@ -188,13 +188,13 @@ def _scene_context() -> tuple[MissionInput, MissionSnapshot, TransportEvent]:
         mission_id=mission.mission_id,
         version=1,
         created_at="2026-08-20T00:00:00+00:00",
-        operational_scene_graph=scene.event_id,
-        source_revisions={"operational_scene_graph": 0},
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 0},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": True},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
     return mission, snapshot, scene
 
@@ -232,7 +232,7 @@ def test_workflow_tools_return_recoverable_prerequisites_and_ready_context(
     context = HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
-        scene_graph=scene,
+        environment_event=scene,
         artifact_root=artifact_root,
         minizinc_translation=MiniZincTranslation(
             RejectingMiniZincPlanner(),
@@ -423,7 +423,7 @@ def test_verified_hyper_workflow_returns_normalized_plan_and_logs_progress(
     context = HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
-        scene_graph=scene,
+        environment_event=scene,
         artifact_root=artifact_root,
         minizinc_translation=MiniZincTranslation(
             VerifiedMiniZincPlanner(_planner_evidence(tmp_path)),
@@ -589,7 +589,7 @@ def test_one_hyper_workflow_reaches_rejected_minizinc_tool_result(
     context = HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
-        scene_graph=scene,
+        environment_event=scene,
         artifact_root=tmp_path / "planner-artifacts",
         minizinc_translation=translator,
     )
@@ -688,7 +688,7 @@ def test_hyper_workflow_recursion_limit_stops_before_planner_execution(
     context = HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
-        scene_graph=scene,
+        environment_event=scene,
         artifact_root=tmp_path / "planner-artifacts",
         minizinc_translation=MiniZincTranslation(
             planner,

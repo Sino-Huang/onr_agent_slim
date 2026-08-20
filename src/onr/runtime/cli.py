@@ -211,8 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             planning_snapshot = context_coordination.run_once(context_consumer)
         if (
             not isinstance(planning_snapshot, MissionSnapshot)
-            or planning_snapshot.operational_scene_graph
-            != heartbeat.scene_graph.event_id
+            or planning_snapshot.environment_data
+            != heartbeat.environment_event.event_id
         ):
             raise RuntimeError(
                 "Context Coordination did not publish the planning snapshot"
@@ -229,7 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         hyper_context = runtime.create_hyper_workflow_context(
             mission_input,
             planning_snapshot,
-            heartbeat.scene_graph,
+            heartbeat.environment_event,
             artifact_root=planner_artifacts,
         )
         hyper_result = hyper_workflow.run(

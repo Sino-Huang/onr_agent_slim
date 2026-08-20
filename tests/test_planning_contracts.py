@@ -46,7 +46,7 @@ def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
         source_authority="mission-control",
         mission_intent=VerifiableReference("mission-input:symbolic", "1" * 64),
         planning_decision=VerifiableReference("planner-choice:symbolic", "2" * 64),
-        operational_scene_graph=VerifiableReference("scene:symbolic", "3" * 64),
+        environment_data=VerifiableReference("scene:symbolic", "3" * 64),
         generated_assets={
             "domain.pddl": VerifiableReference("domain.pddl", "4" * 64),
             "problem.pddl": VerifiableReference("problem.pddl", "5" * 64),

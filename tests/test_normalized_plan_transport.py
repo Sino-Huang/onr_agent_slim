@@ -23,7 +23,7 @@ def test_provenance_only_normalized_plan_round_trips_with_verifiable_references(
         source_authority="mission-control",
         mission_intent=VerifiableReference("mission-input:1", "a" * 64),
         planning_decision=VerifiableReference("planner-choice:1", "b" * 64),
-        operational_scene_graph=VerifiableReference("scene:1", "c" * 64),
+        environment_data=VerifiableReference("scene:1", "c" * 64),
         generated_assets={
             "model.mzn": VerifiableReference("artifacts/model.mzn", "d" * 64),
             "data.dzn": VerifiableReference("artifacts/data.dzn", "e" * 64),
@@ -78,7 +78,7 @@ def test_provenance_only_normalized_plan_round_trips_with_verifiable_references(
             "reference": "planner-choice:1",
             "sha256": "b" * 64,
         },
-        "operational_scene_graph": {
+        "environment_data": {
             "reference": "scene:1",
             "sha256": "c" * 64,
         },
@@ -108,7 +108,7 @@ def test_symbolic_provenance_only_plan_round_trips_without_mission_spec() -> Non
         source_authority="mission-control",
         mission_intent=VerifiableReference("mission-input:symbolic", "1" * 64),
         planning_decision=VerifiableReference("planner-choice:symbolic", "2" * 64),
-        operational_scene_graph=VerifiableReference("scene:symbolic", "3" * 64),
+        environment_data=VerifiableReference("scene:symbolic", "3" * 64),
         generated_assets={
             "domain.pddl": VerifiableReference("artifacts/domain.pddl", "4" * 64),
             "problem.pddl": VerifiableReference("artifacts/problem.pddl", "5" * 64),

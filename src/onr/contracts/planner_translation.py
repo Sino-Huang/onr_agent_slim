@@ -25,12 +25,12 @@ from onr.contracts.planning_evidence import (
 from onr.contracts.transport import TransportEvent
 
 
-def operational_scene_graph_sha256(scene_graph: TransportEvent) -> str:
-    """Hash the complete environment payload referenced by a scene event."""
+def environment_data_sha256(environment_event: TransportEvent) -> str:
+    """Hash the complete payload referenced by an environment event."""
 
-    if not isinstance(scene_graph, TransportEvent):
-        raise TypeError("scene evidence must be a TransportEvent")
-    payload = scene_graph.to_dict()["payload"]
+    if not isinstance(environment_event, TransportEvent):
+        raise TypeError("environment evidence must be a TransportEvent")
+    payload = environment_event.to_dict()["payload"]
     document = json.dumps(
         payload,
         sort_keys=True,
@@ -41,27 +41,25 @@ def operational_scene_graph_sha256(scene_graph: TransportEvent) -> str:
     return hashlib.sha256(document.encode("utf-8")).hexdigest()
 
 
-def validate_operational_scene_graph(
+def validate_environment_data(
     mission_id: str,
     snapshot: MissionSnapshot,
-    scene_graph: TransportEvent,
+    environment_event: TransportEvent,
 ) -> str:
     """Validate snapshot identity, health, freshness, and content digest."""
 
-    source = "operational_scene_graph"
-    digest = operational_scene_graph_sha256(scene_graph)
+    source = "environment_data"
+    digest = environment_data_sha256(environment_event)
     if (
         snapshot.mission_id != mission_id
-        or scene_graph.mission_id != mission_id
-        or scene_graph.event_kind != "operational_scene_graph"
-        or snapshot.source_references[source] != scene_graph.event_id
+        or environment_event.mission_id != mission_id
+        or environment_event.event_kind != "environment_data"
+        or snapshot.source_references[source] != environment_event.event_id
         or snapshot.source_hashes[source] != digest
         or snapshot.source_health[source] != "healthy"
         or not snapshot.source_freshness[source]
     ):
-        raise ValueError(
-            "planning requires snapshot-authorized Operational Scene Graph evidence"
-        )
+        raise ValueError("planning requires snapshot-authorized environment data")
     return digest
 
 
@@ -112,7 +110,7 @@ class PlannerGenerationContext:
     mission_input: MissionInput
     planner_choice: PlannerChoiceRecord
     mission_snapshot: MissionSnapshot
-    scene_graph: TransportEvent
+    environment_event: TransportEvent
     attempt_number: int
     correction_feedback: PlannerCorrectionFeedback | None = None
 
@@ -243,7 +241,7 @@ __all__ = [
     "PlanningTranslationOutcome",
     "PlanningTranslationResult",
     "create_generation_attempt_evidence",
-    "operational_scene_graph_sha256",
-    "validate_operational_scene_graph",
+    "environment_data_sha256",
+    "validate_environment_data",
     "verifiable_file_reference",
 ]

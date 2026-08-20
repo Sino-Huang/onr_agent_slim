@@ -33,9 +33,9 @@ from onr.contracts.planner_translation import PlanningTranslationOutcome
             ),
         ),
         (
-            HumanDecisionCategory.INSUFFICIENT_SCENE_EVIDENCE,
+            HumanDecisionCategory.INSUFFICIENT_ENVIRONMENT_DATA,
             (
-                HumanDecisionAction.WAIT_FOR_SCENE_EVIDENCE,
+                HumanDecisionAction.WAIT_FOR_ENVIRONMENT_DATA,
                 HumanDecisionAction.END_MISSION_RUN,
             ),
         ),
@@ -93,8 +93,8 @@ def test_terminal_planning_categories_persist_correct_safe_operator_actions(
             HumanDecisionCategory.TIMEOUT,
         ),
         (
-            PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
-            HumanDecisionCategory.INSUFFICIENT_SCENE_EVIDENCE,
+            PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA,
+            HumanDecisionCategory.INSUFFICIENT_ENVIRONMENT_DATA,
         ),
     ),
 )

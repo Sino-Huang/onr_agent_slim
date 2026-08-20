@@ -1,14 +1,14 @@
 ---
 name: creating-pddl-problem-files
 description: Apply after Fast Downward is selected to generate PDDL domain and problem files from Mission Intent and the current Hyper heartbeat snapshot.
-version: '1.0.0'
+version: '1.1.0'
 ---
 
 # Creating PDDL Problem Files
 
 ## Procedure
 
-1. Read Mission Intent, the accepted PlanningIntent, and the current MissionSnapshot. Resolve operational facts only through its referenced Operational Scene Graph and other authorized evidence.
+1. Read Mission Intent, the accepted PlanningIntent, and the current MissionSnapshot. Resolve operational facts through every relevant key in its snapshot-authorized flexible `environment_data`.
 2. Put reusable predicates, action preconditions/effects, and action costs in domain.pddl. Put current objects, initial predicates, and the goal in problem.pddl.
 3. Use portable lowercase action names. Use the same action names and costs in the normalization template.
 4. When correction_feedback is present, use its sanitized validation stage and message as the complete diagnosis and generate a fresh asset set within the runtime's retry bound.

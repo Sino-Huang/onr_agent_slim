@@ -604,7 +604,7 @@ def _normalized_plan(planning_profile: str) -> NormalizedPlan:
             source_authority="authority",
             mission_intent=VerifiableReference("mission-input:1", "1" * 64),
             planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
-            operational_scene_graph=VerifiableReference("scene:1", "3" * 64),
+            environment_data=VerifiableReference("scene:1", "3" * 64),
             generated_assets={
                 "planner-input": VerifiableReference("planner-input", "4" * 64),
             },

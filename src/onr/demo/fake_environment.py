@@ -45,7 +45,7 @@ class FakeEnvironmentResult:
     """The immutable evidence emitted for one consumed maneuver command."""
 
     command: ManeuverCommand
-    scene_graph: TransportEvent
+    environment_event: TransportEvent
     source_fact: TransportEvent
     risk_observation: TransportEvent
     feedback: TransportEvent
@@ -54,9 +54,9 @@ class FakeEnvironmentResult:
 
 @dataclass(frozen=True, slots=True)
 class FakeEnvironmentHeartbeat:
-    """Operational scene evidence emitted before any maneuver command."""
+    """Environment evidence emitted before any maneuver command."""
 
-    scene_graph: TransportEvent
+    environment_event: TransportEvent
     source_fact: TransportEvent
     environment_file: Path
 
@@ -72,7 +72,7 @@ class FakeEnvironment:
         target_service: str = "maneuver-adapter",
         command_topic: str = "maneuver",
         feedback_topic: str = "maneuver-feedback",
-        scene_graph_topic: str = "operational-scene-graph",
+        environment_topic: str = "environment-data",
         context_topic: str = "normalized-plans",
         max_retries: int = 3,
         output_root: Path | str | None = None,
@@ -85,7 +85,7 @@ class FakeEnvironment:
         self.target_service = target_service
         self.command_topic = command_topic
         self.feedback_topic = feedback_topic
-        self.scene_graph_topic = scene_graph_topic
+        self.environment_topic = environment_topic
         self.context_topic = context_topic
         self.output_root = (
             Path(output_root)
@@ -95,7 +95,7 @@ class FakeEnvironment:
         self.event_report_path = Path(event_report_path or _DEFAULT_EVENT_REPORT_PATH)
         self.subscription = Subscription(target_service, mission_id, command_topic, max_retries)
         self._results: dict[tuple[str, str], FakeEnvironmentResult] = {}
-        self._scene_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
+        self._environment_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
         self.last_result: FakeEnvironmentResult | None = None
         self.last_output_path: Path | None = None
 
@@ -112,10 +112,10 @@ class FakeEnvironment:
         return Subscription(target_service, mission_id, command_topic, max_retries)
 
     def heartbeat(self) -> FakeEnvironmentHeartbeat:
-        """Publish the current operational scene before planner generation."""
+        """Publish the current environment data before planner generation."""
 
         environment_file = (
-            self.output_root / quote(self.mission_id, safe="._-") / "scene.json"
+            self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
         )
         self.last_output_path = environment_file
         graph = {
@@ -127,9 +127,11 @@ class FakeEnvironment:
         }
         environment_data = self._environment_data(graph)
         _atomic_write_json(environment_file, environment_data)
-        scene_graph, source_fact = self._publish_scene_graph(environment_data, 0)
+        environment_event, source_fact = self._publish_environment_data(
+            environment_data, 0
+        )
         return FakeEnvironmentHeartbeat(
-            scene_graph=scene_graph,
+            environment_event=environment_event,
             source_fact=source_fact,
             environment_file=environment_file,
         )
@@ -171,12 +173,14 @@ class FakeEnvironment:
             self.last_result = existing
             return existing
 
-        scene_graph, source_fact, environment_file = self._scene_graph_and_fact(command)
+        environment_event, source_fact, environment_file = (
+            self._environment_event_and_fact(command)
+        )
         risk_observation = self._risk_observation(command)
         feedback = self._feedback(command, lifecycle)
         result = FakeEnvironmentResult(
             command,
-            scene_graph,
+            environment_event,
             source_fact,
             risk_observation,
             feedback,
@@ -186,10 +190,12 @@ class FakeEnvironment:
         self.last_result = result
         return result
 
-    def _scene_graph_and_fact(
+    def _environment_event_and_fact(
         self, command: ManeuverCommand
     ) -> tuple[TransportEvent, TransportEvent, Path]:
-        environment_file = self.output_root / quote(self.mission_id, safe="._-") / "scene.json"
+        environment_file = (
+            self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
+        )
         self.last_output_path = environment_file
         graph = {
             "mission_id": command.mission_id,
@@ -208,10 +214,10 @@ class FakeEnvironment:
         }
         environment_data = self._environment_data(graph)
         _atomic_write_json(environment_file, environment_data)
-        scene_event, source_fact = self._publish_scene_graph(
+        environment_event, source_fact = self._publish_environment_data(
             environment_data, command.plan_revision
         )
-        return scene_event, source_fact, environment_file
+        return environment_event, source_fact, environment_file
 
     def _environment_data(self, graph: dict[str, object]) -> dict[str, object]:
         event_report = json.loads(self.event_report_path.read_text(encoding="utf-8"))
@@ -220,7 +226,7 @@ class FakeEnvironment:
             "event_report": event_report,
         }
 
-    def _publish_scene_graph(
+    def _publish_environment_data(
         self, environment_data: dict[str, object], revision: int
     ) -> tuple[TransportEvent, TransportEvent]:
         environment_json = json.dumps(
@@ -230,27 +236,27 @@ class FakeEnvironment:
             ensure_ascii=False,
         )
         reference = hashlib.sha256(environment_json.encode("utf-8")).hexdigest()
-        cached = self._scene_facts.get(reference)
+        cached = self._environment_facts.get(reference)
         if cached is not None:
             return cached
 
-        scene_event_id = f"operational-scene-graph:{self.mission_id}:{reference}"
+        environment_event_id = f"environment-data:{self.mission_id}:{reference}"
         source_fact_id = (
-            f"source-fact:{self.mission_id}:operational_scene_graph:{reference}"
+            f"source-fact:{self.mission_id}:environment_data:{reference}"
         )
-        scene_event = self.transport.get_event(scene_event_id)
+        environment_event = self.transport.get_event(environment_event_id)
         source_fact = self.transport.get_event(source_fact_id)
-        if scene_event is None:
-            scene_event = self.transport.publish_event(
-                self.scene_graph_topic,
+        if environment_event is None:
+            environment_event = self.transport.publish_event(
+                self.environment_topic,
                 TransportEvent(
                     schema_version=1,
-                    event_id=scene_event_id,
+                    event_id=environment_event_id,
                     mission_id=self.mission_id,
                     sequence=self.transport.next_event_sequence(
-                        self.scene_graph_topic, self.mission_id
+                        self.environment_topic, self.mission_id
                     ),
-                    event_kind="operational_scene_graph",
+                    event_kind="environment_data",
                     payload=json.loads(environment_json),
                 ),
             )
@@ -259,18 +265,18 @@ class FakeEnvironment:
                 self.context_topic,
                 create_source_fact_event(
                     self.mission_id,
-                    "operational_scene_graph",
+                    "environment_data",
                     revision,
                     event_id=source_fact_id,
                     sequence=self.transport.next_event_sequence(
                         self.context_topic, self.mission_id
                     ),
-                    reference=scene_event_id,
+                    reference=environment_event_id,
                     content_sha256=reference,
                 ),
             )
-        self._scene_facts[reference] = (scene_event, source_fact)
-        return scene_event, source_fact
+        self._environment_facts[reference] = (environment_event, source_fact)
+        return environment_event, source_fact
 
     def _entities(self, command: ManeuverCommand) -> list[dict[str, object]]:
         return self._entities_for_seed(

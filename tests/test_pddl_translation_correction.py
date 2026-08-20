@@ -11,7 +11,7 @@ from onr.contracts.planner_translation import (
     PlannerCorrectionStage,
     PlannerGenerationContext,
     PlanningTranslationOutcome,
-    operational_scene_graph_sha256,
+    environment_data_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -99,20 +99,20 @@ def _planning_context() -> tuple[
         event_id="scene-symbolic-1",
         mission_id=mission_input.mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"entities": [{"entity_id": "drone-1"}]}},
     )
     snapshot = MissionSnapshot(
         mission_id=mission_input.mission_id,
         version=3,
         created_at="time-3",
-        operational_scene_graph=scene.event_id,
-        source_revisions={"operational_scene_graph": 3},
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 3},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": True},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
     return mission_input, choice, snapshot, scene
 

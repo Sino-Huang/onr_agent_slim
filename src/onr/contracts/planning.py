@@ -493,7 +493,7 @@ class PlanProvenance:
     source_authority: str
     mission_intent: VerifiableReference
     planning_decision: VerifiableReference
-    operational_scene_graph: VerifiableReference
+    environment_data: VerifiableReference
     generated_assets: Mapping[str, VerifiableReference]
     solver_evidence: Mapping[str, VerifiableReference]
 
@@ -503,7 +503,7 @@ class PlanProvenance:
         for value, label in (
             (self.mission_intent, "Mission Intent"),
             (self.planning_decision, "Planning Decision"),
-            (self.operational_scene_graph, "Operational Scene Graph"),
+            (self.environment_data, "Environment Data"),
         ):
             if not isinstance(value, VerifiableReference):
                 raise ValueError(f"{label} provenance must be verifiable")
@@ -527,7 +527,7 @@ class PlanProvenance:
             "source_authority": self.source_authority,
             "mission_intent": self.mission_intent.to_dict(),
             "planning_decision": self.planning_decision.to_dict(),
-            "operational_scene_graph": self.operational_scene_graph.to_dict(),
+            "environment_data": self.environment_data.to_dict(),
             "generated_assets": {
                 key: value.to_dict()
                 for key, value in sorted(self.generated_assets.items())
@@ -547,7 +547,7 @@ class PlanProvenance:
                 "source_authority",
                 "mission_intent",
                 "planning_decision",
-                "operational_scene_graph",
+                "environment_data",
                 "generated_assets",
                 "solver_evidence",
             },
@@ -574,9 +574,7 @@ class PlanProvenance:
             source_authority=data["source_authority"],
             mission_intent=VerifiableReference.from_dict(data["mission_intent"]),
             planning_decision=VerifiableReference.from_dict(data["planning_decision"]),
-            operational_scene_graph=VerifiableReference.from_dict(
-                data["operational_scene_graph"]
-            ),
+            environment_data=VerifiableReference.from_dict(data["environment_data"]),
             generated_assets=generated,
             solver_evidence=solver,
         )

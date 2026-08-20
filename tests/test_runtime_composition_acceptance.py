@@ -32,7 +32,7 @@ from onr.contracts.maneuver_control import (
 from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
-    operational_scene_graph_sha256,
+    environment_data_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -108,7 +108,7 @@ class RecordingTranslator:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
         asset_generator: object,
         *,
         plan_revision: int,
@@ -118,7 +118,7 @@ class RecordingTranslator:
                 mission_input,
                 planner_choice,
                 snapshot,
-                scene_graph,
+                environment_event,
                 asset_generator,
                 plan_revision,
             )
@@ -195,7 +195,7 @@ def _terminal_planning_dependencies(
     }
 
 
-def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
+def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec(
     tmp_path: Path,
 ) -> None:
     planner_path = tmp_path / "planner"
@@ -241,7 +241,7 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
                 ).hexdigest(),
             ),
             planning_decision=VerifiableReference("choice:planning-runtime", "2" * 64),
-            operational_scene_graph=VerifiableReference(
+            environment_data=VerifiableReference(
                 "scene:planning-runtime", "3" * 64
             ),
             generated_assets={
@@ -312,13 +312,13 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
     def generate(
         choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
     ) -> PlannerGenerationAttempt:
-        assert snapshot.operational_scene_graph == scene_graph.event_id
-        graph = scene_graph.payload["scene_graph"]
+        assert snapshot.environment_data == environment_event.event_id
+        graph = environment_event.payload["scene_graph"]
         assert isinstance(graph, Mapping) and graph["entities"]
         environment_data = cast(
-            Mapping[str, object], scene_graph.to_dict()["payload"]
+            Mapping[str, object], environment_event.to_dict()["payload"]
         )
         assert environment_data["event_report"] == json.loads(
             (
@@ -366,14 +366,14 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
         correction_attempt.attempt_id,
     ]
     assert result.context_snapshot is not None
-    assert result.scene_graph is not None
+    assert result.environment_event is not None
     assert result.translation is translator.result
     assert result.execution is not None
     assert result.execution.plan is plan
     assert result.execution.final_status.status == "transitioned"
     assert len(translator.calls) == 1
     assert (
-        result.context_snapshot.operational_scene_graph == result.scene_graph.event_id
+        result.context_snapshot.environment_data == result.environment_event.event_id
     )
     assert (
         runtime.transport.latest_event(
@@ -389,7 +389,7 @@ def test_planning_mission_uses_heartbeat_scene_without_a_mission_spec(
     assert evidence.payload["attempt_id"] == correction_attempt.attempt_id
 
 
-def test_planning_mission_reports_missing_heartbeat_scene_without_generation(
+def test_planning_mission_reports_missing_environment_data_without_generation(
     tmp_path: Path,
 ) -> None:
     planner_path = tmp_path / "planner"
@@ -416,7 +416,7 @@ def test_planning_mission_reports_missing_heartbeat_scene_without_generation(
 
     def generate(*args: object) -> PlannerGenerationAttempt:
         calls.append(args)
-        raise AssertionError("generation must not start without scene evidence")
+        raise AssertionError("generation must not start without environment data")
 
     dependencies = _terminal_planning_dependencies(runtime)
     human_decisions = runtime.create_human_decision_coordinator()
@@ -431,14 +431,14 @@ def test_planning_mission_reports_missing_heartbeat_scene_without_generation(
         **dependencies,
     )
 
-    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.human_decision_request is not None
-    assert str(result.human_decision_request.category) == "insufficient_scene_evidence"
+    assert str(result.human_decision_request.category) == "insufficient_environment_data"
     assert result.execution is None
     assert result.planner_choice is None
     assert result.attempt is None
     assert result.context_snapshot is None
-    assert result.scene_graph is None
+    assert result.environment_event is None
 
     resumed_from: list[RunCheckpoint] = []
 
@@ -453,7 +453,7 @@ def test_planning_mission_reports_missing_heartbeat_scene_without_generation(
             request_id=request.request_id,
             mission_id=request.mission_id,
             mission_run_id=request.mission_run_id,
-            action=HumanDecisionAction.WAIT_FOR_SCENE_EVIDENCE,
+            action=HumanDecisionAction.WAIT_FOR_ENVIRONMENT_DATA,
         ),
         human_decision_coordinator=human_decisions,
         resume=resume,
@@ -549,7 +549,7 @@ def test_failed_planning_resume_can_be_retried(tmp_path: Path) -> None:
     )
     resume_calls: list[RunCheckpoint] = []
     resumed = PlanningMissionRunResult(
-        PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+        PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     )
 
     def resume(selected: RunCheckpoint) -> PlanningMissionRunResult:
@@ -581,7 +581,7 @@ def test_failed_planning_resume_can_be_retried(tmp_path: Path) -> None:
     assert resume_calls == [checkpoint, checkpoint]
 
 
-def test_planning_mission_reports_stale_snapshot_scene_without_generation(
+def test_planning_mission_reports_stale_environment_data_without_generation(
     tmp_path: Path,
 ) -> None:
     planner_path = tmp_path / "planner"
@@ -610,25 +610,25 @@ def test_planning_mission_reports_stale_snapshot_scene_without_generation(
         event_id="stale-scene",
         mission_id=mission_input.mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"entities": []}},
     )
 
     def heartbeat() -> None:
-        transport.publish_event("operational-scene-graph", scene)
+        transport.publish_event("environment-data", scene)
         context_coordination.publish_source_fact(
-            "operational_scene_graph",
+            "environment_data",
             1,
             reference=scene.event_id,
             fresh=False,
-            content_sha256=operational_scene_graph_sha256(scene),
+            content_sha256=environment_data_sha256(scene),
         )
 
     calls: list[object] = []
 
     def generate(*args: object) -> PlannerGenerationAttempt:
         calls.append(args)
-        raise AssertionError("generation must not start with stale scene evidence")
+        raise AssertionError("generation must not start with stale environment data")
 
     result = runtime.run_planning_mission(
         mission_input,
@@ -640,18 +640,18 @@ def test_planning_mission_reports_stale_snapshot_scene_without_generation(
         model=FixedSummaryModel(),
     )
 
-    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.human_decision_request is not None
-    assert str(result.human_decision_request.category) == "insufficient_scene_evidence"
+    assert str(result.human_decision_request.category) == "insufficient_environment_data"
     assert result.execution is None
     assert result.context_snapshot is not None
-    assert result.scene_graph == scene
+    assert result.environment_event == scene
     assert result.planner_choice is None
     assert result.attempt is None
     assert calls == []
 
 
-def test_planning_mission_reports_unreferenced_scene_without_generation(
+def test_planning_mission_reports_unreferenced_environment_data_without_generation(
     tmp_path: Path,
 ) -> None:
     planner_path = tmp_path / "planner"
@@ -680,13 +680,13 @@ def test_planning_mission_reports_unreferenced_scene_without_generation(
         event_id="unreferenced-scene",
         mission_id=mission_input.mission_id,
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"entities": []}},
     )
     calls: list[object] = []
 
     def heartbeat() -> None:
-        transport.publish_event("operational-scene-graph", scene)
+        transport.publish_event("environment-data", scene)
 
     def generate(*args: object) -> PlannerGenerationAttempt:
         calls.append(args)
@@ -702,12 +702,12 @@ def test_planning_mission_reports_unreferenced_scene_without_generation(
         model=FixedSummaryModel(),
     )
 
-    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+    assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.human_decision_request is not None
-    assert str(result.human_decision_request.category) == "insufficient_scene_evidence"
+    assert str(result.human_decision_request.category) == "insufficient_environment_data"
     assert result.execution is None
     assert result.context_snapshot is None
-    assert result.scene_graph == scene
+    assert result.environment_event == scene
     assert result.planner_choice is None
     assert result.attempt is None
     assert calls == []
@@ -741,7 +741,7 @@ def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> 
             source_authority=mission_input.source_authority,
             mission_intent=VerifiableReference("mission-input:1", "1" * 64),
             planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
-            operational_scene_graph=VerifiableReference("scene:1", "3" * 64),
+            environment_data=VerifiableReference("scene:1", "3" * 64),
             generated_assets={
                 "model.mzn": VerifiableReference("model.mzn", "4" * 64),
             },
@@ -798,6 +798,6 @@ def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> 
         if record.event_kind == "planning"
     )
     assert planning_record.details["planning_decision_reference"] == "planner-choice:1"
-    assert planning_record.details["scene_graph_reference"] == "scene:1"
+    assert planning_record.details["environment_data_reference"] == "scene:1"
     assert planning_record.details["generated_assets"] == "model.mzn"
     assert planning_record.details["solver_evidence"] == "stdout"

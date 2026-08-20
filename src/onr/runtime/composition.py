@@ -109,21 +109,21 @@ class RuntimeRunResult:
     status_before_feedback: FSMStatus
     decision: ManeuverControlDecision
     command: ManeuverCommand
-    scene_graph: TransportEvent
+    environment_event: TransportEvent
     feedback: ManeuverFeedback
     final_status: FSMStatus
 
 
 @dataclass(frozen=True, slots=True)
 class PlanningMissionRunResult:
-    """Evidence returned by one planner-native, scene-backed Mission Run."""
+    """Evidence returned by one planner-native, environment-backed Mission Run."""
 
     outcome: PlanningHeartbeatOutcome
     planner_choice: PlannerChoiceRecord | None = None
     attempt: PlannerGenerationAttempt | None = None
     generation_attempts: tuple[PlannerGenerationAttempt, ...] = ()
     context_snapshot: MissionSnapshot | None = None
-    scene_graph: TransportEvent | None = None
+    environment_event: TransportEvent | None = None
     translation: PlanningTranslationResult | None = None
     human_decision_request: HumanDecisionRequest | None = None
     execution: RuntimeRunResult | None = None
@@ -705,7 +705,7 @@ class RuntimeComposition:
         self,
         mission_input: MissionInput,
         mission_snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
         *,
         artifact_root: Path,
     ) -> HyperWorkflowContext:
@@ -714,7 +714,7 @@ class RuntimeComposition:
         return HyperWorkflowContext(
             mission_input=mission_input,
             mission_snapshot=mission_snapshot,
-            scene_graph=scene_graph,
+            environment_event=environment_event,
             artifact_root=artifact_root,
             minizinc_translation=self.create_minizinc_translation(
                 artifact_root,
@@ -769,7 +769,7 @@ class RuntimeComposition:
             fsm_subscription,
             Subscription(maneuver_control.target_service, mission_id, "maneuver"),
             Subscription(
-                "runtime-planning-scene-observer", mission_id, "operational-scene-graph"
+                "runtime-environment-observer", mission_id, "environment-data"
             ),
             Subscription("runtime-feedback-observer", mission_id, "maneuver-feedback"),
             Subscription(
@@ -839,7 +839,7 @@ class RuntimeComposition:
             fsm_consumer = consumers.enter_context(
                 self.transport.open_consumer(fsm_subscription)
             )
-            scene_consumer = consumers.enter_context(
+            environment_consumer = consumers.enter_context(
                 self.transport.open_consumer(required_subscriptions[3])
             )
             feedback_consumer = consumers.enter_context(
@@ -870,8 +870,8 @@ class RuntimeComposition:
                     "planning_decision_reference": (
                         provenance.planning_decision.reference
                     ),
-                    "scene_graph_reference": (
-                        provenance.operational_scene_graph.reference
+                    "environment_data_reference": (
+                        provenance.environment_data.reference
                     ),
                     "generated_assets": ",".join(sorted(provenance.generated_assets)),
                     "solver_evidence": ",".join(sorted(provenance.solver_evidence)),
@@ -973,7 +973,7 @@ class RuntimeComposition:
                 "completed",
                 details={"operation": "environment_step"},
             )
-            scene_graph = consume_event(scene_consumer, "operational_scene_graph")
+            environment_event = consume_event(environment_consumer, "environment_data")
             feedback_event = consume_event(feedback_consumer, "maneuver-feedback")
             feedback = ManeuverFeedback.from_dict(feedback_event.payload)
             if (
@@ -987,7 +987,7 @@ class RuntimeComposition:
                 raise RuntimeError(
                     "maneuver feedback does not match the physical command"
                 )
-            graph = scene_graph.payload.get("scene_graph")
+            graph = environment_event.payload.get("scene_graph")
             expected_parameters = {
                 parameter.name: parameter.value for parameter in command.parameters
             }
@@ -998,7 +998,7 @@ class RuntimeComposition:
                 else None
             )
             if (
-                scene_graph.mission_id != mission_id
+                environment_event.mission_id != mission_id
                 or not isinstance(graph, Mapping)
                 or graph.get("mission_id") != mission_id
                 or graph.get("plan_revision") != plan.plan_revision
@@ -1008,17 +1008,17 @@ class RuntimeComposition:
                 or maneuver.get("parameters") != expected_parameters
             ):
                 raise RuntimeError(
-                    "operational scene graph does not match the physical command"
+                    "environment data does not match the physical command"
                 )
 
             context_snapshot = context_coordination.run_once(context_consumer)
             if (
                 context_snapshot is None
                 or context_snapshot.plan_revision != plan.plan_revision
-                or context_snapshot.operational_scene_graph != scene_graph.event_id
+                or context_snapshot.environment_data != environment_event.event_id
             ):
                 raise RuntimeError(
-                    "Context Coordination did not consume the scene graph source fact"
+                    "Context Coordination did not consume the environment data source fact"
                 )
 
             if status_before_feedback.active_state != activated.active_state:
@@ -1082,7 +1082,7 @@ class RuntimeComposition:
                 status_before_feedback=status_before_feedback,
                 decision=decision,
                 command=command,
-                scene_graph=scene_graph,
+                environment_event=environment_event,
                 feedback=feedback,
                 final_status=final_status,
             )
@@ -1108,7 +1108,7 @@ class RuntimeComposition:
         summarizer: MissionLogSummarizer | None = None,
         model: Any | None = None,
     ) -> PlanningMissionRunResult:
-        """Run scene-backed planner selection and planner-native generation."""
+        """Run environment-backed planner selection and planner-native generation."""
 
         with self.mission_session(
             mission_input.mission_id,
@@ -1189,23 +1189,26 @@ class RuntimeComposition:
                 attempt=(generation_attempts[-1] if generation_attempts else None),
                 generation_attempts=generation_attempts,
                 context_snapshot=preparation.context_snapshot,
-                scene_graph=preparation.scene_graph,
+                environment_event=preparation.environment_event,
                 translation=translation,
                 human_decision_request=request,
             )
 
-        if preparation.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE:
-            scene_reference = (
-                preparation.scene_graph.event_id
-                if preparation.scene_graph is not None
-                else f"scene-evidence:{mission_id}:missing"
+        if (
+            preparation.outcome
+            is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
+        ):
+            environment_reference = (
+                preparation.environment_event.event_id
+                if preparation.environment_event is not None
+                else f"environment-data:{mission_id}:missing"
             )
-            return paused(preparation.outcome, (scene_reference,))
+            return paused(preparation.outcome, (environment_reference,))
         if (
             preparation.planner_choice is None
             or preparation.attempt is None
             or preparation.context_snapshot is None
-            or preparation.scene_graph is None
+            or preparation.environment_event is None
         ):
             raise RuntimeError("planning preparation evidence is incomplete")
 
@@ -1216,7 +1219,7 @@ class RuntimeComposition:
             mission_input,
             preparation.planner_choice,
             preparation.context_snapshot,
-            preparation.scene_graph,
+            preparation.environment_event,
             asset_generator,
             plan_revision=plan_revision,
         )
@@ -1278,7 +1281,7 @@ class RuntimeComposition:
             attempt=latest_attempt,
             generation_attempts=(preparation.generation_attempts + published_attempts),
             context_snapshot=preparation.context_snapshot,
-            scene_graph=preparation.scene_graph,
+            environment_event=preparation.environment_event,
             translation=translation,
             execution=execution,
         )
@@ -1308,12 +1311,15 @@ class RuntimeComposition:
                 "Context Coordination mission ID does not match MissionInput"
             )
 
-        scene_subscription = Subscription(
-            "runtime-planning-scene-observer",
+        environment_subscription = Subscription(
+            "runtime-environment-observer",
             mission_id,
-            "operational-scene-graph",
+            "environment-data",
         )
-        for subscription in (context_coordination.subscription, scene_subscription):
+        for subscription in (
+            context_coordination.subscription,
+            environment_subscription,
+        ):
             if subscription not in self.transport.subscriptions:
                 self.transport.subscriptions += (subscription,)
 
@@ -1329,46 +1335,48 @@ class RuntimeComposition:
             self.transport.open_consumer(
                 context_coordination.subscription
             ) as context_consumer,
-            self.transport.open_consumer(scene_subscription) as scene_consumer,
+            self.transport.open_consumer(
+                environment_subscription
+            ) as environment_consumer,
         ):
             environment_heartbeat()
-            scene_delivery = scene_consumer.receive()
+            environment_delivery = environment_consumer.receive()
             if (
-                scene_delivery is None
-                or not isinstance(scene_delivery.message, TransportEvent)
-                or scene_delivery.message.event_kind != "operational_scene_graph"
+                environment_delivery is None
+                or not isinstance(environment_delivery.message, TransportEvent)
+                or environment_delivery.message.event_kind != "environment_data"
             ):
-                if scene_delivery is not None:
-                    scene_delivery.nack()
+                if environment_delivery is not None:
+                    environment_delivery.nack()
                 logger.emit(
                     mission_id,
                     "runtime",
-                    "planning-scene-evidence",
-                    str(PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE),
+                    "planning-environment-data",
+                    str(PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA),
                     details={"operation": "environment_heartbeat"},
                 )
                 return PlanningMissionRunResult(
-                    outcome=PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
+                    outcome=PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA,
                 )
-            scene_graph = scene_delivery.message
-            scene_delivery.ack()
+            environment_event = environment_delivery.message
+            environment_delivery.ack()
 
             snapshot = context_coordination.run_once(context_consumer)
             if (
                 snapshot is None
-                or snapshot.operational_scene_graph != scene_graph.event_id
+                or snapshot.environment_data != environment_event.event_id
             ):
                 logger.emit(
                     mission_id,
                     "runtime",
-                    "planning-scene-evidence",
-                    str(PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE),
+                    "planning-environment-data",
+                    str(PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA),
                     details={"operation": "context_coordination"},
                 )
                 return PlanningMissionRunResult(
-                    outcome=PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
+                    outcome=PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA,
                     context_snapshot=snapshot,
-                    scene_graph=scene_graph,
+                    environment_event=environment_event,
                 )
             belief_source = "bayesian_belief_snapshot"
             belief_revision = snapshot.source_revisions[belief_source]
@@ -1396,7 +1404,7 @@ class RuntimeComposition:
             heartbeat = hyper_agent.planning_heartbeat(
                 mission_input,
                 snapshot,
-                scene_graph,
+                environment_event,
                 generate,
                 belief_snapshot,
             )
@@ -1406,7 +1414,7 @@ class RuntimeComposition:
                 )
             if (
                 heartbeat.outcome
-                is PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE
+                is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
             ):
                 logger.emit(
                     mission_id,
@@ -1418,7 +1426,7 @@ class RuntimeComposition:
                 return PlanningMissionRunResult(
                     outcome=heartbeat.outcome,
                     context_snapshot=snapshot,
-                    scene_graph=scene_graph,
+                    environment_event=environment_event,
                 )
             if heartbeat.attempt is None or heartbeat.planner_choice is None:
                 raise RuntimeError("planning attempt evidence is incomplete")
@@ -1441,7 +1449,7 @@ class RuntimeComposition:
                 attempt=heartbeat.attempt,
                 generation_attempts=(heartbeat.attempt,),
                 context_snapshot=snapshot,
-                scene_graph=scene_graph,
+                environment_event=environment_event,
             )
 
     def resolve_planning_mission(

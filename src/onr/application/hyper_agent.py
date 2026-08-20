@@ -22,7 +22,7 @@ from onr.contracts.hyper_agent import (
     MissionInput,
     _issue_human_question,
 )
-from onr.contracts.planner_translation import validate_operational_scene_graph
+from onr.contracts.planner_translation import validate_environment_data
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
     PlannerGenerationAttempt,
@@ -35,15 +35,15 @@ from onr.ports.operational_log import OperationalLog
 
 
 class PlanningHeartbeatOutcome(StrEnum):
-    """Whether scene evidence allowed planner generation to start."""
+    """Whether environment data allowed planner generation to start."""
 
     ATTEMPTED = "attempted"
-    INSUFFICIENT_SCENE_EVIDENCE = "insufficient_scene_evidence"
+    INSUFFICIENT_ENVIRONMENT_DATA = "insufficient_environment_data"
 
 
 @dataclass(frozen=True, slots=True)
 class HyperPlanningHeartbeatResult:
-    """Planner selection and generation evidence from one scene-backed heartbeat."""
+    """Planner selection and generation evidence from one environment heartbeat."""
 
     outcome: PlanningHeartbeatOutcome
     mission_snapshot_id: str
@@ -53,7 +53,7 @@ class HyperPlanningHeartbeatResult:
 
 
 class HyperAgent:
-    """Select planners and publish scene-backed generation evidence."""
+    """Select planners and publish environment-backed generation evidence."""
 
     def __init__(
         self,
@@ -158,14 +158,14 @@ class HyperAgent:
         self,
         mission_input: MissionInput,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent | None,
+        environment_event: TransportEvent | None,
         generate: Callable[
             [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
             PlannerGenerationAttempt,
         ],
         belief_snapshot: BayesianBeliefSnapshot | None = None,
     ) -> HyperPlanningHeartbeatResult:
-        """Select and generate from one snapshot-authorized operational scene."""
+        """Select and generate from snapshot-authorized environment data."""
 
         if not isinstance(snapshot, MissionSnapshot):
             raise TypeError("planning heartbeat requires a MissionSnapshot")
@@ -173,9 +173,9 @@ class HyperAgent:
             raise ValueError("planning heartbeat Mission IDs do not match")
         validated_belief = self._validate_belief_provenance(snapshot, belief_snapshot)
         snapshot_id = f"{mission_input.mission_id}:snapshot:{snapshot.version}"
-        source = "operational_scene_graph"
+        source = "environment_data"
         if (
-            scene_graph is None
+            environment_event is None
             or snapshot.source_references[source] is None
             or snapshot.source_revisions[source] is None
             or snapshot.source_hashes[source] is None
@@ -184,35 +184,35 @@ class HyperAgent:
         ):
             self._emit(
                 mission_input.mission_id,
-                "planning-scene-evidence",
-                str(PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE),
+                "planning-environment-data",
+                str(PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA),
                 {"mission_snapshot_id": snapshot_id},
             )
             return HyperPlanningHeartbeatResult(
-                outcome=PlanningHeartbeatOutcome.INSUFFICIENT_SCENE_EVIDENCE,
+                outcome=PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA,
                 mission_snapshot_id=snapshot_id,
             )
 
         if (
-            not isinstance(scene_graph, TransportEvent)
-            or scene_graph.event_kind != "operational_scene_graph"
-            or scene_graph.mission_id != mission_input.mission_id
+            not isinstance(environment_event, TransportEvent)
+            or environment_event.event_kind != "environment_data"
+            or environment_event.mission_id != mission_input.mission_id
         ):
-            raise ValueError("planning heartbeat requires the Mission scene graph")
-        validate_operational_scene_graph(
-            mission_input.mission_id, snapshot, scene_graph
+            raise ValueError("planning heartbeat requires the Mission environment event")
+        validate_environment_data(
+            mission_input.mission_id, snapshot, environment_event
         )
-        if snapshot.source_references[source] != scene_graph.event_id:
+        if snapshot.source_references[source] != environment_event.event_id:
             raise ValueError(
-                "MissionSnapshot does not reference the supplied scene graph"
+                "MissionSnapshot does not reference the supplied environment event"
             )
         if snapshot.source_health[source] != "healthy":
-            raise ValueError("MissionSnapshot scene graph is not healthy")
+            raise ValueError("MissionSnapshot environment data is not healthy")
         if not callable(generate):
             raise TypeError("planning heartbeat requires a generation callback")
 
         choice = self.choose_planner(mission_input)
-        attempt = generate(choice, snapshot, scene_graph)
+        attempt = generate(choice, snapshot, environment_event)
         if not isinstance(attempt, PlannerGenerationAttempt):
             raise TypeError("generation callback must return PlannerGenerationAttempt")
         if attempt.mission_snapshot_id != snapshot_id:

@@ -17,7 +17,7 @@ from onr.contracts.context_coordination import (
 )
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.planner_translation import operational_scene_graph_sha256
+from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import (
     ManeuverIntent,
     NormalizedPlan,
@@ -64,7 +64,7 @@ def _normalized_plan() -> NormalizedPlan:
             source_authority="demo-operator",
             mission_intent=VerifiableReference("planning-intent:demo", "1" * 64),
             planning_decision=VerifiableReference("planner-choice:demo", "2" * 64),
-            operational_scene_graph=VerifiableReference("scene:demo", "3" * 64),
+            environment_data=VerifiableReference("scene:demo", "3" * 64),
             generated_assets={"model.mzn": VerifiableReference("model.mzn", "4" * 64)},
             solver_evidence={"result": VerifiableReference("result", "5" * 64)},
         ),
@@ -225,23 +225,23 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     plan = _normalized_plan()
     scene = TransportEvent(
         schema_version=1,
-        event_id="operational-scene-graph:mission:demo:1",
+        event_id="environment-data:mission:demo:1",
         mission_id="mission:demo",
         sequence=0,
-        event_kind="operational_scene_graph",
+        event_kind="environment_data",
         payload={"graph": {"mission_id": "mission:demo", "entities": []}},
     )
     snapshot = MissionSnapshot(
         mission_id="mission:demo",
         version=1,
         created_at="2026-08-20T00:00:00+00:00",
-        operational_scene_graph=scene.event_id,
-        source_revisions={"operational_scene_graph": 0},
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 0},
         source_hashes={
-            "operational_scene_graph": operational_scene_graph_sha256(scene)
+            "environment_data": environment_data_sha256(scene)
         },
-        source_health={"operational_scene_graph": "healthy"},
-        source_freshness={"operational_scene_graph": True},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
 
     class FakeHyperWorkflow:
@@ -338,15 +338,15 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             calls.append("environment-heartbeat")
             source_fact = create_source_fact_event(
                 "mission:demo",
-                "operational_scene_graph",
+                "environment_data",
                 0,
                 event_id="source-fact:mission:demo:scene:1",
                 sequence=0,
                 reference=scene.event_id,
-                content_sha256=operational_scene_graph_sha256(scene),
+                content_sha256=environment_data_sha256(scene),
             )
             runtime.transport.publish_event("normalized-plans", source_fact)
-            return SimpleNamespace(scene_graph=scene, source_fact=source_fact)
+            return SimpleNamespace(environment_event=scene, source_fact=source_fact)
 
         def run_once(self) -> str:
             calls.append("environment")

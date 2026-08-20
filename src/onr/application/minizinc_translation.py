@@ -18,8 +18,8 @@ from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
     create_generation_attempt_evidence,
-    operational_scene_graph_sha256,
-    validate_operational_scene_graph,
+    environment_data_sha256,
+    validate_environment_data,
     verifiable_file_reference,
 )
 from onr.contracts.planning import (
@@ -107,13 +107,15 @@ class MiniZincTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
         generator: object,
         *,
         plan_revision: int,
         start_attempt_number: int = 1,
     ) -> PlanningTranslationResult:
-        self._validate_context(mission_input, planner_choice, snapshot, scene_graph)
+        self._validate_context(
+            mission_input, planner_choice, snapshot, environment_event
+        )
         if (
             isinstance(start_attempt_number, bool)
             or not isinstance(start_attempt_number, int)
@@ -132,7 +134,7 @@ class MiniZincTranslation:
                 mission_input=mission_input,
                 planner_choice=planner_choice,
                 mission_snapshot=snapshot,
-                scene_graph=scene_graph,
+                environment_event=environment_event,
                 attempt_number=attempt_number,
                 correction_feedback=feedback,
             )
@@ -200,7 +202,7 @@ class MiniZincTranslation:
                 mission_input,
                 planner_choice,
                 snapshot,
-                scene_graph,
+                environment_event,
                 problem,
                 execution,
                 plan_revision,
@@ -276,7 +278,7 @@ class MiniZincTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
         problem: MiniZincProblem,
         execution: PlannerExecutionResult,
         plan_revision: int,
@@ -342,9 +344,9 @@ class MiniZincTranslation:
                     planner_choice.to_canonical_json().encode("utf-8")
                 ).hexdigest(),
             ),
-            operational_scene_graph=VerifiableReference(
-                scene_graph.event_id,
-                operational_scene_graph_sha256(scene_graph),
+            environment_data=VerifiableReference(
+                environment_event.event_id,
+                environment_data_sha256(environment_event),
             ),
             generated_assets=generated_assets,
             solver_evidence={
@@ -378,7 +380,7 @@ class MiniZincTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
     ) -> None:
         if planner_choice.mission_id != mission_input.mission_id:
             raise ValueError("Planner Choice does not match Mission Input")
@@ -394,9 +396,7 @@ class MiniZincTranslation:
             raise ValueError(
                 "MiniZinc translation requires the MiniZinc Planner Choice"
             )
-        validate_operational_scene_graph(
-            mission_input.mission_id, snapshot, scene_graph
-        )
+        validate_environment_data(mission_input.mission_id, snapshot, environment_event)
 
 
 __all__ = ["MiniZincProblem", "MiniZincTranslation"]

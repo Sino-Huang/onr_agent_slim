@@ -437,7 +437,7 @@ def test_fixture_is_valid_public_and_covers_phase_one_contract() -> None:
     assert {
         "mission-overview", "hyper-agent", "planner-selection", "planner-execution",
         "normalized-plan", "context-coordination", "mission-snapshot", "bayesian-belief", "statechart",
-        "fsm-status", "maneuver-decision", "maneuver-adapter", "operational-scene-graph",
+        "fsm-status", "maneuver-decision", "maneuver-adapter", "environment-data",
         "transport-fan-out", "command", "command-receipt", "command-outcome",
         "control-to-hyper-replan", "environment-to-fsm-feedback", "role-skills-advisory",
         "mission-memory-isolation", "human-question", "physical-action-catalogue",
@@ -528,7 +528,7 @@ def test_normalized_plan_trace_explains_provenance_without_mission_spec() -> Non
             "reference": "planner-choice:1",
             "sha256": "2" * 64,
         },
-        "operational_scene_graph": {
+        "environment_data": {
             "reference": "scene:1",
             "sha256": "3" * 64,
         },

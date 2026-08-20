@@ -11,20 +11,18 @@ from onr.contracts.transport import TransportEvent
 
 MISSION_SNAPSHOT_SOURCES = (
     "plan",
-    "operational_scene_graph",
+    "environment_data",
     "bayesian_belief_snapshot",
     "fsm_status",
     "active_maneuver",
 )
 _REFERENCE_FIELDS = {
-    "operational_scene_graph": "operational_scene_graph",
+    "environment_data": "environment_data",
     "bayesian_belief_snapshot": "bayesian_belief_snapshot",
     "fsm_status": "fsm_status",
     "active_maneuver": "active_maneuver",
 }
 _SOURCE_ALIASES = {
-    "scene_graph": "operational_scene_graph",
-    "operational-scene-graph": "operational_scene_graph",
     "belief": "bayesian_belief_snapshot",
     "bayesian-belief-snapshot": "bayesian_belief_snapshot",
     "fsm": "fsm_status",
@@ -83,7 +81,7 @@ class MissionSnapshot:
     created_at: str
     plan_revision: int | None = None
     plan_reference: str | None = None
-    operational_scene_graph: str | None = None
+    environment_data: str | None = None
     bayesian_belief_snapshot: str | None = None
     fsm_status: str | None = None
     active_maneuver: str | None = None
@@ -225,7 +223,7 @@ class MissionSnapshot:
             "created_at": self.created_at,
             "plan_revision": self.plan_revision,
             "plan_reference": self.plan_reference,
-            "operational_scene_graph": self.operational_scene_graph,
+            "environment_data": self.environment_data,
             "bayesian_belief_snapshot": self.bayesian_belief_snapshot,
             "fsm_status": self.fsm_status,
             "active_maneuver": self.active_maneuver,

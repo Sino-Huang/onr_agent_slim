@@ -53,7 +53,7 @@ def _provenance(mission_id: str) -> PlanProvenance:
         source_authority="authority",
         mission_intent=VerifiableReference(f"mission-input:{mission_id}", "1" * 64),
         planning_decision=VerifiableReference(f"planner-choice:{mission_id}", "2" * 64),
-        operational_scene_graph=VerifiableReference(f"scene:{mission_id}", "3" * 64),
+        environment_data=VerifiableReference(f"scene:{mission_id}", "3" * 64),
         generated_assets={
             "planner-input": VerifiableReference("planner-input", "4" * 64),
         },
@@ -409,7 +409,7 @@ def _provenance_plan() -> NormalizedPlan:
             source_authority="authority",
             mission_intent=VerifiableReference("mission-input:1", "1" * 64),
             planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
-            operational_scene_graph=VerifiableReference("scene:1", "3" * 64),
+            environment_data=VerifiableReference("scene:1", "3" * 64),
             generated_assets={
                 "model.mzn": VerifiableReference("model.mzn", "4" * 64),
             },

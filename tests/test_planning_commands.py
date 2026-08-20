@@ -25,7 +25,7 @@ def _plan(mission_id: str, revision: int) -> NormalizedPlan:
             source_authority="authority",
             mission_intent=VerifiableReference(f"mission-input:{mission_id}", "1" * 64),
             planning_decision=VerifiableReference(f"planner-choice:{mission_id}", "2" * 64),
-            operational_scene_graph=VerifiableReference(f"scene:{mission_id}", "3" * 64),
+            environment_data=VerifiableReference(f"scene:{mission_id}", "3" * 64),
             generated_assets={
                 "model.mzn": VerifiableReference("model.mzn", "4" * 64),
             },

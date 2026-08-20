@@ -21,14 +21,14 @@ def _canonical(value: object) -> str:
 class HumanDecisionCategory(StrEnum):
     TRANSLATION_REPAIR_EXHAUSTED = "translation_repair_exhausted"
     UNSOLVABLE = "unsolvable"
-    INSUFFICIENT_SCENE_EVIDENCE = "insufficient_scene_evidence"
+    INSUFFICIENT_ENVIRONMENT_DATA = "insufficient_environment_data"
     TIMEOUT = "timeout"
 
 
 class HumanDecisionAction(StrEnum):
     RETRY_TRANSLATION = "retry_translation"
     REVISE_MISSION_INTENT = "revise_mission_intent"
-    WAIT_FOR_SCENE_EVIDENCE = "wait_for_scene_evidence"
+    WAIT_FOR_ENVIRONMENT_DATA = "wait_for_environment_data"
     RETRY_PLANNER = "retry_planner"
     END_MISSION_RUN = "end_mission_run"
 

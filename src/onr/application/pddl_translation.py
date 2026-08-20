@@ -18,8 +18,8 @@ from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
     create_generation_attempt_evidence,
-    operational_scene_graph_sha256,
-    validate_operational_scene_graph,
+    environment_data_sha256,
+    validate_environment_data,
     verifiable_file_reference,
 )
 from onr.contracts.planning import (
@@ -111,12 +111,14 @@ class PDDLTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
         generator: object,
         *,
         plan_revision: int,
     ) -> PlanningTranslationResult:
-        self._validate_context(mission_input, planner_choice, snapshot, scene_graph)
+        self._validate_context(
+            mission_input, planner_choice, snapshot, environment_event
+        )
         generate = self._generator(generator)
         feedback: PlannerCorrectionFeedback | None = None
         feedback_history: list[PlannerCorrectionFeedback] = []
@@ -128,7 +130,7 @@ class PDDLTranslation:
                 mission_input=mission_input,
                 planner_choice=planner_choice,
                 mission_snapshot=snapshot,
-                scene_graph=scene_graph,
+                environment_event=environment_event,
                 attempt_number=attempt_number,
                 correction_feedback=feedback,
             )
@@ -194,7 +196,7 @@ class PDDLTranslation:
                 mission_input,
                 planner_choice,
                 snapshot,
-                scene_graph,
+                environment_event,
                 problem,
                 execution,
                 plan_revision,
@@ -270,7 +272,7 @@ class PDDLTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
         problem: PDDLProblem,
         execution: SymbolicPlannerExecutionResult,
         plan_revision: int,
@@ -353,9 +355,9 @@ class PDDLTranslation:
                     planner_choice.to_canonical_json().encode("utf-8")
                 ).hexdigest(),
             ),
-            operational_scene_graph=VerifiableReference(
-                scene_graph.event_id,
-                operational_scene_graph_sha256(scene_graph),
+            environment_data=VerifiableReference(
+                environment_event.event_id,
+                environment_data_sha256(environment_event),
             ),
             generated_assets=generated_assets,
             solver_evidence={
@@ -391,7 +393,7 @@ class PDDLTranslation:
         mission_input: MissionInput,
         planner_choice: PlannerChoiceRecord,
         snapshot: MissionSnapshot,
-        scene_graph: TransportEvent,
+        environment_event: TransportEvent,
     ) -> None:
         if planner_choice.mission_id != mission_input.mission_id:
             raise ValueError("Planner Choice does not match Mission Input")
@@ -407,9 +409,7 @@ class PDDLTranslation:
             raise ValueError(
                 "PDDL translation requires the Fast Downward Planner Choice"
             )
-        validate_operational_scene_graph(
-            mission_input.mission_id, snapshot, scene_graph
-        )
+        validate_environment_data(mission_input.mission_id, snapshot, environment_event)
 
 
 __all__ = ["PDDLProblem", "PDDLTranslation"]

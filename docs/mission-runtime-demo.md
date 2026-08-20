@@ -48,7 +48,7 @@ python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --c
 The CLI always verifies the configured LLM endpoint, composes the configured
 real planners, creates model-backed Hyper Agent and Maneuver Control services,
 and runs Context Coordination and FSM Runner. It first publishes a demo
-environment heartbeat, turns that scene evidence into a Mission Snapshot, and
+environment heartbeat, turns that environment data into a Mission Snapshot, and
 invokes the Hyper workflow. Hyper owns the live todo list, creates the MiniZinc
 files under `--planner-artifacts`, invokes the configured solver, and returns the
 verified Normalized Plan consumed by mission execution. There is no operator

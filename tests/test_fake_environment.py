@@ -58,7 +58,7 @@ def _transport(tmp_path: Path, mission_id: str = "mission-1") -> FileTransport:
         tmp_path,
         (
             FakeEnvironment.subscription_for(mission_id),
-            Subscription("scene-reader", mission_id, "operational-scene-graph"),
+            Subscription("scene-reader", mission_id, "environment-data"),
             Subscription("context-coordination", mission_id, "normalized-plans"),
             Subscription("feedback-reader", mission_id, "maneuver-feedback"),
             Subscription("belief-reader", mission_id, "belief-observations"),
@@ -66,7 +66,7 @@ def _transport(tmp_path: Path, mission_id: str = "mission-1") -> FileTransport:
     )
 
 
-def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fact(tmp_path: Path) -> None:
+def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_path: Path) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path, mission_id)
     command = _command(mission_id=mission_id)
@@ -76,11 +76,11 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
 
     assert result is not None
     assert result.command == command
-    assert result.scene_graph.event_kind == "operational_scene_graph"
-    assert set(result.scene_graph.payload) == {"scene_graph", "event_report"}
+    assert result.environment_event.event_kind == "environment_data"
+    assert set(result.environment_event.payload) == {"scene_graph", "event_report"}
     assert result.source_fact.event_kind == "source-fact"
-    assert result.source_fact.payload["source"] == "operational_scene_graph"
-    assert result.source_fact.payload["reference"] == result.scene_graph.event_id
+    assert result.source_fact.payload["source"] == "environment_data"
+    assert result.source_fact.payload["reference"] == result.environment_event.event_id
     assert result.risk_observation.event_kind == "risk.observed"
     observation = RiskObservation.from_dict(result.risk_observation.payload)
     assert observation.risk_type == "collision"
@@ -89,11 +89,11 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
         "ship-2",
         "ship-3",
     }
-    assert result.environment_file == tmp_path.parent / "environment" / mission_id / "scene.json"
+    assert result.environment_file == tmp_path.parent / "environment" / mission_id / "environment.json"
     environment = cast(
         dict[str, Any], json.loads(result.environment_file.read_text(encoding="utf-8"))
     )
-    assert environment == result.scene_graph.to_dict()["payload"]
+    assert environment == result.environment_event.to_dict()["payload"]
     assert environment["event_report"] == json.loads(
         _EVENT_REPORT_PATH.read_text(encoding="utf-8")
     )
@@ -119,11 +119,11 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
     )
     assert list(graph["entities"]) == entities
 
-    with transport.open_consumer(Subscription("scene-reader", mission_id, "operational-scene-graph")) as scene:
+    with transport.open_consumer(Subscription("scene-reader", mission_id, "environment-data")) as scene:
         scene_delivery = scene.receive()
         assert scene_delivery is not None
         scene_event = cast(TransportEvent, scene_delivery.message)
-        assert TransportEvent.from_json(scene_event.to_canonical_json()) == result.scene_graph
+        assert TransportEvent.from_json(scene_event.to_canonical_json()) == result.environment_event
         scene_delivery.ack()
     with transport.open_consumer(Subscription("context-coordination", mission_id, "normalized-plans")) as context:
         source_delivery = context.receive()
@@ -133,7 +133,7 @@ def test_consumes_file_command_and_exposes_operational_scene_graph_and_source_fa
         source_delivery.ack()
 
 
-def test_environment_heartbeat_publishes_scene_before_any_maneuver(
+def test_environment_heartbeat_publishes_data_before_any_maneuver(
     tmp_path: Path,
 ) -> None:
     mission_id = "mission-1"
@@ -142,8 +142,8 @@ def test_environment_heartbeat_publishes_scene_before_any_maneuver(
 
     heartbeat = environment.heartbeat()
 
-    assert heartbeat.scene_graph.event_kind == "operational_scene_graph"
-    graph = cast(dict[str, Any], heartbeat.scene_graph.payload["scene_graph"])
+    assert heartbeat.environment_event.event_kind == "environment_data"
+    graph = cast(dict[str, Any], heartbeat.environment_event.payload["scene_graph"])
     assert graph["mission_id"] == mission_id
     assert graph["plan_revision"] == 0
     assert graph["maneuvers"] == ()
@@ -155,20 +155,20 @@ def test_environment_heartbeat_publishes_scene_before_any_maneuver(
         if entity["type"] == "ship"
     )
     heartbeat_payload = cast(
-        dict[str, Any], heartbeat.scene_graph.to_dict()["payload"]
+        dict[str, Any], heartbeat.environment_event.to_dict()["payload"]
     )
     assert heartbeat_payload["event_report"] == json.loads(
         _EVENT_REPORT_PATH.read_text(encoding="utf-8")
     )
-    assert heartbeat.source_fact.payload["reference"] == heartbeat.scene_graph.event_id
+    assert heartbeat.source_fact.payload["reference"] == heartbeat.environment_event.event_id
 
     coordination = ContextCoordination(transport, mission_id)
     with transport.open_consumer(coordination.subscription) as consumer:
         snapshot = coordination.run_once(consumer)
 
     assert snapshot is not None
-    assert snapshot.operational_scene_graph == heartbeat.scene_graph.event_id
-    assert snapshot.source_revisions["operational_scene_graph"] == 0
+    assert snapshot.environment_data == heartbeat.environment_event.event_id
+    assert snapshot.source_revisions["environment_data"] == 0
     assert environment.run_once() is None
 
 
@@ -196,17 +196,17 @@ def test_event_report_content_participates_in_environment_identity(
         event_report_path=second_report,
     ).heartbeat()
 
-    first_payload = cast(dict[str, Any], first.scene_graph.to_dict()["payload"])
-    second_payload = cast(dict[str, Any], second.scene_graph.to_dict()["payload"])
+    first_payload = cast(dict[str, Any], first.environment_event.to_dict()["payload"])
+    second_payload = cast(dict[str, Any], second.environment_event.to_dict()["payload"])
     assert first_payload["event_report"] == [{"event": "first"}]
     assert second_payload["event_report"] == [{"event": "second"}]
-    assert first.scene_graph.event_id != second.scene_graph.event_id
+    assert first.environment_event.event_id != second.environment_event.event_id
     assert first.source_fact.payload["content_sha256"] != second.source_fact.payload[
         "content_sha256"
     ]
 
 
-def test_context_coordination_consumes_operational_scene_graph_source_fact(tmp_path: Path) -> None:
+def test_context_coordination_consumes_environment_data_source_fact(tmp_path: Path) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path, mission_id)
     environment = FakeEnvironment(transport, mission_id)
@@ -221,7 +221,7 @@ def test_context_coordination_consumes_operational_scene_graph_source_fact(tmp_p
     assert snapshot is not None
     last_result = environment.last_result
     assert last_result is not None
-    assert snapshot.operational_scene_graph == last_result.source_fact.payload["reference"]
+    assert snapshot.environment_data == last_result.source_fact.payload["reference"]
 
 
 def test_all_maneuver_feedback_lifecycles_are_transport_events_and_correlated(tmp_path: Path) -> None:
@@ -268,8 +268,8 @@ def test_maneuver_feedback_replay_is_idempotent_across_crash_window(tmp_path: Pa
     second = restarted.run_once(lifecycle="completed")
     assert second is not None
     assert second.command == first.command
-    assert second.scene_graph.event_id == first.scene_graph.event_id
-    assert second.scene_graph.sequence == first.scene_graph.sequence
+    assert second.environment_event.event_id == first.environment_event.event_id
+    assert second.environment_event.sequence == first.environment_event.sequence
     assert second.source_fact.event_id == first.source_fact.event_id
     assert second.source_fact.sequence == first.source_fact.sequence
     assert second.risk_observation.event_id == first.risk_observation.event_id
