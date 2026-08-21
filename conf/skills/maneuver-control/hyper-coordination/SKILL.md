@@ -26,7 +26,7 @@ A Replan Request is advisory. Maneuver must not rewrite, broaden, or replace obj
 
 ## Queries and Reports
 
-- Ask Hyper for planning-authority information with `query_hyper(message)` in the correlated envelope.
+- Ask Hyper for planning-authority information with `communicate(recipient="hyper-agent", kind="query", message=...)`.
 - Use a report for execution facts or constraints Hyper should evaluate; do not present an opinion or prediction as environment feedback.
 - Hyper may answer queries, issue replans, and send reports.
 - Only Hyper may emit the reserved `human-question` message. Maneuver must never construct, relay as its own, or answer one from hidden knowledge.
@@ -40,7 +40,7 @@ For a replan request, accept only these response classes:
 - `no_change`; or
 - `decline`.
 
-Correlate the response to the original envelope. A new plan reference is not permission to edit the plan locally; use it only after the runtime supplies the corresponding authoritative plan/statechart revision. On `no_change` or `decline`, retain current authority and choose the next bounded Maneuver response from current state.
+The communication tool correlates the response to the original envelope. A new plan reference is not permission to edit the plan locally; use it only after the runtime supplies the corresponding authoritative plan/Statechart revision. On `no_change` or `decline`, retain current authority and choose the next bounded Maneuver response from live FSM and environment state.
 
 ## Gotchas
 

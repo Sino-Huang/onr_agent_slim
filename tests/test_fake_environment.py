@@ -5,18 +5,17 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
 from onr.application.context_coordination import ContextCoordination
 from onr.application.maneuver_control import ManeuverControl
-from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.bayesian_belief import RiskObservation
+from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverFeedback, TransitionCandidate
 from onr.contracts.maneuver_control import ManeuverCommand, ManeuverControlDecision
 from onr.contracts.planning import ManeuverIntent, ManeuverParameter
 from onr.contracts.transport import Command, TransportEvent
-from onr.ports.transport import Subscription, Transport
-
-from harness.fake_environment import FakeEnvironment
+from onr.ports.transport import Subscription
 
 _EVENT_REPORT_PATH = (
     Path(__file__).parents[1]
@@ -251,9 +250,18 @@ def test_all_maneuver_feedback_lifecycles_are_transport_events_and_correlated(tm
         while (delivery := reader.receive()) is not None:
             events.append(cast(TransportEvent, delivery.message))
             delivery.ack()
-    assert [event.event_kind for event in events] == ["maneuver-feedback"] * 5
-    assert [event.sequence for event in events] == list(range(5))
-    assert [ManeuverFeedback.from_dict(event.payload).lifecycle for event in events] == list(lifecycles)
+    assert [event.event_kind for event in events] == ["maneuver-feedback"] * 6
+    assert [event.sequence for event in events] == list(range(6))
+    feedback = [ManeuverFeedback.from_dict(event.payload) for event in events]
+    assert [item.lifecycle for item in feedback] == [
+        "accepted",
+        "cancelled",
+        "active",
+        "completed",
+        "failed",
+        "cancelled",
+    ]
+    assert feedback[1].payload["reason"] == "overridden"
 
 
 def test_maneuver_feedback_replay_is_idempotent_across_crash_window(tmp_path: Path) -> None:

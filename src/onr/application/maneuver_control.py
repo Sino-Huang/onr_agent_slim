@@ -2,21 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from dataclasses import dataclass
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from threading import Thread
 from typing import Any, cast
 
+from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverDecision
 from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverCommand,
     ManeuverControlDecision,
+    ManeuverHeartbeatCompletion,
+    ManeuverInvocation,
 )
 from onr.contracts.planning import ManeuverIntent, NormalizedPlan
-from onr.contracts.transport import Command, CommandOutcome, CommandReceipt, TransportEvent
+from onr.contracts.transport import (
+    Command,
+    CommandOutcome,
+    CommandReceipt,
+    TransportEvent,
+)
 from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Consumer, Transport
@@ -35,7 +46,7 @@ DecisionProvider = Callable[[MissionSnapshot, FSMStatus, InvocationOverlay | Non
 
 
 class ManeuverControl:
-    """Validate Maneuver Decisions, emit one command, and submit each command once."""
+    """Run live tool heartbeats and durably dispatch code-owned physical choices."""
 
     def __init__(
         self,
@@ -46,6 +57,10 @@ class ManeuverControl:
         target_service: str = "maneuver-adapter",
         submission_topic: str = "maneuver-submissions",
         operational_log: OperationalLog | None = None,
+        fsm_runner: object | None = None,
+        environment_authority: object | None = None,
+        belief_service: object | None = None,
+        communication_port: object | None = None,
     ) -> None:
         self.transport = transport
         self.adapter = adapter
@@ -53,7 +68,12 @@ class ManeuverControl:
         self.target_service = target_service
         self.submission_topic = submission_topic
         self.operational_log = operational_log
+        self.fsm_runner = fsm_runner
+        self.environment_authority = environment_authority
+        self.belief_service = belief_service
+        self.communication_port = communication_port
         self._submitted: dict[str, CommandOutcome] = {}
+        self.last_execution_record: object | None = None
 
     def decide(
         self,
@@ -103,14 +123,21 @@ class ManeuverControl:
 
     def heartbeat(
         self,
-        snapshot: MissionSnapshot,
-        status: FSMStatus,
+        snapshot: MissionSnapshot | ManeuverInvocation,
+        status: FSMStatus | None = None,
         overlay: InvocationOverlay | None = None,
         *,
         event_id: str | None = None,
         plan: NormalizedPlan | None = None,
-    ) -> ManeuverHeartbeatResult:
-        """Run one stateless heartbeat and publish at most one physical command."""
+    ) -> ManeuverHeartbeatResult | ManeuverHeartbeatCompletion:
+        """Run a live tool heartbeat, or the retained deterministic legacy seam."""
+
+        if isinstance(snapshot, ManeuverInvocation):
+            if status is not None or overlay is not None or event_id is not None or plan is not None:
+                raise ValueError("tool-driven Maneuver heartbeat accepts only its invocation")
+            return self._tool_heartbeat(self._live_invocation(snapshot))
+        if status is None:
+            raise TypeError("legacy Maneuver heartbeat requires FSMStatus")
 
         self._validate_context(snapshot, status, overlay)
         stored = self._stored_invocation(event_id, snapshot.mission_id) if event_id is not None else None
@@ -142,6 +169,138 @@ class ManeuverControl:
             },
         )
         return ManeuverHeartbeatResult(decision, command, receipt)
+
+    def handle_agent_message(self, message: AgentMessage) -> ManeuverHeartbeatCompletion:
+        """Handle one correlated Hyper invocation synchronously."""
+
+        if not isinstance(message, AgentMessage):
+            raise TypeError("Maneuver Control communication requires AgentMessage")
+        if message.recipient != "maneuver-control" or message.kind is not AgentMessageKind.INVOKE:
+            raise ValueError("Maneuver Control accepts only correlated invoke messages")
+        invocation = ManeuverInvocation.from_dict(message.payload)
+        if (
+            invocation.request_id != message.message_id
+            or invocation.correlation_id != message.correlation_id
+            or invocation.mission_id != message.mission_id
+            or invocation.plan_revision != message.plan_revision
+        ):
+            raise ValueError("Maneuver invocation does not match its communication envelope")
+        return cast(ManeuverHeartbeatCompletion, self.heartbeat(invocation))
+
+    def _tool_heartbeat(
+        self, invocation: ManeuverInvocation
+    ) -> ManeuverHeartbeatCompletion:
+        from onr.agents.maneuver_tools import ManeuverToolContext
+
+        if self.fsm_runner is None:
+            raise RuntimeError("tool-driven Maneuver Control has no live FSM Runner")
+        provider = self.decision_provider
+        heartbeat = getattr(provider, "heartbeat", None)
+        if not callable(heartbeat):
+            raise TypeError("tool-driven Maneuver provider must expose heartbeat")
+        context = ManeuverToolContext(
+            invocation=invocation,
+            fsm_runner=self.fsm_runner,
+            command_dispatcher=self,
+            belief_service=self.belief_service,
+            communication_port=self.communication_port,
+            operational_log=self.operational_log,
+        )
+        completion = heartbeat(invocation, context)
+        if not isinstance(completion, ManeuverHeartbeatCompletion):
+            raise TypeError("Maneuver provider did not return a heartbeat completion")
+        self.last_execution_record = context.execution_record
+        self._emit(
+            invocation.mission_id,
+            "heartbeat",
+            str(completion.outcome),
+            {
+                "operation": "maneuver_heartbeat",
+                "plan_revision": invocation.plan_revision,
+                "request_id": invocation.request_id,
+                "successful_tool_calls": context.execution_record.successful_count,
+            },
+        )
+        return completion
+
+    def _live_invocation(self, invocation: ManeuverInvocation) -> ManeuverInvocation:
+        if self.fsm_runner is None:
+            return invocation
+        status = _run_sync(cast(Any, self.fsm_runner).status())
+        if not isinstance(status, FSMStatus):
+            raise TypeError("live FSM Runner status did not return FSMStatus")
+        environment = _current_environment_data(
+            self.environment_authority, invocation.environment_data
+        )
+        belief = invocation.belief_snapshot
+        if self.belief_service is not None:
+            loader = getattr(self.belief_service, "load_current_snapshot", None)
+            if callable(loader):
+                current_belief = loader()
+                if current_belief is not None and not isinstance(
+                    current_belief, BayesianBeliefSnapshot
+                ):
+                    raise TypeError("belief service returned invalid current snapshot")
+                if current_belief is not None:
+                    belief = current_belief
+        recipients = invocation.available_recipients
+        if self.communication_port is not None:
+            available = getattr(self.communication_port, "available_recipients", None)
+            if callable(available):
+                recipients = cast(
+                    tuple[str, ...],
+                    tuple(cast(Any, available("maneuver-control"))),
+                )
+        return ManeuverInvocation(
+            request_id=invocation.request_id,
+            correlation_id=invocation.correlation_id,
+            mission_id=invocation.mission_id,
+            plan_revision=invocation.plan_revision,
+            normalized_plan=invocation.normalized_plan,
+            statechart_reference=invocation.statechart_reference,
+            fsm_status=status,
+            environment_data=environment,
+            belief_snapshot=belief,
+            available_recipients=recipients,
+            planning_snapshot=invocation.planning_snapshot,
+        )
+
+    def dispatch_physical(
+        self,
+        invocation: ManeuverInvocation,
+        decision: ManeuverControlDecision,
+        *,
+        sequence: int,
+    ) -> tuple[ManeuverCommand, CommandOutcome]:
+        """Submit one code-owned physical choice without plan-action equality gates."""
+
+        if not isinstance(invocation, ManeuverInvocation):
+            raise TypeError("physical dispatch requires ManeuverInvocation")
+        if (
+            not isinstance(decision, ManeuverControlDecision)
+            or decision.physical_intent is None
+            or decision.maneuver_id is None
+        ):
+            raise ValueError("physical dispatch requires a physical audit decision")
+        if (
+            decision.mission_id != invocation.mission_id
+            or decision.plan_revision != invocation.plan_revision
+        ):
+            raise ValueError("physical decision identity does not match invocation")
+        command = ManeuverCommand(
+            command_id=f"maneuver:{invocation.request_id}:{sequence}",
+            correlation_id=invocation.correlation_id,
+            mission_id=invocation.mission_id,
+            plan_revision=invocation.plan_revision,
+            maneuver_id=decision.maneuver_id,
+            intent=decision.physical_intent,
+            mission_snapshot_id=(
+                f"{invocation.mission_id}:snapshot:{invocation.planning_snapshot.version}"
+                if invocation.planning_snapshot is not None
+                else None
+            ),
+        )
+        return command, self.handle_command(command)
 
     def handle_command(self, command: Command | ManeuverCommand) -> CommandOutcome:
         """Submit a command at most once and return its correlated outcome."""
@@ -519,8 +678,50 @@ def _physical_command_id(
     return f"maneuver:{mission_id}:{plan_revision}:{maneuver_id}:{digest}"
 
 
+def _run_sync(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+    result: list[object] = []
+    failure: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            result.append(asyncio.run(awaitable))
+        except Exception as exc:
+            failure.append(exc)
+
+    thread = Thread(target=target, name="maneuver-control-fsm-adapter")
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+    return result[0]
+
+
+def _current_environment_data(
+    authority: object | None,
+    fallback: Mapping[str, object],
+) -> Mapping[str, object]:
+    if authority is None:
+        return fallback
+    getter = getattr(authority, "current_environment_data", None)
+    if callable(getter):
+        value = getter()
+        if isinstance(value, Mapping):
+            return value
+        raise TypeError("environment authority returned invalid current data")
+    for name in ("latest_environment_event", "last_environment_event"):
+        event = getattr(authority, name, None)
+        payload = getattr(event, "payload", None)
+        if isinstance(payload, Mapping):
+            return payload
+    return fallback
+
+
 __all__ = [
+    "DecisionProvider",
     "ManeuverControl",
     "ManeuverHeartbeatResult",
-    "DecisionProvider",
 ]

@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from collections.abc import Mapping
 from typing import Any, cast
 
-from onr.contracts.planning import JsonScalar, ManeuverIntent, ManeuverParameter
+from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.fsm import FSMStatus
+from onr.contracts.planning import (
+    JsonScalar,
+    ManeuverIntent,
+    ManeuverParameter,
+    NormalizedPlan,
+)
 from onr.contracts.transport import Command
 
 
@@ -286,7 +294,7 @@ class ManeuverControlDecision:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "ManeuverControlDecision":
+    def from_dict(cls, value: Mapping[str, object]) -> ManeuverControlDecision:
         expected = {
             "schema_version", "decision_id", "mission_id", "plan_revision",
             "transition_event", "maneuver_id", "physical_intent", "choice", "payload",
@@ -332,7 +340,7 @@ class ManeuverControlDecision:
         )
 
     @classmethod
-    def from_json(cls, value: str) -> "ManeuverControlDecision":
+    def from_json(cls, value: str) -> ManeuverControlDecision:
         try:
             decoded = json.loads(value)
         except (TypeError, json.JSONDecodeError) as exc:
@@ -414,7 +422,7 @@ class ManeuverCommand:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "ManeuverCommand":
+    def from_dict(cls, value: Mapping[str, object]) -> ManeuverCommand:
         expected = {
             "schema_version", "command_id", "correlation_id", "mission_id",
             "plan_revision", "maneuver_id", "intent",
@@ -447,7 +455,7 @@ class ManeuverCommand:
         )
 
     @classmethod
-    def from_json(cls, value: str) -> "ManeuverCommand":
+    def from_json(cls, value: str) -> ManeuverCommand:
         try:
             decoded = json.loads(value)
         except (TypeError, json.JSONDecodeError) as exc:
@@ -455,7 +463,7 @@ class ManeuverCommand:
         return cls.from_dict(_string_mapping(decoded, "maneuver command"))
 
     @classmethod
-    def from_command(cls, command: Command) -> "ManeuverCommand":
+    def from_command(cls, command: Command) -> ManeuverCommand:
         if command.command_kind != "maneuver":
             raise ValueError("generic command is not a maneuver command")
         payload = command.payload
@@ -517,10 +525,253 @@ class InvocationOverlay:
         }
 
 
+class ManeuverHeartbeatOutcome(StrEnum):
+    """Allowed public outcomes of one tool-driven heartbeat."""
+
+    COMPLETED = "completed"
+    NO_CHANGE = "no_change"
+
+
+@dataclass(frozen=True, slots=True)
+class ManeuverInvocation:
+    """Model-visible evidence injected for one live Maneuver heartbeat."""
+
+    request_id: str
+    correlation_id: str
+    mission_id: str
+    plan_revision: int
+    normalized_plan: NormalizedPlan
+    statechart_reference: str
+    fsm_status: FSMStatus
+    environment_data: Mapping[str, object]
+    belief_snapshot: BayesianBeliefSnapshot | None = None
+    available_recipients: tuple[str, ...] = ()
+    planning_snapshot: MissionSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.request_id, "Maneuver invocation request ID"),
+            (self.correlation_id, "Maneuver invocation correlation ID"),
+            (self.mission_id, "Maneuver invocation Mission ID"),
+            (self.statechart_reference, "Maneuver invocation Statechart reference"),
+        ):
+            _text(value, label)
+        if (
+            isinstance(self.plan_revision, bool)
+            or not isinstance(self.plan_revision, int)
+            or self.plan_revision < 0
+        ):
+            raise ValueError("Maneuver invocation plan revision must be non-negative")
+        if not isinstance(self.normalized_plan, NormalizedPlan):
+            raise TypeError("Maneuver invocation requires a NormalizedPlan")
+        if not isinstance(self.fsm_status, FSMStatus):
+            raise TypeError("Maneuver invocation requires live FSMStatus")
+        if (
+            self.normalized_plan.mission_id != self.mission_id
+            or self.fsm_status.mission_id != self.mission_id
+        ):
+            raise ValueError("Maneuver invocation Mission identity is inconsistent")
+        if (
+            self.normalized_plan.plan_revision != self.plan_revision
+            or self.fsm_status.plan_revision != self.plan_revision
+        ):
+            raise ValueError("Maneuver invocation plan revision is inconsistent")
+        frozen_environment = _payload(
+            self.environment_data, "Maneuver invocation environment data"
+        )
+        object.__setattr__(self, "environment_data", frozen_environment)
+        if self.belief_snapshot is not None:
+            if not isinstance(self.belief_snapshot, BayesianBeliefSnapshot):
+                raise TypeError("Maneuver invocation belief must be a BayesianBeliefSnapshot")
+            if self.belief_snapshot.mission_id != self.mission_id:
+                raise ValueError("Maneuver invocation belief Mission ID does not match")
+        recipients = tuple(self.available_recipients)
+        if not all(isinstance(item, str) and item.strip() for item in recipients):
+            raise ValueError("Maneuver invocation recipients must be non-empty strings")
+        if len(recipients) != len(set(recipients)):
+            raise ValueError("Maneuver invocation recipients must be unique")
+        object.__setattr__(self, "available_recipients", tuple(sorted(recipients)))
+        if self.planning_snapshot is not None:
+            if not isinstance(self.planning_snapshot, MissionSnapshot):
+                raise TypeError("Maneuver invocation provenance must be a MissionSnapshot")
+            if self.planning_snapshot.mission_id != self.mission_id:
+                raise ValueError("Maneuver invocation provenance Mission ID does not match")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "request_id": self.request_id,
+            "correlation_id": self.correlation_id,
+            "mission_id": self.mission_id,
+            "plan_revision": self.plan_revision,
+            "normalized_plan": self.normalized_plan.to_dict(),
+            "statechart_reference": self.statechart_reference,
+            "fsm_status": self.fsm_status.to_dict(),
+            "environment_data": _json_value(self.environment_data),
+            "belief_snapshot": (
+                self.belief_snapshot.to_dict()
+                if self.belief_snapshot is not None
+                else None
+            ),
+            "available_recipients": list(self.available_recipients),
+            "planning_snapshot": (
+                self.planning_snapshot.to_dict()
+                if self.planning_snapshot is not None
+                else None
+            ),
+        }
+
+    def to_canonical_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> ManeuverInvocation:
+        fields = {
+            "request_id",
+            "correlation_id",
+            "mission_id",
+            "plan_revision",
+            "normalized_plan",
+            "statechart_reference",
+            "fsm_status",
+            "environment_data",
+            "belief_snapshot",
+            "available_recipients",
+            "planning_snapshot",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ValueError("Maneuver invocation contains unknown or missing fields")
+        plan = value["normalized_plan"]
+        status = value["fsm_status"]
+        environment = value["environment_data"]
+        belief = value["belief_snapshot"]
+        recipients = value["available_recipients"]
+        snapshot = value["planning_snapshot"]
+        if not isinstance(plan, Mapping) or not isinstance(status, Mapping):
+            raise TypeError("Maneuver invocation plan and FSM status must be objects")
+        if not isinstance(environment, Mapping):
+            raise TypeError("Maneuver invocation environment data must be an object")
+        if belief is not None and not isinstance(belief, Mapping):
+            raise TypeError("Maneuver invocation belief must be an object or null")
+        if not isinstance(recipients, (list, tuple)):
+            raise TypeError("Maneuver invocation recipients must be an array")
+        if snapshot is not None and not isinstance(snapshot, Mapping):
+            raise TypeError("Maneuver invocation provenance must be an object or null")
+        request_id = _text(value["request_id"], "Maneuver invocation request ID")
+        correlation_id = _text(
+            value["correlation_id"], "Maneuver invocation correlation ID"
+        )
+        mission_id = _text(value["mission_id"], "Maneuver invocation Mission ID")
+        statechart_reference = _text(
+            value["statechart_reference"], "Maneuver invocation Statechart reference"
+        )
+        return cls(
+            request_id=request_id,
+            correlation_id=correlation_id,
+            mission_id=mission_id,
+            plan_revision=_nonnegative_int(
+                value["plan_revision"], "Maneuver invocation plan revision"
+            ),
+            normalized_plan=NormalizedPlan.from_dict(plan),
+            statechart_reference=statechart_reference,
+            fsm_status=FSMStatus.from_dict(status),
+            environment_data=environment,
+            belief_snapshot=(
+                BayesianBeliefSnapshot.from_dict(belief) if belief is not None else None
+            ),
+            available_recipients=tuple(cast(tuple[str, ...], tuple(recipients))),
+            planning_snapshot=(
+                MissionSnapshot.from_dict(cast(Mapping[str, Any], snapshot))
+                if snapshot is not None
+                else None
+            ),
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> ManeuverInvocation:
+        try:
+            decoded = json.loads(value)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Maneuver invocation JSON is invalid") from exc
+        if not isinstance(decoded, Mapping):
+            raise TypeError("Maneuver invocation JSON must contain an object")
+        return cls.from_dict(decoded)
+
+
+@dataclass(frozen=True, slots=True)
+class ManeuverHeartbeatCompletion:
+    """Small public completion returned after tool effects have been applied."""
+
+    mission_id: str
+    request_id: str
+    outcome: ManeuverHeartbeatOutcome | str
+    summary: str
+
+    def __post_init__(self) -> None:
+        _text(self.mission_id, "Maneuver heartbeat completion Mission ID")
+        _text(self.request_id, "Maneuver heartbeat completion request ID")
+        _text(self.summary, "Maneuver heartbeat completion summary")
+        try:
+            object.__setattr__(self, "outcome", ManeuverHeartbeatOutcome(self.outcome))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Maneuver heartbeat completion outcome is invalid") from exc
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mission_id": self.mission_id,
+            "request_id": self.request_id,
+            "outcome": self.outcome,
+            "summary": self.summary,
+        }
+
+    def to_canonical_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> ManeuverHeartbeatCompletion:
+        if not isinstance(value, Mapping) or set(value) != {
+            "mission_id",
+            "request_id",
+            "outcome",
+            "summary",
+        }:
+            raise ValueError("Maneuver heartbeat completion has invalid fields")
+        return cls(
+            mission_id=_text(value["mission_id"], "Maneuver completion Mission ID"),
+            request_id=_text(value["request_id"], "Maneuver completion request ID"),
+            outcome=_text(value["outcome"], "Maneuver completion outcome"),
+            summary=_text(value["summary"], "Maneuver completion summary"),
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> ManeuverHeartbeatCompletion:
+        try:
+            decoded = json.loads(value)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Maneuver heartbeat completion JSON is invalid") from exc
+        if not isinstance(decoded, Mapping):
+            raise TypeError("Maneuver heartbeat completion JSON must contain an object")
+        return cls.from_dict(decoded)
+
+
 __all__ = [
-    "PhysicalAction",
-    "NonPhysicalChoice",
-    "ManeuverControlDecision",
-    "ManeuverCommand",
     "InvocationOverlay",
+    "ManeuverCommand",
+    "ManeuverControlDecision",
+    "ManeuverHeartbeatCompletion",
+    "ManeuverHeartbeatOutcome",
+    "ManeuverInvocation",
+    "NonPhysicalChoice",
+    "PhysicalAction",
 ]

@@ -1,6 +1,6 @@
 ---
 name: decision-cycle
-description: Use on every Maneuver heartbeat to choose a bounded response from the current Mission Snapshot and FSM transition candidates without assuming mission, plan, or environment authority.
+description: Use on every Maneuver heartbeat to sequence live FSM, physical, belief, and communication tools from current evidence.
 version: '1.1.0'
 ---
 
@@ -8,23 +8,20 @@ version: '1.1.0'
 
 ## Inputs and Authority
 
-- Read the supplied Mission Snapshot and current FSM Status, including enabled Transition Candidates, before deciding.
-- Treat the Mission Snapshot as an immutable versioned manifest, not hidden ground truth. Do not infer unreported environment state.
-- Use an Invocation Overlay only for the current invocation. It does not become durable Mission authority.
-- Copy `mission_id`, `plan_revision`, selected `maneuver_id`, and selected `transition_event` exactly from the current inputs. Never repair, translate, or synthesize these identifiers.
-- If Mission IDs or plan/statechart revisions disagree, do not guess which is current. Return an appropriate nonphysical report, query, replan request, or no-change response through the provided contract.
+- Read the supplied live FSM Status, current environment, active maneuver, verified planning provenance, and latest belief before acting.
+- Treat the older Mission Snapshot as provenance only. Do not wait for it to refresh before using current live evidence.
+- Copy events and recipients exactly from current candidates and the available-recipient registry. State and event names have no required pattern.
 
 ## Procedure
 
-1. Confirm the Mission and plan/statechart revision are consistent across the Mission Snapshot and FSM Status.
-2. Review the active semantic state, all outgoing Transition Candidates and their conditions, current environment data, and any Active Maneuver lifecycle state.
-3. Select at most one physical action permitted by the active state and current environment context.
-4. Separately select the applicable nonphysical response: `transition`, `replan`, `report`, `query`, `no_change`, or `cancel_maneuver`.
-5. Do not combine a physical action with `transition` or `cancel_maneuver`. Use `no_change` when no other response is justified.
-6. Return only the exact structured `ManeuverControlDecision` fields required by the runtime contract, with no prose or extra fields.
+1. Review the active semantic state, outgoing candidates and conditions, Mission time, active action, and belief.
+2. Call `transition_fsm` when a candidate is satisfied and appropriate.
+3. Use the returned live state to select any physical action; a transition and physical call may occur in the same heartbeat.
+4. Call belief or communication tools when evidence warrants them.
+5. Finish with `ManeuverHeartbeatCompletion`; effects are already authoritative tool executions.
 
 ## Gotchas
 
 - A prior decision or remembered observation may be stale even when its Mission ID matches.
-- An enabled transition is a candidate, not an automatic transition and not permission to invent a target state.
-- Do not claim accepted, active, completed, failed, or cancelled. Consume normalized environment lifecycle feedback after Context Coordination incorporates it into authoritative Mission state.
+- An exposed transition is a candidate, not an automatic transition. The transition tool is the condition and mutation gate.
+- A belief updated in this heartbeat does not enter its current invocation; inspect it on the next heartbeat.

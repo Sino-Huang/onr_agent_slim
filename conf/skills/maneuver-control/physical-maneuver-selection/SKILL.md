@@ -21,7 +21,7 @@ Reject or use a nonphysical response for any other action kind.
 
 ## Physical Request Contract
 
-Select at most one physical action per decision. Each request is an environment-agnostic command containing:
+Each tool call is an environment-agnostic command containing:
 
 - a stable action ID;
 - the exact Mission ID;
@@ -36,9 +36,9 @@ Copy target facts from the active semantic state and current environment data. E
 
 1. Check the current Mission Snapshot, semantic FSM Status, environment context, and Active Maneuver before selecting an action.
 2. Ensure the selected maneuver belongs to the current Mission and revision and has a valid target and typed parameters.
-3. Prefer no physical request when the Mission is already reserved by a submitted nonterminal action.
-4. Submit the command once with its stable action ID. Submission reserves the Mission until environment feedback reports a terminal outcome.
-5. Route normalized lifecycle feedback to Context Coordination so a later Mission Snapshot can represent the authoritative Active Maneuver state.
+3. Prefer no physical request while a suitable action remains nonterminal.
+4. A new physical tool call always submits and overrides the active action. Use this for inappropriate actions or emergencies, not as routine polling.
+5. Inspect normalized lifecycle feedback in the next injected environment payload; do not wait for a refreshed planning Mission Snapshot.
 
 The Mission Snapshot avoids known duplicate actions, but only the environment has final authority over what was accepted or executed. Preserve the action ID on retries or correlation; do not create a second action to work around uncertain feedback.
 
@@ -48,15 +48,13 @@ The Mission Snapshot avoids known duplicate actions, but only the environment ha
 - Do not claim or infer any lifecycle outcome from selection, submission, adapter return text, timeout, replanning, or FSM movement.
 - Keep the Mission reserved until normalized terminal feedback is received and incorporated through Context Coordination.
 
-## Cancellation
+## Override
 
-- Cancellation is the nonphysical request `cancel_maneuver(action_id)`.
-- Never cancel automatically because Hyper replans or a plan revision changes.
-- Keep the action correlated and reserved while cancellation is pending.
-- Only environment feedback confirms `cancelled`; a cancellation request is not a lifecycle outcome.
+- Override is technically always allowed. The environment cancels the displaced command with `reason: overridden` and activates the new one.
+- Only environment feedback confirms the displaced and replacement lifecycles.
 
 ## Gotchas
 
 - A new plan does not retract an already submitted command.
 - Missing feedback means unknown state, not failure or cancellation.
-- Do not combine cancellation or an FSM transition with a new physical action in the same decision.
+- Several tools may run sequentially in one heartbeat; inspect live results between calls.

@@ -98,6 +98,12 @@ class FakeEnvironment:
         self._environment_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
         self.last_result: FakeEnvironmentResult | None = None
         self.last_output_path: Path | None = None
+        self.latest_environment_event: TransportEvent | None = None
+        self.last_override_feedback: TransportEvent | None = None
+        self.mission_time_seconds = 0.0
+        self.current_maneuver: dict[str, object] | None = None
+        self.navigation_status = "idle"
+        self._active_command: ManeuverCommand | None = None
 
     @staticmethod
     def subscription_for(
@@ -111,21 +117,25 @@ class FakeEnvironment:
 
         return Subscription(target_service, mission_id, command_topic, max_retries)
 
-    def heartbeat(self) -> FakeEnvironmentHeartbeat:
+    def heartbeat(
+        self, mission_time_seconds: float | None = None
+    ) -> FakeEnvironmentHeartbeat:
         """Publish the current environment data before planner generation."""
+
+        if mission_time_seconds is not None:
+            self._set_mission_time(mission_time_seconds)
 
         environment_file = (
             self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
         )
         self.last_output_path = environment_file
-        graph = {
-            "mission_id": self.mission_id,
-            "plan_revision": 0,
-            "mission_time_seconds": 0.0,
-            "maneuvers": [],
-            "entities": self._entities_for_seed(f"{self.mission_id}:heartbeat"),
-            "environment_file": str(environment_file),
-        }
+        graph = self._graph(
+            plan_revision=(
+                self._active_command.plan_revision if self._active_command else 0
+            ),
+            entities=self._entities_for_seed(f"{self.mission_id}:heartbeat"),
+            environment_file=environment_file,
+        )
         environment_data = self._environment_data(graph)
         _atomic_write_json(environment_file, environment_data)
         environment_event, source_fact = self._publish_environment_data(
@@ -137,7 +147,7 @@ class FakeEnvironment:
             environment_file=environment_file,
         )
 
-    def run_once(self, lifecycle: str = "completed") -> FakeEnvironmentResult | None:
+    def run_once(self, lifecycle: str = "active") -> FakeEnvironmentResult | None:
         """Consume and acknowledge at most one command from the registered subscription."""
 
         with self.transport.open_consumer(self.subscription) as consumer:
@@ -158,7 +168,7 @@ class FakeEnvironment:
             return result
 
     def process_command(
-        self, command: ManeuverCommand, lifecycle: str = "completed"
+        self, command: ManeuverCommand, lifecycle: str = "active"
     ) -> FakeEnvironmentResult:
         """Publish deterministic evidence for a command without changing mission authority."""
 
@@ -173,6 +183,52 @@ class FakeEnvironment:
         if existing is not None:
             self.last_result = existing
             return existing
+
+        if (
+            lifecycle in {"accepted", "active"}
+            and self._active_command is not None
+            and self._active_command.command_id != command.command_id
+        ):
+            self.last_override_feedback = self._feedback(
+                self._active_command,
+                "cancelled",
+                extra_payload={"reason": "overridden"},
+            )
+        if lifecycle in {"accepted", "active"}:
+            self._active_command = command
+            self.current_maneuver = {
+                "maneuver_id": command.maneuver_id,
+                "action": command.action,
+                "parameters": {
+                    parameter.name: parameter.value for parameter in command.parameters
+                },
+                "command_id": command.command_id,
+                "correlation_id": command.correlation_id,
+                "start_time": self.mission_time_seconds,
+                "lifecycle": "active",
+            }
+            self.navigation_status = "active"
+        else:
+            if self.current_maneuver is None or self.current_maneuver.get(
+                "command_id"
+            ) != command.command_id:
+                self.current_maneuver = {
+                    "maneuver_id": command.maneuver_id,
+                    "action": command.action,
+                    "parameters": {
+                        parameter.name: parameter.value
+                        for parameter in command.parameters
+                    },
+                    "command_id": command.command_id,
+                    "correlation_id": command.correlation_id,
+                    "start_time": self.mission_time_seconds,
+                    "lifecycle": lifecycle,
+                }
+            else:
+                self.current_maneuver["lifecycle"] = lifecycle
+            self.navigation_status = lifecycle
+            if self._active_command is not None and self._active_command.command_id == command.command_id:
+                self._active_command = None
 
         environment_event, source_fact, environment_file = (
             self._environment_event_and_fact(command)
@@ -191,6 +247,35 @@ class FakeEnvironment:
         self.last_result = result
         return result
 
+    def submit(self, command: ManeuverCommand) -> FakeEnvironmentResult:
+        """Maneuver-adapter seam: make a submitted action active immediately."""
+
+        return self.process_command(command, lifecycle="active")
+
+    def tick(
+        self, mission_time_seconds: float | None = None
+    ) -> FakeEnvironmentResult | FakeEnvironmentHeartbeat:
+        """Advance fake Mission time and complete the currently active action."""
+
+        if mission_time_seconds is not None:
+            self._set_mission_time(mission_time_seconds)
+        active = self._active_command
+        if active is None:
+            return self.heartbeat()
+        return self.process_command(active, lifecycle="completed")
+
+    def current_environment_data(self) -> dict[str, object]:
+        """Return the latest model-visible environment payload."""
+
+        if self.latest_environment_event is None:
+            return dict(self.heartbeat().environment_event.payload)
+        return dict(self.latest_environment_event.payload)
+
+    def _set_mission_time(self, value: float) -> None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError("fake environment Mission time must be numeric")
+        self.mission_time_seconds = float(value)
+
     def _environment_event_and_fact(
         self, command: ManeuverCommand
     ) -> tuple[TransportEvent, TransportEvent, Path]:
@@ -198,27 +283,36 @@ class FakeEnvironment:
             self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
         )
         self.last_output_path = environment_file
-        graph = {
-            "mission_id": command.mission_id,
-            "plan_revision": command.plan_revision,
-            "maneuvers": [
-                {
-                    "maneuver_id": command.maneuver_id,
-                    "action": command.action,
-                    "parameters": {
-                        parameter.name: parameter.value for parameter in command.parameters
-                    },
-                }
-            ],
-            "entities": self._entities(command),
-            "environment_file": str(environment_file),
-        }
+        graph = self._graph(
+            plan_revision=command.plan_revision,
+            entities=self._entities(command),
+            environment_file=environment_file,
+        )
         environment_data = self._environment_data(graph)
         _atomic_write_json(environment_file, environment_data)
         environment_event, source_fact = self._publish_environment_data(
             environment_data, command.plan_revision
         )
         return environment_event, source_fact, environment_file
+
+    def _graph(
+        self,
+        *,
+        plan_revision: int,
+        entities: list[dict[str, object]],
+        environment_file: Path,
+    ) -> dict[str, object]:
+        maneuver = dict(self.current_maneuver) if self.current_maneuver else None
+        return {
+            "mission_id": self.mission_id,
+            "plan_revision": plan_revision,
+            "mission_time_seconds": self.mission_time_seconds,
+            "current_maneuver": maneuver,
+            "navigation_status": self.navigation_status,
+            "maneuvers": [maneuver] if maneuver is not None else [],
+            "entities": entities,
+            "environment_file": str(environment_file),
+        }
 
     def _environment_data(self, graph: dict[str, object]) -> dict[str, object]:
         event_report = json.loads(self.event_report_path.read_text(encoding="utf-8"))
@@ -277,6 +371,7 @@ class FakeEnvironment:
                 ),
             )
         self._environment_facts[reference] = (environment_event, source_fact)
+        self.latest_environment_event = environment_event
         return environment_event, source_fact
 
     def _entities(self, command: ManeuverCommand) -> list[dict[str, object]]:
@@ -347,7 +442,13 @@ class FakeEnvironment:
             ),
         )
 
-    def _feedback(self, command: ManeuverCommand, lifecycle: str) -> TransportEvent:
+    def _feedback(
+        self,
+        command: ManeuverCommand,
+        lifecycle: str,
+        *,
+        extra_payload: dict[str, object] | None = None,
+    ) -> TransportEvent:
         feedback_id = f"maneuver-feedback:{command.command_id}:{lifecycle}"
         existing = self.transport.get_event(feedback_id)
         if existing is not None:
@@ -360,6 +461,7 @@ class FakeEnvironment:
             payload={
                 "command_id": command.command_id,
                 "correlation_id": command.correlation_id,
+                **(extra_payload or {}),
             },
         )
         event = TransportEvent(
@@ -376,8 +478,8 @@ class FakeEnvironment:
 
 
 __all__ = [
+    "SUPPORTED_LIFECYCLES",
     "FakeEnvironment",
     "FakeEnvironmentHeartbeat",
     "FakeEnvironmentResult",
-    "SUPPORTED_LIFECYCLES",
 ]

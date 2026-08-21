@@ -60,13 +60,13 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     assert [prompt.index(stage) for stage in stages] == sorted(
         prompt.index(stage) for stage in stages
     )
-    assert "Run one live todo list with exactly these eight todos in order" in prompt
+    assert "Run one live todo list with exactly these nine todos in order" in prompt
     assert "never batch completions" in prompt
     assert "`outcome: execution_ready`" in prompt
     assert "verified NormalizedPlan" in prompt
     assert "Treat `environment_data` as flexible" in prompt
     assert "derive planner facts from the actual payload" in prompt
-    assert "Write one complete file per response" in prompt
+    assert "sentinel appends of at most 75 values per response" in prompt
     assert "`belief_snapshot`" in prompt
     assert "tool `reflection` arguments" in prompt
     assert "Never expose private reasoning" in prompt
@@ -92,8 +92,8 @@ def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -
         "maneuver-control",
     )
 
-    assert "invocation overlay" in prompt
-    assert "current `environment_data`" in prompt
-    assert "semantic context" in prompt
+    assert "ManeuverInvocation" in prompt
+    assert "current environment data" in prompt
+    assert "semantic state context" in prompt
     assert "environment_time_at_or_after" in prompt
-    assert "`choice: no_change`" in prompt
+    assert "ManeuverHeartbeatCompletion" in prompt

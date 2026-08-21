@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Thread
 from typing import Any, Literal, cast
 
 from langchain.agents.middleware import (
@@ -23,10 +25,15 @@ from onr.agents.hyper_agent import (
 )
 from onr.application.minizinc_translation import MiniZincProblem, MiniZincTranslation
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
+from onr.contracts.maneuver_control import (
+    ManeuverHeartbeatCompletion,
+    ManeuverInvocation,
+)
 from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
@@ -42,7 +49,7 @@ from onr.contracts.planning import (
 )
 from onr.contracts.planning_evidence import PlannerChoiceRecord
 from onr.contracts.planning_intent import PlanningIntent
-from onr.contracts.transport import TransportEvent
+from onr.contracts.transport import CommandOutcome, TransportEvent
 
 HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
     "title": "HyperWorkflowResultCandidate",
@@ -191,7 +198,15 @@ class HyperWorkflowContext:
     statechart: Any = field(default=None, init=False)
     statechart_reference: str | None = field(default=None, init=False)
     initial_fsm_status: Any = field(default=None, init=False)
+    preview_fsm_status: Any = field(default=None, init=False)
+    handoff_outcome: Any = field(default=None, init=False)
+    handoff_attempt: int = field(default=0, init=False)
+    handoff_correlation_id: str | None = field(default=None, init=False)
     current_statechart_attempt: int = field(default=0, init=False)
+    fsm_runner: Any = None
+    environment_authority: Any = None
+    belief_service: Any = None
+    communication_port: Any = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_input, MissionInput):
@@ -228,6 +243,15 @@ class HyperWorkflowContext:
             getattr(self.state_machine_factory, "build", None)
         ):
             raise TypeError("Hyper workflow Statechart factory must expose build")
+        if self.fsm_runner is not None and (
+            not callable(getattr(self.fsm_runner, "activate", None))
+            or not callable(getattr(self.fsm_runner, "status", None))
+        ):
+            raise TypeError("Hyper workflow FSM Runner must expose activate and status")
+        if self.communication_port is not None and not callable(
+            getattr(self.communication_port, "request", None)
+        ):
+            raise TypeError("Hyper workflow communication port must expose request")
         self.artifact_root = Path(self.artifact_root).resolve()
         if self.backend_root is not None:
             self.backend_root = Path(self.backend_root).resolve()
@@ -235,6 +259,10 @@ class HyperWorkflowContext:
             self.planner_workspace_location = str(
                 (self.artifact_root / "workspace").resolve()
             )
+
+    @property
+    def handoff_required(self) -> bool:
+        return self.fsm_runner is not None or self.communication_port is not None
 
 
 _PHASE_CONTROLLED_TOOLS = frozenset(
@@ -246,6 +274,7 @@ _PHASE_CONTROLLED_TOOLS = frozenset(
         "persist_planner_assets",
         "planner_executor",
         "submit_statechart_draft",
+        "handoff_execution",
         "HyperWorkflowResultCandidate",
     }
 )
@@ -266,6 +295,10 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
             and context.current_attempt_number < context.max_planner_attempts
         ):
             return frozenset({"write_file", "edit_file", "persist_planner_assets"})
+        return frozenset({"HyperWorkflowResultCandidate"})
+    if context.statechart is not None and context.handoff_required:
+        if context.handoff_outcome is None:
+            return frozenset({"handoff_execution"})
         return frozenset({"HyperWorkflowResultCandidate"})
     if context.statechart is not None:
         return frozenset({"HyperWorkflowResultCandidate"})
@@ -320,6 +353,7 @@ class HyperWorkflowRunResult:
     statechart: Statechart | None
     statechart_reference: str | None
     initial_fsm_status: FSMStatus | None
+    handoff_outcome: CommandOutcome | None
 
 
 def _context(runtime: ToolRuntime[HyperWorkflowContext]) -> HyperWorkflowContext:
@@ -991,6 +1025,9 @@ def submit_statechart_draft(
     context.statechart = chart
     context.statechart_reference = str(accepted_path.resolve())
     context.initial_fsm_status = status
+    context.preview_fsm_status = status
+    if context.handoff_required:
+        context.initial_fsm_status = None
     _emit(
         context,
         "statechart-generation",
@@ -1011,6 +1048,163 @@ def submit_statechart_draft(
             "statechart_reference": context.statechart_reference,
             "statechart_sha256": chart.statechart_sha256,
             "transition_count": len(chart.transitions),
+        }
+    )
+
+
+def _run_sync(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+    result: list[object] = []
+    failure: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            result.append(asyncio.run(awaitable))
+        except Exception as exc:
+            failure.append(exc)
+
+    thread = Thread(target=target, name="hyper-handoff-fsm-adapter")
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+    return result[0]
+
+
+def _live_environment(context: HyperWorkflowContext) -> Mapping[str, object]:
+    authority = context.environment_authority
+    if authority is not None:
+        getter = getattr(authority, "current_environment_data", None)
+        if callable(getter):
+            value = getter()
+            if not isinstance(value, Mapping):
+                raise TypeError("environment authority returned invalid current data")
+            return value
+        event = getattr(authority, "latest_environment_event", None)
+        payload = getattr(event, "payload", None)
+        if isinstance(payload, Mapping):
+            return payload
+    return context.environment_event.payload
+
+
+@tool(parse_docstring=True)
+def handoff_execution(
+    reflection: str,
+    runtime: ToolRuntime[HyperWorkflowContext],
+) -> str:
+    """Activate the verified Statechart and synchronously invoke Maneuver Control.
+
+    Args:
+        reflection: Concise public summary of verified execution evidence and handoff.
+
+    Returns:
+        Canonical JSON containing the correlated Maneuver completion or retry evidence.
+    """
+
+    context = _context(runtime)
+    translation = context.translation
+    plan = translation.normalized_plan if translation is not None else None
+    if plan is None or context.statechart is None or context.statechart_reference is None:
+        return _prerequisite_missing(
+            missing=("verified_normalized_plan", "verified_statechart"),
+            required_tool="submit_statechart_draft",
+            retry_tool="handoff_execution",
+        )
+    if context.fsm_runner is None or context.communication_port is None:
+        raise RuntimeError("Hyper execution handoff requires FSM Runner and communication port")
+    context.handoff_attempt += 1
+    live_status = _run_sync(context.fsm_runner.activate(context.statechart))
+    if not isinstance(live_status, FSMStatus):
+        raise TypeError("FSM Runner activation did not return FSMStatus")
+    refreshed = _run_sync(context.fsm_runner.status())
+    if not isinstance(refreshed, FSMStatus):
+        raise TypeError("FSM Runner status did not return FSMStatus")
+    belief = cast(BayesianBeliefSnapshot | None, context.belief_snapshot)
+    if context.belief_service is not None:
+        loader = getattr(context.belief_service, "load_current_snapshot", None)
+        if callable(loader):
+            current_belief = loader()
+            if current_belief is not None and not isinstance(
+                current_belief, BayesianBeliefSnapshot
+            ):
+                raise TypeError("belief service returned invalid current snapshot")
+            if current_belief is not None:
+                belief = current_belief
+    available = getattr(context.communication_port, "available_recipients", None)
+    recipients = (
+        cast(tuple[str, ...], tuple(cast(Any, available("maneuver-control"))))
+        if callable(available)
+        else ("hyper-agent",)
+    )
+    correlation_id = context.handoff_correlation_id or (
+        f"execution-handoff:{plan.mission_id}:{plan.plan_revision}"
+    )
+    request_id = (
+        f"hyper-handoff:{plan.mission_id}:{plan.plan_revision}:"
+        f"{context.handoff_attempt}"
+    )
+    invocation = ManeuverInvocation(
+        request_id=request_id,
+        correlation_id=correlation_id,
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        normalized_plan=plan,
+        statechart_reference=context.statechart_reference,
+        fsm_status=refreshed,
+        environment_data=_live_environment(context),
+        belief_snapshot=belief,
+        available_recipients=recipients,
+        planning_snapshot=context.mission_snapshot,
+    )
+    message = AgentMessage(
+        message_id=request_id,
+        correlation_id=correlation_id,
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        sender="hyper-agent",
+        recipient="maneuver-control",
+        kind="invoke",
+        payload=invocation.to_dict(),
+    )
+    outcome = context.communication_port.request(message)
+    if (
+        not isinstance(outcome, CommandOutcome)
+        or outcome.command_id != request_id
+        or outcome.correlation_id != correlation_id
+        or outcome.mission_id != plan.mission_id
+        or str(outcome.status) != "completed"
+    ):
+        return _canonical_json(
+            {
+                "status": "rejected",
+                "retry_tool": "handoff_execution",
+                "reason": "Maneuver Control handoff did not complete successfully",
+                "outcome": outcome.to_dict() if isinstance(outcome, CommandOutcome) else None,
+            }
+        )
+    completion = ManeuverHeartbeatCompletion.from_dict(outcome.payload)
+    if completion.mission_id != plan.mission_id or completion.request_id != request_id:
+        raise ValueError("Maneuver handoff completion identity does not match")
+    context.initial_fsm_status = refreshed
+    context.handoff_outcome = outcome
+    _emit(
+        context,
+        "maneuver-handoff",
+        "completed",
+        details={
+            "correlation_id": correlation_id,
+            "plan_revision": plan.plan_revision,
+            "request_id": request_id,
+        },
+    )
+    return _canonical_json(
+        {
+            "status": "completed",
+            "fsm_status": refreshed.to_dict(),
+            "maneuver_completion": completion.to_dict(),
         }
     )
 
@@ -1049,6 +1243,7 @@ def create_hyper_workflow_agent(
             persist_planner_assets,
             planner_executor,
             submit_statechart_draft,
+            handoff_execution,
         ],
         writable_paths=(
             [planner_workspace_location]
@@ -1141,6 +1336,7 @@ class DeepAgentsHyperWorkflow:
             "configurable": {"thread_id": thread_id},
             "recursion_limit": recursion_limit,
         }
+        context.handoff_correlation_id = thread_id
         callback = getattr(self.agent, "_onr_debug_callback", None)
         if callback is not None:
             config["callbacks"] = [callback]
@@ -1193,6 +1389,7 @@ class DeepAgentsHyperWorkflow:
                 or context.statechart is None
                 or context.statechart_reference is None
                 or context.initial_fsm_status is None
+                or (context.handoff_required and context.handoff_outcome is None)
             ):
                 raise ValueError(
                     "Hyper workflow success lacks verified plan and Statechart evidence"
@@ -1247,6 +1444,7 @@ class DeepAgentsHyperWorkflow:
             statechart=context.statechart,
             statechart_reference=context.statechart_reference,
             initial_fsm_status=context.initial_fsm_status,
+            handoff_outcome=context.handoff_outcome,
         )
 
 
@@ -1257,6 +1455,7 @@ __all__ = [
     "HyperWorkflowRunResult",
     "TemporalManeuverCandidate",
     "create_hyper_workflow_agent",
+    "handoff_execution",
     "load_planning_context",
     "persist_planner_assets",
     "planner_executor",

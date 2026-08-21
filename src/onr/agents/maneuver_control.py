@@ -1,9 +1,4 @@
-"""DeepAgents boundary for Maneuver Control.
-
-The application service remains deterministic and dependency-free.  This
-module is the only place that knows how to construct a Deep Agent; tests and
-deployments may instead provide a plain decision provider.
-"""
+"""DeepAgents boundary for tool-driven Maneuver heartbeats and audit parsing."""
 
 from __future__ import annotations
 
@@ -13,6 +8,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, cast
 
+from langchain_core.messages import HumanMessage
+
+from onr.agents.hyper_agent import _create_deep_agent
+from onr.agents.maneuver_tools import (
+    MANEUVER_OPERATIONAL_TOOLS,
+    ManeuverToolContext,
+)
 from onr.agents.structured_output import (
     StructuralIssue,
     StructuredOutputFailure,
@@ -23,11 +25,12 @@ from onr.contracts.fsm import FSMStatus
 from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverControlDecision,
+    ManeuverHeartbeatCompletion,
+    ManeuverHeartbeatOutcome,
+    ManeuverInvocation,
     NonPhysicalChoice,
     PhysicalAction,
 )
-from onr.agents.hyper_agent import _create_deep_agent
-
 
 _DECISION_FIELDS: Final = frozenset(
     {
@@ -121,6 +124,19 @@ MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
     },
 }
 
+MANEUVER_HEARTBEAT_COMPLETION_SCHEMA: dict[str, Any] = {
+    "title": "ManeuverHeartbeatCompletion",
+    "type": "object",
+    "properties": {
+        "mission_id": {"type": "string", "minLength": 1},
+        "request_id": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "enum": ["completed", "no_change"]},
+        "summary": {"type": "string", "minLength": 1},
+    },
+    "required": ["mission_id", "request_id", "outcome", "summary"],
+    "additionalProperties": False,
+}
+
 
 def create_maneuver_control_agent(
     *,
@@ -132,19 +148,132 @@ def create_maneuver_control_agent(
     skill_version: str | None = None,
     backend_root: Path | None = None,
 ) -> object:
-    """Create a DeepAgents model wrapper with optional role context."""
+    """Create the tool-driven DeepAgents Maneuver heartbeat."""
 
     return _create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        response_format=MANEUVER_CONTROL_DECISION_SCHEMA,
+        response_format=MANEUVER_HEARTBEAT_COMPLETION_SCHEMA,
         mission_id=mission_id,
         role="maneuver-control",
         memory_store=memory_store,
         skill_catalog=skill_catalog,
         skill_version=skill_version,
         backend_root=backend_root,
+        tools=list(MANEUVER_OPERATIONAL_TOOLS),
+        context_schema=ManeuverToolContext,
     )
+
+
+class DeepAgentsHeartbeatProvider:
+    """Invoke a Maneuver Deep Agent and validate completion against tool effects."""
+
+    def __init__(self, agent: object, max_retries: int = 1) -> None:
+        if (
+            isinstance(max_retries, bool)
+            or not isinstance(max_retries, int)
+            or max_retries < 0
+        ):
+            raise ValueError("Maneuver completion retry budget must be non-negative")
+        self.agent = agent
+        self.max_retries = max_retries
+
+    def heartbeat(
+        self,
+        invocation: ManeuverInvocation,
+        tool_context: ManeuverToolContext,
+    ) -> ManeuverHeartbeatCompletion:
+        if not isinstance(invocation, ManeuverInvocation):
+            raise TypeError("Maneuver heartbeat provider requires ManeuverInvocation")
+        if not isinstance(tool_context, ManeuverToolContext):
+            raise TypeError("Maneuver heartbeat provider requires ManeuverToolContext")
+        if tool_context.invocation != invocation:
+            raise ValueError("Maneuver heartbeat tool context invocation does not match")
+        invoke = cast(Any, self.agent).invoke
+        callback = getattr(self.agent, "_onr_debug_callback", None)
+        config = {"callbacks": [callback]} if callback is not None else None
+        messages = [
+            HumanMessage(
+                content=json.dumps(
+                    invocation.to_dict(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+            )
+        ]
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            kwargs: dict[str, object] = {"context": tool_context}
+            if config is not None:
+                kwargs["config"] = config
+            response = invoke({"messages": messages}, **kwargs)
+            try:
+                completion = _parse_heartbeat_completion(response)
+                self._validate_completion(completion, invocation, tool_context)
+                return completion
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+                if attempt == self.max_retries:
+                    break
+                messages = [
+                    HumanMessage(
+                        content=json.dumps(
+                            {
+                                "completion_correction": str(exc),
+                                "request_id": invocation.request_id,
+                                "successful_tool_calls": (
+                                    tool_context.execution_record.successful_count
+                                ),
+                                "tool_executions": len(
+                                    tool_context.execution_record.executions
+                                ),
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
+                ]
+        assert last_error is not None
+        raise last_error
+
+    @staticmethod
+    def _validate_completion(
+        completion: ManeuverHeartbeatCompletion,
+        invocation: ManeuverInvocation,
+        tool_context: ManeuverToolContext,
+    ) -> None:
+        if (
+            completion.mission_id != invocation.mission_id
+            or completion.request_id != invocation.request_id
+        ):
+            raise ValueError("Maneuver completion identity does not match invocation")
+        successful = tool_context.execution_record.successful_count
+        executed = len(tool_context.execution_record.executions)
+        if (
+            completion.outcome is ManeuverHeartbeatOutcome.COMPLETED
+            and successful < 1
+        ):
+            raise ValueError("completed Maneuver heartbeat requires a successful tool call")
+        if completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE and executed != 0:
+            raise ValueError("no_change Maneuver heartbeat requires no tool executions")
+
+
+def _parse_heartbeat_completion(response: object) -> ManeuverHeartbeatCompletion:
+    if isinstance(response, ManeuverHeartbeatCompletion):
+        return response
+    if not isinstance(response, Mapping):
+        raise TypeError("Maneuver heartbeat returned invalid agent state")
+    candidate = response.get("structured_response")
+    model_dump = getattr(candidate, "model_dump", None)
+    if callable(model_dump):
+        candidate = model_dump()
+    if candidate is None:
+        candidate = _decision_from_final_message(response)
+    if not isinstance(candidate, Mapping):
+        raise TypeError("Maneuver heartbeat returned invalid structured output")
+    return ManeuverHeartbeatCompletion.from_dict(cast(Mapping[str, object], candidate))
 
 
 class DeepAgentsDecisionProvider:
@@ -181,6 +310,12 @@ class DeepAgentsDecisionProvider:
             self.max_retries,
             _parse_decision_response,
         )
+
+
+class DeepAgentsManeuverProvider(
+    DeepAgentsHeartbeatProvider, DeepAgentsDecisionProvider
+):
+    """Runtime provider exposing the heartbeat path and retained audit parser."""
 
 
 def _failure(*issues: StructuralIssue) -> StructuredOutputFailure:
@@ -419,6 +554,9 @@ def _is_json_value(value: object) -> bool:
     return False
 __all__ = [
     "MANEUVER_CONTROL_DECISION_SCHEMA",
-    "create_maneuver_control_agent",
+    "MANEUVER_HEARTBEAT_COMPLETION_SCHEMA",
     "DeepAgentsDecisionProvider",
+    "DeepAgentsHeartbeatProvider",
+    "DeepAgentsManeuverProvider",
+    "create_maneuver_control_agent",
 ]

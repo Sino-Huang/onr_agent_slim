@@ -1,5 +1,6 @@
 """Immutable contracts for Missions, Mission Snapshots, and Transport Events."""
 
+from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import (
     FSMEvent,
@@ -22,6 +23,9 @@ from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverCommand,
     ManeuverControlDecision,
+    ManeuverHeartbeatCompletion,
+    ManeuverHeartbeatOutcome,
+    ManeuverInvocation,
     NonPhysicalChoice,
     PhysicalAction,
 )
@@ -40,6 +44,8 @@ from onr.contracts.role_context import (
 __all__ = [
     "HYPER_AGENT_ROLE",
     "MANEUVER_CONTROL_ROLE",
+    "AgentMessage",
+    "AgentMessageKind",
     "FSMEvent",
     "FSMExecutionRecord",
     "FSMStatus",
@@ -48,6 +54,9 @@ __all__ = [
     "InvocationOverlay",
     "ManeuverCommand",
     "ManeuverControlDecision",
+    "ManeuverHeartbeatCompletion",
+    "ManeuverHeartbeatOutcome",
+    "ManeuverInvocation",
     "ManeuverDecision",
     "ManeuverFeedback",
     "MissionInput",

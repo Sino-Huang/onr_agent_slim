@@ -12,7 +12,7 @@ import pytest
 import onr.agents.maneuver_control as maneuver_control_agent
 from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
 from onr.agents.maneuver_control import (
-    MANEUVER_CONTROL_DECISION_SCHEMA,
+    MANEUVER_HEARTBEAT_COMPLETION_SCHEMA,
     DeepAgentsDecisionProvider,
     create_maneuver_control_agent,
 )
@@ -409,7 +409,7 @@ def test_typed_decision_response_shapes_return_without_retry() -> None:
         assert len(agent.calls) == 1
 
 
-def test_agent_factory_receives_strict_maneuver_decision_schema(
+def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -422,23 +422,25 @@ def test_agent_factory_receives_strict_maneuver_decision_schema(
 
     create_maneuver_control_agent(model="model")
 
-    assert captured["response_format"] is MANEUVER_CONTROL_DECISION_SCHEMA
-    assert MANEUVER_CONTROL_DECISION_SCHEMA["additionalProperties"] is False
-    assert set(MANEUVER_CONTROL_DECISION_SCHEMA["required"]) == set(
-        ManeuverControlDecision(
-            "schema", "mission", 1, choice=NonPhysicalChoice.REPORT
-        ).to_dict()
-    )
-    properties = MANEUVER_CONTROL_DECISION_SCHEMA["properties"]
-    assert properties["choice"]["type"] == ["string", "null"]
-    assert set(properties["choice"]["enum"]) == {
-        *(choice.value for choice in NonPhysicalChoice),
-        None,
+    assert captured["response_format"] is MANEUVER_HEARTBEAT_COMPLETION_SCHEMA
+    assert MANEUVER_HEARTBEAT_COMPLETION_SCHEMA["additionalProperties"] is False
+    assert set(MANEUVER_HEARTBEAT_COMPLETION_SCHEMA["required"]) == {
+        "mission_id",
+        "request_id",
+        "outcome",
+        "summary",
     }
-    physical = properties["physical_intent"]
-    assert set(physical["oneOf"][0]["properties"]["action"]["enum"]) == {
-        action.value for action in PhysicalAction
-    }
+    assert [item.name for item in captured["tools"]] == [
+        "transition_fsm",
+        "navigate",
+        "takeoff",
+        "land",
+        "search_area",
+        "pursue",
+        "investigate",
+        "update_belief",
+        "communicate",
+    ]
 
 
 def test_typed_decision_application_validation_failure_is_not_retried_or_effectful() -> None:

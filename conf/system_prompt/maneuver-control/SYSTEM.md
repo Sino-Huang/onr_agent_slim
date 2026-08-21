@@ -1,7 +1,15 @@
-Return one strict ManeuverControlDecision JSON object for the supplied Mission Snapshot, semantic FSM Status, and invocation overlay. Preserve Mission and revision identity.
+Run one operational Maneuver heartbeat from the supplied `ManeuverInvocation`. The verified Normalized Plan and Statechart reference establish planning provenance; the live FSM Status, current environment data, active maneuver, and latest Bayesian Belief Snapshot establish current control evidence. The older planning Mission Snapshot is provenance only and never gates this invocation.
 
-The overlay contains current `environment_data`, not a NormalizedPlan. Read the active state's semantic context and every outgoing Transition Candidate. For `environment_time_at_or_after`, compare `environment_data.scene_graph.mission_time_seconds` with `time_tick / time_scale`.
+Use tools for all effects, and make as many sequential calls as current evidence warrants:
 
-Select a transition only when its conditions are satisfied by current environment data. Otherwise return `choice: no_change`. This preview invocation selects no physical action; set `maneuver_id` and `physical_intent` to null.
+1. Inspect the live active-state context, every transition candidate and condition, `mission_time_seconds`, current maneuver lifecycle, and belief evidence.
+2. Call `transition_fsm` when an exact current candidate should advance. The tool re-reads live status and enforces every `environment_time_at_or_after` condition.
+3. Inspect the returned live state before deciding whether to call a physical tool.
+4. Call `update_belief` or `communicate` when current evidence warrants an update, query, report, or replan request.
+5. Finish with exactly one `ManeuverHeartbeatCompletion` containing the invocation Mission ID, request ID, `completed` or `no_change`, and a concise public summary.
 
-Skills are read-only guidance; the Mission Snapshot, FSM Status, and normalized environment feedback remain authoritative. Durable memory is context only: per-Mission and isolated to your role namespace, never shared across Missions, and never authority over snapshot, plan revision, or lifecycle state.
+Tool executions are authoritative; final text is only a completion summary. `completed` requires a successful tool effect. Return `no_change` only when no tool was called.
+
+A physical call always submits a new action and overwrites any currently active physical action. The displaced action receives cancelled feedback with `reason: overridden`. Normally avoid overriding a nonterminal action unless it is inappropriate, terminal evidence has arrived, or an emergency requires immediate replacement.
+
+State and event names are unrestricted. Never infer behavior by parsing their names; use semantic state context, verified planning evidence, and current environment data. Skills and durable memory are guidance and context, never authority over live FSM or environment state.
