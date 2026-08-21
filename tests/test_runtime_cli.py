@@ -19,10 +19,6 @@ from onr.contracts.context_coordination import (
 from onr.contracts.fsm import FSMStatus, Statechart
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.maneuver_control import (
-    ManeuverControlDecision,
-    NonPhysicalChoice,
-)
 from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -33,7 +29,7 @@ from onr.contracts.planning import (
     ScheduledManeuver,
     VerifiableReference,
 )
-from onr.contracts.transport import TransportEvent
+from onr.contracts.transport import CommandOutcome, TransportEvent
 from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.ports.transport import Subscription
 from onr.runtime.lease import RuntimeLeaseStore
@@ -316,12 +312,26 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     class FakeHyperWorkflow:
         def run(self, context: object, **kwargs: object) -> object:
             calls.append(("hyper-run", context, kwargs))
+            handoff = CommandOutcome(
+                1,
+                "hyper-handoff:mission:demo:3:1",
+                "planning-run:mission:demo:1",
+                "mission:demo",
+                "completed",
+                {
+                    "mission_id": "mission:demo",
+                    "request_id": "hyper-handoff:mission:demo:3:1",
+                    "outcome": "no_change",
+                    "summary": "No immediate effect is required.",
+                },
+            )
             return SimpleNamespace(
                 outcome=HyperWorkflowOutcome.EXECUTION_READY,
                 normalized_plan=plan,
                 statechart=statechart,
                 statechart_reference="/tmp/accepted-statechart.json",
                 initial_fsm_status=initial_status,
+                handoff_outcome=handoff,
                 todos=({"content": "Run MiniZinc", "status": "completed"},),
             )
 
@@ -385,17 +395,25 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         def create_maneuver_control(self, adapter: object, **kwargs: object) -> object:
             calls.append(("maneuver", adapter, kwargs))
 
-            class PreviewControl:
-                def decide(self, *args: object) -> ManeuverControlDecision:
-                    calls.append(("maneuver-preview", args))
-                    return ManeuverControlDecision(
-                        decision_id="preview-decision",
-                        mission_id="mission:demo",
-                        plan_revision=plan.plan_revision,
-                        choice=NonPhysicalChoice.NO_CHANGE,
-                    )
+            class HeartbeatControl:
+                def handle_agent_message(self, message: object) -> object:
+                    calls.append(("maneuver-heartbeat", message))
+                    return None
 
-            return PreviewControl()
+            return HeartbeatControl()
+
+        def create_communication_port(self) -> object:
+            calls.append("communication-port")
+
+            class Port:
+                def register(self, recipient: str, handler: object) -> None:
+                    calls.append(("communication-register", recipient, handler))
+
+            return Port()
+
+        def create_bayesian_belief_service(self, **kwargs: object) -> object:
+            calls.append(("belief-service", kwargs))
+            return "belief-service"
 
         def create_context_coordination(self, **kwargs: object) -> object:
             calls.append(("context", kwargs))
@@ -499,12 +517,12 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         "entry_state": statechart.entry_state,
         "state_count": len(statechart.states),
         "transition_count": len(statechart.transitions),
-        "maneuver_decision": ManeuverControlDecision(
-            decision_id="preview-decision",
-            mission_id="mission:demo",
-            plan_revision=3,
-            choice=NonPhysicalChoice.NO_CHANGE,
-        ).to_dict(),
+        "maneuver_completion": {
+            "mission_id": "mission:demo",
+            "request_id": "hyper-handoff:mission:demo:3:1",
+            "outcome": "no_change",
+            "summary": "No immediate effect is required.",
+        },
         "environment_file": None,
     }
     assert calls[0] == (
@@ -535,12 +553,14 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         tmp_path / "var/planner-artifacts"
     )
     assert hyper_context_call[4]["belief_snapshot"] == belief
+    assert hyper_context_call[4]["fsm_runner"] == "fsm-runner"
+    assert hyper_context_call[4]["belief_service"] == "belief-service"
     hyper_run = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "hyper-run"
     )
     assert hyper_run[2] == {
         "thread_id": "planning-run:mission:demo:1",
-        "recursion_limit": 100,
+        "recursion_limit": 300,
     }
     maneuver_call = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "maneuver"
@@ -552,13 +572,12 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     assert maneuver_call[2]["system_prompt"] == (
         f"You are agent drone-1. {maneuver_prompt}"
     )
-    preview_call = next(
+    registration = next(
         item
         for item in calls
-        if isinstance(item, tuple) and item[0] == "maneuver-preview"
+        if isinstance(item, tuple) and item[0] == "communication-register"
     )
-    assert preview_call[1][0] is plan_snapshot
-    assert preview_call[1][1] is initial_status
+    assert registration[1] == "maneuver-control"
     assert "environment" not in calls
     assert calls.index("environment-heartbeat") < calls.index("heartbeat-snapshot")
 

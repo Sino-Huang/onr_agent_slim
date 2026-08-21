@@ -8,6 +8,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
@@ -16,26 +17,13 @@ from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import Statechart
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.maneuver_control import (
-    InvocationOverlay,
-    ManeuverCommand,
-    ManeuverControlDecision,
-)
-from onr.contracts.transport import create_normalized_plan_transport_event
 from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.demo.fake_environment import FakeEnvironment
-from onr.runtime.composition import RuntimeComposition, RuntimeRunResult
+from onr.runtime.composition import RuntimeComposition
 from onr.runtime.lease import RuntimeLeaseStore
 
 _MISSION_FIELDS = {"mission_id", "mission_text", "source_authority"}
 _MAX_MISSION_BYTES = 1024 * 1024
-
-
-class _DemoManeuverAdapter:
-    """Acknowledge demo submissions; FakeEnvironment provides external evidence."""
-
-    def submit(self, command: ManeuverCommand) -> object:
-        return {"command_id": command.command_id}
 
 
 def _reject_constant(value: str) -> None:
@@ -106,28 +94,12 @@ def _create_demo_environment(
     return FakeEnvironment(runtime.transport, mission_id, output_root=output_root)
 
 
-def _safe_result(
-    result: RuntimeRunResult, *, environment_file: Path | None = None
-) -> dict[str, object]:
-    return {
-        "mission_id": result.plan.mission_id,
-        "plan_revision": result.plan.plan_revision,
-        "command_id": result.command.command_id,
-        "maneuver_id": result.command.maneuver_id,
-        "final_state": result.final_status.active_state,
-        "final_status": result.final_status.status,
-        "environment_file": str(environment_file)
-        if environment_file is not None
-        else None,
-    }
-
-
-def _safe_preview_result(
+def _safe_handoff_result(
     *,
     outcome: HyperWorkflowOutcome,
     statechart: Statechart,
     statechart_reference: str,
-    decision: ManeuverControlDecision,
+    handoff_payload: Mapping[str, object],
     environment_file: Path | None,
 ) -> dict[str, object]:
     return {
@@ -139,10 +111,8 @@ def _safe_preview_result(
         "entry_state": statechart.entry_state,
         "state_count": len(statechart.states),
         "transition_count": len(statechart.transitions),
-        "maneuver_decision": decision.to_dict(),
-        "environment_file": (
-            str(environment_file) if environment_file is not None else None
-        ),
+        "maneuver_completion": dict(handoff_payload),
+        "environment_file": str(environment_file) if environment_file else None,
     }
 
 
@@ -169,7 +139,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recursion-limit",
         type=_positive_integer,
-        default=100,
+        default=300,
         help="maximum Deep Agent graph steps for the Hyper planning episode",
     )
     parser.add_argument(
@@ -232,10 +202,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             mission_input.mission_id,
             output_root=repo_root / "var/environment",
         )
+        fsm_runner = runtime.create_fsm_runner(mission_id=mission_input.mission_id)
+        communication_port = runtime.create_communication_port()
 
         stage = "environment heartbeat"
         heartbeat = environment.heartbeat()
         belief_snapshot = create_fake_entity_risk_snapshot(mission_input.mission_id)
+        belief_service = runtime.create_bayesian_belief_service(
+            mission_id=mission_input.mission_id,
+            keys=tuple(item.key for item in belief_snapshot.marginals),
+        )
         context_coordination.publish_source_fact(
             "bayesian_belief_snapshot",
             belief_snapshot.belief_revision,
@@ -262,7 +238,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Context Coordination did not publish the planning snapshot"
             )
 
-        stage = "Hyper planning"
+        stage = "Maneuver heartbeat composition"
+        maneuver_model = runtime.create_chat_model(
+            mission_id=mission_input.mission_id,
+            debug_scope="maneuver-control",
+        )
+        maneuver_control = runtime.create_maneuver_control(
+            environment,
+            model=maneuver_model,
+            mission_id=mission_input.mission_id,
+            system_prompt=f"You are agent {runtime.config.agent_name}. {maneuver_prompt}",
+            skill_catalog=skill_catalog,
+            backend_root=repo_root,
+            fsm_runner=fsm_runner,
+            environment_authority=environment,
+            belief_service=belief_service,
+            communication_port=communication_port,
+        )
+        communication_port.register(
+            "maneuver-control", maneuver_control.handle_agent_message
+        )
+
+        stage = "Hyper planning and execution handoff"
         hyper_workflow = runtime.create_hyper_workflow(
             model=hyper_model,
             system_prompt=hyper_prompt,
@@ -278,6 +275,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_root=planner_artifacts,
             belief_snapshot=belief_snapshot,
             backend_root=repo_root,
+            fsm_runner=fsm_runner,
+            environment_authority=environment,
+            belief_service=belief_service,
+            communication_port=communication_port,
         )
         hyper_result = hyper_workflow.run(
             hyper_context,
@@ -288,75 +289,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         statechart = hyper_result.statechart
         initial_fsm_status = hyper_result.initial_fsm_status
         statechart_reference = hyper_result.statechart_reference
+        handoff_outcome = hyper_result.handoff_outcome
         if (
             hyper_result.outcome is not HyperWorkflowOutcome.EXECUTION_READY
             or plan is None
             or statechart is None
             or initial_fsm_status is None
             or statechart_reference is None
+            or handoff_outcome is None
         ):
             raise RuntimeError(
                 "Hyper planning ended without execution-ready Statechart evidence: "
                 f"{hyper_result.outcome}"
             )
 
-        stage = "Statechart context publication"
-        topic = context_coordination.input_topic
-        runtime.transport.publish_event(
-            topic,
-            create_normalized_plan_transport_event(
-                plan,
-                event_id=(
-                    f"normalized-plan:{mission_input.mission_id}:"
-                    f"{plan.plan_revision}"
-                ),
-                sequence=runtime.transport.next_event_sequence(
-                    topic, mission_input.mission_id
-                ),
-            ),
-        )
-        with runtime.transport.open_consumer(
-            context_coordination.subscription
-        ) as context_consumer:
-            maneuver_snapshot = context_coordination.run_once(context_consumer)
-        if (
-            not isinstance(maneuver_snapshot, MissionSnapshot)
-            or maneuver_snapshot.plan_revision != plan.plan_revision
-        ):
-            raise RuntimeError(
-                "Context Coordination did not publish the Statechart preview snapshot"
-            )
-
-        stage = "Maneuver preview model composition"
-        maneuver_model = runtime.create_chat_model(
-            mission_id=mission_input.mission_id,
-            debug_scope="maneuver-control",
-        )
-        maneuver_control = runtime.create_maneuver_control(
-            _DemoManeuverAdapter(),
-            model=maneuver_model,
-            mission_id=mission_input.mission_id,
-            system_prompt=f"You are agent {runtime.config.agent_name}. {maneuver_prompt}",
-            skill_catalog=skill_catalog,
-            backend_root=repo_root,
-        )
-        stage = "Maneuver preview"
-        decision = maneuver_control.decide(
-            maneuver_snapshot,
-            initial_fsm_status,
-            InvocationOverlay(
-                mission_input.mission_id,
-                f"maneuver-preview:{mission_input.mission_id}:{plan.plan_revision}",
-                {"environment_data": heartbeat.environment_event.payload},
-            ),
-        )
         print(
             json.dumps(
-                _safe_preview_result(
+                _safe_handoff_result(
                     outcome=hyper_result.outcome,
                     statechart=statechart,
                     statechart_reference=statechart_reference,
-                    decision=decision,
+                    handoff_payload=handoff_outcome.payload,
                     environment_file=environment.last_output_path,
                 ),
                 sort_keys=True,

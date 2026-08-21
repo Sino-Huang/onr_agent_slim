@@ -1,10 +1,28 @@
+% ==========================================================================
+% Example: one abstract observation interval weighting five stationary ships
+% by risk. This model plans in ticks and integer metres directly.
+%
+% ----- Original evidence received (excerpt) -----
+% belief_snapshot/static_info: five ships, each with a position, one
+%   observation window (tick), and a probability_risk marginal —
+%   ship 1 → position [-62, 34],  window at tick 2,  probability_risk 0.81
+%   ship 2 → position [-25, -12], window at tick 4,  probability_risk 0.64
+%   ship 3 → position [18, 48],   window at tick 6,  probability_risk 0.93
+%   ship 4 → position [54, -55],  window at tick 8,  probability_risk 0.28
+%   ship 5 → position [76, 9],    window at tick 10, probability_risk 0.47
+%
+% ----- Mapping -----
+% event_time[s]  = ship s window time in ticks
+% ship_x/ship_y  = position components (int metres)
+% risk_weight[s] = round(probability_risk x 100) — scaled at copy time here
+% ==========================================================================
+
 ship_count = 5;
 horizon = 12;
 event_time = [2, 4, 6, 8, 10];
 ship_x = [-62, -25, 18, 54, 76];
 ship_y = [34, -12, 48, -55, 9];
 
-% FakeEnvironment risks in [0.0, 1.0], scaled by 100.
 risk_weight = [81, 64, 93, 28, 47];
 
 coordinate_bound = 100;

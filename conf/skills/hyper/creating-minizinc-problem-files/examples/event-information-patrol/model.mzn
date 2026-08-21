@@ -1,24 +1,35 @@
 int: event_count;
 set of int: EVENTS = 1..event_count;
-int: opportunity_count;
-set of int: OPPORTUNITIES = 1..opportunity_count;
+set of int: OPPORTUNITIES = EVENTS;
 int: stop_count;
 set of int: STOPS = 1..stop_count;
+int: entity_count;
+set of int: ENTITIES = 1..entity_count;
 
 int: horizon_ticks;
 int: time_scale;
 int: dwell_ticks;
 array[STOPS] of string: maneuver_id;
 
-array[EVENTS] of int: event_time;
-array[EVENTS] of int: event_x;
-array[EVENTS] of int: event_y;
-array[EVENTS] of int: event_risk;
+array[EVENTS] of float: event_time_s;
+array[EVENTS] of float: event_x_m;
+array[EVENTS] of float: event_y_m;
+array[EVENTS] of int: event_entity;
+array[ENTITIES] of float: entity_risk_p;
 
-array[OPPORTUNITIES] of int: opportunity_time;
-array[OPPORTUNITIES] of int: opportunity_x;
-array[OPPORTUNITIES] of int: opportunity_y;
-array[OPPORTUNITIES] of int: source_event_index;
+array[EVENTS] of int: event_time = [
+  round(event_time_s[event] * time_scale) | event in EVENTS
+];
+array[EVENTS] of int: event_x = [round(event_x_m[event]) | event in EVENTS];
+array[EVENTS] of int: event_y = [round(event_y_m[event]) | event in EVENTS];
+array[EVENTS] of int: event_risk = [
+  round(entity_risk_p[event_entity[event]] * risk_scale) | event in EVENTS
+];
+
+array[OPPORTUNITIES] of int: opportunity_time = event_time;
+array[OPPORTUNITIES] of int: opportunity_x = event_x;
+array[OPPORTUNITIES] of int: opportunity_y = event_y;
+array[OPPORTUNITIES] of int: source_event_index = [event | event in EVENTS];
 
 int: drone_start_time;
 int: drone_start_x;

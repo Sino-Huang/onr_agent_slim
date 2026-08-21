@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
-from typing import Any, Callable, cast
+from typing import Any, cast
 
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -39,7 +39,8 @@ from onr.agents.hyper_workflow import (
     create_hyper_workflow_agent,
 )
 from onr.agents.maneuver_control import (
-    DeepAgentsDecisionProvider,
+    DeepAgentsDecisionProvider,  # noqa: F401 - retained public composition seam
+    DeepAgentsManeuverProvider,
 )
 from onr.agents.maneuver_control import (
     create_maneuver_control_agent as create_deep_maneuver_control_agent,
@@ -48,6 +49,7 @@ from onr.application.bayesian_belief import (
     BayesianBeliefManager,
     BayesianBeliefService,
 )
+from onr.application.communication import TransportCommunicationPort
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
 from onr.application.human_decisions import HumanDecisionCoordinator
@@ -56,7 +58,7 @@ from onr.application.hyper_agent import (
     HyperPlanningHeartbeatResult,
     PlanningHeartbeatOutcome,
 )
-from onr.application.maneuver_control import ManeuverControl
+from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
 from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
 from onr.contracts.bayesian_belief import (
@@ -73,7 +75,7 @@ from onr.contracts.human_decision import (
     HumanDecisionResolution,
     RunCheckpoint,
 )
-from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.hyper_agent import MissionInput, ReplanRequest
 from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverCommand,
@@ -163,7 +165,7 @@ class RuntimeComposition:
         repo_root: Path,
         config_path: Path | None = None,
         subscriptions: tuple[Subscription, ...] = (),
-    ) -> "RuntimeComposition":
+    ) -> RuntimeComposition:
         config = load_runtime_config(config_path, repo_root=repo_root)
         if config.transport.backend == "file":
             transport = FileTransport(config.transport.root, subscriptions)
@@ -314,8 +316,10 @@ class RuntimeComposition:
             model=llm.model,
             api_key=cast(Any, llm.api_key),
             temperature=llm.temperature,
-            timeout=300.0,
+            timeout=800.0,
             max_retries=0,
+            max_tokens=16384,
+            extra_body={"thinking_token_budget": 4096},
             **options,
         )
         if recorder is not None:
@@ -574,8 +578,12 @@ class RuntimeComposition:
         skill_catalog: object | None = None,
         skill_version: str | None = None,
         backend_root: Path | None = None,
+        fsm_runner: FSMRunner | None = None,
+        environment_authority: object | None = None,
+        belief_service: BayesianBeliefService | None = None,
+        communication_port: object | None = None,
     ) -> ManeuverControl:
-        """Compose Maneuver Control without introducing runtime authority state."""
+        """Compose tool-driven Maneuver Control with opaque live dependencies."""
 
         if decision_provider is None:
             if mission_id is None:
@@ -594,7 +602,7 @@ class RuntimeComposition:
             context_backend_root = backend_root
             if context_backend_root is None and skill_catalog is not None:
                 context_backend_root = self.config.storage.root
-            decision_provider = DeepAgentsDecisionProvider(
+            decision_provider = DeepAgentsManeuverProvider(
                 create_deep_maneuver_control_agent(
                     model=model,
                     system_prompt=system_prompt,
@@ -613,7 +621,38 @@ class RuntimeComposition:
             decision_provider,
             target_service=target_service,
             operational_log=self._logger(),
+            fsm_runner=fsm_runner,
+            environment_authority=environment_authority,
+            belief_service=belief_service,
+            communication_port=communication_port,
         )
+
+    def create_communication_port(self) -> TransportCommunicationPort:
+        """Compose the shared correlated agent-message registry."""
+
+        port = TransportCommunicationPort(cast(Any, self.transport))
+
+        def handle_hyper_message(message: Any) -> Mapping[str, object]:
+            if message.recipient != "hyper-agent":
+                raise ValueError("Hyper communication recipient does not match")
+            if str(message.kind) == "replan":
+                raw = message.payload.get("replan_request")
+                if not isinstance(raw, Mapping):
+                    raise ValueError("Hyper replan message lacks ReplanRequest")
+                request = ReplanRequest.from_dict(raw)
+                return {
+                    "status": "received",
+                    "disposition": "no_change",
+                    "replan_request": request.to_dict(),
+                }
+            return {
+                "status": "received",
+                "kind": str(message.kind),
+                "message": message.payload.get("message"),
+            }
+
+        port.register("hyper-agent", handle_hyper_message)
+        return port
 
     def create_hyper_agent(
         self,
@@ -730,6 +769,10 @@ class RuntimeComposition:
         artifact_root: Path,
         belief_snapshot: BayesianBeliefSnapshot | None = None,
         backend_root: Path | None = None,
+        fsm_runner: FSMRunner | None = None,
+        environment_authority: object | None = None,
+        belief_service: BayesianBeliefService | None = None,
+        communication_port: object | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""
 
@@ -767,6 +810,10 @@ class RuntimeComposition:
             ),
             state_machine_factory=PythonStateMachineFactory(),
             operational_log=self._logger(),
+            fsm_runner=fsm_runner,
+            environment_authority=environment_authority,
+            belief_service=belief_service,
+            communication_port=communication_port,
         )
 
     def _run_mission(
@@ -970,6 +1017,8 @@ class RuntimeComposition:
                 event_id=invocation_id,
                 plan=plan,
             )
+            if not isinstance(maneuver_result, ManeuverHeartbeatResult):
+                raise TypeError("legacy Mission Run requires ManeuverHeartbeatResult")
             decision = maneuver_result.decision
             command = maneuver_result.command
             if (
