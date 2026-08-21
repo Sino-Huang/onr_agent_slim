@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -13,7 +12,6 @@ from typing import Any
 from onr.contracts.planning import PlannerChoice, PlanningProfile
 
 
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _TOP_LEVEL_FIELDS = frozenset(
     {
         "schema_version",
@@ -22,7 +20,6 @@ _TOP_LEVEL_FIELDS = frozenset(
         "objective",
         "rationale",
         "planner_choice",
-        "mission_input_sha256",
         "details",
     }
 )
@@ -97,7 +94,6 @@ class PlanningIntent:
     objective: str
     rationale: str
     planner_choice: PlannerChoice
-    mission_input_sha256: str
     details: Mapping[str, object]
     schema_version: int = field(default=1, init=False)
 
@@ -113,10 +109,6 @@ class PlanningIntent:
             (PlanningProfile.SYMBOLIC, "fast-downward"),
         ):
             raise ValueError("planning intent requires a configured planner")
-        if not isinstance(self.mission_input_sha256, str) or not _SHA256.fullmatch(
-            self.mission_input_sha256
-        ):
-            raise ValueError("mission input SHA-256 must be 64 lowercase hexadecimal characters")
         if not isinstance(self.details, Mapping):
             raise ValueError("planning intent details must be a JSON object")
         if any(key in _TOP_LEVEL_FIELDS for key in self.details):
@@ -131,7 +123,6 @@ class PlanningIntent:
             "objective": self.objective,
             "rationale": self.rationale,
             "planner_choice": self.planner_choice.to_dict(),
-            "mission_input_sha256": self.mission_input_sha256,
             "details": _json_value(self.details),
         }
 
@@ -151,7 +142,6 @@ class PlanningIntent:
             objective=value["objective"],
             rationale=value["rationale"],
             planner_choice=PlannerChoice.from_dict(value["planner_choice"]),
-            mission_input_sha256=value["mission_input_sha256"],
             details=value["details"],
         )
 

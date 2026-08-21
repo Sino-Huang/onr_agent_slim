@@ -45,9 +45,7 @@ from onr.contracts.planning import (
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
-    VerifiableReference,
 )
 from onr.contracts.transport import TransportEvent
 from onr.demo.fake_environment import FakeEnvironment
@@ -56,6 +54,8 @@ from onr.demo.fake_environment import FakeEnvironment
 def _plan() -> NormalizedPlan:
     mission_id = "mission-tools"
     return NormalizedPlan(
+        mission_id=mission_id,
+        source_authority="operator",
         plan_revision=2,
         mission_snapshot_id="mission-tools:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
@@ -72,15 +72,6 @@ def _plan() -> NormalizedPlan:
                 1,
             ),
         ),
-        provenance=PlanProvenance(
-            mission_id=mission_id,
-            source_authority="operator",
-            mission_intent=VerifiableReference("mission", "1" * 64),
-            planning_decision=VerifiableReference("choice", "2" * 64),
-            environment_data=VerifiableReference("environment", "3" * 64),
-            generated_assets={"model": VerifiableReference("model", "4" * 64)},
-            solver_evidence={"result": VerifiableReference("result", "5" * 64)},
-        ),
     )
 
 
@@ -90,7 +81,6 @@ def _chart(plan: NormalizedPlan) -> Statechart:
         plan_revision=plan.plan_revision,
         mission_snapshot_id=plan.mission_snapshot_id,
         planning_profile="temporal",
-        normalized_plan_sha256="a" * 64,
         entry_state="arbitrary origin",
         terminal_states=("arbitrary destination",),
         states=("arbitrary origin", "arbitrary destination"),
@@ -518,14 +508,12 @@ def test_hyper_handoff_activates_runner_before_correlated_invocation(
         store=None,
     )
 
-    result = json.loads(
-        cast(Any, handoff_execution).func(
-            reflection="The verified Statechart is ready for live execution.",
-            runtime=runtime,
-        )
+    result = cast(Any, handoff_execution).func(
+        reflection="The verified Statechart is ready for live execution.",
+        runtime=runtime,
     )
 
-    assert result["status"] == "completed"
+    assert result == "Execution handoff completed."
     assert context.handoff_outcome is not None
     assert context.initial_fsm_status is not None
     assert seen[0].fsm_status.active_state == chart.entry_state

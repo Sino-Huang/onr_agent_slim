@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -15,9 +14,7 @@ from onr.contracts.planning import (
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
-    VerifiableReference,
 )
 from onr.demo.fake_environment import FakeEnvironment
 
@@ -104,20 +101,13 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
         for number, move_start, arrive, _from_x, _from_y, x, y in stops
     )
     plan = NormalizedPlan(
+        mission_id=mission_id,
+        source_authority=mission_input.source_authority,
         plan_revision=1,
         mission_snapshot_id=f"{mission_id}:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
         outcome=PlanningOutcome.SOLVED,
         maneuvers=maneuvers,
-        provenance=PlanProvenance(
-            mission_id=mission_id,
-            source_authority=mission_input.source_authority,
-            mission_intent=VerifiableReference("mission-input", "1" * 64),
-            planning_decision=VerifiableReference("planner-choice", "2" * 64),
-            environment_data=VerifiableReference("environment", "3" * 64),
-            generated_assets={"model": VerifiableReference("model", "4" * 64)},
-            solver_evidence={"result": VerifiableReference("result", "5" * 64)},
-        ),
     )
 
     states = ["at-initial-location"]
@@ -191,9 +181,6 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
         plan_revision=plan.plan_revision,
         mission_snapshot_id=plan.mission_snapshot_id,
         planning_profile="temporal",
-        normalized_plan_sha256=hashlib.sha256(
-            plan.to_canonical_json().encode("utf-8")
-        ).hexdigest(),
         entry_state="at-initial-location",
         terminal_states=("patrol-complete",),
         states=tuple(states),

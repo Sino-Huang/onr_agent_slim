@@ -1,4 +1,3 @@
-import hashlib
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -90,9 +89,6 @@ def test_planning_intent_interpreter_builds_a_trusted_temporal_intent() -> None:
     assert isinstance(result, PlanningIntent)
     assert result.schema_version == 1
     assert result.planner_choice == PlannerChoice("temporal", "minizinc")
-    assert result.mission_input_sha256 == hashlib.sha256(
-        mission_input.to_canonical_json().encode("utf-8")
-    ).hexdigest()
     assert result.to_dict()["details"] == _candidate()["details"]
 
 

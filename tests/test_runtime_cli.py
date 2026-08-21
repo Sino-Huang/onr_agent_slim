@@ -19,15 +19,12 @@ from onr.contracts.context_coordination import (
 from onr.contracts.fsm import FSMStatus, Statechart
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import (
     ManeuverIntent,
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
-    VerifiableReference,
 )
 from onr.contracts.transport import CommandOutcome, TransportEvent
 from onr.demo.fake_belief import create_fake_entity_risk_snapshot
@@ -49,6 +46,8 @@ def _mission_file(tmp_path: Path, **overrides: object) -> Path:
 
 def _normalized_plan() -> NormalizedPlan:
     return NormalizedPlan(
+        mission_id="mission:demo",
+        source_authority="demo-operator",
         plan_revision=3,
         mission_snapshot_id="mission:demo:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
@@ -61,15 +60,6 @@ def _normalized_plan() -> NormalizedPlan:
                 start=0,
                 duration=1,
             ),
-        ),
-        provenance=PlanProvenance(
-            mission_id="mission:demo",
-            source_authority="demo-operator",
-            mission_intent=VerifiableReference("planning-intent:demo", "1" * 64),
-            planning_decision=VerifiableReference("planner-choice:demo", "2" * 64),
-            environment_data=VerifiableReference("scene:demo", "3" * 64),
-            generated_assets={"model.mzn": VerifiableReference("model.mzn", "4" * 64)},
-            solver_evidence={"result": VerifiableReference("result", "5" * 64)},
         ),
     )
 
@@ -240,7 +230,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         created_at="2026-08-20T00:00:00+00:00",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 0},
-        source_hashes={"environment_data": environment_data_sha256(scene)},
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -257,10 +246,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         source_revisions={
             "environment_data": 0,
             "bayesian_belief_snapshot": belief.belief_revision,
-        },
-        source_hashes={
-            "environment_data": environment_data_sha256(scene),
-            "bayesian_belief_snapshot": belief.content_sha256,
         },
         source_health={
             "environment_data": "healthy",
@@ -283,11 +268,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             "environment_data": 0,
             "bayesian_belief_snapshot": belief.belief_revision,
             "plan": plan.plan_revision,
-        },
-        source_hashes={
-            "environment_data": environment_data_sha256(scene),
-            "bayesian_belief_snapshot": belief.content_sha256,
-            "plan": "9" * 64,
         },
         source_health={
             "environment_data": "healthy",
@@ -351,7 +331,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             revision: int,
             *,
             reference: str,
-            content_sha256: str,
         ) -> object:
             event = create_source_fact_event(
                 "mission:demo",
@@ -362,7 +341,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
                     "normalized-plans", "mission:demo"
                 ),
                 reference=reference,
-                content_sha256=content_sha256,
             )
             return self.transport.publish_event("normalized-plans", event)
 
@@ -468,7 +446,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
                 event_id="source-fact:mission:demo:scene:1",
                 sequence=0,
                 reference=scene.event_id,
-                content_sha256=environment_data_sha256(scene),
             )
             runtime.transport.publish_event("normalized-plans", source_fact)
             return SimpleNamespace(environment_event=scene, source_fact=source_fact)
@@ -513,7 +490,6 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
         "plan_revision": 3,
         "outcome": "execution_ready",
         "statechart_reference": "/tmp/accepted-statechart.json",
-        "statechart_sha256": statechart.statechart_sha256,
         "entry_state": statechart.entry_state,
         "state_count": len(statechart.states),
         "transition_count": len(statechart.transitions),

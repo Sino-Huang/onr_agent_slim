@@ -50,46 +50,49 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     )
 
     stages = (
-        "Parse Mission Intent into PlanningIntent.",
-        "Decide and record the MiniZinc planner inside PlanningIntent.",
-        "Load the current snapshot-authorized operational evidence.",
-        "Write MiniZinc problem files from the current operational evidence.",
-        "Submit and statically verify the written MiniZinc attempt.",
-        "Execute the statically accepted MiniZinc attempt.",
+        "Parse Mission Intent.",
+        "Select and record MiniZinc.",
+        "Generate `model.mzn` and `data.dzn`.",
+        "Submit and statically verify the files.",
+        "Execute MiniZinc and verify the solution.",
+        "Generate the Statechart.",
+        "Validate and repair the Statechart.",
+        "Hand off execution.",
     )
     assert [prompt.index(stage) for stage in stages] == sorted(
         prompt.index(stage) for stage in stages
     )
-    assert "Run one live todo list with exactly these nine todos in order" in prompt
-    assert "never batch completions" in prompt
-    assert "`outcome: execution_ready`" in prompt
-    assert "verified NormalizedPlan" in prompt
-    assert "Treat `environment_data` as flexible" in prompt
-    assert "derive planner facts from the actual payload" in prompt
+    assert "Run one todo list with exactly these eight items in this order" in prompt
+    assert "`execution_ready`" in prompt
+    assert "verified maneuver list" in prompt
+    assert "names and nesting are flexible" in prompt
     assert "exactly one complete `write_file` call" in prompt
-    assert "template choice, evidence-field mapping, record counts" in prompt
     assert "sentinel" not in prompt
     assert "revise an existing planner file through `edit_file`" in prompt
-    assert "`belief_snapshot`" in prompt
+    assert "belief marginals" in prompt
     assert "tool `reflection` arguments" in prompt
     assert "Never expose private reasoning" in prompt
-    assert "exact returned diagnostic" in prompt
-    assert "the `attempt_number` returned by the accepted submission" in prompt
-    assert "Do not search host filesystem paths" in prompt
-    assert "exact immutable references returned by the accepted submission" not in prompt
+    assert "exact planner or solution-checker diagnostic" in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",
         "`record_planning_intent`",
         "creating-minizinc-problem-files",
         "`write_file`",
-        "`load_planning_context`",
         "`submit_planner_attempt`",
         "`planner_executor`",
         "`submit_statechart_draft`",
         "`HyperWorkflowResultCandidate`",
     ):
         assert capability in prompt
+    for removed in (
+        "load_planning_context",
+        "PlannerChoiceRecord",
+        "sha256",
+        "digest",
+        "authoring",
+    ):
+        assert removed not in prompt
 
 
 def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -> None:

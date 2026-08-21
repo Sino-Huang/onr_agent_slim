@@ -67,12 +67,12 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "hyper-coordination",
     ]
     assert [skill.version for skill in (*hyper, *maneuver)] == [
-        "1.6.0",
-        "1.4.0",
-        "1.25.0",
+        "1.7.0",
+        "1.5.0",
+        "1.26.0",
         "1.3.0",
         "1.1.0",
-        "1.1.0",
+        "1.2.0",
         "1.1.1",
         "1.1.0",
         "1.1.0",
@@ -426,7 +426,7 @@ def test_planner_generation_skills_forbid_known_invalid_file_patterns() -> None:
 
     assert "## Must Not Do" in minizinc_skill
     assert "int: max_velocity;" in minizinc_skill
-    assert "exact `correction_message`" in minizinc_skill
+    assert "exact diagnostic" in minizinc_skill
     assert "names and nesting are flexible" in minizinc_skill
     assert "Do not assume environment keys" in minizinc_skill
     assert "submit_planner_attempt" in minizinc_skill

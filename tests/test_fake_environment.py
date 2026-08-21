@@ -206,9 +206,10 @@ def test_static_info_content_participates_in_environment_identity(
     assert first_payload["static_info"] == [{"event": "first"}]
     assert second_payload["static_info"] == [{"event": "second"}]
     assert first.environment_event.event_id != second.environment_event.event_id
-    assert first.source_fact.payload["content_sha256"] != second.source_fact.payload[
-        "content_sha256"
-    ]
+    assert first.source_fact.payload["reference"] == first.environment_event.event_id
+    assert second.source_fact.payload["reference"] == second.environment_event.event_id
+    assert first.source_fact.payload["reference"] != second.source_fact.payload["reference"]
+    assert "content_sha256" not in first.source_fact.payload
 
 
 def test_context_coordination_consumes_environment_data_source_fact(tmp_path: Path) -> None:

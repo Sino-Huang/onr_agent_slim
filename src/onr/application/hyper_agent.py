@@ -7,7 +7,6 @@ callables and planner-port-shaped objects.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -100,9 +99,6 @@ class HyperAgent:
                 raise ValueError(
                     "planner selection interpreter must return a PlanningIntent"
                 )
-            expected_hash = hashlib.sha256(
-                mission_input.to_canonical_json().encode("utf-8")
-            ).hexdigest()
             if raw.mission_id != mission_id:
                 raise ValueError(
                     "PlanningIntent Mission ID does not match MissionInput"
@@ -111,11 +107,6 @@ class HyperAgent:
                 raise ValueError(
                     "PlanningIntent source authority does not match MissionInput"
                 )
-            if raw.mission_input_sha256 != expected_hash:
-                raise ValueError(
-                    "PlanningIntent does not reference the raw MissionInput"
-                )
-
             choice = PlannerChoiceRecord.from_planning_intent(raw)
             if self.transport is not None:
                 sequence = self.transport.next_event_sequence(
@@ -140,8 +131,6 @@ class HyperAgent:
                 "selected",
                 {
                     "decision_id": choice.decision_id,
-                    "mission_input_sha256": choice.mission_input_sha256,
-                    "planning_intent_sha256": choice.planning_intent_sha256,
                     "planning_profile": str(choice.planner_choice.planning_profile),
                     "planner_id": choice.planner_choice.planner_id,
                     "rationale": choice.rationale,
@@ -178,7 +167,6 @@ class HyperAgent:
             environment_event is None
             or snapshot.source_references[source] is None
             or snapshot.source_revisions[source] is None
-            or snapshot.source_hashes[source] is None
             or snapshot.source_health[source] != "healthy"
             or not snapshot.source_freshness[source]
         ):
@@ -220,8 +208,6 @@ class HyperAgent:
         if (
             attempt.mission_id != mission_input.mission_id
             or attempt.decision_id != choice.decision_id
-            or attempt.mission_input_sha256 != choice.mission_input_sha256
-            or attempt.planning_intent_sha256 != choice.planning_intent_sha256
             or attempt.planner_choice != choice.planner_choice
             or attempt.rationale != choice.rationale
         ):
@@ -245,14 +231,13 @@ class HyperAgent:
         source = "bayesian_belief_snapshot"
         revision = snapshot.source_revisions[source]
         reference = snapshot.source_references[source]
-        content_hash = snapshot.source_hashes[source]
-        if all(value is None for value in (revision, reference, content_hash)):
+        if revision is None and reference is None:
             if belief is not None:
                 raise ValueError(
                     "belief artifact is not authorized by the MissionSnapshot"
                 )
             return None
-        if revision is None or reference is None or content_hash is None:
+        if revision is None or reference is None:
             raise ValueError("MissionSnapshot belief provenance is incomplete")
         if (
             snapshot.source_health[source] != "healthy"
@@ -269,8 +254,6 @@ class HyperAgent:
             raise ValueError("belief artifact mission does not match MissionSnapshot")
         if belief.belief_revision != revision:
             raise ValueError("belief artifact revision does not match MissionSnapshot")
-        if belief.content_sha256 != content_hash:
-            raise ValueError("belief artifact hash does not match MissionSnapshot")
         if reference != belief_artifact_reference(
             belief.mission_id, belief.content_sha256
         ):
@@ -287,8 +270,6 @@ class HyperAgent:
         if (
             attempt.mission_id != choice.mission_id
             or attempt.decision_id != choice.decision_id
-            or attempt.mission_input_sha256 != choice.mission_input_sha256
-            or attempt.planning_intent_sha256 != choice.planning_intent_sha256
             or attempt.planner_choice != choice.planner_choice
             or attempt.rationale != choice.rationale
         ):
@@ -350,7 +331,6 @@ class HyperAgent:
                     "translator_id": attempt.translator_id,
                     "translator_version": attempt.translator_version,
                     "asset_references": dict(attempt.asset_references),
-                    "asset_sha256": dict(attempt.asset_sha256),
                 },
             )
             return attempt

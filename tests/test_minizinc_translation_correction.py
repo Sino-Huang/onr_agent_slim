@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -11,7 +10,6 @@ from onr.contracts.planner_translation import (
     PlannerCorrectionStage,
     PlannerGenerationContext,
     PlanningTranslationOutcome,
-    environment_data_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -76,10 +74,6 @@ def _planning_context() -> tuple[
     choice = PlannerChoiceRecord(
         decision_id="choice-1",
         mission_id=mission_input.mission_id,
-        mission_input_sha256=hashlib.sha256(
-            mission_input.to_canonical_json().encode("utf-8")
-        ).hexdigest(),
-        planning_intent_sha256="b" * 64,
         planner_choice=PlannerChoice("temporal", "minizinc"),
         rationale="This Mission requires temporal optimization.",
     )
@@ -97,9 +91,6 @@ def _planning_context() -> tuple[
         created_at="time-2",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 2},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -186,9 +177,7 @@ def test_static_rejection_gets_exact_feedback_before_verified_plan(
     ]
     for attempt in result.generation_attempts:
         assert set(attempt.asset_references) == {"model.mzn", "data.dzn"}
-        for name, reference in attempt.asset_references.items():
-            content = Path(reference).read_bytes()
-            assert hashlib.sha256(content).hexdigest() == attempt.asset_sha256[name]
+        assert all(Path(reference).is_file() for reference in attempt.asset_references.values())
     assert result.normalized_plan is not None
     assert result.normalized_plan.outcome is PlanningOutcome.SOLVED
     assert result.normalized_plan.mission_snapshot_id == "mission-1:snapshot:2"

@@ -1,7 +1,7 @@
 ---
 name: planner-selection
 description: Apply when deriving Planner Choice from PlanningIntent.
-version: '1.4.0'
+version: '1.5.0'
 ---
 
 # Planner Selection
@@ -11,8 +11,8 @@ version: '1.4.0'
 1. Read PlanningIntent and its objective and constraints; do not reinterpret the raw MissionInput or operator Mission Intent.
 2. Select MiniZinc for temporal optimization, not only conventional timed scheduling. It is required when feasibility or objective value depends on where the drone is at event times, travel along a path, FoV overlap or coverage, time windows or horizons, or maximizing weighted coverage or information gain. Do not reduce the Mission to symbolic inspect/reach goals merely because candidate ships or actions can be named. Set `planner_choice` exactly to `{"planning_profile":"temporal","planner_id":"minizinc"}`.
 3. Reserve Fast Downward with PDDL for symbolic state reachability only when timestamps, durations, and path timing do not affect feasibility or objective value. Actions may have preconditions/effects and goals, but their timing, time windows, and FoV or coverage value must not require temporal optimization. Set `planner_choice` exactly to `{"planning_profile":"symbolic","planner_id":"fast-downward"}`.
-4. Put flexible planner facts only in `details`. Planner-native assets, solver input/output, and verification evidence belong to later provenance-bound planning outputs.
-5. Satisfy the PlanningIntent schema completely and include no extra fields. Return only the structured contract; the rationale must be concise and public, never private reasoning.
+4. Put flexible planner facts only in `details`. Planner-native files, solver input/output, and verification evidence belong to later translation outputs.
+5. Satisfy the PlanningIntent fields completely and include no extra fields. Record the selection with `record_planning_intent`; the rationale must be concise and public.
 
 ## Example: ships observation coverage
 
@@ -22,7 +22,7 @@ For the time-indexed ships events in `data/ships_report_and_trajectory_example/s
 
 - Planner Choice does not authorize changes to raw mission authority or PlanningIntent.
 - Preserve the mission objective and all authoritative revisions exactly; never invent objectives, constraints, revision values, or risk scores.
-- Plans, Planner Choice, and provenance evidence remain versioned runtime artifacts and must follow their established publication path.
+- Plans and Planner Choice remain versioned runtime artifacts and must follow their established publication path.
 
 ## Gotchas
 

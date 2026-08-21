@@ -21,7 +21,6 @@ def _chart() -> Statechart:
         plan_revision=1,
         mission_snapshot_id="mission-semantic:snapshot:1",
         planning_profile="temporal",
-        normalized_plan_sha256="a" * 64,
         entry_state="at-initial-location",
         terminal_states=("patrol-complete",),
         states=(
@@ -73,7 +72,6 @@ def test_semantic_statechart_round_trips_and_rejects_unreachable_states() -> Non
             plan_revision=chart.plan_revision,
             mission_snapshot_id=chart.mission_snapshot_id,
             planning_profile=chart.planning_profile,
-            normalized_plan_sha256=chart.normalized_plan_sha256,
             entry_state=chart.entry_state,
             terminal_states=chart.terminal_states,
             states=chart.states + ("orphan",),
@@ -191,7 +189,6 @@ def test_event_patrol_semantic_topology_instantiates_all_four_stops() -> None:
         plan_revision=1,
         mission_snapshot_id="mission-patrol:snapshot:1",
         planning_profile="temporal",
-        normalized_plan_sha256="b" * 64,
         entry_state="at-initial-location",
         terminal_states=("patrol-complete",),
         states=tuple(states),

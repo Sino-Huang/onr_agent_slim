@@ -1,4 +1,3 @@
-import hashlib
 from types import MappingProxyType
 from typing import cast
 
@@ -16,7 +15,6 @@ from onr.contracts.bayesian_belief import (
 )
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import PlannerChoice
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
@@ -42,9 +40,6 @@ def _planning_intent(mission_input: MissionInput) -> PlanningIntent:
         objective="Maximize risk-weighted ship observation coverage",
         rationale="Event times, travel, and field of view make this temporal optimization.",
         planner_choice=PlannerChoice("temporal", "minizinc"),
-        mission_input_sha256=hashlib.sha256(
-            mission_input.to_canonical_json().encode("utf-8")
-        ).hexdigest(),
         details={"risk_source": "environment_data"},
     )
 
@@ -67,9 +62,6 @@ def _scene_snapshot(
         created_at="time-7",
         environment_data=event_id,
         source_revisions={"environment_data": 7},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -104,10 +96,6 @@ def _scene_snapshot_with_belief(
             "environment_data": 7,
             "bayesian_belief_snapshot": belief.belief_revision,
         },
-        source_hashes={
-            "environment_data": environment_data_sha256(scene),
-            "bayesian_belief_snapshot": belief.content_sha256,
-        },
         source_health={
             "environment_data": "healthy",
             "bayesian_belief_snapshot": "healthy",
@@ -127,14 +115,11 @@ def _attempt(
     outcome: str,
     mission_snapshot_id: str | None = None,
     asset_references: dict[str, str] | None = None,
-    asset_sha256: dict[str, str] | None = None,
 ) -> PlannerGenerationAttempt:
     return PlannerGenerationAttempt(
         attempt_id=attempt_id,
         decision_id=choice.decision_id,
         mission_id=choice.mission_id,
-        mission_input_sha256=choice.mission_input_sha256,
-        planning_intent_sha256=choice.planning_intent_sha256,
         planner_choice=choice.planner_choice,
         rationale=choice.rationale,
         mission_snapshot_id=(
@@ -146,7 +131,6 @@ def _attempt(
         translator_version="1.0.0",
         outcome=outcome,
         asset_references={} if asset_references is None else asset_references,
-        asset_sha256={} if asset_sha256 is None else asset_sha256,
     )
 
 
@@ -164,7 +148,7 @@ def test_hyper_records_planner_choice_without_creating_a_mission_spec() -> None:
     choice = hyper.choose_planner(mission_input)
 
     assert isinstance(choice, PlannerChoiceRecord)
-    assert choice.mission_input_sha256 == intent.mission_input_sha256
+    assert choice.decision_id == "planner-choice:mission-1"
     assert choice.planner_choice == PlannerChoice("temporal", "minizinc")
     assert choice.rationale == intent.rationale
     assert hyper.planner_choice("mission-1") == choice
@@ -193,7 +177,6 @@ def test_hyper_records_distinguishable_immutable_generation_attempts() -> None:
         attempt_id="attempt-1",
         outcome="rejected",
         asset_references={"model.mzn": "artifacts/attempt-1/model.mzn"},
-        asset_sha256={"model.mzn": "a" * 64},
     )
     accepted = _attempt(
         choice,
@@ -203,7 +186,6 @@ def test_hyper_records_distinguishable_immutable_generation_attempts() -> None:
             "model.mzn": "artifacts/attempt-2/model.mzn",
             "data.dzn": "artifacts/attempt-2/data.dzn",
         },
-        asset_sha256={"model.mzn": "b" * 64, "data.dzn": "c" * 64},
     )
 
     rejected_result = hyper.planning_heartbeat(
@@ -218,7 +200,6 @@ def test_hyper_records_distinguishable_immutable_generation_attempts() -> None:
     assert rejected_result.attempt.outcome is TranslationAttemptOutcome.REJECTED
     assert accepted_result.attempt.outcome is TranslationAttemptOutcome.ACCEPTED
     assert rejected.decision_id == accepted.decision_id == choice.decision_id
-    assert rejected.mission_input_sha256 == intent.mission_input_sha256
     assert accepted.mission_snapshot_id == "mission-1:snapshot:7"
     assert accepted.asset_references == MappingProxyType(
         {
@@ -272,17 +253,16 @@ def test_planner_choice_and_attempt_identity_are_idempotent() -> None:
         attempt_id="attempt-1",
         outcome="rejected",
         asset_references={"model.mzn": "changed/model.mzn"},
-        asset_sha256={"model.mzn": "d" * 64},
     )
     with pytest.raises(ValueError, match="different generation attempt"):
         hyper.planning_heartbeat(mission_input, snapshot, scene, lambda *_: conflicting)
 
 
-def test_accepted_attempt_requires_asset_references_and_hashes() -> None:
+def test_accepted_attempt_requires_asset_references() -> None:
     mission_input = _mission_input()
     choice = PlannerChoiceRecord.from_planning_intent(_planning_intent(mission_input))
 
-    with pytest.raises(ValueError, match="accepted generation attempt requires assets"):
+    with pytest.raises(ValueError, match="requires asset references"):
         _attempt(choice, attempt_id="attempt-1", outcome="accepted")
 
 
@@ -347,9 +327,6 @@ def test_planning_heartbeat_reports_stale_environment_data_without_starting_plan
         created_at="time-7",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 7},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": False},
     )
@@ -374,24 +351,22 @@ def test_planning_heartbeat_reports_stale_environment_data_without_starting_plan
     assert calls == []
 
 
-def test_planning_heartbeat_rejects_environment_data_outside_snapshot_digest() -> None:
+def test_planning_heartbeat_rejects_environment_data_outside_snapshot_reference() -> None:
     mission_input = _mission_input()
     intent = _planning_intent(mission_input)
     snapshot, scene = _scene_snapshot()
     tampered = TransportEvent(
         schema_version=scene.schema_version,
-        event_id=scene.event_id,
+        event_id="scene:mission-1:other",
         mission_id=scene.mission_id,
         sequence=scene.sequence,
         event_kind=scene.event_kind,
-        payload={
-            "graph": {"mission_id": scene.mission_id, "entities": [{"id": "tampered"}]}
-        },
+        payload=scene.payload,
     )
     hyper = HyperAgent(lambda _: intent)
 
     def generate(*_: object) -> PlannerGenerationAttempt:
-        raise AssertionError("generation must not start with tampered environment data")
+        raise AssertionError("generation must not start with unreferenced environment data")
 
     with pytest.raises(ValueError, match="snapshot-authorized"):
         hyper.planning_heartbeat(mission_input, snapshot, tampered, generate)

@@ -1,22 +1,22 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate planner-native model and data files from Mission Intent and the current Hyper heartbeat snapshot.
-version: '1.25.0'
+version: '1.26.0'
 ---
 
 # Creating MiniZinc Problem Files
 
 ## Procedure
 
-1. Read the raw Mission Intent, accepted PlanningIntent, and `load_planning_context`. Inspect the current `environment_data` payload before choosing planner fields: its names and nesting are flexible and may change between environment adapters. Keep environment facts and `belief_snapshot` facts distinct, joining them only through identifiers present in the current evidence.
+1. Read the raw Mission Intent and the exact environment data and belief marginals returned by `record_planning_intent`. Inspect the environment payload before choosing planner fields: its names and nesting are flexible and may change between environment adapters. Keep environment facts and belief facts distinct, joining them only through identifiers present in the current evidence.
 2. Separate reusable constraints into model.mzn and current authorized values into data.dzn. Preserve supplied entity IDs, positions, event times, risks, units, and mission limits.
 3. Copy event times, coordinates, and risk probabilities verbatim from the evidence into float arrays in data.dzn, in evidence order. Declare each scale (for example `time_scale`, `risk_scale`) once in data.dzn and let model.mzn convert to integers with comprehensions such as `round(event_time_s[e] * time_scale)`. Never transform values one by one — not in private reasoning, not in data.dzn.
-4. Produce one attempt-specific asset set at the exact `planner_asset_locations` returned by `load_planning_context`. Before each initial full write, privately preflight the template choice, evidence-field mapping, record counts, units/scales, and output shape. Keep the preflight bounded; in the same response emit one concise public summary and the complete file call. The preflight finalizes that file for this attempt: after its write succeeds, advance directly to the other file and leave the written path unchanged until verifier feedback requests a new attempt. Write `model.mzn` first with exactly one complete `write_file` call, then write `data.dzn` with exactly one complete `write_file` call.
+4. Produce one attempt-specific file set at the exact virtual locations returned by `record_planning_intent` or a rejection. Before each initial full write, privately preflight the template choice, evidence-field mapping, record counts, units/scales, and output shape. Keep the preflight bounded; in the same response emit one concise public summary and the complete file call. Write `model.mzn` first with exactly one complete `write_file` call, then write `data.dzn` with exactly one complete `write_file` call.
 5. Use `edit_file` to revise a planner file that already exists, supplying complete `file_path`, `old_string`, and `new_string` arguments. Use `write_file` when the target file does not exist.
-6. When static verification rejects an attempt, read the exact MiniZinc diagnostic and references returned by `submit_planner_attempt`. In the prepared next workspace, repair the diagnosed file with `edit_file` or replace it with `write_file`. Repair both files when the diagnostic does not identify one file.
+6. When static verification rejects an attempt, read the exact MiniZinc diagnostic and next virtual locations returned by `submit_planner_attempt`. Repair the diagnosed file with `edit_file` or replace it with `write_file`. Repair both files when the diagnostic does not identify one file.
 7. Use the same maneuver IDs in MiniZinc output and the normalization template. Emit only the `assignments` JSON object expected by the independent solution checker. Put solver-selected waypoint values in each assignment's `parameters` object.
-8. Pass those exact file locations and the normalization template to `submit_planner_attempt`; it freezes the files and performs MiniZinc instance checking only. After `static_status: accepted`, call `planner_executor` with the returned attempt number. The executor resolves and verifies the immutable files internally; never pass host filesystem paths.
-9. Stage 4 completes when both complete files exist, stage 5 completes when static verification accepts them, and stage 6 completes when execution and independent solution checks return a verified NormalizedPlan.
+8. Pass the horizon and normalization template to `submit_planner_attempt`; it resolves and freezes the current files and performs MiniZinc instance checking only. After acceptance, call `planner_executor` with only a concise reflection. The executor runs the cached submitted problem and verifies it internally.
+9. File generation completes when both complete files exist, static verification completes when the verifier accepts them, and execution completes when independent solution checks return the verified maneuver list.
 
 ## Generation discipline
 
@@ -41,8 +41,8 @@ snapshot-authorized evidence.
 - Do not assign the same parameter in both files. Keep declarations and reusable constraints in `model.mzn`; keep snapshot-authorized values in `data.dzn`.
 - Do not use placeholders, representative samples, or truncated event lists. Encode every required record from the authorized planning context.
 - Do not scale, round, or convert individual event values in data.dzn or in private reasoning. Copy them verbatim; conversions belong in model.mzn comprehensions.
-- Do not repeat a rejected construct. Use the exact `correction_message` and `diagnostic_references` from `submit_planner_attempt` to rewrite the cited complete file.
-- On planner execution rejection, use the exact returned `planner_stdout`, `planner_stderr`, or solution-checker `correction_message` and the returned virtual next-attempt locations. Do not discover or reuse host filesystem paths from planner process output.
+- Do not repeat a rejected construct. Use the exact diagnostic from `submit_planner_attempt` to rewrite the cited complete file.
+- On planner execution rejection, use the exact returned planner or solution-checker diagnostic and the returned virtual locations. Do not discover or reuse host filesystem paths from planner process output.
 - Do not assume environment keys such as `static_info`, `scene_graph`, `entities`, or `location` exist. Inspect the payload returned for this episode and map its actual structure into planner data.
 - Do not copy example data values into a generated attempt. Examples provide MiniZinc structure; current values must come from the authorized planning context.
 - Do not combine both planner files into one tool call. Write and confirm `model.mzn` before generating the complete `data.dzn` call.

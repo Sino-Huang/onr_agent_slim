@@ -946,13 +946,12 @@ class RuntimeComposition:
             )
 
             planning_details: dict[str, object] = {"operation": "initial_plan"}
-            provenance = plan.provenance
             if (
                 plan.mission_id != mission_id
                 or plan.source_authority != mission_input.source_authority
             ):
                 raise RuntimeError(
-                    "provenance plan does not match Mission Input authority"
+                    "Normalized Plan does not match Mission Input authority"
                 )
             topic = context_coordination.input_topic
             event = create_normalized_plan_transport_event(
@@ -961,18 +960,6 @@ class RuntimeComposition:
                 sequence=self.transport.next_event_sequence(topic, mission_id),
             )
             self.transport.publish_event(topic, event)
-            planning_details.update(
-                {
-                    "planning_decision_reference": (
-                        provenance.planning_decision.reference
-                    ),
-                    "environment_data_reference": (
-                        provenance.environment_data.reference
-                    ),
-                    "generated_assets": ",".join(sorted(provenance.generated_assets)),
-                    "solver_evidence": ",".join(sorted(provenance.solver_evidence)),
-                }
-            )
             if plan.outcome is not PlanningOutcome.SOLVED or len(plan.maneuvers) != 1:
                 raise RuntimeError("Mission Run requires one solved maneuver")
             planning_details["plan_revision"] = plan.plan_revision
@@ -1357,14 +1344,6 @@ class RuntimeComposition:
         plan = translation.normalized_plan
         if plan is None:
             raise RuntimeError("verified translation did not provide a plan")
-        generated_asset_hashes = {
-            name: reference.sha256
-            for name, reference in plan.provenance.generated_assets.items()
-        }
-        if generated_asset_hashes != dict(latest_attempt.asset_sha256):
-            raise RuntimeError(
-                "verified plan assets do not match Hyper generation evidence"
-            )
         execution = self._run_mission(
             mission_input,
             plan=plan,
@@ -1479,16 +1458,11 @@ class RuntimeComposition:
             belief_source = "bayesian_belief_snapshot"
             belief_revision = snapshot.source_revisions[belief_source]
             belief_reference = snapshot.source_references[belief_source]
-            belief_hash = snapshot.source_hashes[belief_source]
             belief_snapshot = None
-            if any(
-                value is not None
-                for value in (belief_revision, belief_reference, belief_hash)
-            ):
+            if belief_revision is not None or belief_reference is not None:
                 if (
                     belief_revision is None
                     or belief_reference is None
-                    or belief_hash is None
                 ):
                     raise ValueError("MissionSnapshot belief provenance is incomplete")
                 if bayesian_belief_service is None:
@@ -1497,7 +1471,6 @@ class RuntimeComposition:
                     )
                 belief_snapshot = bayesian_belief_service.load_snapshot_reference(
                     belief_reference,
-                    belief_hash,
                 )
             heartbeat = hyper_agent.planning_heartbeat(
                 mission_input,

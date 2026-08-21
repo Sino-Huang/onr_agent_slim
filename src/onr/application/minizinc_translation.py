@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,10 +16,8 @@ from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
     create_generation_attempt_evidence,
-    environment_data_sha256,
     persist_static_check_diagnostics,
     validate_environment_data,
-    verifiable_file_reference,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -28,10 +25,8 @@ from onr.contracts.planning import (
     PlannerExecutionResult,
     PlannerStaticCheckResult,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
     TemporalManeuver,
-    VerifiableReference,
 )
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
@@ -484,18 +479,16 @@ class MiniZincTranslation:
                             f"dependency '{dependency}' completes."
                         ),
                     )
-        solver_reference = verifiable_file_reference(execution.evidence.stdout_path)
-        if solver_reference is None:
+        if not execution.evidence.stdout_path.is_file():
             return None, "Planner solver stdout evidence is missing or unreadable."
         artifact_paths = {path.name: path for path in execution.evidence.artifact_paths}
-        generated_assets: dict[str, VerifiableReference] = {}
         for name, content in problem.assets.items():
             path = artifact_paths.get(name)
-            reference = verifiable_file_reference(path) if path is not None else None
-            if (
-                reference is None
-                or reference.sha256 != hashlib.sha256(content).hexdigest()
-            ):
+            try:
+                persisted = path.read_bytes() if path is not None else None
+            except OSError:
+                persisted = None
+            if persisted != content:
                 return (
                     None,
                     (
@@ -503,31 +496,10 @@ class MiniZincTranslation:
                         "submitted asset."
                     ),
                 )
-            generated_assets[name] = reference
-        provenance = PlanProvenance(
-            mission_id=mission_input.mission_id,
-            source_authority=mission_input.source_authority,
-            mission_intent=VerifiableReference(
-                f"mission-input:{mission_input.mission_id}",
-                planner_choice.mission_input_sha256,
-            ),
-            planning_decision=VerifiableReference(
-                planner_choice.decision_id,
-                hashlib.sha256(
-                    planner_choice.to_canonical_json().encode("utf-8")
-                ).hexdigest(),
-            ),
-            environment_data=VerifiableReference(
-                environment_event.event_id,
-                environment_data_sha256(environment_event),
-            ),
-            generated_assets=generated_assets,
-            solver_evidence={
-                "planner-result": solver_reference,
-            },
-        )
         return (
             NormalizedPlan(
+                mission_id=mission_input.mission_id,
+                source_authority=mission_input.source_authority,
                 plan_revision=plan_revision,
                 mission_snapshot_id=(
                     f"{mission_input.mission_id}:snapshot:{snapshot.version}"
@@ -535,7 +507,6 @@ class MiniZincTranslation:
                 planner_choice=planner_choice.planner_choice,
                 outcome=PlanningOutcome.SOLVED,
                 maneuvers=maneuvers,
-                provenance=provenance,
             ),
             None,
         )
@@ -560,11 +531,6 @@ class MiniZincTranslation:
     ) -> None:
         if planner_choice.mission_id != mission_input.mission_id:
             raise ValueError("Planner Choice does not match Mission Input")
-        mission_input_sha256 = hashlib.sha256(
-            mission_input.to_canonical_json().encode("utf-8")
-        ).hexdigest()
-        if planner_choice.mission_input_sha256 != mission_input_sha256:
-            raise ValueError("Planner Choice does not bind the supplied Mission Input")
         if (
             str(planner_choice.planner_choice.planning_profile) != "temporal"
             or planner_choice.planner_choice.planner_id != "minizinc"

@@ -7,7 +7,6 @@ contains Python source, callbacks, or serialized runtime objects.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections.abc import Mapping
@@ -476,16 +475,11 @@ class Statechart:
     deadlines: Mapping[str, int | float] = MappingProxyType({})
     trusted: bool = False
     schema_version: int = 1
-    normalized_plan_sha256: str = ""
 
     def __post_init__(self) -> None:
         _text(self.mission_id, "Statechart mission ID")
         _non_negative_int(self.plan_revision, "Statechart plan revision")
         _text(self.mission_snapshot_id, "Statechart mission snapshot ID")
-        if not isinstance(self.normalized_plan_sha256, str) or len(self.normalized_plan_sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in self.normalized_plan_sha256
-        ):
-            raise ValueError("Statechart Normalized Plan SHA-256 must be lowercase hexadecimal")
         try:
             PlanningProfile(self.planning_profile)
         except (TypeError, ValueError) as exc:
@@ -599,9 +593,6 @@ class Statechart:
             transitions=transitions,
             terminal_states=(states[-1],),
             state_context={state: {} for state in states},
-            normalized_plan_sha256=hashlib.sha256(
-                plan.to_canonical_json().encode("utf-8")
-            ).hexdigest(),
             deadlines=deadlines,
         )
 
@@ -622,29 +613,11 @@ class Statechart:
         return self.deadlines
 
     @property
-    def statechart_sha256(self) -> str:
-        """Digest of the canonical declarative Statechart JSON asset."""
-
-        return hashlib.sha256(self.to_canonical_json().encode("utf-8")).hexdigest()
-
-    @property
-    def statechart_hash(self) -> str:
-        return self.statechart_sha256
-
-    @property
-    def normalized_plan_hash(self) -> str:
-        return self.normalized_plan_sha256
-
-    @property
     def timer_deadlines(self) -> Mapping[str, int | float]:
         return self.deadlines
 
     def context_for(self, state: str) -> Mapping[str, object]:
         return self.state_context[state]
-
-    @property
-    def hash(self) -> str:
-        return self.statechart_sha256
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -653,7 +626,6 @@ class Statechart:
             "plan_revision": self.plan_revision,
             "mission_snapshot_id": self.mission_snapshot_id,
             "planning_profile": self.planning_profile,
-            "normalized_plan_sha256": self.normalized_plan_sha256,
             "entry_state": self.entry_state,
             "states": list(self.states),
             "transitions": [item.to_dict() for item in self.transitions],
@@ -677,7 +649,6 @@ class Statechart:
             "plan_revision",
             "mission_snapshot_id",
             "planning_profile",
-            "normalized_plan_sha256",
             "entry_state",
             "states",
             "transitions",
@@ -704,7 +675,6 @@ class Statechart:
             plan_revision=value["plan_revision"],
             mission_snapshot_id=value["mission_snapshot_id"],
             planning_profile=value["planning_profile"],
-            normalized_plan_sha256=value["normalized_plan_sha256"],
             entry_state=value["entry_state"],
             states=tuple(states),
             transitions=tuple(StatechartTransition.from_dict(item) for item in transitions),

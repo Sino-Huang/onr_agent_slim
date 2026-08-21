@@ -107,7 +107,6 @@ def _safe_handoff_result(
         "plan_revision": statechart.plan_revision,
         "outcome": str(outcome),
         "statechart_reference": statechart_reference,
-        "statechart_sha256": statechart.statechart_sha256,
         "entry_state": statechart.entry_state,
         "state_count": len(statechart.states),
         "transition_count": len(statechart.transitions),
@@ -218,7 +217,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             reference=belief_artifact_reference(
                 belief_snapshot.mission_id, belief_snapshot.content_sha256
             ),
-            content_sha256=belief_snapshot.content_sha256,
         )
         with runtime.transport.open_consumer(
             context_coordination.subscription

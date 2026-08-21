@@ -1,19 +1,19 @@
 ---
 name: creating-statechart-files
 description: Apply after MiniZinc returns a verified NormalizedPlan to generate and repair semantic Statechart topology for execution readiness.
-version: '1.1.0'
+version: '1.2.0'
 ---
 
 # Creating Statechart Files
 
 ## Procedure
 
-1. Use only the verified `normalized_plan` returned by `planner_executor` and the snapshot-authorized planning context.
+1. Use only the verified maneuver list returned by `planner_executor`.
 2. Describe behavioral states and time-conditioned transitions. State context carries plan-derived location, destination, observation, and timing facts; it never selects a physical action.
 3. Submit topology with exactly `entry_state`, `terminal_states`, `states`, `state_context`, and `transitions`. Every state has one `state_context` object.
 4. Each transition has exactly `event`, `source`, `target`, and `conditions`. A temporal condition has `kind: environment_time_at_or_after`, non-negative `time_tick`, and positive `time_scale`.
-5. Call `submit_statechart_draft` with the next attempt number. On rejection, use its exact correction message and diagnostic reference to produce a fresh attempt within the returned bound.
-6. Completion requires `outcome: verified`, an immutable Statechart reference and digest, and successful `python-statemachine` instantiation.
+5. Call `submit_statechart_draft` with the topology and concise reflection; the workflow assigns the next attempt. On rejection, use its exact validation error to produce a fresh attempt within the returned bound.
+6. Completion requires acceptance and successful `python-statemachine` instantiation.
 
 ## Event-information patrol
 
@@ -33,7 +33,7 @@ State IDs and event names are stable semantic identifiers. Conditions remain vis
 - Do not add `additionalProperties` or any other top-level field. Submit exactly `entry_state`, `terminal_states`, `states`, `state_context`, and `transitions`.
 - Do not put context objects inside `states`. `states` is an array of state-ID strings; `state_context` is a top-level object mapping every state ID to its context object.
 - Do not submit one condition object directly. Every transition's `conditions` value is an array, such as `[{"kind":"environment_time_at_or_after","time_tick":65,"time_scale":2}]`.
-- Do not repeat an identical rejected draft. Read `correction_message` and `diagnostic_reference`, then change the cited shape before resubmission.
+- Do not repeat an identical rejected draft. Read the exact validation error, then change the cited shape before resubmission.
 
 ## Repair boundary
 

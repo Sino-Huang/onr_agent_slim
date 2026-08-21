@@ -6,10 +6,8 @@ from onr.contracts.planning import (
     PlannerChoice,
     PlanningOutcome,
     PlanningProfile,
-    PlanProvenance,
     SymbolicManeuver,
     SymbolicPlanStep,
-    VerifiableReference,
 )
 
 
@@ -41,21 +39,9 @@ def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
         cost=1,
     )
     planner_choice = PlannerChoice("symbolic", "fast-downward")
-    provenance = PlanProvenance(
+    plan = NormalizedPlan(
         mission_id="mission-symbolic",
         source_authority="mission-control",
-        mission_intent=VerifiableReference("mission-input:symbolic", "1" * 64),
-        planning_decision=VerifiableReference("planner-choice:symbolic", "2" * 64),
-        environment_data=VerifiableReference("scene:symbolic", "3" * 64),
-        generated_assets={
-            "domain.pddl": VerifiableReference("domain.pddl", "4" * 64),
-            "problem.pddl": VerifiableReference("problem.pddl", "5" * 64),
-        },
-        solver_evidence={
-            "plan": VerifiableReference("sas_plan", "6" * 64),
-        },
-    )
-    plan = NormalizedPlan(
         plan_revision=1,
         mission_snapshot_id="snapshot-1",
         planner_choice=planner_choice,
@@ -64,7 +50,6 @@ def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
             SymbolicPlanStep(0, "survey", survey.intent, (), 4),
             SymbolicPlanStep(1, "report", report.intent, ("survey",), 1),
         ),
-        provenance=provenance,
     )
 
     assert '"duration"' not in plan.to_canonical_json()
@@ -81,6 +66,8 @@ def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
         )
     with pytest.raises(ValueError):
         NormalizedPlan(
+            mission_id="mission-symbolic",
+            source_authority="mission-control",
             plan_revision=1,
             mission_snapshot_id="snapshot-1",
             planner_choice=planner_choice,
@@ -89,7 +76,6 @@ def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
                 SymbolicPlanStep(1, "survey", survey.intent, (), 4),
                 SymbolicPlanStep(2, "report", report.intent, ("survey",), 1),
             ),
-            provenance=provenance,
         )
 
 

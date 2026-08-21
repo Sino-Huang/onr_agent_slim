@@ -18,7 +18,6 @@ from onr.application.minizinc_translation import MiniZincTranslation
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.planning import PlannerExecutionResult, PlannerStaticCheckResult
 from onr.contracts.transport import TransportEvent
 from onr.runtime import RuntimeComposition
@@ -102,9 +101,6 @@ def _planning_context(
         created_at="2026-08-20T00:00:00+00:00",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 1},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -164,12 +160,13 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     assert planner.checked_assets
     assert set(planner.checked_assets[-1]) == {"model.mzn", "data.dzn"}
     assert all(planner.checked_assets[-1].values())
+    assert len(result.todos) == 8
     assert [item["status"] for item in result.todos[:5]] == [
         "completed",
         "completed",
         "completed",
-        "completed",
         "in_progress",
+        "pending",
     ]
     debug_directory = (
         tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
@@ -190,8 +187,10 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     ]
     assert all(item["input"]["content"] for item in successful_writes)
     assert not any(item.get("name") == "edit_file" for item in tool_records)
+    assert not any(item.get("name") == "load_planning_context" for item in tool_records)
     submission = next(
         item for item in tool_records if item.get("name") == "submit_planner_attempt"
     )
     assert submission["sequence"] > successful_writes[-1]["sequence"]
     assert not any(item.get("name") == "planner_executor" for item in tool_records)
+    assert "sha256" not in json.dumps(tool_records).casefold()

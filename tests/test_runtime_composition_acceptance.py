@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -32,7 +31,6 @@ from onr.contracts.maneuver_control import (
 from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
-    environment_data_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -40,9 +38,7 @@ from onr.contracts.planning import (
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
-    VerifiableReference,
 )
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
@@ -60,9 +56,6 @@ class FixedPlanningIntentInterpreter:
             objective="survey area 7",
             rationale="Timed movement and observation require MiniZinc.",
             planner_choice=PlannerChoice("temporal", "minizinc"),
-            mission_input_sha256=hashlib.sha256(
-                mission_input.to_canonical_json().encode("utf-8")
-            ).hexdigest(),
             details={"observation_objective": "maximize FoV coverage"},
         )
 
@@ -226,38 +219,13 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
         (ManeuverParameter("waypoint", "windmill-area"),),
     )
     plan = NormalizedPlan(
+        mission_id=mission_input.mission_id,
+        source_authority=mission_input.source_authority,
         plan_revision=1,
         mission_snapshot_id=f"{mission_input.mission_id}:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
         outcome=PlanningOutcome.SOLVED,
         maneuvers=(ScheduledManeuver("survey", intent, (), 0, 1),),
-        provenance=PlanProvenance(
-            mission_id=mission_input.mission_id,
-            source_authority=mission_input.source_authority,
-            mission_intent=VerifiableReference(
-                f"mission-input:{mission_input.mission_id}",
-                hashlib.sha256(
-                    mission_input.to_canonical_json().encode("utf-8")
-                ).hexdigest(),
-            ),
-            planning_decision=VerifiableReference("choice:planning-runtime", "2" * 64),
-            environment_data=VerifiableReference(
-                "scene:planning-runtime", "3" * 64
-            ),
-            generated_assets={
-                "model.mzn": VerifiableReference(
-                    "model.mzn",
-                    hashlib.sha256(b"solve satisfy;\n").hexdigest(),
-                ),
-                "data.dzn": VerifiableReference(
-                    "data.dzn",
-                    hashlib.sha256(b"horizon = 1;\n").hexdigest(),
-                ),
-            },
-            solver_evidence={
-                "stdout": VerifiableReference("solver.stdout", "5" * 64),
-            },
-        ),
     )
     asset_generator = object()
     human_decisions = runtime.create_human_decision_coordinator()
@@ -286,8 +254,6 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
         attempt_id=f"{choice_record.decision_id}:generation:1",
         decision_id=choice_record.decision_id,
         mission_id=choice_record.mission_id,
-        mission_input_sha256=choice_record.mission_input_sha256,
-        planning_intent_sha256=choice_record.planning_intent_sha256,
         planner_choice=choice_record.planner_choice,
         rationale=choice_record.rationale,
         mission_snapshot_id=f"{mission_input.mission_id}:snapshot:1",
@@ -295,10 +261,6 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
         translator_version="1.0.0",
         outcome="accepted",
         asset_references=references,
-        asset_sha256={
-            name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
-            for name, path in references.items()
-        },
     )
     translator = RecordingTranslator(
         PlanningTranslationResult(
@@ -330,8 +292,6 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
             attempt_id="attempt-1",
             decision_id=choice.decision_id,
             mission_id=choice.mission_id,
-            mission_input_sha256=choice.mission_input_sha256,
-            planning_intent_sha256=choice.planning_intent_sha256,
             planner_choice=choice.planner_choice,
             rationale=choice.rationale,
             mission_snapshot_id=f"{mission_input.mission_id}:snapshot:1",
@@ -339,10 +299,6 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
             translator_version="1.0.0",
             outcome="accepted",
             asset_references=references,
-            asset_sha256={
-                name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
-                for name, path in references.items()
-            },
         )
 
     result = runtime.run_planning_mission(
@@ -621,7 +577,6 @@ def test_planning_mission_reports_stale_environment_data_without_generation(
             1,
             reference=scene.event_id,
             fresh=False,
-            content_sha256=environment_data_sha256(scene),
         )
 
     calls: list[object] = []
@@ -713,7 +668,7 @@ def test_planning_mission_reports_unreferenced_environment_data_without_generati
     assert calls == []
 
 
-def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> None:
+def test_direct_authority_plan_completes_physical_mission_run(tmp_path: Path) -> None:
     planner_path = tmp_path / "planner"
     planner_path.write_text("#!/bin/sh\n", encoding="utf-8")
     planner_path.chmod(0o755)
@@ -731,24 +686,13 @@ def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> 
         (ManeuverParameter("waypoint", "area-7"),),
     )
     plan = NormalizedPlan(
+        mission_id=mission_input.mission_id,
+        source_authority=mission_input.source_authority,
         plan_revision=1,
         mission_snapshot_id="mission-provenance:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
         outcome=PlanningOutcome.SOLVED,
         maneuvers=(ScheduledManeuver("survey", intent, (), 0, 1),),
-        provenance=PlanProvenance(
-            mission_id=mission_input.mission_id,
-            source_authority=mission_input.source_authority,
-            mission_intent=VerifiableReference("mission-input:1", "1" * 64),
-            planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
-            environment_data=VerifiableReference("scene:1", "3" * 64),
-            generated_assets={
-                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
-            },
-            solver_evidence={
-                "stdout": VerifiableReference("solver.stdout", "5" * 64),
-            },
-        ),
     )
     context = runtime.create_context_coordination(
         mission_id=mission_input.mission_id,
@@ -797,7 +741,7 @@ def test_provenance_only_plan_completes_physical_mission_run(tmp_path: Path) -> 
         ).replay(mission_input.mission_id)
         if record.event_kind == "planning"
     )
-    assert planning_record.details["planning_decision_reference"] == "planner-choice:1"
-    assert planning_record.details["environment_data_reference"] == "scene:1"
-    assert planning_record.details["generated_assets"] == "model.mzn"
-    assert planning_record.details["solver_evidence"] == "stdout"
+    assert planning_record.details == {
+        "operation": "initial_plan",
+        "plan_revision": 1,
+    }

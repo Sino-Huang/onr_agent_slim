@@ -883,12 +883,14 @@ class BayesianBeliefService:
             raise TypeError("belief service store returned an invalid snapshot")
         return snapshot
 
-    def load_snapshot_reference(
-        self, reference: str, content_sha256: str
-    ) -> BayesianBeliefSnapshot:
+    def load_snapshot_reference(self, reference: str) -> BayesianBeliefSnapshot:
         loader = getattr(self.store, "load_reference", None)
         if not callable(loader):
             raise TypeError("belief service store must expose load_reference")
+        marker = "#sha256="
+        if marker not in reference:
+            raise ValueError("belief snapshot reference is not hash-addressed")
+        content_sha256 = reference.rsplit(marker, 1)[1]
         snapshot = loader(self.manager.mission_id, reference, content_sha256)
         if not isinstance(snapshot, BayesianBeliefSnapshot):
             raise TypeError("belief service store returned an invalid referenced snapshot")

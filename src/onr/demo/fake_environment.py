@@ -367,7 +367,6 @@ class FakeEnvironment:
                         self.context_topic, self.mission_id
                     ),
                     reference=environment_event_id,
-                    content_sha256=reference,
                 ),
             )
         self._environment_facts[reference] = (environment_event, source_fact)

@@ -16,8 +16,6 @@ from onr.contracts.planning import (
     PlannerChoice,
     PlanningOutcome,
     PlanningProfile,
-    PlanProvenance,
-    VerifiableReference,
 )
 from onr.contracts.transport import (
     TransportEvent,
@@ -29,23 +27,12 @@ from onr.ports.transport import Subscription
 
 def _plan(revision: int = 1) -> NormalizedPlan:
     return NormalizedPlan(
+        mission_id="mission-context",
+        source_authority="mission-control",
         plan_revision=revision,
         mission_snapshot_id=f"plan-snapshot-{revision}",
         planner_choice=PlannerChoice(PlanningProfile.TEMPORAL, "minizinc"),
         outcome=PlanningOutcome.UNSOLVABLE,
-        provenance=PlanProvenance(
-            mission_id="mission-context",
-            source_authority="mission-control",
-            mission_intent=VerifiableReference("mission-input:context", "1" * 64),
-            planning_decision=VerifiableReference("planner-choice:context", "2" * 64),
-            environment_data=VerifiableReference("scene:context", "3" * 64),
-            generated_assets={
-                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
-            },
-            solver_evidence={
-                "stdout": VerifiableReference("solver.stdout", "5" * 64),
-            },
-        ),
     )
 
 
@@ -82,7 +69,7 @@ def test_context_coordination_publishes_complete_immutable_manifest_through_tran
         assert snapshot.plan_revision == 1
         assert set(snapshot.missing_sources) == set(MISSION_SNAPSHOT_SOURCES) - {"plan"}
         assert snapshot.source_revisions["plan"] == 1
-        assert snapshot.source_references["plan"] == plan_event.payload.normalized_plan_sha256
+        assert snapshot.source_references["plan"] == plan_event.event_id
 
         delivery = output_consumer.receive()
         assert delivery is not None
@@ -336,9 +323,9 @@ def test_belief_updated_is_reference_only_and_publishes_only_changed_fact() -> N
     assert first is not None
     assert first.bayesian_belief_snapshot == payload["reference"]
     assert first.source_revisions["bayesian_belief_snapshot"] == 1
-    assert first.source_hashes["bayesian_belief_snapshot"] == content_hash
     assert first.source_health["bayesian_belief_snapshot"] == "healthy"
     assert first.source_freshness["bayesian_belief_snapshot"] is True
+    assert "source_hashes" not in first.to_dict()
     assert unchanged is None
     assert transport.next_event_sequence("mission-snapshots", "mission-context") == 1
 

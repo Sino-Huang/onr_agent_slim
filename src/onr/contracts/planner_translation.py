@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -18,7 +16,6 @@ from onr.contracts.planning import (
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlannerStaticCheckResult,
-    VerifiableReference,
 )
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
@@ -28,53 +25,24 @@ from onr.contracts.planning_evidence import (
 from onr.contracts.transport import TransportEvent
 
 
-def environment_data_sha256(environment_event: TransportEvent) -> str:
-    """Hash the complete payload referenced by an environment event."""
-
-    if not isinstance(environment_event, TransportEvent):
-        raise TypeError("environment evidence must be a TransportEvent")
-    payload = environment_event.to_dict()["payload"]
-    document = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    return hashlib.sha256(document.encode("utf-8")).hexdigest()
-
-
 def validate_environment_data(
     mission_id: str,
     snapshot: MissionSnapshot,
     environment_event: TransportEvent,
-) -> str:
-    """Validate snapshot identity, health, freshness, and content digest."""
+) -> None:
+    """Validate snapshot identity, revision, reference, health, and freshness."""
 
     source = "environment_data"
-    digest = environment_data_sha256(environment_event)
     if (
         snapshot.mission_id != mission_id
         or environment_event.mission_id != mission_id
         or environment_event.event_kind != "environment_data"
         or snapshot.source_references[source] != environment_event.event_id
-        or snapshot.source_hashes[source] != digest
+        or snapshot.source_revisions[source] is None
         or snapshot.source_health[source] != "healthy"
         or not snapshot.source_freshness[source]
     ):
         raise ValueError("planning requires snapshot-authorized environment data")
-    return digest
-
-
-def verifiable_file_reference(path: Path) -> VerifiableReference | None:
-    """Bind an existing evidence file reference to its exact bytes."""
-
-    selected = Path(path).resolve()
-    try:
-        content = selected.read_bytes()
-    except OSError:
-        return None
-    return VerifiableReference(str(selected), hashlib.sha256(content).hexdigest())
 
 
 class PlannerCorrectionStage(StrEnum):
@@ -170,19 +138,18 @@ def create_generation_attempt_evidence(
     outcome: TranslationAttemptOutcome | str,
     artifact_root: Path,
 ) -> PlannerGenerationAttempt:
-    """Persist one generated asset set and bind it to immutable public evidence."""
+    """Persist one generated asset set as immutable public evidence."""
 
     attempt_id = (
         f"{context.planner_choice.decision_id}:generation:{context.attempt_number}"
     )
     directory = (
         Path(artifact_root).resolve()
-        / hashlib.sha256(context.planner_choice.decision_id.encode("utf-8")).hexdigest()
+        / quote(context.planner_choice.decision_id, safe="._-")
         / f"{context.attempt_number:03d}"
     )
     directory.mkdir(parents=True, exist_ok=True)
     references: dict[str, str] = {}
-    digests: dict[str, str] = {}
     for name, content in sorted(assets.items()):
         if (
             not isinstance(name, str)
@@ -191,20 +158,13 @@ def create_generation_attempt_evidence(
         ):
             raise ValueError("generation-attempt assets must map names to bytes")
         path = directory / quote(name, safe="._-")
-        if path.is_file():
-            if path.read_bytes() != content:
-                raise ValueError("generation-attempt asset identity conflicts")
-        else:
-            path.write_bytes(content)
+        path.write_bytes(content)
         references[name] = str(path.resolve())
-        digests[name] = hashlib.sha256(content).hexdigest()
     choice = context.planner_choice
     return PlannerGenerationAttempt(
         attempt_id=attempt_id,
         decision_id=choice.decision_id,
         mission_id=choice.mission_id,
-        mission_input_sha256=choice.mission_input_sha256,
-        planning_intent_sha256=choice.planning_intent_sha256,
         planner_choice=choice.planner_choice,
         rationale=choice.rationale,
         mission_snapshot_id=(
@@ -215,7 +175,6 @@ def create_generation_attempt_evidence(
         translator_version=translator_version,
         outcome=outcome,
         asset_references=references,
-        asset_sha256=digests,
     )
 
 
@@ -302,8 +261,6 @@ __all__ = [
     "PlanningTranslationOutcome",
     "PlanningTranslationResult",
     "create_generation_attempt_evidence",
-    "environment_data_sha256",
     "persist_static_check_diagnostics",
     "validate_environment_data",
-    "verifiable_file_reference",
 ]

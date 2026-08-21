@@ -23,10 +23,8 @@ from onr.contracts.planning import (
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
     SymbolicPlanStep,
-    VerifiableReference,
 )
 from onr.contracts.transport import (
     TransportEvent,
@@ -47,25 +45,11 @@ from onr.runtime.config import (
 )
 
 
-def _provenance(mission_id: str) -> PlanProvenance:
-    return PlanProvenance(
-        mission_id=mission_id,
-        source_authority="authority",
-        mission_intent=VerifiableReference(f"mission-input:{mission_id}", "1" * 64),
-        planning_decision=VerifiableReference(f"planner-choice:{mission_id}", "2" * 64),
-        environment_data=VerifiableReference(f"scene:{mission_id}", "3" * 64),
-        generated_assets={
-            "planner-input": VerifiableReference("planner-input", "4" * 64),
-        },
-        solver_evidence={
-            "planner-result": VerifiableReference("planner-result", "5" * 64),
-        },
-    )
-
-
 def _temporal_plan(revision: int = 1) -> NormalizedPlan:
     choice = PlannerChoice("temporal", "minizinc")
     return NormalizedPlan(
+        mission_id="mission-fsm",
+        source_authority="authority",
         plan_revision=revision,
         mission_snapshot_id=f"snapshot-{revision}",
         planner_choice=choice,
@@ -74,13 +58,14 @@ def _temporal_plan(revision: int = 1) -> NormalizedPlan:
             ScheduledManeuver("survey", ManeuverIntent("survey"), (), 0, 2),
             ScheduledManeuver("report", ManeuverIntent("report"), ("survey",), 2, 1),
         ),
-        provenance=_provenance("mission-fsm"),
     )
 
 
 def _symbolic_plan(revision: int = 1) -> NormalizedPlan:
     choice = PlannerChoice("symbolic", "fast-downward")
     return NormalizedPlan(
+        mission_id="mission-fsm-symbolic",
+        source_authority="authority",
         plan_revision=revision,
         mission_snapshot_id=f"snapshot-symbolic-{revision}",
         planner_choice=choice,
@@ -89,7 +74,6 @@ def _symbolic_plan(revision: int = 1) -> NormalizedPlan:
             SymbolicPlanStep(0, "survey", ManeuverIntent("survey"), (), 1),
             SymbolicPlanStep(1, "report", ManeuverIntent("report"), ("survey",), 1),
         ),
-        provenance=_provenance("mission-fsm-symbolic"),
     )
 
 
@@ -273,13 +257,12 @@ def test_timer_due_marker_remains_authoritative_after_clock_change_and_restart()
     assert applied.active_state == "state-1"
 
 
-@pytest.mark.parametrize("field", ("normalized_plan_document", "normalized_plan_sha256"))
-def test_generic_normalized_plan_event_validates_wire_provenance(field: str) -> None:
+def test_generic_normalized_plan_event_rejects_unknown_digest_fields() -> None:
     plan = _temporal_plan()
     typed = create_normalized_plan_transport_event(plan, event_id="wire-plan", sequence=0)
     wire = normalized_plan_transport_event_to_wire(typed)
     payload = dict(wire.payload)
-    payload[field] = "tampered"
+    payload["normalized_plan_sha256"] = "tampered"
     tampered = TransportEvent(
         schema_version=wire.schema_version,
         event_id=wire.event_id,
@@ -397,25 +380,14 @@ def test_file_json_store_reconstructs_without_python_runtime_state(tmp_path) -> 
 def _provenance_plan() -> NormalizedPlan:
     choice = PlannerChoice("temporal", "minizinc")
     return NormalizedPlan(
+        mission_id="mission-fsm",
+        source_authority="authority",
         plan_revision=1,
         mission_snapshot_id="mission-fsm:snapshot:1",
         planner_choice=choice,
         outcome=PlanningOutcome.SOLVED,
         maneuvers=(
             ScheduledManeuver("survey", ManeuverIntent("survey"), (), 0, 2),
-        ),
-        provenance=PlanProvenance(
-            mission_id="mission-fsm",
-            source_authority="authority",
-            mission_intent=VerifiableReference("mission-input:1", "1" * 64),
-            planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
-            environment_data=VerifiableReference("scene:1", "3" * 64),
-            generated_assets={
-                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
-            },
-            solver_evidence={
-                "stdout": VerifiableReference("solver.stdout", "5" * 64),
-            },
         ),
     )
 

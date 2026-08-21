@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -410,9 +409,6 @@ def _parse_planning_intent_response(
         {
             **candidate,
             "schema_version": 1,
-            "mission_input_sha256": hashlib.sha256(
-                mission_input.to_canonical_json().encode("utf-8")
-            ).hexdigest(),
         }
     )
 

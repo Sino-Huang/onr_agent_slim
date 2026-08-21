@@ -14,7 +14,6 @@ class _PlanningIntentArguments(TypedDict):
     objective: str
     rationale: str
     planner_choice: PlannerChoice
-    mission_input_sha256: str
     details: Mapping[str, object]
 
 
@@ -24,7 +23,6 @@ class _PlanningIntentOverrides(TypedDict, total=False):
     objective: str
     rationale: str
     planner_choice: PlannerChoice
-    mission_input_sha256: str
     details: Mapping[str, object]
 
 
@@ -45,7 +43,6 @@ def _intent(
         "objective": "Survey the operating area",
         "rationale": "The survey supports the requested assessment.",
         "planner_choice": PlannerChoice("temporal", "minizinc"),
-        "mission_input_sha256": "a" * 64,
         "details": cast(
             Mapping[str, object], details if details is not None else default_details
         ),
@@ -68,7 +65,6 @@ def test_planning_intent_is_a_canonical_immutable_public_contract() -> None:
 
     assert intent.schema_version == 1
     assert intent.planner_choice == PlannerChoice("temporal", "minizinc")
-    assert intent.mission_input_sha256 == "a" * 64
     assert intent.to_dict()["schema_version"] == 1
 
     source_priority["priority"] = 2
@@ -120,7 +116,6 @@ def test_planning_intent_requires_nonblank_identity_and_explanation_fields(
         "objective",
         "rationale",
         "planner_choice",
-        "mission_input_sha256",
         "details",
     ),
 )
@@ -156,13 +151,7 @@ def test_planning_intent_requires_an_available_planner() -> None:
         _intent(planner_choice=PlannerChoice.unsupported_symbolic())
 
 
-@pytest.mark.parametrize("mission_input_sha256", ("a" * 63, "A" * 64))
-def test_planning_intent_rejects_untrusted_hashes_versions_and_nonfinite_json(
-    mission_input_sha256: str,
-) -> None:
-    with pytest.raises(ValueError):
-        _intent(mission_input_sha256=mission_input_sha256)
-
+def test_planning_intent_rejects_wrong_versions_and_nonfinite_json() -> None:
     wrong_version = _intent().to_dict()
     wrong_version["schema_version"] = 2
     with pytest.raises(ValueError):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections.abc import Mapping
@@ -267,7 +266,7 @@ class CommandOutcome:
             object.__setattr__(self, name, _identity(getattr(self, name), label))
         try:
             status = CommandStatus(self.status)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             raise ValueError("command outcome status must be accepted, completed, or failed")
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "payload", _payload(self.payload))
@@ -307,7 +306,7 @@ class CommandOutcome:
 
 @dataclass(frozen=True, slots=True)
 class NormalizedPlanTransportPayload:
-    """Immutable canonical Normalized Plan document and provenance."""
+    """Immutable transport metadata and one Normalized Plan."""
 
     mission_id: str
     plan_revision: int
@@ -316,8 +315,6 @@ class NormalizedPlanTransportPayload:
     source_authority: str
     outcome: PlanningOutcome
     normalized_plan: NormalizedPlan
-    normalized_plan_document: str
-    normalized_plan_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,25 +343,19 @@ class NormalizedPlanTransportEvent:
     def normalized_plan(self) -> NormalizedPlan:
         return self.payload.normalized_plan
 
-    @property
-    def normalized_plan_sha256(self) -> str:
-        return self.payload.normalized_plan_sha256
-
-
 def create_normalized_plan_transport_event(
     normalized_plan: NormalizedPlan,
     *,
     event_id: str,
     sequence: int,
 ) -> NormalizedPlanTransportEvent:
-    """Create a stable Transport Event for an exact Normalized Plan document."""
+    """Create a stable Transport Event for one Normalized Plan."""
 
     if not isinstance(event_id, str) or not event_id.strip():
         raise ValueError("event ID must be a non-empty string")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
         raise ValueError("event sequence must be a non-negative integer")
 
-    document = normalized_plan.to_canonical_json()
     payload = NormalizedPlanTransportPayload(
         mission_id=normalized_plan.mission_id,
         plan_revision=normalized_plan.plan_revision,
@@ -373,8 +364,6 @@ def create_normalized_plan_transport_event(
         source_authority=normalized_plan.source_authority,
         outcome=PlanningOutcome(normalized_plan.outcome),
         normalized_plan=normalized_plan,
-        normalized_plan_document=document,
-        normalized_plan_sha256=hashlib.sha256(document.encode("utf-8")).hexdigest(),
     )
     return NormalizedPlanTransportEvent(
         event_id=event_id,
@@ -401,8 +390,6 @@ def normalized_plan_transport_event_to_wire(
         "source_authority": payload.source_authority,
         "outcome": str(payload.outcome),
         "normalized_plan": payload.normalized_plan.to_dict(),
-        "normalized_plan_document": payload.normalized_plan_document,
-        "normalized_plan_sha256": payload.normalized_plan_sha256,
     }
     if correlation_id is not None:
         wire_payload["correlation_id"] = _identity(correlation_id, "correlation ID")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from onr.adapters.fast_downward import FastDownwardExecutor
@@ -11,7 +10,6 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planner_translation import (
     PlannerGenerationContext,
     PlanningTranslationOutcome,
-    environment_data_sha256,
 )
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -55,10 +53,6 @@ def test_real_generated_pddl_plan_requires_independent_val_acceptance(
     choice = PlannerChoiceRecord(
         decision_id="choice-real-pddl",
         mission_id=mission_input.mission_id,
-        mission_input_sha256=hashlib.sha256(
-            mission_input.to_canonical_json().encode("utf-8")
-        ).hexdigest(),
-        planning_intent_sha256="e" * 64,
         planner_choice=PlannerChoice("symbolic", "fast-downward"),
         rationale="The Mission is symbolic reachability.",
     )
@@ -76,9 +70,6 @@ def test_real_generated_pddl_plan_requires_independent_val_acceptance(
         created_at="time-1",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 1},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -136,38 +127,12 @@ def test_real_generated_pddl_plan_requires_independent_val_acceptance(
     assert len(result.generation_attempts) == 1
     attempt = result.generation_attempts[0]
     assert str(attempt.outcome) == "accepted"
-    for name, reference in attempt.asset_references.items():
-        assert (
-            hashlib.sha256(Path(reference).read_bytes()).hexdigest()
-            == (attempt.asset_sha256[name])
-        )
+    assert all(Path(reference).is_file() for reference in attempt.asset_references.values())
     assert len(requests) == 1
     assert result.normalized_plan is not None
-    assert result.normalized_plan.provenance is not None
-    provenance = result.normalized_plan.provenance
-    assert provenance.mission_intent.reference == (
-        f"mission-input:{mission_input.mission_id}"
-    )
-    assert provenance.mission_intent.sha256 == choice.mission_input_sha256
-    assert provenance.environment_data.sha256 == (
-        environment_data_sha256(scene)
-    )
-    for name, reference in provenance.generated_assets.items():
-        assert Path(reference.reference).name == name
-        assert (
-            hashlib.sha256(Path(reference.reference).read_bytes()).hexdigest()
-            == reference.sha256
-        )
-    assert set(provenance.solver_evidence) == {
-        "accepted-plan",
-        "planner-result",
-        "validator-result",
-    }
-    for reference in provenance.solver_evidence.values():
-        assert (
-            hashlib.sha256(Path(reference.reference).read_bytes()).hexdigest()
-            == reference.sha256
-        )
+    assert result.normalized_plan.mission_id == mission_input.mission_id
+    assert result.normalized_plan.source_authority == mission_input.source_authority
+    assert "provenance" not in result.normalized_plan.to_dict()
     assert "mission_spec" not in result.normalized_plan.to_dict()
     assert [step.maneuver_id for step in result.normalized_plan.symbolic_steps] == [
         "survey",

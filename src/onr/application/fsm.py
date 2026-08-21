@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Callable, Protocol, cast
@@ -74,22 +73,12 @@ def _plan_from_message(message: object) -> NormalizedPlan:
             "source_authority",
             "outcome",
             "normalized_plan",
-            "normalized_plan_document",
-            "normalized_plan_sha256",
         }
-        if not required.issubset(payload):
-            raise ValueError("normalized-plan transport payload is missing provenance")
+        if set(payload) not in (required, required | {"correlation_id"}):
+            raise ValueError("normalized-plan transport payload has invalid fields")
         plan = NormalizedPlan.from_dict(
             _object(payload["normalized_plan"], "normalized plan payload")
         )
-        document = payload["normalized_plan_document"]
-        digest = payload["normalized_plan_sha256"]
-        if not isinstance(document, str) or not isinstance(digest, str):
-            raise ValueError("normalized-plan transport provenance has invalid types")
-        if document != plan.to_canonical_json():
-            raise ValueError("normalized-plan transport document does not match the plan")
-        if digest != hashlib.sha256(document.encode("utf-8")).hexdigest():
-            raise ValueError("normalized-plan transport hash does not match the document")
         if payload["mission_id"] != message.mission_id or plan.mission_id != message.mission_id:
             raise ValueError("normalized-plan transport mission ID does not match")
         if _int_field(payload, "plan_revision", "plan revision") != plan.plan_revision:

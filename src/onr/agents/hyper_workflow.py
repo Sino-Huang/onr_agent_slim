@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -11,10 +10,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any, Literal, cast
 
-from langchain.agents.middleware import (
-    TodoListMiddleware,
-    wrap_model_call,
-)
+from langchain.agents.middleware import TodoListMiddleware, wrap_model_call
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field
@@ -104,18 +100,20 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _prerequisite_missing(
-    *, missing: tuple[str, ...], required_tool: str, retry_tool: str
-) -> str:
-    return _canonical_json(
-        {
-            "message": f"Call {required_tool}, then retry {retry_tool}.",
-            "missing": list(missing),
-            "required_tool": required_tool,
-            "retry_tool": retry_tool,
-            "status": "prerequisite_missing",
+def _model_environment_payload(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _model_environment_payload(item)
+            for key, item in value.items()
+            if key != "environment_file"
         }
-    )
+    if isinstance(value, (list, tuple)):
+        return [_model_environment_payload(item) for item in value]
+    return value
+
+
+def _prerequisite_missing(*, required_tool: str, retry_tool: str) -> str:
+    return f"Cannot run {retry_tool} yet. Call {required_tool} first."
 
 
 def _planner_asset_locations(
@@ -130,19 +128,9 @@ def _planner_asset_locations(
 
 
 def _planner_asset_path(
-    context: HyperWorkflowContext,
-    location: str,
-    *,
-    attempt_number: int,
-    name: str,
+    context: HyperWorkflowContext, *, attempt_number: int, name: str
 ) -> Path:
-    if not isinstance(location, str) or not location.strip():
-        raise ValueError("planner asset file location must be non-empty")
-    expected_location = _planner_asset_locations(context, attempt_number)[name]
-    if location != expected_location:
-        raise ValueError(
-            "planner asset file location does not match the attempt workspace"
-        )
+    location = _planner_asset_locations(context, attempt_number)[name]
     if context.backend_root is not None and location.startswith("/"):
         path = context.backend_root / location.removeprefix("/")
     else:
@@ -157,17 +145,6 @@ def _planner_asset_path(
     if path != expected_path or not path.is_file():
         raise ValueError("planner asset file does not exist at the expected location")
     return path
-
-
-def _agent_file_location(context: HyperWorkflowContext, path: str | Path) -> str:
-    resolved = Path(path).resolve()
-    if context.backend_root is None:
-        return str(resolved)
-    try:
-        relative = resolved.relative_to(context.backend_root)
-    except ValueError as exc:
-        raise ValueError("planner evidence is outside the agent backend root") from exc
-    return "/" + relative.as_posix()
 
 
 def _agent_diagnostic(context: HyperWorkflowContext, text: str) -> str:
@@ -192,21 +169,6 @@ def _persist_minizinc_check(
     return references
 
 
-def _persist_agent_minizinc_check(
-    context: HyperWorkflowContext,
-    result: PlannerStaticCheckResult,
-) -> dict[str, str]:
-    directory = (
-        context.artifact_root / "drafts" / f"{context.current_attempt_number:03d}"
-    )
-    references = {}
-    for stream, contents in (("stdout", result.stdout), ("stderr", result.stderr)):
-        path = directory / f"minizinc-check.agent.{stream}"
-        path.write_text(_agent_diagnostic(context, contents), encoding="utf-8")
-        references[stream] = _agent_file_location(context, path)
-    return references
-
-
 def _prepare_next_planner_workspace(
     context: HyperWorkflowContext, problem: MiniZincProblem
 ) -> dict[str, str]:
@@ -228,16 +190,13 @@ def _planner_files_exist(context: HyperWorkflowContext) -> bool:
         return all(
             _planner_asset_path(
                 context,
-                location,
                 attempt_number=attempt_number,
                 name=name,
             )
             .stat()
             .st_size
             > 0
-            for name, location in _planner_asset_locations(
-                context, attempt_number
-            ).items()
+            for name in _planner_asset_locations(context, attempt_number)
         )
     except (OSError, ValueError):
         return False
@@ -264,7 +223,6 @@ class HyperWorkflowContext:
     planner_workspace_location: str | None = None
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
-    planning_context_loaded: bool = field(default=False, init=False)
     minizinc_problem: Any = field(default=None, init=False)
     draft_references: tuple[str, ...] = field(default=(), init=False)
     static_check_result: Any = field(default=None, init=False)
@@ -350,7 +308,6 @@ class HyperWorkflowContext:
 _PHASE_CONTROLLED_TOOLS = frozenset(
     {
         "record_planning_intent",
-        "load_planning_context",
         "write_file",
         "edit_file",
         "submit_planner_attempt",
@@ -365,8 +322,6 @@ _PHASE_CONTROLLED_TOOLS = frozenset(
 def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
     if context.planning_intent is None or context.planner_choice is None:
         return frozenset({"record_planning_intent"})
-    if not context.planning_context_loaded:
-        return frozenset({"load_planning_context"})
     if context.static_accepted and (
         context.current_attempt_number > context.executed_attempt_number
     ):
@@ -470,8 +425,6 @@ def _emit(
 
 @tool(parse_docstring=True)
 def record_planning_intent(
-    mission_id: str,
-    source_authority: str,
     objective: str,
     planning_profile: Literal["temporal", "symbolic"],
     planner_id: Literal["minizinc", "fast-downward"],
@@ -486,8 +439,6 @@ def record_planning_intent(
     the same call so the workflow can continue instead of ending at structured output.
 
     Args:
-        mission_id: Exact MissionInput mission ID.
-        source_authority: Exact MissionInput source authority.
         objective: Concise planner-facing Mission objective.
         planning_profile: Temporal scheduling or symbolic reachability profile.
         planner_id: Configured planner ID for the selected profile.
@@ -497,13 +448,13 @@ def record_planning_intent(
             next action. Do not include private reasoning.
 
     Returns:
-        Canonical PlannerChoiceRecord JSON bound to the accepted PlanningIntent.
+        Acceptance with MiniZinc paths and exact file-generation evidence.
     """
 
     context = _context(runtime)
     candidate = {
-        "mission_id": mission_id,
-        "source_authority": source_authority,
+        "mission_id": context.mission_input.mission_id,
+        "source_authority": context.mission_input.source_authority,
         "objective": objective,
         "planner_choice": {
             "planning_profile": planning_profile,
@@ -518,118 +469,57 @@ def record_planning_intent(
         )
         choice = PlannerChoiceRecord.from_planning_intent(intent)
     except (TypeError, ValueError) as exc:
-        return _canonical_json(
-            {
-                "status": "rejected",
-                "correction_message": f"{type(exc).__name__}: {exc}",
-                "retry_tool": "record_planning_intent",
-            }
+        return f"Planning intent rejected: {type(exc).__name__}: {exc}"
+    try:
+        validate_environment_data(
+            context.mission_input.mission_id,
+            context.mission_snapshot,
+            context.environment_event,
         )
+    except ValueError as exc:
+        return f"Planning intent rejected: {exc}"
     if context.planning_intent is not None or context.planner_choice is not None:
         if context.planning_intent != intent or context.planner_choice != choice:
             raise ValueError("recorded PlanningIntent conflicts with this workflow")
-        return _canonical_json(
-            {
-                "next_tool": "load_planning_context",
-                "planner_choice_record": choice.to_dict(),
-                "status": "already_recorded",
-            }
+        accepted = "Planning intent was already accepted."
+    else:
+        context.planning_intent = intent
+        context.planner_choice = choice
+        _emit(
+            context,
+            "planning-intent",
+            "completed",
+            details={
+                "planner_id": choice.planner_choice.planner_id,
+                "planning_profile": choice.planner_choice.planning_profile,
+            },
         )
-    context.planning_intent = intent
-    context.planner_choice = choice
-    context.planning_context_loaded = False
-    _emit(
-        context,
-        "planning-intent",
-        "completed",
-        details={
-            "decision_id": choice.decision_id,
-            "planner_id": choice.planner_choice.planner_id,
-            "planning_profile": choice.planner_choice.planning_profile,
-            "planning_intent_sha256": choice.planning_intent_sha256,
-        },
-    )
-    _emit(
-        context,
-        "planner-choice",
-        "completed",
-        details={
-            "decision_id": choice.decision_id,
-            "planner_id": choice.planner_choice.planner_id,
-            "planning_profile": choice.planner_choice.planning_profile,
-            "rationale": choice.rationale,
-        },
-    )
-    return _canonical_json(
-        {
-            "next_tool": "load_planning_context",
-            "planner_choice_record": choice.to_dict(),
-            "status": "accepted",
-        }
-    )
-
-
-@tool(parse_docstring=True)
-def load_planning_context(
-    reflection: str,
-    runtime: ToolRuntime[HyperWorkflowContext],
-) -> str:
-    """Load the complete snapshot-authorized context for planner generation.
-
-    Returns canonical JSON containing PlanningIntent, Planner Choice, MissionSnapshot,
-    the complete flexible environment-data payload, and the snapshot-authorized
-    BayesianBeliefSnapshot when available, or an actionable missing-prerequisite
-    result.
-
-    Args:
-        reflection: Concise public summary of observed evidence and the immediate
-            next action. Do not include private reasoning.
-    """
-
-    context = _context(runtime)
-    intent = context.planning_intent
-    choice = context.planner_choice
-    if intent is None or choice is None:
-        return _prerequisite_missing(
-            missing=("planning_intent", "planner_choice"),
-            required_tool="record_planning_intent",
-            retry_tool="load_planning_context",
+        _emit(
+            context,
+            "planner-choice",
+            "completed",
+            details={
+                "planner_id": choice.planner_choice.planner_id,
+                "planning_profile": choice.planner_choice.planning_profile,
+                "rationale": choice.rationale,
+            },
         )
-    validate_environment_data(
-        context.mission_input.mission_id,
-        context.mission_snapshot,
-        context.environment_event,
+        accepted = "Planning intent accepted."
+    locations = _planner_asset_locations(context, context.current_attempt_number + 1)
+    environment = _model_environment_payload(
+        context.environment_event.to_dict()["payload"]
     )
-    context.planning_context_loaded = True
-    _emit(
-        context,
-        "planning-context",
-        "completed",
-        details={
-            "snapshot_id": (
-                f"{context.mission_input.mission_id}:snapshot:"
-                f"{context.mission_snapshot.version}"
-            ),
-            "environment_data_reference": context.environment_event.event_id,
-            "revision": context.mission_snapshot.version,
-        },
+    marginals = (
+        [item.to_dict() for item in context.belief_snapshot.marginals]
+        if context.belief_snapshot is not None
+        else None
     )
-    return _canonical_json(
-        {
-            "status": "ready",
-            "planning_intent": intent.to_dict(),
-            "planner_choice": choice.to_dict(),
-            "mission_snapshot": context.mission_snapshot.to_dict(),
-            "environment_data": context.environment_event.to_dict()["payload"],
-            "belief_snapshot": (
-                context.belief_snapshot.to_dict()
-                if context.belief_snapshot is not None
-                else None
-            ),
-            "planner_asset_locations": _planner_asset_locations(
-                context, context.current_attempt_number + 1
-            ),
-        }
+    return (
+        f"{accepted} Generate MiniZinc files at:\n"
+        f"model.mzn: {locations['model_file_location']}\n"
+        f"data.dzn: {locations['data_file_location']}\n"
+        f"Environment data:\n{_canonical_json(environment)}\n"
+        f"Belief marginals:\n{_canonical_json(marginals)}"
     )
 
 
@@ -648,13 +538,8 @@ def _normalize_provider_tool_value(value: object) -> object:
 
 @tool(parse_docstring=True)
 def submit_planner_attempt(
-    attempt_number: int,
-    model_file_location: str,
-    data_file_location: str,
     horizon: int,
     maneuvers: list[TemporalManeuverCandidate],
-    translator_id: str,
-    translator_version: str,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
@@ -664,78 +549,35 @@ def submit_planner_attempt(
     planner_executor. Each accepted call creates one attempt-specific immutable draft.
 
     Args:
-        attempt_number: Positive generation-attempt sequence number.
-        model_file_location: Exact model.mzn location returned by planning context.
-        data_file_location: Exact data.dzn location returned by planning context.
         horizon: Positive scheduling horizon represented by the problem.
         maneuvers: Maneuver templates used to check solver assignments.
-        translator_id: Public identity of the asset generator.
-        translator_version: Public version of the asset generator.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
     Returns:
-        Canonical JSON containing immutable evidence and exact static-check output.
+        Concise static-verification success or exact repair diagnostic.
     """
 
     context = _context(runtime)
     choice = context.planner_choice
     if context.planning_intent is None or choice is None:
         return _prerequisite_missing(
-            missing=("planning_intent", "planner_choice"),
             required_tool="record_planning_intent",
             retry_tool="submit_planner_attempt",
         )
     if choice.planner_choice != PlannerChoice("temporal", "minizinc"):
         raise ValueError("MiniZinc assets require the recorded MiniZinc Planner Choice")
-    if not context.planning_context_loaded:
-        return _prerequisite_missing(
-            missing=("planning_context",),
-            required_tool="load_planning_context",
-            retry_tool="submit_planner_attempt",
-        )
-    if isinstance(attempt_number, bool) or attempt_number < 1:
-        raise ValueError("planner asset attempt number must be positive")
-    if attempt_number == context.current_attempt_number:
-        if context.submission_result is None:
-            raise ValueError("planner attempt has no cached submission result")
-        model_path = _planner_asset_path(
-            context,
-            model_file_location,
-            attempt_number=attempt_number,
-            name="model_file_location",
-        )
-        data_path = _planner_asset_path(
-            context,
-            data_file_location,
-            attempt_number=attempt_number,
-            name="data_file_location",
-        )
-        submitted = {
-            "model.mzn": model_path.read_bytes(),
-            "data.dzn": data_path.read_bytes(),
-        }
-        if (
-            context.minizinc_problem is None
-            or dict(context.minizinc_problem.assets) != submitted
-        ):
-            raise ValueError("planner draft attempt identity conflicts")
-        return context.submission_result
-    if (
-        attempt_number > context.max_planner_attempts
-        or attempt_number != context.current_attempt_number + 1
-    ):
+    attempt_number = context.current_attempt_number + 1
+    if attempt_number > context.max_planner_attempts:
         raise ValueError("planner asset attempt is outside the workflow retry sequence")
 
     model_path = _planner_asset_path(
         context,
-        model_file_location,
         attempt_number=attempt_number,
         name="model_file_location",
     )
     data_path = _planner_asset_path(
         context,
-        data_file_location,
         attempt_number=attempt_number,
         name="data_file_location",
     )
@@ -747,22 +589,15 @@ def submit_planner_attempt(
         },
         maneuvers=templates,
         horizon=horizon,
-        translator_id=translator_id,
-        translator_version=translator_version,
+        translator_id="hyper-agent",
+        translator_version="1",
     )
-    if context.minizinc_problem is not None and dict(
-        context.minizinc_problem.assets
-    ) == dict(problem.assets):
-        raise ValueError("planner attempt must change the rejected asset bytes")
     directory = context.artifact_root / "drafts" / f"{attempt_number:03d}"
     directory.mkdir(parents=True, exist_ok=True)
     references = []
     for name, contents in problem.assets.items():
         path = directory / name
-        if path.exists() and path.read_bytes() != contents:
-            raise ValueError("planner draft attempt identity conflicts")
-        if not path.exists():
-            path.write_bytes(contents)
+        path.write_bytes(contents)
         references.append(str(path.resolve()))
     context.minizinc_problem = problem
     context.draft_references = tuple(sorted(references))
@@ -771,38 +606,10 @@ def submit_planner_attempt(
     static_check = context.minizinc_translation.check_problem(problem)
     context.static_check_result = static_check
     diagnostic_references = _persist_minizinc_check(context, static_check)
-    agent_diagnostic_references = _persist_agent_minizinc_check(
-        context, static_check
-    )
     retries_remaining = context.max_planner_attempts - attempt_number
-    result: dict[str, object] = {
-        "attempt_number": attempt_number,
-        "asset_references": [
-            _agent_file_location(context, reference)
-            for reference in context.draft_references
-        ],
-        "asset_sha256": {
-            name: hashlib.sha256(contents).hexdigest()
-            for name, contents in sorted(problem.assets.items())
-        },
-        "diagnostic_references": agent_diagnostic_references,
-        "planner_id": "minizinc",
-        "translator_id": translator_id,
-        "translator_version": translator_version,
-        "verifier_id": "minizinc-instance-check",
-        "verifier_return_code": static_check.return_code,
-        "verifier_stdout": _agent_diagnostic(context, static_check.stdout),
-        "verifier_stderr": _agent_diagnostic(context, static_check.stderr),
-        "retries_remaining": retries_remaining,
-    }
     if static_check.accepted:
         context.static_accepted = True
-        result.update(
-            {
-                "static_status": "accepted",
-                "next_tool": "planner_executor",
-            }
-        )
+        result = "Static verification passed. Execute MiniZinc next."
     else:
         context.static_accepted = False
         choice_record = cast(PlannerChoiceRecord, choice)
@@ -848,29 +655,35 @@ def submit_planner_attempt(
                 context.planner_correction_feedback,
             ),
         )
-        result["correction_message"] = _agent_diagnostic(
-            context, static_check.error_message
-        )
+        diagnostic = _agent_diagnostic(context, static_check.error_message)
         if retries_remaining:
-            result["static_status"] = "rejected"
-            result["next_attempt_locations"] = _prepare_next_planner_workspace(
+            locations = _prepare_next_planner_workspace(
                 context, problem
             )
+            result = (
+                f"Static verification failed:\n{diagnostic}\n"
+                f"{retries_remaining} planner attempts remain. Repair MiniZinc files at:\n"
+                f"model.mzn: {locations['model_file_location']}\n"
+                f"data.dzn: {locations['data_file_location']}"
+            )
         else:
-            result["static_status"] = "repair_exhausted"
+            result = (
+                f"Static verification failed:\n{diagnostic}\n"
+                "No planner attempts remain."
+            )
     _emit(
         context,
         "planner-assets",
-        str(result["static_status"]),
+        "accepted" if static_check.accepted else "rejected",
         details={
             "generated_assets": "model.mzn,data.dzn",
             "planner_id": "minizinc",
             "sequence": attempt_number,
-            "translator_id": translator_id,
-            "translator_version": translator_version,
+            "translator_id": problem.translator_id,
+            "translator_version": problem.translator_version,
         },
     )
-    context.submission_result = _canonical_json(result)
+    context.submission_result = result
     return context.submission_result
 
 
@@ -890,8 +703,6 @@ def _temporal_maneuver(value: TemporalManeuverCandidate) -> TemporalManeuver:
 
 @tool(parse_docstring=True)
 def planner_executor(
-    planner_id: Literal["minizinc"],
-    attempt_number: int,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
@@ -901,14 +712,11 @@ def planner_executor(
     checks its assignments, and constructs a NormalizedPlan.
 
     Args:
-        planner_id: Recorded planner identifier for this draft.
-        attempt_number: Statically accepted generation-attempt sequence number.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
     Returns:
-        Canonical JSON with a verified result, exact execution rejection, or
-        actionable missing-prerequisite result.
+        Concise verified maneuvers or an exact execution repair diagnostic.
     """
 
     context = _context(runtime)
@@ -916,46 +724,23 @@ def planner_executor(
     problem = context.minizinc_problem
     if context.planning_intent is None or choice is None:
         return _prerequisite_missing(
-            missing=("planning_intent", "planner_choice"),
             required_tool="record_planning_intent",
             retry_tool="planner_executor",
         )
-    if planner_id != "minizinc" or choice.planner_choice != PlannerChoice(
+    if choice.planner_choice != PlannerChoice(
         "temporal", "minizinc"
     ):
         raise ValueError("planner executor has no matching MiniZinc draft")
-    if not context.planning_context_loaded:
-        return _prerequisite_missing(
-            missing=("planning_context",),
-            required_tool="load_planning_context",
-            retry_tool="planner_executor",
-        )
     if problem is None:
         return _prerequisite_missing(
-            missing=("minizinc_problem",),
             required_tool="submit_planner_attempt",
             retry_tool="planner_executor",
         )
     if not context.static_accepted or context.static_check_result is None:
         return _prerequisite_missing(
-            missing=("accepted_static_check",),
             required_tool="submit_planner_attempt",
             retry_tool="planner_executor",
         )
-    if (
-        isinstance(attempt_number, bool)
-        or not isinstance(attempt_number, int)
-        or attempt_number != context.current_attempt_number
-    ):
-        raise ValueError("planner executor attempt does not match the accepted draft")
-    for reference in context.draft_references:
-        path = Path(reference)
-        expected = problem.assets.get(path.name)
-        if expected is None or path.read_bytes() != expected:
-            raise ValueError(
-                "planner executor draft content does not match persistence"
-            )
-
     translation = context.minizinc_translation.execute_prechecked(
         context.mission_input,
         choice,
@@ -985,7 +770,7 @@ def planner_executor(
         str(translation.outcome),
         details={
             "attempt_id": attempt.attempt_id,
-            "planner_id": planner_id,
+            "planner_id": "minizinc",
             "plan_revision": (
                 translation.normalized_plan.plan_revision
                 if translation.normalized_plan is not None
@@ -997,52 +782,32 @@ def planner_executor(
         normalized_plan = translation.normalized_plan
         if normalized_plan is None:
             raise RuntimeError("verified planner translation lacks a Normalized Plan")
-        return _canonical_json(
-            {
-                "attempt_id": attempt.attempt_id,
-                "outcome": "verified",
-                "planner_id": planner_id,
-                "normalized_plan": normalized_plan.to_dict(),
-            }
+        maneuvers = [item.to_dict() for item in normalized_plan.maneuvers]
+        return (
+            "MiniZinc execution and solution verification passed. Generate the "
+            f"Statechart from these verified maneuvers:\n{_canonical_json(maneuvers)}"
         )
     if translation.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED:
         feedback = translation.correction_feedback[-1]
         retries_remaining = (
             context.max_planner_attempts - context.current_attempt_number
         )
-        result: dict[str, object] = {
-            "attempt_id": attempt.attempt_id,
-            "attempt_outcome": "rejected",
-            "correction_message": _agent_diagnostic(context, feedback.message),
-            "correction_stage": str(feedback.stage),
-            "outcome": ("repair_exhausted" if retries_remaining == 0 else "rejected"),
-            "planner_id": planner_id,
-            "retries_remaining": retries_remaining,
-        }
-        if feedback.execution_result is not None:
-            result.update(
-                {
-                    "planner_return_code": feedback.execution_result.return_code,
-                    "planner_stdout": _agent_diagnostic(
-                        context, feedback.execution_result.stdout
-                    ),
-                    "planner_stderr": _agent_diagnostic(
-                        context, feedback.execution_result.stderr
-                    ),
-                }
-            )
+        diagnostic = _agent_diagnostic(context, feedback.message)
         if retries_remaining:
-            result["next_attempt_locations"] = _prepare_next_planner_workspace(
+            locations = _prepare_next_planner_workspace(
                 context, problem
             )
-        return _canonical_json(result)
-    return _canonical_json(
-        {
-            "attempt_id": attempt.attempt_id,
-            "outcome": str(translation.outcome),
-            "planner_id": planner_id,
-        }
-    )
+            return (
+                f"MiniZinc execution or solution verification failed:\n{diagnostic}\n"
+                f"{retries_remaining} planner attempts remain. Repair MiniZinc files at:\n"
+                f"model.mzn: {locations['model_file_location']}\n"
+                f"data.dzn: {locations['data_file_location']}"
+            )
+        return (
+            f"MiniZinc execution or solution verification failed:\n{diagnostic}\n"
+            "No planner attempts remain."
+        )
+    return f"MiniZinc execution ended with {translation.outcome}."
 
 
 def _statechart_rejection(
@@ -1052,35 +817,23 @@ def _statechart_rejection(
     stage: str,
     diagnostic: str,
 ) -> str:
-    messages = {
-        "schema": "Generated Statechart data failed contract validation.",
-        "machine_build": "Generated Statechart data could not instantiate the FSM engine.",
-    }
     retries_remaining = context.max_statechart_attempts - attempt_number
     directory = context.artifact_root / "statechart-attempts" / f"{attempt_number:03d}"
-    diagnostic_path = directory / "statechart-error.txt"
-    diagnostic_path.write_text(diagnostic, encoding="utf-8")
+    (directory / "statechart-error.txt").write_text(diagnostic, encoding="utf-8")
     _emit(
         context,
         "statechart-generation",
         "rejected",
         details={"attempt_number": attempt_number, "stage": stage},
     )
-    return _canonical_json(
-        {
-            "attempt_number": attempt_number,
-            "correction_message": diagnostic or messages[stage],
-            "correction_stage": stage,
-            "diagnostic_reference": str(diagnostic_path.resolve()),
-            "outcome": ("repair_exhausted" if retries_remaining == 0 else "rejected"),
-            "retries_remaining": retries_remaining,
-        }
+    return (
+        f"Statechart validation failed:\n{diagnostic}\n"
+        f"{retries_remaining} Statechart attempts remain."
     )
 
 
 @tool(parse_docstring=True)
 def submit_statechart_draft(
-    attempt_number: int,
     statechart: dict[str, Any],
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
@@ -1091,7 +844,6 @@ def submit_statechart_draft(
     a live python-statemachine instance, and returns exact bounded repair feedback.
 
     Args:
-        attempt_number: Positive sequential Statechart generation attempt.
         statechart: Topology containing exactly entry_state, terminal_states,
             states, state_context, and transitions. Each transition contains
             event, source, target, and conditions. Physical actions are omitted.
@@ -1099,7 +851,7 @@ def submit_statechart_draft(
             next action. Do not include private reasoning.
 
     Returns:
-        Canonical JSON with accepted Statechart evidence or repair feedback.
+        Concise acceptance or exact bounded repair feedback.
     """
 
     context = _context(runtime)
@@ -1111,20 +863,13 @@ def submit_statechart_draft(
         or plan is None
     ):
         return _prerequisite_missing(
-            missing=("verified_normalized_plan",),
             required_tool="planner_executor",
             retry_tool="submit_statechart_draft",
         )
     if context.state_machine_factory is None:
         raise RuntimeError("Hyper workflow has no Statechart machine factory")
-    if isinstance(attempt_number, bool) or not isinstance(attempt_number, int):
-        raise TypeError("Statechart attempt number must be an integer")
-    if (
-        attempt_number < 1
-        or attempt_number > context.max_statechart_attempts
-        or attempt_number > context.current_statechart_attempt + 1
-        or attempt_number < context.current_statechart_attempt
-    ):
+    attempt_number = context.current_statechart_attempt + 1
+    if attempt_number > context.max_statechart_attempts:
         raise ValueError("Statechart attempt is outside the workflow retry sequence")
 
     statechart = cast(dict[str, Any], _normalize_provider_tool_value(statechart))
@@ -1133,10 +878,7 @@ def submit_statechart_draft(
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "statechart.json"
     topology_document = _canonical_json(statechart)
-    if path.exists() and path.read_text(encoding="utf-8") != topology_document:
-        raise ValueError("Statechart draft attempt identity conflicts")
-    if not path.exists():
-        path.write_text(topology_document, encoding="utf-8")
+    path.write_text(topology_document, encoding="utf-8")
     context.current_statechart_attempt = attempt_number
 
     try:
@@ -1178,9 +920,6 @@ def submit_statechart_draft(
             "plan_revision": plan.plan_revision,
             "mission_snapshot_id": plan.mission_snapshot_id,
             "planning_profile": str(plan.planner_choice.planning_profile),
-            "normalized_plan_sha256": hashlib.sha256(
-                plan.to_canonical_json().encode("utf-8")
-            ).hexdigest(),
             "entry_state": statechart["entry_state"],
             "terminal_states": statechart["terminal_states"],
             "states": statechart["states"],
@@ -1234,8 +973,7 @@ def submit_statechart_draft(
     )
     accepted_path = directory / "accepted-statechart.json"
     document = chart.to_canonical_json()
-    if not accepted_path.exists():
-        accepted_path.write_text(document, encoding="utf-8")
+    accepted_path.write_text(document, encoding="utf-8")
     context.statechart = chart
     context.statechart_reference = str(accepted_path.resolve())
     context.initial_fsm_status = status
@@ -1248,22 +986,11 @@ def submit_statechart_draft(
         "verified",
         details={
             "attempt_number": attempt_number,
-            "statechart_sha256": chart.statechart_sha256,
             "state_count": len(chart.states),
             "transition_count": len(chart.transitions),
         },
     )
-    return _canonical_json(
-        {
-            "attempt_number": attempt_number,
-            "entry_state": chart.entry_state,
-            "outcome": "verified",
-            "state_count": len(chart.states),
-            "statechart_reference": context.statechart_reference,
-            "statechart_sha256": chart.statechart_sha256,
-            "transition_count": len(chart.transitions),
-        }
-    )
+    return "Statechart validation passed. Hand off execution next."
 
 
 def _run_sync(awaitable: Any) -> Any:
@@ -1327,7 +1054,6 @@ def handoff_execution(
         or context.statechart_reference is None
     ):
         return _prerequisite_missing(
-            missing=("verified_normalized_plan", "verified_statechart"),
             required_tool="submit_statechart_draft",
             retry_tool="handoff_execution",
         )
@@ -1397,16 +1123,12 @@ def handoff_execution(
         or outcome.mission_id != plan.mission_id
         or str(outcome.status) != "completed"
     ):
-        return _canonical_json(
-            {
-                "status": "rejected",
-                "retry_tool": "handoff_execution",
-                "reason": "Maneuver Control handoff did not complete successfully",
-                "outcome": outcome.to_dict()
-                if isinstance(outcome, CommandOutcome)
-                else None,
-            }
-        )
+        reason = "Maneuver Control handoff did not complete successfully"
+        if isinstance(outcome, CommandOutcome):
+            error = outcome.payload.get("error")
+            if isinstance(error, str) and error.strip():
+                reason = error
+        return f"Execution handoff failed: {reason}."
     completion = ManeuverHeartbeatCompletion.from_dict(outcome.payload)
     if completion.mission_id != plan.mission_id or completion.request_id != request_id:
         raise ValueError("Maneuver handoff completion identity does not match")
@@ -1422,13 +1144,7 @@ def handoff_execution(
             "request_id": request_id,
         },
     )
-    return _canonical_json(
-        {
-            "status": "completed",
-            "fsm_status": refreshed.to_dict(),
-            "maneuver_completion": completion.to_dict(),
-        }
-    )
+    return "Execution handoff completed."
 
 
 def create_hyper_workflow_agent(
@@ -1461,7 +1177,6 @@ def create_hyper_workflow_agent(
         ],
         tools=[
             record_planning_intent,
-            load_planning_context,
             submit_planner_attempt,
             planner_executor,
             submit_statechart_draft,
@@ -1678,7 +1393,6 @@ __all__ = [
     "TemporalManeuverCandidate",
     "create_hyper_workflow_agent",
     "handoff_execution",
-    "load_planning_context",
     "planner_executor",
     "record_planning_intent",
     "submit_planner_attempt",

@@ -7,8 +7,6 @@ from onr.contracts.planning import (
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
-    VerifiableReference,
 )
 from onr.contracts.transport import Command
 from onr.ports.transport import Subscription
@@ -16,23 +14,12 @@ from onr.ports.transport import Subscription
 
 def _plan(mission_id: str, revision: int) -> NormalizedPlan:
     return NormalizedPlan(
+        mission_id=mission_id,
+        source_authority="authority",
         plan_revision=revision,
         mission_snapshot_id=f"snapshot-{revision}",
         planner_choice=PlannerChoice("temporal", "minizinc"),
         outcome=PlanningOutcome.UNSOLVABLE,
-        provenance=PlanProvenance(
-            mission_id=mission_id,
-            source_authority="authority",
-            mission_intent=VerifiableReference(f"mission-input:{mission_id}", "1" * 64),
-            planning_decision=VerifiableReference(f"planner-choice:{mission_id}", "2" * 64),
-            environment_data=VerifiableReference(f"scene:{mission_id}", "3" * 64),
-            generated_assets={
-                "model.mzn": VerifiableReference("model.mzn", "4" * 64),
-            },
-            solver_evidence={
-                "stdout": VerifiableReference("solver.stdout", "5" * 64),
-            },
-        ),
     )
 
 
@@ -121,8 +108,9 @@ def test_file_planning_command_restarts_without_repeating_planner(tmp_path: Path
     assert event.event_kind == "normalized-plan"
     assert event.payload["correlation_id"] == "file-correlation"
     assert event.payload["plan_revision"] == 7
-    assert event.payload["normalized_plan_document"] == normalized.to_canonical_json()
-    assert event.payload["normalized_plan_sha256"]
+    assert NormalizedPlan.from_dict(event.payload["normalized_plan"]) == normalized
+    assert "normalized_plan_document" not in event.payload
+    assert "normalized_plan_sha256" not in event.payload
     event_delivery.ack()
     outcome_delivery = commands.receive()
     assert outcome_delivery is not None and outcome_delivery.message.status == "completed"

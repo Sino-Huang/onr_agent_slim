@@ -15,7 +15,6 @@ from onr.application.minizinc_translation import MiniZincTranslation
 from onr.application.pddl_translation import PDDLTranslation
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.planner_translation import environment_data_sha256
 from onr.contracts.transport import TransportEvent
 from onr.runtime import (
     HeartbeatsConfig,
@@ -311,9 +310,6 @@ def test_runtime_builds_single_attempt_workflow_planner_context(
         created_at="2026-08-20T00:00:00+00:00",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 1},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )

@@ -13,7 +13,7 @@ The raw operator-authored natural-language input supplied in a Mission Activatio
 _Avoid_: Public trace record, derived plan
 
 **Planning Intent**:
-A structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It preserves source provenance and may hold flexible planner-selection facts in `details`, but never planner assets or verification evidence; it does not amend the Mission Intent or MissionInput.
+A structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It retains Mission and source authority identity and may hold flexible planner-selection facts in `details`, but never planner files or verification evidence; it does not amend the Mission Intent or MissionInput.
 _Avoid_: Source authority, planner-native asset, verification record
 
 **Mission Run**:
@@ -49,7 +49,7 @@ The planning agent that owns one Hyper Workflow Episode, derives Planning Intent
 _Avoid_: Main agent, controller
 
 **Hyper Workflow Episode**:
-One checkpointed planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, snapshot-authorized generation, and verification. It terminates with either a verified Normalized Plan ready for execution or a recorded no-plan outcome. Invoked capabilities return evidence but do not own or update the todo state.
+One checkpointed eight-stage planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, MiniZinc file generation, verification, Statechart validation, and execution handoff. It terminates with either a verified Normalized Plan and Statechart handed to execution or a recorded rejection. Invoked capabilities return evidence but do not own or update the todo state.
 _Avoid_: Planning Intent invocation, shared agent state, planner authority
 
 **Maneuver Control Agent**:
@@ -133,20 +133,16 @@ The semantic selection of the eligible planner derived from PlanningIntent.
 _Avoid_: Executable path, solver command
 
 **Planner Choice Record**:
-An immutable public record binding one Planner Choice and concise rationale to the raw Mission Input and accepted PlanningIntent provenance.
+An immutable Mission-scoped public record of one Planner Choice and its concise rationale.
 _Avoid_: Mission authority, private reasoning
 
 **Planner Generation Attempt**:
-An immutable accepted-or-rejected record of one planner-native asset generation attempt, bound to its Planner Choice Record and Mission Snapshot.
+An immutable accepted-or-rejected record of one planner-native file generation attempt, correlated to its Planner Choice Record and Mission Snapshot and retaining operational file references.
 _Avoid_: Planner result, hidden retry
 
 **Planning Record**:
-A future durable aggregate that binds Planner Choice and generation-attempt records to solver evidence, code-owned verification checks/outcome, and a NormalizedPlan reference/hash. Planner assets and solver evidence are Planning Record outputs, never PlanningIntent `details`.
+A future durable aggregate that correlates Planner Choice and generation-attempt records with solver evidence, code-owned verification outcomes, and the resulting Normalized Plan by Mission identity, revisions, event identity, and references.
 _Avoid_: Mission authority, planner-selection input
-
-**Plan Provenance**:
-A reference-only binding from one Normalized Plan to its Mission Intent, Planning Decision, Operational Scene Graph, generated assets, and solver evidence, with a content digest for every reference.
-_Avoid_: Embedded planning authority, PlanningIntent details
 
 **Operational Scene Graph**:
 The agent-visible representation of operational entities, attributes, predicates, and relationships used for planning.
@@ -157,11 +153,11 @@ An immutable versioned estimate of uncertainty about operational entities and ev
 _Avoid_: Ground truth, agent memory
 
 **Normalized Plan**:
-A planner-independent revision of abstract maneuver intent and execution constraints, derived from one planner result.
+A planner-independent revision of abstract maneuver intent and execution constraints, derived from one verified planner result and carrying Mission ID and source authority directly.
 _Avoid_: Planner output, scene snapshot
 
 **Planner Translator**:
-A code-owned translation slice that validates generated planner assets, invokes the selected planner, independently checks its result, and normalizes only a verified result.
+A code-owned translation slice that validates generated planner files, invokes the selected planner, independently checks its result, and normalizes only a verified result.
 _Avoid_: Planner Asset Generator, planner runner
 
 **Planner Asset Generator**:
@@ -169,7 +165,7 @@ A non-authoritative Hyper capability that proposes planner-native assets and a n
 _Avoid_: Planner Translator, mission authority
 
 **Planner Correction Feedback**:
-A bounded, sanitized notice from the Planner Translator that identifies whether static validation or independent solution checking rejected a generated asset set.
+A bounded notice from the Planner Translator that preserves the exact external diagnostic identifying whether static validation, planner execution, or independent solution checking rejected generated files.
 _Avoid_: Raw solver diagnostic, private reasoning
 
 **Invocation Overlay**:

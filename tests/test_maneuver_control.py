@@ -41,10 +41,8 @@ from onr.contracts.planning import (
     NormalizedPlan,
     PlannerChoice,
     PlanningOutcome,
-    PlanProvenance,
     ScheduledManeuver,
     SymbolicPlanStep,
-    VerifiableReference,
 )
 from onr.contracts.transport import (
     Command,
@@ -596,24 +594,13 @@ def _normalized_plan(planning_profile: str) -> NormalizedPlan:
         else SymbolicPlanStep(0, "survey", intent, (), 1)
     )
     return NormalizedPlan(
+        mission_id=mission_id,
+        source_authority="authority",
         plan_revision=7,
         mission_snapshot_id="snapshot-7",
         planner_choice=choice,
         outcome=PlanningOutcome.SOLVED,
         maneuvers=(maneuver,),
-        provenance=PlanProvenance(
-            mission_id=mission_id,
-            source_authority="authority",
-            mission_intent=VerifiableReference("mission-input:1", "1" * 64),
-            planning_decision=VerifiableReference("planner-choice:1", "2" * 64),
-            environment_data=VerifiableReference("scene:1", "3" * 64),
-            generated_assets={
-                "planner-input": VerifiableReference("planner-input", "4" * 64),
-            },
-            solver_evidence={
-                "planner-result": VerifiableReference("planner-result", "5" * 64),
-            },
-        ),
     )
 
 

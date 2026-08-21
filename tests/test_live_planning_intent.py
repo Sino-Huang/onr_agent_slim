@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -253,9 +252,6 @@ def test_live_planning_intent_interprets_ships_report_for_temporal_fov_schedulin
     assert isinstance(intent, PlanningIntent)
     assert intent.mission_id == mission_input.mission_id
     assert intent.source_authority == mission_input.source_authority
-    assert intent.mission_input_sha256 == hashlib.sha256(
-        mission_input.to_canonical_json().encode("utf-8")
-    ).hexdigest()
     assert intent.planner_choice == PlannerChoice("temporal", "minizinc")
     assert intent.rationale.strip()
     assert len(intent.rationale.strip()) <= 500
