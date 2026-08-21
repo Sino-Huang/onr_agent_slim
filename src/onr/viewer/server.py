@@ -40,6 +40,12 @@ from onr.viewer.debug import (
     load_debug_artifacts,
     load_llm_conversations,
 )
+from onr.viewer.steps import (
+    MISSION_CONTENT_WARNING,
+    RunStatus,
+    StepProjection,
+    StepsView,
+)
 from onr.viewer.trace import TraceProjection, sanitize_payload
 
 
@@ -48,6 +54,13 @@ _MAX_JSON_DEPTH = 64
 _EPOCH = "1970-01-01T00:00:00+00:00"
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _MISSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
+_PLANNER_ARTIFACT_LABELS = {
+    "model.mzn": "MiniZinc model",
+    "data.dzn": "MiniZinc data",
+    "statechart.json": "Statechart draft",
+    "accepted-statechart.json": "Accepted statechart",
+    "statechart-error.txt": "Statechart error",
+}
 _CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
     "font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; "
@@ -742,6 +755,61 @@ def _load_current_beliefs(
     return artifacts
 
 
+def _planner_artifact_label(kind: str, ref: str) -> str:
+    label = _PLANNER_ARTIFACT_LABELS[kind]
+    for component in PurePosixPath(ref).parts[:-1]:
+        if component.isdigit():
+            return f"{label} (attempt {int(component)})"
+    return label
+
+
+def _load_planner_artifact_index(root: Path) -> list[dict[str, str]]:
+    """Index allowlisted, regular planner artifacts without reading their content."""
+
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError:
+        return []
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        return []
+    pending = [root]
+    artifacts: list[dict[str, str]] = []
+    while pending:
+        directory = pending.pop()
+        pending.extend(reversed(_safe_dirs(directory)))
+        try:
+            entries = tuple(directory.iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            if path.name not in _PLANNER_ARTIFACT_LABELS:
+                continue
+            try:
+                mode = path.lstat().st_mode
+                path.resolve().relative_to(root.resolve())
+            except (OSError, ValueError):
+                continue
+            if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+                continue
+            ref = path.relative_to(root).as_posix()
+            artifacts.append(
+                {
+                    "kind": path.name,
+                    "ref": ref,
+                    "label": _planner_artifact_label(path.name, ref),
+                }
+            )
+    return sorted(artifacts, key=lambda item: item["ref"])
+
+
+def _load_environment(repo_root: Path, mission_id: str) -> Mapping[str, object] | None:
+    root = repo_root / "var" / "environment"
+    return _read_mapping(
+        root / _encoded(mission_id) / "environment.json",
+        root=root,
+    )
+
+
 def _valid_mission_id(value: str | None) -> bool:
     return value is not None and _MISSION_ID.fullmatch(value) is not None
 
@@ -798,6 +866,7 @@ class ViewerApplication:
             Path(static_root) if static_root is not None else Path(__file__).with_name("web")
         )
         self._projection = TraceProjection()
+        self._steps_projection = StepProjection()
 
     def _runtime(self) -> _RuntimeView | None:
         try:
@@ -929,6 +998,247 @@ class ViewerApplication:
             "conversations": conversations,
         }
 
+    def _project_steps(
+        self,
+        runtime: _RuntimeView,
+        mission_id: str,
+        generated_at: str,
+    ) -> tuple[
+        StepsView,
+        tuple[_PublicArtifact, ...],
+        list[dict[str, str]],
+        list[dict[str, object]],
+    ]:
+        artifacts = _load_public_artifacts(runtime.config, mission_id)
+        invocations: list[dict[str, object]] = []
+        conversations: list[dict[str, object]] = []
+        if runtime.config.debug:
+            try:
+                _, invocations = load_debug_artifacts(
+                    runtime.config.storage.root, mission_id
+                )
+                conversations = load_llm_conversations(
+                    runtime.config.storage.root, mission_id
+                )
+            except Exception:  # noqa: BLE001 - optional debug evidence degrades safely.
+                invocations = []
+                conversations = []
+        planner_artifacts = _load_planner_artifact_index(
+            self.repo_root / "var" / "planner-artifacts"
+        )
+        view = self._steps_projection.project(
+            mission_id,
+            llm_records=conversations,
+            agent_invocations=invocations,
+            operational_logs=(
+                artifact.record
+                for artifact in artifacts
+                if artifact.source_kind == "operational-log"
+            ),
+            transport_events=(
+                artifact.record
+                for artifact in artifacts
+                if artifact.source_kind == "transport-event"
+            ),
+            planner_artifacts=planner_artifacts,
+            generated_at=generated_at,
+        )
+        return view, artifacts, planner_artifacts, invocations
+
+    def steps_payload(self, mission_id: str | None) -> dict[str, object]:
+        generated_at = datetime.now(timezone.utc).isoformat()  # noqa: UP017
+        if not _valid_mission_id(mission_id):
+            view = self._steps_projection.project("", generated_at=generated_at)
+            payload = view.to_dict()
+            payload["warnings"] = [
+                "A valid mission_id query parameter is required.",
+                *cast(list[str], payload["warnings"]),
+            ]
+            return payload
+        runtime = self._runtime()
+        if runtime is None:
+            view = self._steps_projection.project(
+                cast(str, mission_id), generated_at=generated_at
+            )
+            payload = view.to_dict()
+            payload["warnings"] = [
+                "Runtime configuration is unavailable.",
+                *cast(list[str], payload["warnings"]),
+            ]
+            return payload
+        view, _, _, _ = self._project_steps(
+            runtime, cast(str, mission_id), generated_at
+        )
+        if not self._runtime_unchanged(runtime):
+            view = self._steps_projection.project(
+                cast(str, mission_id), generated_at=generated_at
+            )
+            payload = view.to_dict()
+            payload["warnings"] = [
+                "Runtime changed while step artifacts were being collected.",
+                *cast(list[str], payload["warnings"]),
+            ]
+            return payload
+        return view.to_dict()
+
+    def run_payload(self, mission_id: str | None) -> dict[str, object]:
+        generated_at = datetime.now(timezone.utc).isoformat()  # noqa: UP017
+        if not _valid_mission_id(mission_id):
+            view = self._steps_projection.project("", generated_at=generated_at)
+            overview = self._steps_projection.overview(
+                view,
+                warnings=("A valid mission_id query parameter is required.",),
+                generated_at=generated_at,
+            )
+            return overview.to_dict()
+        runtime = self._runtime()
+        selected = cast(str, mission_id)
+        if runtime is None:
+            view = self._steps_projection.project(selected, generated_at=generated_at)
+            overview = self._steps_projection.overview(
+                view,
+                warnings=(
+                    "Runtime configuration is unavailable.",
+                    MISSION_CONTENT_WARNING,
+                ),
+                generated_at=generated_at,
+            )
+            return overview.to_dict()
+        view, artifacts, planner_artifacts, invocations = self._project_steps(
+            runtime, selected, generated_at
+        )
+        operational_logs = [
+            artifact.record
+            for artifact in artifacts
+            if artifact.source_kind == "operational-log"
+        ]
+        transport_events = [
+            artifact.record
+            for artifact in artifacts
+            if artifact.source_kind == "transport-event"
+        ]
+        mission, mission_warnings = self._steps_projection.mission_content(
+            operational_logs=operational_logs,
+            agent_invocations=invocations,
+            transport_events=transport_events,
+        )
+        summaries = [
+            artifact.record
+            for artifact in artifacts
+            if artifact.source_kind == "summary"
+        ]
+        statechart = next(
+            (
+                artifact.record
+                for artifact in reversed(artifacts)
+                if artifact.source_kind == "statechart"
+            ),
+            None,
+        )
+        execution = next(
+            (
+                artifact.record
+                for artifact in reversed(artifacts)
+                if artifact.source_kind == "fsm-execution"
+            ),
+            None,
+        )
+        fsm = (
+            {"statechart": statechart, "execution_record": execution}
+            if statechart is not None or execution is not None
+            else None
+        )
+        final_result = next(
+            (
+                {
+                    "event_kind": artifact.record.get("event_kind"),
+                    "outcome": artifact.record.get("outcome"),
+                    "details": artifact.record.get("details", {}),
+                }
+                for artifact in reversed(artifacts)
+                if artifact.source_kind == "operational-log"
+                and artifact.record.get("event_kind") == "maneuver-handoff"
+            ),
+            None,
+        )
+        lease = runtime.lease
+        status = "unknown"
+        if lease is not None and lease.status == "active":
+            status = "running"
+        elif (lease is not None and lease.status in {"stopped", "stale"}) or (
+            lease is None and view.steps
+        ):
+            status = "complete"
+        overview = self._steps_projection.overview(
+            view,
+            mission=mission,
+            status=cast(RunStatus, status),
+            summaries=summaries,
+            fsm=fsm,
+            environment=_load_environment(self.repo_root, selected),
+            planner_artifacts=planner_artifacts,
+            final_result=final_result,
+            warnings=mission_warnings,
+            generated_at=generated_at,
+        )
+        if not self._runtime_unchanged(runtime):
+            empty = self._steps_projection.project(selected, generated_at=generated_at)
+            overview = self._steps_projection.overview(
+                empty,
+                warnings=(
+                    "Runtime changed while run artifacts were being collected.",
+                    MISSION_CONTENT_WARNING,
+                ),
+                generated_at=generated_at,
+            )
+        return overview.to_dict()
+
+    def artifact_payload(
+        self, mission_id: str | None, ref: str | None
+    ) -> tuple[bytes, str] | None:
+        if not _valid_mission_id(mission_id) or not isinstance(ref, str):
+            return None
+        if not ref or "\\" in ref or "\x00" in ref:
+            return None
+        relative = PurePosixPath(ref)
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            return None
+        if relative.name not in _PLANNER_ARTIFACT_LABELS:
+            return None
+        root = self.repo_root / "var" / "planner-artifacts"
+        descriptor: int | None = None
+        try:
+            descriptor = _open_confined(root.joinpath(*relative.parts), root)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_ARTIFACT_BYTES:
+                return None
+            chunks: list[bytes] = []
+            size = 0
+            while size <= _MAX_ARTIFACT_BYTES:
+                chunk = os.read(
+                    descriptor,
+                    min(64 * 1024, _MAX_ARTIFACT_BYTES + 1 - size),
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            if size > _MAX_ARTIFACT_BYTES:
+                return None
+            content = b"".join(chunks)
+            content.decode("utf-8")
+        except (OSError, UnicodeError):
+            return None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        content_type = (
+            "application/json"
+            if relative.suffix.lower() == ".json"
+            else "text/plain; charset=utf-8"
+        )
+        return content, content_type
+
     def static_file(self, request_path: str) -> Path | None:
         try:
             decoded = unquote(request_path, errors="strict")
@@ -984,6 +1294,44 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         if parsed.path == "/api/runtime":
             self._send_json(self.application.runtime_payload(), head_only=head_only)
+            return
+        if parsed.path == "/api/steps":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            mission_values = (
+                query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+            )
+            mission_id = mission_values[0] if len(mission_values) == 1 else None
+            self._send_json(
+                self.application.steps_payload(mission_id), head_only=head_only
+            )
+            return
+        if parsed.path == "/api/run":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            mission_values = (
+                query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+            )
+            mission_id = mission_values[0] if len(mission_values) == 1 else None
+            self._send_json(
+                self.application.run_payload(mission_id), head_only=head_only
+            )
+            return
+        if parsed.path == "/api/artifact":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            valid_keys = set(query) <= {"mission_id", "ref"}
+            mission_values = query.get("mission_id", []) if valid_keys else []
+            ref_values = query.get("ref", []) if valid_keys else []
+            mission_id = mission_values[0] if len(mission_values) == 1 else None
+            ref = ref_values[0] if len(ref_values) == 1 else None
+            artifact = self.application.artifact_payload(mission_id, ref)
+            if artifact is None:
+                self._send_error(HTTPStatus.NOT_FOUND, head_only=head_only)
+                return
+            content, content_type = artifact
+            self._send_content(
+                content,
+                content_type=content_type,
+                head_only=head_only,
+            )
             return
         if parsed.path == "/api/trace":
             query = parse_qs(parsed.query, keep_blank_values=True)
@@ -1060,6 +1408,22 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         content = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self._security_headers()
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(content)
+
+    def _send_content(
+        self,
+        content: bytes,
+        *,
+        content_type: str,
+        head_only: bool = False,
+    ) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
         self._security_headers()

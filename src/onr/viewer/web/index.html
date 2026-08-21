@@ -4,84 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>ONR Operator Console</title>
+  <title>ONR Run Viewer</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main class="console" aria-label="ONR runtime observation console">
-    <header class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">ONR</span><span>Operator Console</span></div>
-      <label class="mission-select" id="missionPicker" for="missionSelect" hidden><span>Mission</span><select id="missionSelect" aria-label="Selected mission"></select></label>
-      <div class="runtime-state" id="runtimeState" role="status"><span class="state-dot" aria-hidden="true"></span><span id="runtimeLabel">Checking runtime</span></div>
-      <div class="session-meta" id="sessionMeta" aria-label="Runtime session"></div>
-    </header>
-
-    <section class="workspace" aria-label="Runtime architecture">
-      <div class="section-heading"><div><p class="eyebrow">Mission runtime</p><h1 id="viewTitle">Mission overview</h1></div><p class="quiet" id="observationCount">Architecture ready</p></div>
-      <div class="tool-surface">
-        <nav class="view-tabs" aria-label="Console views">
-          <button class="tab active" data-view="overview" aria-selected="true">Mission overview</button>
-          <button class="tab" data-view="hyper" aria-selected="false">Hyper Agent</button>
-          <button class="tab" data-view="maneuver" aria-selected="false">Maneuver Control</button>
-          <button class="tab" data-view="planning" aria-selected="false">Planning</button>
-          <button class="tab" data-view="runtime" aria-selected="false">Runtime flow</button>
-        </nav>
-
-        <div class="architecture" aria-label="Component architecture map">
-          <div class="graph-stage" id="graphStage">
-            <button class="edge e-mission-hyper" data-edge="mission-input|hyper-agent" aria-label="Inspect Mission Input to Hyper Agent evidence"><span>Mission Input → Hyper</span></button>
-            <button class="edge e-hyper-intent" data-edge="hyper-agent|planning-intent" aria-label="Inspect Hyper Agent to Planning Intent evidence"><span>Hyper → Planning Intent</span></button>
-            <button class="edge e-intent-context" data-edge="planning-intent|planning-context" aria-label="Inspect Planning Intent to Planning Context evidence"><span>Planning Intent → Planning Context</span></button>
-            <button class="edge e-context-model" data-edge="planning-context|minizinc-assets" aria-label="Inspect Planning Context to MiniZinc string generation evidence"><span>Planning Context → MiniZinc strings</span></button>
-            <button class="edge e-model-assets" data-edge="minizinc-assets|planner-assets" aria-label="Inspect MiniZinc strings to persisted planner assets evidence"><span>MiniZinc strings → persisted assets</span></button>
-            <button class="edge e-assets-executor" data-edge="planner-assets|planner-executor" aria-label="Inspect persisted planner assets to Planner Executor evidence"><span>Planner assets → executor</span></button>
-            <button class="edge e-executor-maneuver" data-edge="planner-executor|maneuver-control" aria-label="Inspect Planner Executor to Maneuver Control evidence"><span>Planner Executor → Maneuver</span></button>
-            <button class="edge e-maneuver-fsm" data-edge="maneuver-control|fsm" aria-label="Inspect Maneuver Control to FSM Runner evidence"><span>Maneuver → FSM</span></button>
-            <button class="edge e-fsm-transport" data-edge="fsm|transport" aria-label="Inspect FSM Runner to transport evidence"><span>FSM → transport</span></button>
-            <button class="edge e-transport-environment" data-edge="transport|environment" aria-label="Inspect transport to environment evidence"><span>Transport → environment</span></button>
-            <button class="edge e-environment-context" data-edge="environment|context" aria-label="Inspect environment to Context Coordination evidence"><span>Environment → context</span></button>
-            <button class="edge e-context-belief" data-edge="context|belief" aria-label="Inspect Context Coordination to Bayesian Belief Manager evidence"><span>Context → belief</span></button>
-            <button class="edge e-belief-hyper" data-edge="belief|hyper-agent" aria-label="Inspect Bayesian Belief Manager to Hyper Agent evidence"><span>Belief → Hyper</span></button>
-            <button class="edge e-summary-hyper" data-edge="mission-summary|hyper-agent" aria-label="Inspect Mission Summary to Hyper Agent evidence"><span>Summary → Hyper</span></button>
-
-            <button class="node mission-input" data-component="mission-input"><span class="node-icon">MI</span><span>Mission Input</span><small>HumanMessage</small></button>
-            <button class="node hyper" data-component="hyper-agent"><span class="node-icon">HA</span><span>Hyper Agent</span><small>workflow owner</small></button>
-            <button class="node planning-intent" data-component="planning-intent"><span class="node-icon">PI</span><span>Record Planning Intent</span><small>record_planning_intent</small></button>
-            <button class="node planning-context" data-component="planning-context"><span class="node-icon">PC</span><span>Load Planning Context</span><small>snapshot + scene graph</small></button>
-            <button class="node minizinc-assets" data-component="minizinc-assets"><span class="node-icon">MZ</span><span>Generate MiniZinc</span><small>model.mzn + data.dzn</small></button>
-            <button class="node planner-assets" data-component="planner-assets"><span class="node-icon">PA</span><span>Persist Planner Assets</span><small>persist_planner_assets</small></button>
-            <button class="node planner-executor" data-component="planner-executor"><span class="node-icon">PE</span><span>Planner Executor</span><small>validate · solve · normalize</small></button>
-            <button class="node maneuver" data-component="maneuver-control"><span class="node-icon">MC</span><span>Maneuver Control</span><small>decision authority</small></button>
-            <button class="node fsm" data-component="fsm"><span class="node-icon">FR</span><span>FSM Runner</span><small>transition evidence</small></button>
-            <button class="node transport" data-component="transport"><span class="node-icon">TR</span><span>Transport</span><small>command receipts</small></button>
-            <button class="node environment" data-component="environment"><span class="node-icon">EN</span><span>Environment</span><small>validated feedback</small></button>
-            <button class="node context" data-component="context"><span class="node-icon">CC</span><span>Context Coordination</span><small>snapshot + scene graph</small></button>
-            <button class="node belief" data-component="belief"><span class="node-icon">BB</span><span>Bayesian Belief Manager</span><small>belief evidence</small></button>
-            <button class="node mission-summary" data-component="mission-summary"><span class="node-icon">MS</span><span>Mission Summary</span><small>when observed</small></button>
-            <p class="graph-legend"><span><i class="legend-observed"></i> observed</span><span><i class="legend-related"></i> correlated</span><span>select a line for evidence</span></p>
-            <div class="mobile-flow" id="mobileFlow" aria-label="Observed data flows"></div>
-            <p class="idle-note" id="idleNote">Architecture is ready. Start or select an available mission to inspect evidence.</p>
-          </div>
-
-          <aside class="inspector" id="inspector" aria-live="polite">
-            <p class="eyebrow" id="inspectorKicker">Architecture inspector</p>
-            <h2 id="inspectorTitle">Select a component or flow</h2>
-            <p class="inspector-copy" id="inspectorCopy">Nodes show durable observed history. Flow lines show the evidence that traversed them.</p>
-            <dl class="detail-list" id="detailList"></dl>
-            <div class="inspector-body" id="inspectorBody"></div>
-            <div class="safety-list" id="safetyList"></div>
-          </aside>
-        </div>
-
-        <section class="replay" id="replayControls" aria-label="Observed trace replay" hidden>
-          <div class="replay-actions"><button class="command-button" id="playPause" type="button">Pause</button><button class="icon-button" id="restart" type="button" aria-label="Restart replay" title="Restart replay">↺</button><label class="speed-label" for="speed">Speed <select id="speed"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label></div>
-          <div class="scrubber-wrap"><input id="scrubber" type="range" min="0" max="0" value="0" step="1" aria-label="Trace event position"><div class="scrubber-labels"><span>Start</span><span id="scrubberEnd">0 observed</span></div></div>
-        </section>
-      </div>
-      <section class="summaries" id="summaries" aria-label="Mission summaries" hidden><div class="summary-heading"><div><p class="eyebrow">Mission summaries</p><h2>Non-authoritative summary</h2></div><p class="quiet" id="summaryStatus"></p></div><div class="summary-latest" id="summaryLatest"></div><div class="summary-history" id="summaryHistory" aria-label="Prior mission summaries"></div></section>
-    </section>
-    <section class="trace-strip" id="traceStrip" aria-label="Observed trace" hidden><div class="trace-header"><p class="eyebrow">Observation order</p><button class="clear-button" id="clearSelection" type="button" hidden>Clear correlation</button></div><div class="event-list" id="eventList"></div></section>
-  </main>
-  <script src="app.js"></script>
+  <div id="app" class="app">
+    <header id="app-header" class="app-header"></header>
+    <div id="app-banner" class="app-banner"></div>
+    <main id="view-root" class="view-root" aria-label="Run data"></main>
+  </div>
+  <noscript><p style="padding:2rem;font-family:monospace">The ONR run viewer needs JavaScript (ES modules).</p></noscript>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -1,88 +1,291 @@
-(function () {
-  "use strict";
-  const POLL_MS = 1500;
-  const SAFE_FIELDS = new Set(["mission_id", "trace_id", "event_id", "component", "authority", "event_kind", "occurred_at", "observation_sequence", "status", "outcome", "correlation_id", "parent_id", "payload", "replay_disposition", "redacted_fields", "missing_fields"]);
-  const SAFE_PAYLOAD_FIELDS = new Set(["attempt_id", "decision_id", "generated_assets", "mission_input_sha256", "mission_snapshot_id", "planner_id", "planning_intent_sha256", "rationale", "environment_data_reference", "snapshot_id", "plan_revision", "revision", "maneuver_id", "command_id", "correlation_id", "transition", "action", "operation", "result", "active_state", "status", "outcome", "lifecycle", "planner", "planning_profile", "state", "source", "topic", "summary", "input_start_sequence", "input_end_sequence", "prior_summary_ids", "summary_id", "target_service", "command_kind", "event", "resume_sequence", "translator_id", "translator_version"]);
-  const COMPONENTS = {
-    "mission-input": "Mission Input", "hyper-agent": "Hyper Agent", "planning-intent": "Record Planning Intent", "planning-context": "Load Planning Context", "minizinc-assets": "Generate MiniZinc", "planner-assets": "Persist Planner Assets", "planner-executor": "Planner Executor", "maneuver-control": "Maneuver Control", fsm: "FSM Runner", transport: "Transport", environment: "Environment", context: "Context Coordination", belief: "Bayesian Belief Manager", "mission-summary": "Mission Summary"
-  };
-  const VIEWS = {
-    overview: { title: "Mission overview", components: null, detail: "All observed mission records are in view." },
-    hyper: { title: "Hyper Agent", components: ["mission-input", "hyper-agent", "planning-intent", "planning-context", "minizinc-assets", "planner-assets", "planner-executor", "context", "belief"], detail: "Mission input, tool-validated planning stages, context, and belief evidence." },
-    maneuver: { title: "Maneuver Control", components: ["maneuver-control", "fsm", "transport", "environment"], detail: "Decision, execution, and feedback evidence." },
-    planning: { title: "Planning", components: ["mission-input", "hyper-agent", "planning-intent", "planning-context", "minizinc-assets", "planner-assets", "planner-executor"], detail: "Planning Intent, snapshot-authorized context, generated MiniZinc strings, persisted assets, and verified execution." },
-    runtime: { title: "Runtime flow", components: ["context", "belief", "fsm", "transport", "environment", "mission-summary"], detail: "Public runtime and summary evidence." }
-  };
-  const EDGES = {
-    "mission-input|hyper-agent": ["mission-input", "hyper-agent"], "hyper-agent|planning-intent": ["hyper-agent", "planning-intent"], "planning-intent|planning-context": ["planning-intent", "planning-context"], "planning-context|minizinc-assets": ["planning-context", "minizinc-assets"], "minizinc-assets|planner-assets": ["minizinc-assets", "planner-assets"], "planner-assets|planner-executor": ["planner-assets", "planner-executor"], "planner-executor|maneuver-control": ["planner-executor", "maneuver-control"], "maneuver-control|fsm": ["maneuver-control", "fsm"], "fsm|transport": ["fsm", "transport"], "transport|environment": ["transport", "environment"], "environment|context": ["environment", "context"], "context|belief": ["context", "belief"], "belief|hyper-agent": ["belief", "hyper-agent"], "mission-summary|hyper-agent": ["mission-summary", "hyper-agent"]
-  };
-  const COMPONENT_BY_TRACE = { "hyper-agent":"hyper-agent", "context-coordination":"context", "maneuver-control":"maneuver-control", "fsm-runner":"fsm", transport:"transport", "command-source":"transport", "command-target":"transport", environment:"environment", "mission-log-summarizer":"mission-summary" };
-  const COMPONENT_BY_SIGNATURE = { "environment|bayesian-belief":"belief", "environment|risk.observed":"belief", "environment|belief.constraints":"belief", "environment|belief.updated":"belief" };
-  const WORKFLOW_COMPONENT_BY_KIND = { "planning-intent":"planning-intent", "planner-choice":"planning-intent", "planning-context":"planning-context", "planner-assets":"planner-assets", "planner-execution":"planner-executor", "normalized-plan":"planner-executor" };
-  const WORKFLOW_EDGE_BY_KIND = { "planning-intent":"hyper-agent|planning-intent", "planner-choice":"hyper-agent|planning-intent", "planning-context":"planning-intent|planning-context", "planner-assets":"minizinc-assets|planner-assets", "planner-execution":"planner-assets|planner-executor", "normalized-plan":"planner-executor|maneuver-control" };
-  const OBSERVED_TYPE_BY_SIGNATURE = { "transport|maneuver-feedback":"TransportEvent", "command-source|command":"Command", "transport|command-receipt":"CommandReceipt", "command-target|command-outcome":"CommandOutcome", "context-coordination|mission-snapshot":"MissionSnapshot", "environment|bayesian-belief":"BayesianBeliefSnapshot", "planner|normalized-plan":"NormalizedPlan", "fsm-runner|fsm-status":"FSMStatus", "fsm-runner|fsm-execution-record":"FSMExecutionRecord", "environment|maneuver-feedback":"ManeuverFeedback", "hyper-agent|replan-request":"ReplanRequest", "mission-log-summarizer|summary":"SummaryArtifact" };
-  const DECLARED_EDGE_CLASSES = { "mission-input|hyper-agent":["MissionInput", "HumanMessage"], "hyper-agent|planning-intent":["PlanningIntent", "PlannerChoiceRecord"], "planning-intent|planning-context":["MissionSnapshot", "OperationalSceneGraph", "ToolMessage"], "planning-context|minizinc-assets":["MiniZinc strings: model.mzn + data.dzn"], "minizinc-assets|planner-assets":["MiniZincProblem"], "planner-assets|planner-executor":["PlannerGenerationAttempt"], "planner-executor|maneuver-control":["NormalizedPlan"], "maneuver-control|fsm":[], "fsm|transport":["FSMStatus", "FSMExecutionRecord"], "transport|environment":["TransportEvent", "Command", "CommandReceipt", "CommandOutcome"], "environment|context":["ManeuverFeedback", "BayesianBeliefSnapshot"], "context|belief":["MissionSnapshot", "BayesianBeliefSnapshot"], "belief|hyper-agent":["BayesianBeliefSnapshot"], "mission-summary|hyper-agent":["SummaryArtifact"] };
-  const state = { active:false, available:false, missions:[], missionId:"", items:[], cursor:0, playing:true, speed:1, timer:null, pollTimer:null, requestToken:0, debugToken:0, selectionId:"", correlationId:"", view:"overview", inspection:null, debug:{ enabled:false, profiles:[], invocations:[], conversations:[] } };
-  const $ = (id) => document.getElementById(id);
-  const els = { runtime:$("runtimeState"), runtimeLabel:$("runtimeLabel"), session:$("sessionMeta"), picker:$("missionPicker"), mission:$("missionSelect"), count:$("observationCount"), graph:$("graphStage"), idle:$("idleNote"), mobileFlow:$("mobileFlow"), replay:$("replayControls"), scrubber:$("scrubber"), end:$("scrubberEnd"), play:$("playPause"), speed:$("speed"), trace:$("traceStrip"), events:$("eventList"), title:$("viewTitle"), kicker:$("inspectorKicker"), inspectorTitle:$("inspectorTitle"), inspectorCopy:$("inspectorCopy"), details:$("detailList"), body:$("inspectorBody"), safety:$("safetyList"), clear:$("clearSelection"), summaries:$("summaries"), summaryStatus:$("summaryStatus"), summaryLatest:$("summaryLatest"), summaryHistory:$("summaryHistory") };
-  const text = (value, fallback = "", limit = 240) => typeof value === "string" && value.trim() ? value.trim().slice(0, limit) : fallback;
-  const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
-  const json = (value) => { try { return typeof value === "string" ? value : JSON.stringify(value, null, 2); } catch (_) { return String(value); } };
-  function safePayload(value) { return value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value).filter(([key, item]) => SAFE_PAYLOAD_FIELDS.has(key) && ["string", "number", "boolean"].includes(typeof item)).slice(0, 7).map(([key, item]) => [key, String(item).slice(0, 160)]) : []; }
-  function summaryData(value) { if (!value || typeof value !== "object" || Array.isArray(value) || !text(value.summary)) return null; return { summary:text(value.summary, "", 480), start:own(value, "input_start_sequence") ? String(value.input_start_sequence).slice(0, 40) : "", end:own(value, "input_end_sequence") ? String(value.input_end_sequence).slice(0, 40) : "", prior:Array.isArray(value.prior_summary_ids) ? value.prior_summary_ids.filter((id) => typeof id === "string").slice(0, 8) : [] }; }
-  function normalize(raw, index) { if (!raw || typeof raw !== "object") return null; const item = {}; Object.keys(raw).forEach((key) => { if (SAFE_FIELDS.has(key)) item[key] = raw[key]; }); const eventId = text(item.event_id, "", 160), traceId = text(item.trace_id, eventId, 160); if (!eventId && !traceId) return null; return { key:traceId || eventId, missionId:text(item.mission_id, "unknown", 160), eventId, traceId, component:text(item.component, "runtime", 100).toLowerCase(), kind:text(item.event_kind, "observation", 120), authority:text(item.authority, "unavailable", 100), occurred:text(item.occurred_at, "time unavailable", 160), sequence:Number.isFinite(item.observation_sequence) ? item.observation_sequence : index + 1, status:text(item.status, "", 80), outcome:text(item.outcome, "", 80), correlationId:text(item.correlation_id, "", 160), parentId:text(item.parent_id, "", 160), replay:text(item.replay_disposition, "normal", 80), payload:safePayload(item.payload), summary:summaryData(item.payload), redacted:Array.isArray(item.redacted_fields) ? item.redacted_fields.filter((v) => typeof v === "string").slice(0, 12) : [], missing:Array.isArray(item.missing_fields) ? item.missing_fields.filter((v) => typeof v === "string").slice(0, 12) : [] }; }
-  function feedbackIdentity(item) { if (item.kind !== "maneuver-feedback") return ""; const id = item.eventId || item.traceId; return id.startsWith("feedback:") ? id.slice("feedback:".length) : id; }
-  function coalesceFeedback(items) { const byFeedback = new Map(); return items.reduce((display, item) => { const identity = feedbackIdentity(item); if (!identity) { display.push(item); return display; } const key = item.missionId + "|" + identity, existingIndex = byFeedback.get(key); if (existingIndex === undefined) { byFeedback.set(key, display.length); display.push(item); return display; } const existing = display[existingIndex]; if (item.eventId === "feedback:" + identity && existing.eventId !== "feedback:" + identity) display[existingIndex] = item; return display; }, []); }
-  function signatureFor(item) { return item.component + "|" + item.kind; }
-  function workflowRecord(item) { return item.component === "hyper-agent" || item.component === "planner"; }
-  function componentFor(item) { const workflow = workflowRecord(item) && WORKFLOW_COMPONENT_BY_KIND[item.kind]; if (workflow) return workflow; const signature = signatureFor(item), mapped = COMPONENT_BY_SIGNATURE[signature] || COMPONENT_BY_TRACE[item.component]; return mapped || "unclassified"; }
-  function edgeFor(item, items) { const workflow = workflowRecord(item) && WORKFLOW_EDGE_BY_KIND[item.kind]; if (workflow) return workflow; const child = componentFor(item); const parent = items.find((entry) => item.parentId && (entry.eventId === item.parentId || entry.traceId === item.parentId)); if (!parent) return ""; const key = componentFor(parent) + "|" + child; return EDGES[key] ? key : ""; }
-  function labelForEdge(key) { const endpoints = EDGES[key]; return endpoints ? COMPONENTS[endpoints[0]] + " → " + COMPONENTS[endpoints[1]] : key; }
-  function classFor(item) { const type = OBSERVED_TYPE_BY_SIGNATURE[signatureFor(item)]; return type ? type + " · " + item.kind : item.kind; }
-  function componentLabel(item) { const component = componentFor(item); return COMPONENTS[component] || "Unclassified component: " + item.component; }
-  function normalizeProfile(raw) { if (!raw || typeof raw !== "object") return null; const skills = Array.isArray(raw.skills) ? raw.skills.map((skill) => skill && typeof skill === "object" ? { name:text(skill.name, "Unnamed skill", 120), version:text(skill.version, "", 80), path:text(skill.path, "", 240) } : null).filter(Boolean) : []; const tools = Array.isArray(raw.tools) ? raw.tools.filter((tool) => typeof tool === "string").map((tool) => text(tool, "", 160)).filter(Boolean) : []; return { scope:text(raw.role, text(raw.agent_role, "", 120), 120), role:text(raw.agent_role, "Unassigned role", 120), skills, tools }; }
-  function normalizeInvocation(raw, index) { if (!raw || typeof raw !== "object") return null; return { role:text(raw.role, text(raw.agent_role, "Unassigned role", 120), 120), sequence:Number.isFinite(raw.sequence) ? raw.sequence : index + 1, kind:text(raw.kind, "", 40), name:text(raw.name, "Unnamed invocation", 160), input:raw.input, output:raw.output, error:raw.error, started:text(raw.started_at, "", 160), finished:text(raw.finished_at, "", 160) }; }
-  function normalizeConversation(raw, index) { if (!raw || typeof raw !== "object") return null; const reasoning = [raw.reasoning, raw.reasoning_content, raw.reasoning_details].filter((value) => value !== null && value !== undefined); return { role:text(raw.role, "Unassigned role", 120), sequence:Number.isFinite(raw.sequence) ? raw.sequence : index + 1, input:raw.input === undefined ? raw.request : raw.input, reasoning, output:raw.output === undefined ? { content:raw.content, function_call:raw.function_call, tool_calls:raw.tool_calls } : raw.output, status:raw.status_code, finish:text(raw.finish_reason, "", 80) }; }
-  function sameConversationValue(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
-  function sameConversationContent(left, right) { return sameConversationValue(left, right) || ([null, undefined, ""].includes(left) && [null, undefined, ""].includes(right)); }
-  function sameConversationCalls(left, right) { const leftEmpty = left === null || left === undefined || (Array.isArray(left) && !left.length), rightEmpty = right === null || right === undefined || (Array.isArray(right) && !right.length); return leftEmpty && rightEmpty || sameConversationValue(left, right); }
-  function repeatsPreviousOutput(message, output) { return message && typeof message === "object" && message.role === "assistant" && output && typeof output === "object" && sameConversationContent(message.content, output.content) && sameConversationValue(message.function_call ?? null, output.function_call ?? null) && sameConversationCalls(message.tool_calls, output.tool_calls); }
-  function conversationInputDeltas(conversations) { const previousByRole = new Map(); return conversations.map((conversation) => { const previous = previousByRole.get(conversation.role); previousByRole.set(conversation.role, conversation); if (!previous || !Array.isArray(previous.input) || !Array.isArray(conversation.input)) return conversation; let offset = 0; while (offset < previous.input.length && offset < conversation.input.length && sameConversationValue(previous.input[offset], conversation.input[offset])) offset++; let input = conversation.input.slice(offset); if (input.length && repeatsPreviousOutput(input[0], previous.output)) input = input.slice(1); return { ...conversation, input }; }); }
-  function normalizeConversations(raw) { const conversations = Array.isArray(raw) ? raw.map(normalizeConversation).filter(Boolean).sort((a, b) => a.role.localeCompare(b.role) || a.sequence - b.sequence) : []; return conversationInputDeltas(conversations); }
-  function selectedItem() { return state.items.find((item) => item.key === state.selectionId) || null; }
-  function matchesView(item) { const scope = VIEWS[state.view].components; return !scope || scope.includes(componentFor(item)); }
-  function derive() { const cursor = Math.max(0, Math.min(state.cursor, Math.max(0, state.items.length - 1))); const live = state.available ? state.items.slice(0, cursor + 1) : []; const selected = selectedItem(); return { cursor, live, viewItems:live.filter(matchesView), selected:selected && live.some((item) => item.key === selected.key) ? selected : null, totalInView:state.items.filter(matchesView).length }; }
-  function addDetail(label, value) { const row = document.createElement("div"), dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = label; dd.textContent = String(value); row.append(dt, dd); els.details.append(row); }
-  function clearTimer() { if (state.timer) { clearInterval(state.timer); state.timer = null; } }
-  function resetTimer() { clearTimer(); if (state.available && state.playing) state.timer = setInterval(() => { if (state.items.length > 1) { state.cursor = state.cursor >= state.items.length - 1 ? 0 : state.cursor + 1; renderAll(); } }, 1000 / state.speed); }
-  function resetMission(missionId) { state.requestToken++; state.debugToken++; state.missionId = missionId; state.items = []; state.cursor = 0; state.selectionId = ""; state.correlationId = ""; state.inspection = null; state.debug = { enabled:false, profiles:[], invocations:[], conversations:[] }; state.playing = true; clearTimer(); }
-  function renderPicker() { els.picker.hidden = !state.available || !state.missions.length; els.mission.replaceChildren(); state.missions.forEach((mission) => { const option = document.createElement("option"); option.value = mission; option.textContent = mission.slice(0, 80); option.selected = mission === state.missionId; els.mission.append(option); }); }
-  function renderStatus(runtime, unavailable) { const legacy = runtime && !own(runtime, "available") && Boolean(runtime.active); state.available = Boolean(runtime && (runtime.available || legacy)) && !unavailable; state.active = state.available && Boolean(runtime && runtime.active); els.runtime.className = "runtime-state" + (unavailable ? " unavailable" : state.active ? " live" : ""); els.runtimeLabel.textContent = unavailable ? "Runtime unavailable" : state.active ? "Runtime active" : state.available ? "Runtime available" : "Runtime idle"; if (state.available && Array.isArray(runtime.mission_ids)) state.missions = runtime.mission_ids.filter((id) => typeof id === "string" && id.trim()).map((id) => id.slice(0, 160)); if (state.available && !state.missionId && state.missions.length) resetMission(state.missions[0]); els.session.textContent = state.missionId ? "Mission " + state.missionId.slice(0, 34) : ""; els.graph.classList.toggle("live", state.active); els.idle.hidden = state.available; els.replay.hidden = !state.available; els.trace.hidden = !state.available; renderPicker(); }
-  function related(item, selected) { return selected && (item.key === selected.key || (selected.correlationId && item.correlationId === selected.correlationId) || (selected.eventId && item.parentId === selected.eventId) || (selected.traceId && item.parentId === selected.traceId)); }
-  function debugWorkflowEvidence() { const nodes = new Set(), edges = new Set(), tools = new Set(state.debug.invocations.filter((item) => item.role === "hyper-agent" && item.kind === "tool").map((item) => item.name)); if (tools.has("record_planning_intent")) { ["mission-input", "hyper-agent", "planning-intent"].forEach((item) => nodes.add(item)); ["mission-input|hyper-agent", "hyper-agent|planning-intent"].forEach((item) => edges.add(item)); } if (tools.has("load_planning_context")) { nodes.add("planning-context"); edges.add("planning-intent|planning-context"); } if (tools.has("persist_planner_assets")) { ["minizinc-assets", "planner-assets"].forEach((item) => nodes.add(item)); ["planning-context|minizinc-assets", "minizinc-assets|planner-assets"].forEach((item) => edges.add(item)); } if (tools.has("planner_executor")) { nodes.add("planner-executor"); edges.add("planner-assets|planner-executor"); } return { nodes, edges }; }
-  function renderGraph(model) { document.querySelectorAll(".node").forEach((node) => node.classList.remove("focused", "view-muted", "view-focus", "selected")); document.querySelectorAll(".edge").forEach((edge) => edge.classList.remove("active-flow", "related", "selected")); els.mobileFlow.replaceChildren(); if (!state.available) { els.count.textContent = "Architecture ready"; return; } els.count.textContent = state.view === "overview" ? state.items.length + " observed" : model.totalInView + " in view / " + state.items.length + " observed"; const scope = VIEWS[state.view].components, debugEvidence = debugWorkflowEvidence(), activeEdges = new Set(debugEvidence.edges); debugEvidence.nodes.forEach((component) => { const node = document.querySelector('.node[data-component="' + component + '"]'); if (node) node.classList.add("focused"); }); model.viewItems.forEach((item) => { const component = componentFor(item), node = document.querySelector('.node[data-component="' + component + '"]'); if (node) node.classList.add("focused"); const edge = edgeFor(item, model.live); if (edge) activeEdges.add(edge); }); if (scope) document.querySelectorAll(".node").forEach((node) => node.classList.add(scope.includes(node.dataset.component) ? "view-focus" : "view-muted")); activeEdges.forEach((key) => { const edge = document.querySelector('.edge[data-edge="' + key + '"]'); if (edge) edge.classList.add("active-flow"); const chip = document.createElement("button"); chip.type = "button"; chip.className = "flow-chip"; chip.dataset.edge = key; chip.textContent = labelForEdge(key); els.mobileFlow.append(chip); }); if (model.selected) model.live.filter((item) => related(item, model.selected)).forEach((item) => { const edge = edgeFor(item, model.live); const element = edge && document.querySelector('.edge[data-edge="' + edge + '"]'); if (element) element.classList.add("related"); }); if (state.inspection) { const selector = state.inspection.type === "component" ? '.node[data-component="' + state.inspection.id + '"]' : '.edge[data-edge="' + state.inspection.id + '"]'; const element = document.querySelector(selector); if (element) element.classList.add("selected"); } }
-  function renderEvents(model) { els.events.replaceChildren(); model.viewItems.forEach((item) => { const button = document.createElement("button"), seq = document.createElement("span"), kind = document.createElement("strong"), meta = document.createElement("small"), selected = Boolean(model.selected && item.key === model.selected.key); button.type = "button"; button.className = "event" + (selected ? " selected" : "") + (related(item, model.selected) ? " related" : ""); button.dataset.key = item.key; button.setAttribute("aria-label", "Inspect observed event " + item.sequence + ": " + item.kind); button.setAttribute("aria-pressed", String(selected)); seq.className = "sequence"; seq.textContent = "OBS " + item.sequence; kind.textContent = item.kind; meta.textContent = componentLabel(item); button.append(seq, kind, meta); els.events.append(button); }); }
-  function renderSummaries(model) { const summaries = model.live.filter((item) => componentFor(item) === "mission-summary" && item.summary); els.summaries.hidden = !state.available || state.view !== "overview"; els.summaryLatest.replaceChildren(); els.summaryHistory.replaceChildren(); if (els.summaries.hidden) return; if (!summaries.length) { els.summaryStatus.textContent = "Unavailable"; els.summaryLatest.textContent = "No public summary has been observed for this mission."; return; } const latest = summaries[summaries.length - 1]; els.summaryStatus.textContent = summaries.length + " observed"; els.summaryLatest.textContent = latest.summary.summary; summaries.slice(0, -1).reverse().slice(0, 8).forEach((item) => { const button = document.createElement("button"), selected = Boolean(model.selected && item.key === model.selected.key); button.type = "button"; button.className = "summary-item" + (selected ? " selected" : ""); button.dataset.key = item.key; button.setAttribute("aria-pressed", String(selected)); button.textContent = "OBS " + item.sequence; els.summaryHistory.append(button); }); }
-  function appendEmpty(message) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = message; els.body.append(empty); }
-  function appendEvidence(title, items) { const group = document.createElement("section"); group.className = "history-group"; const heading = document.createElement("h3"); heading.textContent = title; group.append(heading); if (!items.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No observed history."; group.append(empty); } else items.slice(-24).reverse().forEach((item) => { const row = document.createElement("div"), button = document.createElement("button"), meta = document.createElement("small"); row.className = "evidence-row"; button.type = "button"; button.dataset.key = item.key; button.textContent = classFor(item); meta.textContent = "OBS " + item.sequence + " · " + item.occurred; row.append(button, meta); group.append(row); }); els.body.append(group); }
-  function appendDeclaredClasses(edge) { const group = document.createElement("section"), heading = document.createElement("h3"), classes = DECLARED_EDGE_CLASSES[edge] || []; group.className = "history-group"; heading.textContent = "Declared contract classes"; group.append(heading); const detail = document.createElement("p"); detail.className = "empty-state"; detail.textContent = classes.length ? classes.join(" · ") : "No declared trace class for this connection."; group.append(detail); els.body.append(group); }
-  function roleFor(component) { return component === "hyper-agent" ? "hyper-agent" : component === "maneuver-control" ? "maneuver-control" : ""; }
-  function profileFor(component) { const role = roleFor(component); return role ? state.debug.profiles.filter((profile) => profile.scope === role || profile.role === role) : []; }
-  function invocationFor(component) { const role = roleFor(component); return role ? state.debug.invocations.filter((item) => item.role === role) : []; }
-  function appendProfiles(component) { const profiles = profileFor(component), title = COMPONENTS[component]; const group = document.createElement("section"); group.className = "history-group"; const heading = document.createElement("h3"); heading.textContent = title + " API profile"; group.append(heading); if (!state.debug.enabled) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No debug evidence is available for this mission."; group.append(empty); } else if (!profiles.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No tools or skills were reported for this role."; group.append(empty); } else profiles.forEach((profile) => { const item = document.createElement("div"); item.className = "evidence-row"; item.textContent = "Tools: " + (profile.tools.join(", ") || "None reported") + "\nAvailable skills: " + (profile.skills.map((skill) => skill.name + (skill.version ? " " + skill.version : "")).join(", ") || "None reported"); item.style.whiteSpace = "pre-wrap"; group.append(item); }); els.body.append(group); }
-  function appendSkillActivations(component) { const reads = invocationFor(component).filter((item) => item.kind === "tool" && item.name === "read_file"), activations = []; profileFor(component).forEach((profile) => profile.skills.forEach((skill) => { const suffix = "/" + skill.name + "/SKILL.md", invocation = reads.find((item) => item.input && typeof item.input === "object" && text(item.input.file_path, "", 1000).endsWith(suffix)); if (invocation && !activations.some((item) => item.skill.name === skill.name)) activations.push({ skill, invocation }); })); const group = document.createElement("section"), heading = document.createElement("h3"); group.className = "history-group"; heading.textContent = "Skill activations"; group.append(heading); if (!activations.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No SKILL.md read was recorded for this role."; group.append(empty); } else activations.forEach(({ skill, invocation }) => { const item = document.createElement("div"); item.className = "evidence-row"; item.textContent = skill.name + (skill.version ? " " + skill.version : "") + " · sequence " + invocation.sequence; group.append(item); }); els.body.append(group); }
-  function appendToolCalls(component) { const calls = invocationFor(component).filter((item) => item.kind === "tool").sort((a, b) => a.sequence - b.sequence), group = document.createElement("section"), heading = document.createElement("h3"), list = document.createElement("div"); group.className = "history-group"; heading.textContent = "Tool calls"; list.className = "tool-call-list"; group.append(heading); if (!state.debug.enabled || !calls.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No tool invocation evidence is available for this role."; list.append(empty); } else calls.forEach((call) => { const card = document.createElement("article"), header = document.createElement("div"); card.className = "tool-call"; header.className = "tool-call-header"; header.textContent = call.name + " · sequence " + call.sequence; card.append(header); [["Input", call.input, "input"], ["Output", call.output, "output"], ["Error", call.error, "error"]].forEach(([label, value, className]) => { if (className === "error" && (value === null || value === undefined)) return; const exchange = document.createElement("section"), name = document.createElement("strong"), pre = document.createElement("pre"); exchange.className = "exchange " + className; name.textContent = label; pre.textContent = value === null || value === undefined ? "Not reported" : json(value); exchange.append(name, pre); card.append(exchange); }); list.append(card); }); group.append(list); els.body.append(group); }
-  function appendConversations(component) { const role = component === "hyper-agent" ? "hyper-agent" : "maneuver-control"; const conversations = state.debug.conversations.filter((conversation) => conversation.role === role).sort((a, b) => a.role.localeCompare(b.role) || a.sequence - b.sequence); const group = document.createElement("section"); group.className = "history-group"; const heading = document.createElement("h3"); heading.textContent = "Conversation inspector"; group.append(heading); const list = document.createElement("div"); list.className = "conversation-list"; if (!state.debug.enabled || !conversations.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No debug conversation evidence is available for this role."; list.append(empty); } else conversations.forEach((conversation) => { const card = document.createElement("article"); card.className = "conversation"; const header = document.createElement("div"); header.className = "conversation-header"; header.textContent = conversation.role + " · sequence " + conversation.sequence; card.append(header); const exchanges = [["Provider reasoning", conversation.reasoning.length ? conversation.reasoning : null, "reasoning"], ["Output / content / tool calls", conversation.output, "output"]]; if (!Array.isArray(conversation.input) || conversation.input.length) exchanges.unshift(["New input / request", conversation.input, "input"]); exchanges.forEach(([label, value, className]) => { const exchange = document.createElement("section"); exchange.className = "exchange " + className; const name = document.createElement("strong"), pre = document.createElement("pre"); name.textContent = label; pre.textContent = value === null || value === undefined ? "Not reported" : json(value); exchange.append(name, pre); card.append(exchange); }); list.append(card); }); group.append(list); els.body.append(group); }
-  function renderInspector(model) { els.details.replaceChildren(); els.body.replaceChildren(); els.safety.replaceChildren(); const inspected = state.inspection; if (!state.available) { els.kicker.textContent = "Architecture inspector"; els.inspectorTitle.textContent = "Select a component or flow"; els.inspectorCopy.textContent = "No available mission is selected."; return; } if (inspected && inspected.type === "edge") { const evidence = model.live.filter((item) => edgeFor(item, model.live) === inspected.id); els.kicker.textContent = "Directed flow"; els.inspectorTitle.textContent = labelForEdge(inspected.id); els.inspectorCopy.textContent = evidence.length ? "Observed evidence traversing this flow." : "No observed evidence traverses this flow in the replay window."; addDetail("Observed evidence", evidence.length); appendEvidence("Observed traversal evidence", evidence); appendDeclaredClasses(inspected.id); return; } if (inspected && inspected.type === "component") { const component = inspected.id, output = model.live.filter((item) => componentFor(item) === component && edgeFor(item, model.live).startsWith(component + "|")), input = model.live.filter((item) => { const edge = edgeFor(item, model.live); return edge && EDGES[edge][1] === component; }); els.kicker.textContent = "Component history"; els.inspectorTitle.textContent = COMPONENTS[component]; els.inspectorCopy.textContent = "Durable observed input and output evidence."; addDetail("Observed", output.length + input.length); appendEvidence("Input history", input); appendEvidence("Output history", output); if (component === "hyper-agent" || component === "maneuver-control") { appendProfiles(component); appendSkillActivations(component); appendToolCalls(component); appendConversations(component); } return; } const item = model.selected; if (!item) { els.kicker.textContent = VIEWS[state.view].title; els.inspectorTitle.textContent = VIEWS[state.view].title; els.inspectorCopy.textContent = VIEWS[state.view].detail; return; } els.kicker.textContent = "Observed event " + item.sequence; els.inspectorTitle.textContent = item.kind; els.inspectorCopy.textContent = componentLabel(item) + " reported this observation."; [["Component", item.component], ["Authority", item.authority], ["Occurred", item.occurred], ["Event ID", item.eventId || item.traceId], ["Correlation", item.correlationId || "not reported"], ["Replay", item.replay]].forEach(([label, value]) => addDetail(label, value)); item.payload.forEach(([label, value]) => addDetail(label, value)); item.redacted.forEach((field) => { const note = document.createElement("p"); note.className = "safety-note"; note.textContent = "Redacted: " + field; els.safety.append(note); }); item.missing.forEach((field) => { const note = document.createElement("p"); note.className = "safety-note red"; note.textContent = "Missing: " + field; els.safety.append(note); }); }
-  function renderReplay(model) { els.scrubber.max = Math.max(0, state.items.length - 1); els.scrubber.value = model.cursor; els.end.textContent = state.items.length + " observed"; els.play.textContent = state.playing ? "Pause" : "Play"; els.clear.hidden = !state.correlationId; }
-  function renderAll() { const model = derive(); state.cursor = model.cursor; renderGraph(model); renderEvents(model); renderSummaries(model); renderInspector(model); renderReplay(model); }
-  async function loadTrace() { const missionId = state.missionId, token = ++state.requestToken; if (!missionId) return; const response = await fetch("/api/trace?mission_id=" + encodeURIComponent(missionId), { headers:{ Accept:"application/json" }, cache:"no-store" }); if (!response.ok) throw new Error("trace unavailable"); const trace = await response.json(); if (token === state.requestToken && missionId === state.missionId && state.available) { const normalized = Array.isArray(trace.items) ? trace.items.map(normalize).filter((item) => item && item.missionId === missionId) : []; state.items = coalesceFeedback(normalized); state.cursor = Math.min(state.cursor, Math.max(0, state.items.length - 1)); } }
-  async function loadDebug() { const missionId = state.missionId, token = ++state.debugToken; if (!missionId) return; try { const response = await fetch("/api/debug?mission_id=" + encodeURIComponent(missionId), { headers:{ Accept:"application/json" }, cache:"no-store" }); if (!response.ok) throw new Error("debug unavailable"); const debug = await response.json(); if (token === state.debugToken && missionId === state.missionId && state.available) state.debug = { enabled:Boolean(debug && debug.enabled), profiles:Array.isArray(debug && debug.profiles) ? debug.profiles.map(normalizeProfile).filter(Boolean) : [], invocations:Array.isArray(debug && debug.invocations) ? debug.invocations.map(normalizeInvocation).filter(Boolean).sort((a, b) => a.role.localeCompare(b.role) || a.sequence - b.sequence) : [], conversations:normalizeConversations(debug && debug.conversations) }; } catch (_) { if (token === state.debugToken) state.debug = { enabled:false, profiles:[], invocations:[], conversations:[] }; } }
-  async function refreshMission() { if (!state.available) return; try { await Promise.all([loadTrace(), loadDebug()]); } catch (_) { state.items = []; } renderAll(); resetTimer(); }
-  async function poll() { try { const response = await fetch("/api/runtime", { headers:{ Accept:"application/json" }, cache:"no-store" }); if (!response.ok) throw new Error("runtime unavailable"); renderStatus(await response.json(), false); await refreshMission(); } catch (_) { renderStatus(null, true); renderAll(); clearTimer(); } if (state.active) state.pollTimer = setTimeout(poll, POLL_MS); }
-  function inspectEvent(item) { state.selectionId = item.key; state.correlationId = item.correlationId || item.eventId || item.traceId; state.inspection = null; state.cursor = Math.max(state.cursor, state.items.findIndex((entry) => entry.key === item.key)); renderAll(); }
-  document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => { state.view = tab.dataset.view; state.inspection = null; document.querySelectorAll(".tab").forEach((button) => { const active = button === tab; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); }); els.title.textContent = VIEWS[state.view].title; renderAll(); }));
-  els.mission.addEventListener("change", () => { if (state.missions.includes(els.mission.value)) { resetMission(els.mission.value); renderPicker(); renderAll(); refreshMission(); } }); $("playPause").addEventListener("click", () => { state.playing = !state.playing; renderAll(); resetTimer(); }); $("restart").addEventListener("click", () => { state.cursor = 0; state.playing = true; renderAll(); resetTimer(); }); els.speed.addEventListener("change", () => { state.speed = Number(els.speed.value); resetTimer(); }); els.scrubber.addEventListener("input", () => { state.cursor = Number(els.scrubber.value); state.playing = false; renderAll(); resetTimer(); });
-  els.events.addEventListener("click", (event) => { const target = event.target.closest(".event"), item = target && state.items.find((entry) => entry.key === target.dataset.key); if (item) inspectEvent(item); }); els.summaryHistory.addEventListener("click", (event) => { const target = event.target.closest(".summary-item"), item = target && state.items.find((entry) => entry.key === target.dataset.key); if (item) inspectEvent(item); }); els.body.addEventListener("click", (event) => { const target = event.target.closest("button[data-key]"), item = target && state.items.find((entry) => entry.key === target.dataset.key); if (item) inspectEvent(item); }); els.clear.addEventListener("click", () => { state.correlationId = ""; renderAll(); }); document.querySelectorAll(".node").forEach((node) => node.addEventListener("click", () => { state.inspection = { type:"component", id:node.dataset.component }; renderAll(); })); document.querySelectorAll(".edge").forEach((edge) => edge.addEventListener("click", () => { state.inspection = { type:"edge", id:edge.dataset.edge }; renderAll(); })); els.mobileFlow.addEventListener("click", (event) => { const button = event.target.closest("button[data-edge]"); if (button) { state.inspection = { type:"edge", id:button.dataset.edge }; renderAll(); } });
-  renderAll(); poll();
-}());
+// Entry point: boots the store, wires the hash router, runs the 1.5 s poll
+// loop (stale-while-revalidate — the UI always renders from local state and
+// swaps in fresh data when it lands), and owns keyboard navigation.
+
+import { h, icon } from "./app/dom.js";
+import {
+  state, setStepsPayload, signatureOf, readHash, writeHash, resolveHashStep, selectedStep, VIEWS,
+} from "./app/store.js";
+import { getRuntime, getRun, getSteps, mockUsed } from "./app/api.js";
+import { renderHeader } from "./app/header.js";
+import { renderTrajectory, visibleTrajectorySteps } from "./app/trajectory.js";
+import { renderTree, visibleTreeSteps } from "./app/tree.js";
+import { renderTimeline, visibleTimelineSteps } from "./app/timeline.js";
+import { renderOverview } from "./app/overview.js";
+import { renderDetail } from "./app/detail.js";
+import { resetJsonViewState } from "./app/jsonview.js";
+import { invalidateArtifactCache } from "./app/artifact.js";
+
+const POLL_MS = 1500;
+
+const headerRoot = document.getElementById("app-header");
+const bannerRoot = document.getElementById("app-banner");
+const viewRoot = document.getElementById("view-root");
+
+const viewRenderers = {
+  trajectory: renderTrajectory,
+  tree: renderTree,
+  timeline: renderTimeline,
+  overview: renderOverview,
+};
+
+function visibleStepsForView() {
+  if (state.view === "trajectory") return visibleTrajectorySteps();
+  if (state.view === "tree") return visibleTreeSteps();
+  if (state.view === "timeline") return visibleTimelineSteps();
+  return [];
+}
+
+/* ------------------------------ rendering ------------------------------ */
+
+let lastHeaderSig = "";
+function headerSignature() {
+  const runtime = state.runtime;
+  return [
+    state.signature,
+    state.missionId,
+    state.view,
+    runtime ? runtime.active + ":" + (runtime.mission_ids || []).join(",") : "none",
+    mockUsed.runtime, mockUsed.steps, mockUsed.run,
+    state.errors.runtime ? "err" : "",
+  ].join("|");
+}
+
+function renderHeaderIfChanged() {
+  const sig = headerSignature();
+  if (sig === lastHeaderSig) return;
+  lastHeaderSig = sig;
+  renderHeader(headerRoot, actions);
+}
+
+function renderBanner() {
+  bannerRoot.replaceChildren();
+  const warnings = new Set([
+    ...((state.stepsPayload && state.stepsPayload.warnings) || []),
+    ...((state.run && state.run.warnings) || []),
+  ]);
+  for (const text of warnings) {
+    if (state.dismissedWarnings.has(text)) continue;
+    bannerRoot.append(h("div", { class: "banner tone-running", role: "status" },
+      icon("alert", 13),
+      h("span", { class: "banner-text" }, text),
+      h("button", {
+        class: "banner-dismiss", type: "button", "aria-label": "Dismiss warning",
+        onclick: () => { state.dismissedWarnings.add(text); renderBanner(); },
+      }, icon("x", 11))));
+  }
+  const hardError = state.errors.steps || state.errors.run;
+  if (hardError) {
+    bannerRoot.append(h("div", { class: "banner tone-error", role: "alert" },
+      icon("alert", 13),
+      h("span", { class: "banner-text" }, "Live data failed: " + hardError + ". The last good data stays on screen."),
+      h("button", { class: "banner-dismiss", type: "button", onclick: () => { state.errors.steps = null; state.errors.run = null; renderBanner(); } }, icon("x", 11))));
+  }
+}
+
+function preserveScrollAndFocus(render) {
+  const scrollEl = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview");
+  const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+  const active = document.activeElement;
+  const keepFocus = active && active.dataset && active.dataset.testid === "step-search";
+  const caret = keepFocus ? active.selectionStart : 0;
+  render();
+  const nextScroll = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview");
+  if (nextScroll) nextScroll.scrollTop = scrollTop;
+  if (keepFocus) {
+    const input = viewRoot.querySelector('[data-testid="step-search"]');
+    if (input) {
+      input.focus();
+      try { input.setSelectionRange(caret, caret); } catch (_) { /* search inputs accept this in practice */ }
+    }
+  }
+}
+
+const actions = {
+  selectMission(missionId) {
+    if (!missionId || missionId === state.missionId) return;
+    state.missionId = missionId;
+    state.selectedStepId = "";
+    state.detailTab = "";
+    state.artifactRef = "";
+    state.signature = "";
+    state.run = null;
+    setStepsPayload(null);
+    resetJsonViewState();
+    invalidateArtifactCache();
+    state.treeCollapsed.clear();
+    writeHash({ push: true });
+    renderAll();
+    refreshMission();
+  },
+  setView(view) {
+    if (!VIEWS.includes(view) || view === state.view) return;
+    state.view = view;
+    writeHash({ push: true });
+    renderAll();
+  },
+  selectStep(stepId, { push = true, scroll = false } = {}) {
+    if (!state.byId.has(stepId)) return;
+    state.selectedStepId = stepId;
+    state.detailTab = ""; // auto-pick for the new step
+    writeHash({ push });
+    // cheap path: update row highlight in place, re-render only the detail pane
+    viewRoot.querySelectorAll("[data-step-id]").forEach((el) => {
+      const on = el.dataset.stepId === stepId;
+      el.classList.toggle("selected", on);
+      if (el.getAttribute("role") === "treeitem") el.setAttribute("aria-selected", String(on));
+    });
+    const pane = viewRoot.querySelector('[data-testid="detail-panel"]');
+    if (pane) renderDetailInto(pane);
+    if (scroll) {
+      const row = viewRoot.querySelector(".selected[data-step-id]");
+      if (row) row.scrollIntoView({ block: "nearest" });
+    }
+  },
+  renderView(options = {}) {
+    preserveScrollAndFocus(() => renderView(options));
+  },
+  renderDetail() {
+    const pane = viewRoot.querySelector('[data-testid="detail-panel"]');
+    if (pane) renderDetailInto(pane);
+  },
+};
+
+function renderDetailInto(pane) {
+  renderDetail(pane, selectedStep(), actions);
+}
+
+function renderView() {
+  const render = viewRenderers[state.view] || renderTrajectory;
+  render(viewRoot, actions);
+}
+
+function renderAll() {
+  renderHeaderIfChanged();
+  renderBanner();
+  renderView();
+}
+
+/* ------------------------------ polling ------------------------------ */
+
+async function refreshMission() {
+  if (!state.missionId) return;
+  const missionId = state.missionId;
+  try {
+    const [run, steps] = await Promise.all([getRun(missionId), getSteps(missionId)]);
+    if (missionId !== state.missionId) return; // switched while fetching
+    state.errors.run = null;
+    state.errors.steps = null;
+    state.run = run;
+    const signature = signatureOf(steps, run);
+    setStepsPayload(steps);
+    state.loadedOnce = true;
+    if (signature !== state.signature) {
+      state.signature = signature;
+      if (state.selectedStepId && !state.byId.has(state.selectedStepId)) {
+        state.selectedStepId = "";
+      }
+      renderAll();
+    }
+  } catch (error) {
+    if (missionId !== state.missionId) return;
+    state.errors.run = error.message;
+    state.errors.steps = error.message;
+    state.loadedOnce = true;
+    renderBanner();
+  }
+}
+
+async function poll() {
+  try {
+    const runtime = await getRuntime();
+    state.runtime = runtime;
+    state.errors.runtime = null;
+    if (!state.missionId) {
+      const hash = readHash();
+      const missions = Array.isArray(runtime.mission_ids) ? runtime.mission_ids : [];
+      if (hash.mission) state.missionId = hash.mission;
+      else if (missions.length) state.missionId = missions[0];
+    }
+    renderHeaderIfChanged();
+    await refreshMission();
+  } catch (error) {
+    state.errors.runtime = error.message;
+    renderHeaderIfChanged();
+    renderBanner();
+  } finally {
+    setTimeout(poll, POLL_MS);
+  }
+}
+
+/* ------------------------------ keyboard ------------------------------ */
+
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  const inField = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+
+  if (event.key === "/" && !inField) {
+    const search = viewRoot.querySelector('[data-testid="step-search"]');
+    if (search) { event.preventDefault(); search.focus(); }
+    return;
+  }
+  if (event.key === "Escape" && inField) {
+    target.blur();
+    return;
+  }
+  if (inField || state.view === "overview") return;
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+
+  const steps = visibleStepsForView();
+  if (!steps.length) return;
+  event.preventDefault();
+  const currentIndex = steps.findIndex((step) => step.step_id === state.selectedStepId);
+  const delta = event.key === "ArrowDown" ? 1 : -1;
+  const nextIndex = currentIndex === -1
+    ? (delta > 0 ? 0 : steps.length - 1)
+    : Math.max(0, Math.min(steps.length - 1, currentIndex + delta));
+  actions.selectStep(steps[nextIndex].step_id, { push: false, scroll: true });
+});
+
+/* ------------------------------ routing ------------------------------ */
+
+function applyHash() {
+  const hash = readHash();
+  if (hash.mission && hash.mission !== state.missionId) {
+    state.missionId = hash.mission;
+    state.selectedStepId = "";
+    state.signature = "";
+    refreshMission();
+  }
+  if (hash.view && hash.view !== state.view) state.view = hash.view;
+  if (hash.step) {
+    const step = resolveHashStep(hash.step);
+    if (step) {
+      state.selectedStepId = step.step_id;
+      state.detailTab = "";
+    }
+  }
+  renderAll();
+}
+
+window.addEventListener("hashchange", applyHash);
+window.addEventListener("popstate", applyHash);
+
+/* ------------------------------ boot ------------------------------ */
+
+const initialHash = readHash();
+if (initialHash.view) state.view = initialHash.view;
+if (initialHash.mission) state.missionId = initialHash.mission;
+renderAll();
+poll().then(() => {
+  // restore deep-linked step once the first payload lands
+  if (initialHash.step && !state.selectedStepId) {
+    const step = resolveHashStep(initialHash.step);
+    if (step) {
+      state.selectedStepId = step.step_id;
+      renderAll();
+      const row = viewRoot.querySelector(".selected[data-step-id]");
+      if (row) row.scrollIntoView({ block: "nearest" });
+    }
+  }
+});
