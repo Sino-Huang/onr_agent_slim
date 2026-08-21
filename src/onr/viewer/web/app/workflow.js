@@ -2,8 +2,10 @@
 // of the ONR agentic pipeline. Declared topology — no API calls; renders
 // identically with or without a mission selected.
 //
-//   L0 (default) — five big nodes: Mission → Planning Agent → Execution Agent
-//       → Mission Result, with the Data & Memory Plane spanning below.
+//   L0 (default) — three big nodes: Mission → Hyper Agent → Maneuver Control
+//       Agent (a closed loop), with the Data & Memory Plane spanning below.
+//       Results are terminal artifacts of the loop and live on the plane
+//       (verification + mission report) — there is no "result" pipeline stage.
 //   L1 — a node expands in place to its sub-graph; siblings stay visible,
 //       dimmed. Expansion state lives in the hash (#view=workflow&node=hyper).
 //   L2 — "View in run" chips deep-link into the Trajectory view
@@ -32,6 +34,7 @@ const EDGE_KINDS = {
   flow:  { color: "var(--text-2)",        dash: "",    marker: "wf-ar" },
   data:  { color: "var(--text-2)",        dash: "5 4", marker: "wf-ar" },
   retry: { color: "var(--kind-decision)", dash: "6 4", marker: "wf-ar-amber" },
+  loop:  { color: "var(--kind-decision)", dash: "",    marker: "wf-ar-amber" },
   llm:   { color: "var(--kind-llm)",      dash: "",    marker: "wf-ar-violet" },
   done:  { color: "var(--kind-feedback)", dash: "",    marker: "wf-ar-green" },
 };
@@ -159,6 +162,13 @@ function edge(a, b, { label = "", kind = "flow", ...opts } = {}) {
   return svg;
 }
 
+// Label chip at an explicit point — for one label describing a pair of edges.
+function pairLabel(x, y, text) {
+  const w = text.length * 4.9 + 14;
+  return `<rect x="${x - w / 2}" y="${y - 8.5}" width="${w}" height="17" rx="4" class="wf-edge-chip"/>` +
+    `<text x="${x}" y="${y + 3.5}" text-anchor="middle" class="wf-edge-label">${esc(text)}</text>`;
+}
+
 /* ------------------------------ node primitives ------------------------------ */
 
 function node(b, { kind, num = "", title, caption = [], mono = false }) {
@@ -193,12 +203,11 @@ function terminal(b, text) {
 /* ------------------------------ L0: system at a glance ------------------------------ */
 
 const L0_NODES = [
-  { id: "mission",  title: "Mission",            caption: "the tasking that starts a run",              badge: "input",           kind: "io",       x: 40,   w: 200 },
-  { id: "hyper",    title: "Planning Agent",     caption: "solver-verified plan + state machine",       badge: "self-repairing",  kind: "llm",      x: 330,  w: 260 },
-  { id: "maneuver", title: "Execution Agent",    caption: "closed-loop control: reason → act → adapt",  badge: "feedback-driven", kind: "feedback", x: 680,  w: 260 },
-  { id: "result",   title: "Mission Result",     caption: "final structured outcome",                   badge: "output",          kind: "io",       x: 1030, w: 170 },
+  { id: "mission",  title: "Mission",                caption: "the tasking that starts a run",             badge: "input",           kind: "io",       x: 40,  w: 240 },
+  { id: "hyper",    title: "Hyper Agent",            caption: "solver-verified plan + state machine",      badge: "self-repairing",  kind: "llm",      x: 380, w: 340 },
+  { id: "maneuver", title: "Maneuver Control Agent", caption: "closed-loop control: reason → act → adapt", badge: "feedback-driven", kind: "feedback", x: 820, w: 380 },
 ];
-const L0_DATA = { id: "data", title: "Data & Memory Plane", caption: "durable artifacts; every decision inspectable", badge: "auditable", kind: "data", x: 330, w: 610 };
+const L0_DATA = { id: "data", title: "Data & Memory Plane", caption: "durable artifacts · verification + report", badge: "auditable", kind: "data", x: 380, w: 820 };
 const L0_IDS = [...L0_NODES.map((n) => n.id), L0_DATA.id];
 const L0_Y = 70, L0_H = 108, L0_DATA_Y = 236, L0_DATA_H = 96;
 const L0_BASE_H = 356;
@@ -211,7 +220,7 @@ function l0Node(def, y, h, expanded, dimmed) {
     ? `<path d="M -4 1.5 L 0 -3 L 4 1.5" class="wf-afford-chevron"/>`
     : `<path d="M -4 -1.5 L 0 3 L 4 -1.5" class="wf-afford-chevron"/>`;
   return `<g class="wf-l0node${expanded ? " active" : ""}${dimmed ? " dim" : ""}"` +
-    ` data-wf="toggle-node" data-node="${def.id}" tabindex="0" role="button"` +
+    ` data-wf="toggle-node" data-node="${def.id}" data-testid="wf-${def.id}" tabindex="0" role="button"` +
     ` aria-expanded="${String(expanded)}" aria-label="${esc(def.title)} — ${expanded ? "collapse" : "expand"}">` +
     `<rect class="card" x="${def.x}" y="${y}" width="${def.w}" height="${h}" rx="10" fill="${style.fill}" stroke="${style.stroke}" stroke-width="1.4"/>` +
     `<text x="${def.x + 18}" y="${y + 32}" class="wf-l0title">${esc(def.title)}</text>` +
@@ -226,18 +235,23 @@ function l0Node(def, y, h, expanded, dimmed) {
 function buildL0(expanded) {
   const dim = (id) => expanded && expanded !== "all" && expanded !== id;
   const b = {
-    mission: box(40, L0_Y, 200, L0_H),
-    hyper: box(330, L0_Y, 260, L0_H),
-    maneuver: box(680, L0_Y, 260, L0_H),
-    result: box(1030, L0_Y, 170, L0_H),
-    data: box(330, L0_DATA_Y, 610, L0_DATA_H),
+    mission: box(40, L0_Y, 240, L0_H),
+    hyper: box(380, L0_Y, 340, L0_H),
+    maneuver: box(820, L0_Y, 380, L0_H),
+    data: box(380, L0_DATA_Y, 820, L0_DATA_H),
   };
+  // plane↔maneuver pair: reads (up) at x≈1028, writes (down) at x=1105
+  const readsX = 380 + 820 * 0.79, writesX = 820 + 380 * 0.75;
   const edges =
     edge(port(b.mission, "E"), port(b.hyper, "W"), { label: "mission brief" }) +
     edge(port(b.hyper, "E"), port(b.maneuver, "W"), { label: "verified plan" }) +
-    edge(port(b.maneuver, "E"), port(b.result, "W"), { label: "final result" }) +
-    edge(port(b.hyper, "S", 0.3), port(b.data, "N", 0.25), { label: "publish / subscribe", kind: "data" }) +
-    edge(port(b.maneuver, "S", 0.7), port(b.data, "N", 0.75), { label: "read / write artifacts", kind: "data" });
+    edge(port(b.hyper, "S", 0.3), port(b.data, "N", 0.124), { label: "publish / subscribe", kind: "data" }) +
+    // closed-loop affordance: the control agent cycles in place
+    edge(port(b.maneuver, "N", 0.32), port(b.maneuver, "N", 0.68),
+      { label: "closed loop ↺", kind: "loop", clear: L0_Y - 24 }) +
+    edge(port(b.data, "N", 0.79), port(b.maneuver, "S", (readsX - 820) / 380), { kind: "data" }) +
+    edge(port(b.maneuver, "S", 0.75), port(b.data, "N", (writesX - 380) / 820), { kind: "data" }) +
+    pairLabel((readsX + writesX) / 2, (L0_Y + L0_H + L0_DATA_Y) / 2, "reads + writes every cycle");
   const nodes =
     L0_NODES.map((def) => l0Node(def, L0_Y, L0_H, expanded === def.id || expanded === "all", dim(def.id))).join("") +
     l0Node(L0_DATA, L0_DATA_Y, L0_DATA_H, expanded === "data" || expanded === "all", dim("data"));
@@ -289,13 +303,13 @@ const PHASES = [
   { num: "4", kind: "tool",     title: "persist_planner_assets", caption: "freeze the planner draft",            run: "planner-assets" },
   { num: "5", kind: "tool",     title: "planner_executor",       caption: ["runs the solver —", "verified plan ∨ rejection"], run: "planner-execution", chip: "5 · solver" },
   { num: "6", kind: "decision", title: "submit_statechart_draft", caption: ["schema + machine-build", "validation"], run: "statechart-generation", chip: "6 · statechart" },
-  { num: "7", kind: "feedback", title: "handoff_execution",      caption: ["activates FSM, invokes", "maneuver agent"], run: "maneuver-handoff", chip: "7 · handoff" },
+  { num: "7", kind: "feedback", title: "handoff_execution",      caption: ["activates FSM, invokes", "maneuver control agent"], run: "maneuver-handoff", chip: "7 · handoff" },
 ];
 
 function regionHyper(oy) {
   const h = 452;
   const shell = regionShell(oy, h, "hyper",
-    "Planning Agent — phase pipeline",
+    "Hyper Agent — phase pipeline",
     "DeepAgents · phase-gated tools · solver-verified plan + statechart");
   const chainY = oy + 180;
   const boxes = PHASES.map((_, i) => box(26 + i * 172, chainY, 156, 84));
@@ -329,32 +343,48 @@ function regionHyper(oy) {
   return { h, svg: svg + shell.close };
 }
 
+const LOOP_STAGES = [
+  { num: "1", kind: "feedback", title: "observe", caption: "environment snapshot + belief store" },
+  { num: "2", kind: "llm",      title: "reason",  caption: "maneuver control LLM over FSM state" },
+  { num: "3", kind: "tool",     title: "act",     caption: "dispatch command via transport" },
+  { num: "4", kind: "feedback", title: "adapt",   caption: "result → belief store → next FSM state" },
+];
+
 function regionManeuver(oy) {
-  const h = 288;
+  // height derives from the content: header → closure clearance → stage row
+  // → hub gutter → hub → run strip → bottom pad
+  const rowY = oy + 100, stageH = 84;
+  const hubY = rowY + stageH + 56, hubH = 64;
+  const stripY = hubY + hubH + 30;
+  const h = (stripY - oy) + 22 + 16;
   const shell = regionShell(oy, h, "maneuver",
-    "Execution Agent — closed control loop",
-    "heartbeat-driven · reason → act → observe → adapt");
-  const rowY = oy + 96;
-  const heartbeat = box(40, rowY, 170, 84);
-  const llm = box(260, rowY, 190, 84);
-  const tools = box(500, rowY, 330, 84);
-  const record = box(880, rowY, 250, 84);
-  const termBox = box(770, oy + 18, 200, 44);
+    "Maneuver Control Agent — closed control loop",
+    "heartbeat-driven · observe → reason → act → adapt");
+  const stages = LOOP_STAGES.map((_, i) => box(40 + i * 310, rowY, 230, stageH));
+  const hub = box(480, hubY, 280, hubH);
 
   let svg = shell.open;
-  svg += edge(port(heartbeat, "E"), port(llm, "W"), {});
-  svg += edge(port(llm, "E"), port(tools, "W"), {});
-  svg += edge(port(tools, "E"), port(record, "W"), {});
-  svg += edge(port(record, "S"), port(heartbeat, "S"), { label: "next heartbeat", kind: "data", clear: oy + 224 });
-  svg += edge(port(record, "N", 0.35), port(termBox, "S", 0.5), { label: "completion → final result", kind: "done" });
-  svg += node(heartbeat, { kind: "io", title: "heartbeat invocation", caption: ["runtime ticks the", "FSM loop"] });
-  svg += node(llm, { kind: "llm", title: "Maneuver agent LLM", caption: ["reasons over FSM state", "+ belief store"] });
-  svg += node(tools, { kind: "tool", title: "execution tools",
-    caption: ["transition_fsm · navigate · takeoff · land", "search_area · pursue · investigate", "update_belief · communicate"] });
-  svg += node(record, { kind: "feedback", title: ["execution record +", "maneuver-feedback"], caption: ["recorded + published", "each invocation"] });
-  svg += terminal(termBox, "→ mission result");
-  svg += runStrip(28, oy + 248, [
-    { label: "heartbeat loop", phase: "heartbeat" },
+  // edges first (under nodes): forward chain observe → reason → act → adapt
+  for (let i = 0; i < stages.length - 1; i++) {
+    svg += edge(port(stages[i], "E"), port(stages[i + 1], "W"), {});
+  }
+  // the gold edge visibly closes the loop: adapt feeds the next observe
+  svg += `<g data-testid="wf-maneuver-loop">` +
+    edge(port(stages[3], "N", 0.5), port(stages[0], "N", 0.5),
+      { label: "closed loop ↺ every heartbeat", kind: "loop", clear: oy + 62 }) +
+  `</g>`;
+  // the mission lifecycle FSM is the hub the cycle revolves around
+  svg += edge(port(hub, "N", 0.25), port(stages[1], "S", 0.5), { label: "current state" });
+  svg += edge(port(stages[3], "S", 0.5), port(hub, "N", 0.75), { label: "next state" });
+  // nodes
+  LOOP_STAGES.forEach((stage, i) => {
+    svg += node(stages[i], { kind: stage.kind, num: stage.num, title: stage.title, caption: stage.caption });
+  });
+  svg += node(hub, { kind: "decision", title: "mission lifecycle FSM", caption: "drives stage transitions" });
+  // L2 strip — real trajectory phases/components of the loop
+  svg += runStrip(28, stripY, [
+    { label: "maneuver-handoff", phase: "maneuver-handoff" },
+    { label: "heartbeat", phase: "heartbeat" },
     { label: "maneuver-control", phase: "maneuver-control" },
   ]);
   return { h, svg: svg + shell.close };
@@ -362,9 +392,9 @@ function regionManeuver(oy) {
 
 const DATA_NODES = [
   { kind: "io",   title: "transport event bus", caption: ["snapshots · env-data · plans", "fsm-status · statechart · feedback", "commands + receipts / outcomes"] },
-  { kind: "data", title: "operational log",     caption: ["structured timeline", "of every step"] },
+  { kind: "data", title: "operational log",     caption: ["structured timeline", "of every step", "mission_report.json"] },
   { kind: "data", title: "FSM store",           caption: ["statechart +", "execution record"] },
-  { kind: "data", title: "planner artifacts",   caption: ["model.mzn · data.dzn", "statechart attempts"] },
+  { kind: "data", title: "planner artifacts",   caption: ["model.mzn · data.dzn", "statechart attempts", "verification.json"] },
   { kind: "data", title: "debug recorders",     caption: ["raw LLM + agent", "invocations"] },
   { kind: "data", title: "environment state",   caption: "live world snapshot" },
 ];
@@ -373,7 +403,7 @@ function regionData(oy) {
   const h = 250;
   const shell = regionShell(oy, h, "data",
     "Data & Memory Plane — durable artifacts",
-    "transport bus · operational log · FSM store · planner workspace · debug recorders · environment");
+    "transport bus · operational log · FSM store · planner workspace · debug recorders · environment · verification + report");
   const boxes = DATA_NODES.map((_, i) => box(23 + i * 202, oy + 72, 184, 78));
   const viewer = box(24, oy + 196, 280, 30);
 
@@ -402,30 +432,15 @@ function regionMission(oy) {
   return { h, svg: svg + shell.close };
 }
 
-function regionResult(oy) {
-  const h = 200;
-  const shell = regionShell(oy, h, "result",
-    "Mission Result — output",
-    "returned by the planning agent's handoff when execution completes");
-  const done = box(28, oy + 84, 260, 56);
-  const termBox = box(330, oy + 84, 220, 56);
-  let svg = shell.open;
-  svg += edge(port(termBox, "E"), port(done, "W"), {});
-  svg += terminal(termBox, "execution complete");
-  svg += node(done, { kind: "io", title: "final structured result", caption: "status + evidence refs" });
-  return { h, svg: svg + shell.close };
-}
-
 /* ------------------------------ svg assembly ------------------------------ */
 
 const REGION_BUILDERS = {
   mission: regionMission,
   hyper: regionHyper,
   maneuver: regionManeuver,
-  result: regionResult,
   data: regionData,
 };
-const REGION_ORDER = ["mission", "hyper", "maneuver", "result", "data"];
+const REGION_ORDER = ["mission", "hyper", "maneuver", "data"];
 
 function buildSvg(expandedRaw) {
   const expanded = L0_IDS.includes(expandedRaw) || expandedRaw === "all" ? expandedRaw : "";
@@ -470,6 +485,7 @@ function legend() {
     item(swatch("data"), "artifact / store"),
     item(swatch("io"), "input / output boundary"),
     item(h("span", { class: "wf-line" }), "invokes / flows into"),
+    item(h("span", { class: "wf-line amber" }), "closed control loop ↺"),
     item(h("span", { class: "wf-line dashed amber" }), "retry loop (↺)"),
     item(h("span", { class: "wf-line dashed" }), "artifact / event read-write"));
 }
