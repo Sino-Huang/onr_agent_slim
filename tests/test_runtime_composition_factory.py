@@ -81,10 +81,16 @@ def test_chat_model_factory_uses_runtime_llm(monkeypatch) -> None:
             "model": "model",
             "api_key": "EMPTY",
             "temperature": 0.2,
+            "top_p": 0.95,
+            "presence_penalty": 0.0,
+            "reasoning_effort": "medium",
             "timeout": 800.0,
             "max_retries": 0,
-            "max_tokens": 16384,
-            "extra_body": {"thinking_token_budget": 4096},
+            "extra_body": {
+                "top_k": 20,
+                "min_p": 0.0,
+                "repetition_penalty": 1.0,
+            },
         }
     ]
 

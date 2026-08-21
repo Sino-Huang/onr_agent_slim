@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 import subprocess
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from onr.contracts.planning import PlannerExecutionEvidence
+from onr.contracts.planning import PlannerExecutionEvidence, PlannerStaticCheckResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,60 @@ class VALPlanValidator:
             )
             return False
         return completed.returncode == 0 and "Plan valid" in completed.stdout
+
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        """Return whether VAL accepts the exact domain and problem assets."""
+
+        if set(assets) != {"domain.pddl", "problem.pddl"} or any(
+            not content for content in assets.values()
+        ):
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stderr="VAL static check requires non-empty domain.pddl and problem.pddl.",
+            )
+        try:
+            with tempfile.TemporaryDirectory(prefix="val-check-") as temporary:
+                directory = Path(temporary).resolve()
+                domain = directory / "domain.pddl"
+                problem = directory / "problem.pddl"
+                domain.write_bytes(assets["domain.pddl"])
+                problem.write_bytes(assets["problem.pddl"])
+                completed = subprocess.run(
+                    [
+                        str(self.executable),
+                        *self.arguments,
+                        str(domain),
+                        str(problem),
+                    ],
+                    capture_output=True,
+                    check=False,
+                    cwd=str(directory),
+                    text=True,
+                    timeout=self.timeout_seconds,
+                )
+        except subprocess.TimeoutExpired as exc:
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stdout=self._output_text(exc.stdout),
+                stderr=(
+                    self._output_text(exc.stderr)
+                    or f"VAL static check timed out after {self.timeout_seconds} seconds."
+                ),
+            )
+        except (OSError, TypeError, ValueError, UnicodeError) as exc:
+            return PlannerStaticCheckResult(
+                False,
+                None,
+                stderr=f"{type(exc).__name__}: {exc}",
+            )
+        return PlannerStaticCheckResult(
+            completed.returncode == 0,
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
 
     @staticmethod
     def _persist_output(directory: Path, stdout: object, stderr: object) -> None:

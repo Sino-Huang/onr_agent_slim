@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -114,6 +115,7 @@ def _planning_context(
             mission_snapshot=snapshot,
             environment_event=scene,
             artifact_root=tmp_path / "planner-artifacts",
+            backend_root=Path("/"),
             minizinc_translation=MiniZincTranslation(
                 planner,
                 tmp_path / "planner-artifacts/generation-attempts",
@@ -145,7 +147,8 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
         system_prompt=f"You are agent {runtime.config.agent_name}. {prompt}",
         mission_id=mission_id,
         skill_catalog=FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills"),
-        backend_root=_REPO_ROOT,
+        backend_root=context.backend_root,
+        planner_workspace_location=context.planner_workspace_location,
         checkpointer=InMemorySaver(),
     )
 
@@ -168,3 +171,27 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
         "completed",
         "in_progress",
     ]
+    debug_directory = (
+        tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
+    )
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(debug_directory.glob("*.json"))
+    ]
+    tool_records = [item for item in records if item.get("kind") == "tool"]
+    successful_writes = [
+        item
+        for item in tool_records
+        if item.get("name") == "write_file" and item.get("error") is None
+    ]
+    assert [Path(item["input"]["file_path"]).name for item in successful_writes] == [
+        "model.mzn",
+        "data.dzn",
+    ]
+    assert all(item["input"]["content"] for item in successful_writes)
+    assert not any(item.get("name") == "edit_file" for item in tool_records)
+    submission = next(
+        item for item in tool_records if item.get("name") == "submit_planner_attempt"
+    )
+    assert submission["sequence"] > successful_writes[-1]["sequence"]
+    assert not any(item.get("name") == "planner_executor" for item in tool_records)

@@ -105,7 +105,10 @@ class ManeuverToolContext:
     belief_service: Any = None
     communication_port: Any = None
     operational_log: Any = None
-    execution_record: ManeuverHeartbeatExecutionRecord = field(
+    # ToolRuntime asks Pydantic to serialize its context between graph steps.
+    # Keep the audit record opaque like the service dependencies so immutable
+    # MappingProxy payloads are never treated as model-visible dictionaries.
+    execution_record: Any = field(
         default_factory=ManeuverHeartbeatExecutionRecord
     )
 

@@ -45,6 +45,28 @@ conda activate onr
 python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --planner-artifacts var/planner-artifacts --demo-environment
 ```
 
+To exercise the real Maneuver Control agent while bypassing the currently
+independent Hyper/planner workflow, run the post-Hyper demo instead:
+
+```bash
+conda activate onr
+python -m onr.runtime.maneuver_cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --planner-artifacts var/planner-artifacts --demo-environment
+```
+
+This command injects a code-owned accepted four-stop Normalized Plan and
+ten-state Statechart, activates the real FSM Runner, and drives ten live
+Maneuver heartbeats through controlled fake Mission times. It exercises
+navigation, explicit environment completion ticks, one durable belief update,
+communication to a Hyper recipient stub, and an emergency landing override.
+It does not invoke Hyper, write planner source files, or run MiniZinc.
+
+The Maneuver-only command uses the same demo rollover behavior and persistent
+debug locations as the full runtime. Its final JSON includes the exact log
+directories, normally:
+
+- `var/debug/agent/maneuver-control/mission%3Ademo/`
+- `var/debug/llm/maneuver-control/mission%3Ademo/`
+
 The CLI always verifies the configured LLM endpoint, composes the configured
 real planners, creates model-backed Hyper Agent and Maneuver Control services,
 and runs Context Coordination and FSM Runner. It first publishes a demo

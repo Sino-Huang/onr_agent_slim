@@ -316,10 +316,16 @@ class RuntimeComposition:
             model=llm.model,
             api_key=cast(Any, llm.api_key),
             temperature=llm.temperature,
+            top_p=0.95,
+            presence_penalty=0.0,
+            reasoning_effort="medium",
             timeout=800.0,
             max_retries=0,
-            max_tokens=16384,
-            extra_body={"thinking_token_budget": 4096},
+            extra_body={
+                "top_k": 20,
+                "min_p": 0.0,
+                "repetition_penalty": 1.0,
+            },
             **options,
         )
         if recorder is not None:

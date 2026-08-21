@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable
 
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
@@ -25,9 +24,9 @@ from onr.contracts.planner_translation import (
 )
 from onr.contracts.planning import (
     ManeuverIntent,
-    PlannerStaticCheckResult,
     NormalizedPlan,
     PlannerExecutionResult,
+    PlannerStaticCheckResult,
     PlanningOutcome,
     PlanProvenance,
     ScheduledManeuver,
@@ -57,7 +56,7 @@ class MiniZincProblem:
 
     def __post_init__(self) -> None:
         if not isinstance(self.assets, Mapping):
-            raise ValueError("MiniZinc assets must be a mapping")
+            raise TypeError("MiniZinc assets must be a mapping")
         assets = dict(self.assets)
         if not all(
             isinstance(name, str) and isinstance(value, bytes)
@@ -153,7 +152,7 @@ class MiniZincTranslation:
                 feedback = PlannerCorrectionFeedback(PlannerCorrectionStage.STATIC)
                 feedback_history.append(feedback)
                 continue
-            static_check = self._static_check(problem)
+            static_check = self.check_problem(problem)
             if not static_check.accepted:
                 attempt = self._generation_attempt(
                     request,
@@ -174,87 +173,23 @@ class MiniZincTranslation:
                 feedback_history.append(feedback)
                 continue
 
-            execution = self._planner.execute(problem.assets)
-            if not isinstance(execution, PlannerExecutionResult):
-                generation_attempts.append(
-                    self._generation_attempt(
-                        request,
-                        problem,
-                        TranslationAttemptOutcome.REJECTED,
-                    )
-                )
-                feedback = PlannerCorrectionFeedback(
-                    PlannerCorrectionStage.SOLUTION_CHECKER
-                )
-                feedback_history.append(feedback)
-                continue
-            last_evidence = execution.evidence
-            if execution.outcome is PlanningOutcome.UNSOLVABLE:
-                generation_attempts.append(
-                    self._generation_attempt(
-                        request,
-                        problem,
-                        TranslationAttemptOutcome.REJECTED,
-                    )
-                )
-                return PlanningTranslationResult(
-                    PlanningTranslationOutcome.UNSOLVABLE,
-                    len(generation_attempts),
-                    tuple(generation_attempts),
-                    correction_feedback=tuple(feedback_history),
-                    evidence=last_evidence,
-                )
-            if execution.outcome is PlanningOutcome.TIMEOUT:
-                generation_attempts.append(
-                    self._generation_attempt(
-                        request,
-                        problem,
-                        TranslationAttemptOutcome.REJECTED,
-                    )
-                )
-                return PlanningTranslationResult(
-                    PlanningTranslationOutcome.TIMEOUT,
-                    len(generation_attempts),
-                    tuple(generation_attempts),
-                    correction_feedback=tuple(feedback_history),
-                    evidence=last_evidence,
-                )
-            normalized = self._normalize(
+            result = self._execute_attempt(
                 mission_input,
                 planner_choice,
                 snapshot,
                 environment_event,
                 problem,
-                execution,
-                plan_revision,
+                request,
+                plan_revision=plan_revision,
+                prior_generation_attempts=tuple(generation_attempts),
+                correction_feedback=tuple(feedback_history),
             )
-            if normalized is not None:
-                generation_attempts.append(
-                    self._generation_attempt(
-                        request,
-                        problem,
-                        TranslationAttemptOutcome.ACCEPTED,
-                    )
-                )
-                return PlanningTranslationResult(
-                    PlanningTranslationOutcome.VERIFIED,
-                    len(generation_attempts),
-                    tuple(generation_attempts),
-                    normalized_plan=normalized,
-                    correction_feedback=tuple(feedback_history),
-                    evidence=last_evidence,
-                )
-            generation_attempts.append(
-                self._generation_attempt(
-                    request,
-                    problem,
-                    TranslationAttemptOutcome.REJECTED,
-                )
-            )
-            feedback = PlannerCorrectionFeedback(
-                PlannerCorrectionStage.SOLUTION_CHECKER
-            )
-            feedback_history.append(feedback)
+            if result.outcome is not PlanningTranslationOutcome.REPAIR_EXHAUSTED:
+                return result
+            generation_attempts = list(result.generation_attempts)
+            feedback_history = list(result.correction_feedback)
+            feedback = feedback_history[-1]
+            last_evidence = result.evidence
 
         return PlanningTranslationResult(
             PlanningTranslationOutcome.REPAIR_EXHAUSTED,
@@ -287,7 +222,11 @@ class MiniZincTranslation:
             artifact_root=self.attempt_artifact_root,
         )
 
-    def _static_check(self, problem: MiniZincProblem) -> PlannerStaticCheckResult:
+    def check_problem(self, problem: MiniZincProblem) -> PlannerStaticCheckResult:
+        """Statically check one exact MiniZinc problem without executing it."""
+
+        if not isinstance(problem, MiniZincProblem):
+            raise TypeError("MiniZinc static check requires a MiniZincProblem")
         if set(problem.assets) != _REQUIRED_ASSETS or any(
             not content for content in problem.assets.values()
         ):
@@ -301,6 +240,170 @@ class MiniZincTranslation:
             raise TypeError("MiniZinc planner check returned an invalid result")
         return result
 
+    def execute_prechecked(
+        self,
+        mission_input: MissionInput,
+        planner_choice: PlannerChoiceRecord,
+        snapshot: MissionSnapshot,
+        environment_event: TransportEvent,
+        problem: MiniZincProblem,
+        *,
+        plan_revision: int,
+        attempt_number: int,
+        prior_generation_attempts: tuple[PlannerGenerationAttempt, ...] = (),
+        correction_feedback: tuple[PlannerCorrectionFeedback, ...] = (),
+    ) -> PlanningTranslationResult:
+        """Execute one statically accepted problem exactly once."""
+
+        self._validate_context(
+            mission_input, planner_choice, snapshot, environment_event
+        )
+        if (
+            isinstance(attempt_number, bool)
+            or not isinstance(attempt_number, int)
+            or attempt_number < 1
+        ):
+            raise ValueError("generation attempt number must be positive")
+        if len(prior_generation_attempts) != len(correction_feedback):
+            raise ValueError("prior MiniZinc attempts require matching feedback")
+        if any(
+            item.outcome is not TranslationAttemptOutcome.REJECTED
+            for item in prior_generation_attempts
+        ):
+            raise ValueError("prior MiniZinc attempts must be rejected")
+        request = PlannerGenerationContext(
+            mission_input=mission_input,
+            planner_choice=planner_choice,
+            mission_snapshot=snapshot,
+            environment_event=environment_event,
+            attempt_number=attempt_number,
+            correction_feedback=(
+                correction_feedback[-1] if correction_feedback else None
+            ),
+        )
+        return self._execute_attempt(
+            mission_input,
+            planner_choice,
+            snapshot,
+            environment_event,
+            problem,
+            request,
+            plan_revision=plan_revision,
+            prior_generation_attempts=prior_generation_attempts,
+            correction_feedback=correction_feedback,
+        )
+
+    def _execute_attempt(
+        self,
+        mission_input: MissionInput,
+        planner_choice: PlannerChoiceRecord,
+        snapshot: MissionSnapshot,
+        environment_event: TransportEvent,
+        problem: MiniZincProblem,
+        request: PlannerGenerationContext,
+        *,
+        plan_revision: int,
+        prior_generation_attempts: tuple[PlannerGenerationAttempt, ...],
+        correction_feedback: tuple[PlannerCorrectionFeedback, ...],
+    ) -> PlanningTranslationResult:
+        attempts = list(prior_generation_attempts)
+        feedback = list(correction_feedback)
+        execution = self._planner.execute(problem.assets)
+        if not isinstance(execution, PlannerExecutionResult):
+            attempts.append(
+                self._generation_attempt(
+                    request, problem, TranslationAttemptOutcome.REJECTED
+                )
+            )
+            feedback.append(
+                PlannerCorrectionFeedback(PlannerCorrectionStage.EXECUTION)
+            )
+            return PlanningTranslationResult(
+                PlanningTranslationOutcome.REPAIR_EXHAUSTED,
+                len(attempts),
+                tuple(attempts),
+                correction_feedback=tuple(feedback),
+            )
+        evidence = execution.evidence
+        if execution.outcome in {PlanningOutcome.UNSOLVABLE, PlanningOutcome.TIMEOUT}:
+            attempts.append(
+                self._generation_attempt(
+                    request, problem, TranslationAttemptOutcome.REJECTED
+                )
+            )
+            outcome = (
+                PlanningTranslationOutcome.UNSOLVABLE
+                if execution.outcome is PlanningOutcome.UNSOLVABLE
+                else PlanningTranslationOutcome.TIMEOUT
+            )
+            return PlanningTranslationResult(
+                outcome,
+                len(attempts),
+                tuple(attempts),
+                correction_feedback=tuple(feedback),
+                evidence=evidence,
+            )
+        if execution.outcome in {PlanningOutcome.ERROR, PlanningOutcome.INCOMPLETE}:
+            attempts.append(
+                self._generation_attempt(
+                    request, problem, TranslationAttemptOutcome.REJECTED
+                )
+            )
+            feedback.append(
+                PlannerCorrectionFeedback(
+                    PlannerCorrectionStage.EXECUTION,
+                    execution_result=execution,
+                )
+            )
+            return PlanningTranslationResult(
+                PlanningTranslationOutcome.REPAIR_EXHAUSTED,
+                len(attempts),
+                tuple(attempts),
+                correction_feedback=tuple(feedback),
+                evidence=evidence,
+            )
+        normalized, checker_diagnostic = self._normalize(
+            mission_input,
+            planner_choice,
+            snapshot,
+            environment_event,
+            problem,
+            execution,
+            plan_revision,
+        )
+        if normalized is not None:
+            attempts.append(
+                self._generation_attempt(
+                    request, problem, TranslationAttemptOutcome.ACCEPTED
+                )
+            )
+            return PlanningTranslationResult(
+                PlanningTranslationOutcome.VERIFIED,
+                len(attempts),
+                tuple(attempts),
+                normalized_plan=normalized,
+                correction_feedback=tuple(feedback),
+                evidence=evidence,
+            )
+        attempts.append(
+            self._generation_attempt(
+                request, problem, TranslationAttemptOutcome.REJECTED
+            )
+        )
+        feedback.append(
+            PlannerCorrectionFeedback(
+                PlannerCorrectionStage.SOLUTION_CHECKER,
+                checker_diagnostic=checker_diagnostic,
+            )
+        )
+        return PlanningTranslationResult(
+            PlanningTranslationOutcome.REPAIR_EXHAUSTED,
+            len(attempts),
+            tuple(attempts),
+            correction_feedback=tuple(feedback),
+            evidence=evidence,
+        )
+
     @staticmethod
     def _normalize(
         mission_input: MissionInput,
@@ -310,29 +413,46 @@ class MiniZincTranslation:
         problem: MiniZincProblem,
         execution: PlannerExecutionResult,
         plan_revision: int,
-    ) -> NormalizedPlan | None:
+    ) -> tuple[NormalizedPlan | None, str | None]:
         if (
             execution.outcome is not PlanningOutcome.SOLVED
             or execution.evidence is None
         ):
-            return None
+            return None, "Planner execution evidence is missing."
         assignments = {item.maneuver_id: item for item in execution.assignments}
         declared = {item.maneuver_id: item for item in problem.maneuvers}
         if len(assignments) != len(execution.assignments) or set(assignments) != set(
             declared
         ):
-            return None
+            return (
+                None,
+                "Planner assignments do not match generated maneuver identifiers.",
+            )
         maneuvers_list = []
         for maneuver_id, maneuver in declared.items():
             assignment = assignments[maneuver_id]
-            if (
-                assignment.duration != maneuver.duration
-                or assignment.start + assignment.duration > problem.horizon
-            ):
-                return None
+            if assignment.duration != maneuver.duration:
+                return (
+                    None,
+                    (
+                        f"Planner assignment duration for '{maneuver_id}' does not "
+                        "match the generated maneuver."
+                    ),
+                )
+            if assignment.start + assignment.duration > problem.horizon:
+                return (
+                    None,
+                    f"Planner assignment '{maneuver_id}' exceeds the planning horizon.",
+                )
             template_names = {item.name for item in maneuver.intent.parameters}
             if template_names.intersection(item.name for item in assignment.parameters):
-                return None
+                return (
+                    None,
+                    (
+                        f"Planner assignment parameters for '{maneuver_id}' duplicate "
+                        "generated template parameters."
+                    ),
+                )
             try:
                 intent = ManeuverIntent(
                     maneuver.intent.action,
@@ -346,21 +466,27 @@ class MiniZincTranslation:
                     duration=assignment.duration,
                 )
             except ValueError:
-                return None
+                return None, f"Planner assignment '{maneuver_id}' cannot be normalized."
             maneuvers_list.append(scheduled_maneuver)
         maneuvers = tuple(maneuvers_list)
 
         scheduled = {item.maneuver_id: item for item in maneuvers}
-        if any(
-            scheduled[item.maneuver_id].start
-            < scheduled[dependency].start + scheduled[dependency].duration
-            for item in problem.maneuvers
-            for dependency in item.dependencies
-        ):
-            return None
+        for item in problem.maneuvers:
+            for dependency in item.dependencies:
+                if (
+                    scheduled[item.maneuver_id].start
+                    < scheduled[dependency].start + scheduled[dependency].duration
+                ):
+                    return (
+                        None,
+                        (
+                            f"Planner assignment '{item.maneuver_id}' starts before "
+                            f"dependency '{dependency}' completes."
+                        ),
+                    )
         solver_reference = verifiable_file_reference(execution.evidence.stdout_path)
         if solver_reference is None:
-            return None
+            return None, "Planner solver stdout evidence is missing or unreadable."
         artifact_paths = {path.name: path for path in execution.evidence.artifact_paths}
         generated_assets: dict[str, VerifiableReference] = {}
         for name, content in problem.assets.items():
@@ -370,7 +496,13 @@ class MiniZincTranslation:
                 reference is None
                 or reference.sha256 != hashlib.sha256(content).hexdigest()
             ):
-                return None
+                return (
+                    None,
+                    (
+                        f"Planner execution evidence for '{name}' does not match the "
+                        "submitted asset."
+                    ),
+                )
             generated_assets[name] = reference
         provenance = PlanProvenance(
             mission_id=mission_input.mission_id,
@@ -394,15 +526,18 @@ class MiniZincTranslation:
                 "planner-result": solver_reference,
             },
         )
-        return NormalizedPlan(
-            plan_revision=plan_revision,
-            mission_snapshot_id=(
-                f"{mission_input.mission_id}:snapshot:{snapshot.version}"
+        return (
+            NormalizedPlan(
+                plan_revision=plan_revision,
+                mission_snapshot_id=(
+                    f"{mission_input.mission_id}:snapshot:{snapshot.version}"
+                ),
+                planner_choice=planner_choice.planner_choice,
+                outcome=PlanningOutcome.SOLVED,
+                maneuvers=maneuvers,
+                provenance=provenance,
             ),
-            planner_choice=planner_choice.planner_choice,
-            outcome=PlanningOutcome.SOLVED,
-            maneuvers=maneuvers,
-            provenance=provenance,
+            None,
         )
 
     @staticmethod

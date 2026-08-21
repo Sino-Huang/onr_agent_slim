@@ -16,10 +16,10 @@ from onr.contracts.planner_translation import (
 from onr.contracts.planning import (
     ManeuverIntent,
     ManeuverParameter,
-    PlannerStaticCheckResult,
     PlannerChoice,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
+    PlannerStaticCheckResult,
     PlanningOutcome,
     TemporalAssignment,
     TemporalManeuver,
@@ -253,9 +253,60 @@ def test_solution_checker_rejection_receives_sanitized_feedback_before_retry(
     feedback = generator.requests[1].correction_feedback
     assert feedback is not None
     assert feedback.stage is PlannerCorrectionStage.SOLUTION_CHECKER
-    assert feedback.message == "Planner output failed independent solution validation."
-    assert "duration" not in feedback.message
+    assert feedback.message == (
+        "Planner assignment duration for 'survey' does not match the generated "
+        "maneuver."
+    )
     assert len(planner.executed_assets) == 2
+
+
+def test_execution_rejection_receives_exact_planner_diagnostic_before_retry(
+    tmp_path: Path,
+) -> None:
+    mission_input, choice, snapshot, scene = _planning_context()
+    generator = RecordingGenerator([_problem(), _problem()])
+    execution_stdout = (
+        '{"type":"error","location":{"filename":"/host/run/data.dzn"},'
+        '"message":"instance mismatch"}\n'
+    )
+    planner = FakeMiniZincPlanner(
+        checks=[True, True],
+        executions=[
+            PlannerExecutionResult(
+                PlanningOutcome.ERROR,
+                evidence=_evidence(tmp_path),
+                return_code=7,
+                stdout=execution_stdout,
+            ),
+            PlannerExecutionResult(
+                PlanningOutcome.SOLVED,
+                (TemporalAssignment("survey", 0, 2),),
+                _evidence(tmp_path),
+                return_code=0,
+            ),
+        ],
+    )
+
+    result = MiniZincTranslation(
+        planner,
+        tmp_path / "generation-attempts",
+        max_corrections=1,
+    ).plan(
+        mission_input,
+        choice,
+        snapshot,
+        scene,
+        generator,
+        plan_revision=1,
+    )
+
+    assert result.outcome is PlanningTranslationOutcome.VERIFIED
+    feedback = generator.requests[1].correction_feedback
+    assert feedback is not None
+    assert feedback.stage is PlannerCorrectionStage.EXECUTION
+    assert feedback.message == execution_stdout.strip()
+    assert feedback.execution_result is not None
+    assert feedback.execution_result.return_code == 7
 
 
 def test_static_correction_stops_at_configured_bound(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ llm:
   base_url: http://127.0.0.1:11411/v1
   model: Qwen/Qwen3.8-27B-FP8
   api_key: EMPTY
-  temperature: 0
+  temperature: 1.0
 planners:
   temporal:
     entrypoint: modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc

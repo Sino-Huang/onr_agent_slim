@@ -14,9 +14,10 @@ from urllib.parse import quote
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import (
-    PlannerStaticCheckResult,
     NormalizedPlan,
     PlannerExecutionEvidence,
+    PlannerExecutionResult,
+    PlannerStaticCheckResult,
     VerifiableReference,
 )
 from onr.contracts.planning_evidence import (
@@ -80,11 +81,15 @@ class PlannerCorrectionStage(StrEnum):
     """Code-owned validation stage that rejected generated planner assets."""
 
     STATIC = "static"
+    EXECUTION = "execution"
     SOLUTION_CHECKER = "solution_checker"
 
 
 _CORRECTION_MESSAGES = {
     PlannerCorrectionStage.STATIC: "Generated planner assets failed static validation.",
+    PlannerCorrectionStage.EXECUTION: (
+        "Planner execution failed without diagnostic output."
+    ),
     PlannerCorrectionStage.SOLUTION_CHECKER: (
         "Planner output failed independent solution validation."
     ),
@@ -97,12 +102,27 @@ class PlannerCorrectionFeedback:
 
     stage: PlannerCorrectionStage | str
     static_check: PlannerStaticCheckResult | None = None
+    execution_result: PlannerExecutionResult | None = None
+    checker_diagnostic: str | None = None
     diagnostic_references: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         stage = PlannerCorrectionStage(self.stage)
         if self.static_check is not None and stage is not PlannerCorrectionStage.STATIC:
             raise ValueError("planner check diagnostics require static correction")
+        if (
+            self.execution_result is not None
+            and stage is not PlannerCorrectionStage.EXECUTION
+        ):
+            raise ValueError("planner execution diagnostics require execution correction")
+        if self.checker_diagnostic is not None and (
+            stage is not PlannerCorrectionStage.SOLUTION_CHECKER
+            or not isinstance(self.checker_diagnostic, str)
+            or not self.checker_diagnostic.strip()
+        ):
+            raise ValueError(
+                "solution-checker diagnostics require non-empty checker correction"
+            )
         object.__setattr__(self, "stage", stage)
         object.__setattr__(
             self,
@@ -114,6 +134,14 @@ class PlannerCorrectionFeedback:
     def message(self) -> str:
         if self.static_check is not None:
             return self.static_check.error_message
+        if self.execution_result is not None:
+            return (
+                self.execution_result.stderr.strip()
+                or self.execution_result.stdout.strip()
+                or _CORRECTION_MESSAGES[PlannerCorrectionStage.EXECUTION]
+            )
+        if self.checker_diagnostic is not None:
+            return self.checker_diagnostic
         return _CORRECTION_MESSAGES[PlannerCorrectionStage(self.stage)]
 
 

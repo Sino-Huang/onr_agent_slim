@@ -14,9 +14,9 @@ from typing import cast
 from onr.contracts.planning import (
     JsonScalar,
     ManeuverParameter,
-    PlannerStaticCheckResult,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
+    PlannerStaticCheckResult,
     PlanningOutcome,
     TemporalAssignment,
 )
@@ -140,32 +140,46 @@ class MiniZincExecutor:
             _persist_solver_output(run_directory, completed.stdout, completed.stderr)
             evidence = _execution_evidence(run_directory)
         except subprocess.TimeoutExpired as exc:
+            stdout = _output_text(exc.stdout)
+            stderr = _output_text(exc.stderr) or (
+                f"solver timed out after {self.timeout_seconds} seconds"
+            )
             _persist_solver_output(
                 run_directory,
-                exc.stdout,
-                exc.stderr or f"solver timed out after {self.timeout_seconds} seconds",
+                stdout,
+                stderr,
             )
             return PlannerExecutionResult(
                 outcome=PlanningOutcome.TIMEOUT,
                 evidence=_execution_evidence(run_directory),
+                stdout=stdout,
+                stderr=stderr,
             )
         except (OSError, TypeError, ValueError, UnicodeError) as exc:
-            _persist_solver_output(run_directory, "", f"{type(exc).__name__}: {exc}")
+            stderr = f"{type(exc).__name__}: {exc}"
+            _persist_solver_output(run_directory, "", stderr)
             return PlannerExecutionResult(
                 outcome=PlanningOutcome.ERROR,
                 evidence=_execution_evidence(run_directory),
+                stderr=stderr,
             )
 
         if completed.returncode != 0:
             return PlannerExecutionResult(
                 outcome=PlanningOutcome.ERROR,
                 evidence=evidence,
+                return_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
             )
         parsed = _parse_json_stream(completed.stdout)
         return PlannerExecutionResult(
             outcome=parsed.outcome,
             assignments=parsed.assignments,
             evidence=evidence,
+            return_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
         )
 
 

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable
 
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
@@ -56,7 +55,7 @@ class PDDLProblem:
 
     def __post_init__(self) -> None:
         if not isinstance(self.assets, Mapping):
-            raise ValueError("PDDL assets must be a mapping")
+            raise TypeError("PDDL assets must be a mapping")
         assets = dict(self.assets)
         if not all(
             isinstance(name, str) and isinstance(value, bytes)
@@ -97,12 +96,12 @@ class PDDLTranslation:
             or max_corrections < 0
         ):
             raise ValueError("maximum corrections must be a non-negative integer")
-        if not callable(getattr(planner, "check", None)) or not callable(
-            getattr(planner, "execute", None)
+        if not callable(getattr(planner, "execute", None)):
+            raise TypeError("Fast Downward planner must expose execute")
+        if not callable(getattr(validator, "check", None)) or not callable(
+            getattr(validator, "validate", None)
         ):
-            raise TypeError("Fast Downward planner must expose check and execute")
-        if not callable(getattr(validator, "validate", None)):
-            raise TypeError("symbolic plan validator must expose validate")
+            raise TypeError("symbolic plan validator must expose check and validate")
         self._planner = planner
         self._validator = validator
         self.attempt_artifact_root = Path(attempt_artifact_root).resolve()
@@ -159,7 +158,7 @@ class PDDLTranslation:
                 diagnostic_references = persist_static_check_diagnostics(
                     attempt,
                     static_check,
-                    prefix="fast-downward",
+                    prefix="val",
                 )
                 feedback = PlannerCorrectionFeedback(
                     PlannerCorrectionStage.STATIC,
@@ -290,13 +289,12 @@ class PDDLTranslation:
                 False,
                 None,
                 stderr=(
-                    "Fast Downward static check requires non-empty "
-                    "domain.pddl and problem.pddl."
+                    "VAL static check requires non-empty domain.pddl and problem.pddl."
                 ),
             )
-        result = self._planner.check(problem.assets)
+        result = self._validator.check(problem.assets)
         if not isinstance(result, PlannerStaticCheckResult):
-            raise TypeError("Fast Downward planner check returned an invalid result")
+            raise TypeError("VAL static check returned an invalid result")
         return result
 
     def _normalize(

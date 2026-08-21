@@ -54,8 +54,8 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
         "Decide and record the MiniZinc planner inside PlanningIntent.",
         "Load the current snapshot-authorized operational evidence.",
         "Write MiniZinc problem files from the current operational evidence.",
-        "Persist the written MiniZinc problem files.",
-        "Run MiniZinc and repair rejected translations.",
+        "Submit and statically verify the written MiniZinc attempt.",
+        "Execute the statically accepted MiniZinc attempt.",
     )
     assert [prompt.index(stage) for stage in stages] == sorted(
         prompt.index(stage) for stage in stages
@@ -66,11 +66,17 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     assert "verified NormalizedPlan" in prompt
     assert "Treat `environment_data` as flexible" in prompt
     assert "derive planner facts from the actual payload" in prompt
-    assert "sentinel appends of at most 75 values per response" in prompt
+    assert "exactly one complete `write_file` call" in prompt
+    assert "template choice, evidence-field mapping, record counts" in prompt
+    assert "sentinel" not in prompt
+    assert "revise an existing planner file through `edit_file`" in prompt
     assert "`belief_snapshot`" in prompt
     assert "tool `reflection` arguments" in prompt
     assert "Never expose private reasoning" in prompt
-    assert "correction stage" in prompt
+    assert "exact returned diagnostic" in prompt
+    assert "the `attempt_number` returned by the accepted submission" in prompt
+    assert "Do not search host filesystem paths" in prompt
+    assert "exact immutable references returned by the accepted submission" not in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",
@@ -78,7 +84,7 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
         "creating-minizinc-problem-files",
         "`write_file`",
         "`load_planning_context`",
-        "`persist_planner_assets`",
+        "`submit_planner_attempt`",
         "`planner_executor`",
         "`submit_statechart_draft`",
         "`HyperWorkflowResultCandidate`",

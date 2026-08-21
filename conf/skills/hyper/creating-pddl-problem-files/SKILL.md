@@ -1,7 +1,7 @@
 ---
 name: creating-pddl-problem-files
 description: Apply after Fast Downward is selected to generate PDDL domain and problem files from Mission Intent and the current Hyper heartbeat snapshot.
-version: '1.2.0'
+version: '1.3.0'
 ---
 
 # Creating PDDL Problem Files
@@ -11,8 +11,8 @@ version: '1.2.0'
 1. Read Mission Intent, the accepted PlanningIntent, and the current MissionSnapshot. Resolve operational facts through every relevant key in its snapshot-authorized flexible `environment_data`.
 2. Put reusable predicates, action preconditions/effects, and action costs in domain.pddl. Put current objects, initial predicates, and the goal in problem.pddl.
 3. Use portable lowercase action names. Use the same action names and costs in the normalization template.
-4. When `correction_feedback` is present, read its exact Fast Downward error and diagnostic references. Generate a fresh asset set that corrects the cited failure within the runtime's retry bound.
-5. Complete generation only after Fast Downward translates both files, returns a plan, independent VAL accepts that exact persisted domain/problem/plan set, and the code-owned action checker accepts every returned action.
+4. When `correction_feedback` is present, read its exact VAL diagnostic and references. Generate a fresh asset set that corrects the cited failure within the runtime's retry bound.
+5. Complete generation only after VAL accepts the exact domain/problem pair, Fast Downward returns a plan, VAL independently accepts that exact persisted domain/problem/plan set, and the code-owned action checker accepts every returned action.
 
 ## Few-shot example
 

@@ -61,9 +61,22 @@ class FakeFastDownwardPlanner:
 
 
 class RecordingValidator:
-    def __init__(self, results: list[bool]) -> None:
+    def __init__(
+        self, results: list[bool], *, checks: list[bool] | None = None
+    ) -> None:
         self.results = results
+        self.checks = checks or []
+        self.checked_assets: list[dict[str, bytes]] = []
         self.evidence: list[PlannerExecutionEvidence] = []
+
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        self.checked_assets.append(dict(assets))
+        accepted = self.checks.pop(0) if self.checks else True
+        return PlannerStaticCheckResult(
+            accepted,
+            0 if accepted else 1,
+            stderr="VAL parse error: invalid domain" if not accepted else "",
+        )
 
     def validate(self, evidence: PlannerExecutionEvidence) -> bool:
         self.evidence.append(evidence)
@@ -114,9 +127,7 @@ def _planning_context() -> tuple[
         created_at="time-3",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 3},
-        source_hashes={
-            "environment_data": environment_data_sha256(scene)
-        },
+        source_hashes={"environment_data": environment_data_sha256(scene)},
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -188,7 +199,7 @@ def test_static_pddl_rejection_gets_exact_feedback_before_val_verified_plan(
         checks=[False, True],
         executions=[_solved_execution(tmp_path)],
     )
-    validator = RecordingValidator([True])
+    validator = RecordingValidator([True], checks=[False, True])
 
     result = PDDLTranslation(
         planner,
@@ -221,14 +232,16 @@ def test_static_pddl_rejection_gets_exact_feedback_before_val_verified_plan(
     feedback = generator.requests[1].correction_feedback
     assert feedback is not None
     assert feedback.stage is PlannerCorrectionStage.STATIC
-    assert feedback.message == "Fast Downward parse error: invalid domain"
+    assert feedback.message == "VAL parse error: invalid domain"
     assert set(feedback.diagnostic_references) == {"stdout", "stderr"}
-    assert Path(feedback.diagnostic_references["stdout"]).read_text(
-        encoding="utf-8"
-    ) == ""
-    assert Path(feedback.diagnostic_references["stderr"]).read_text(
-        encoding="utf-8"
-    ) == "Fast Downward parse error: invalid domain"
+    assert (
+        Path(feedback.diagnostic_references["stdout"]).read_text(encoding="utf-8") == ""
+    )
+    assert (
+        Path(feedback.diagnostic_references["stderr"]).read_text(encoding="utf-8")
+        == "VAL parse error: invalid domain"
+    )
+    assert len(validator.checked_assets) == 2
     assert len(validator.evidence) == 1
 
 

@@ -4,7 +4,9 @@ Use tools for all effects, and make as many sequential calls as current evidence
 
 1. Inspect the live active-state context, every transition candidate and condition, `mission_time_seconds`, current maneuver lifecycle, and belief evidence.
 2. Call `transition_fsm` when an exact current candidate should advance. The tool re-reads live status and enforces every `environment_time_at_or_after` condition.
-3. Inspect the returned live state before deciding whether to call a physical tool.
+3. After a successful transition, use the returned live state for every remaining
+   physical, belief, and communication choice in this heartbeat. Do not act on
+   instructions that existed only in the transition's source-state context.
 4. Call `update_belief` or `communicate` when current evidence warrants an update, query, report, or replan request.
 5. Finish with exactly one `ManeuverHeartbeatCompletion` containing the invocation Mission ID, request ID, `completed` or `no_change`, and a concise public summary.
 

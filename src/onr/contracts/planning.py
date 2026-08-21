@@ -353,6 +353,9 @@ class PlannerExecutionResult:
     outcome: PlanningOutcome | str
     assignments: tuple[TemporalAssignment, ...] = ()
     evidence: PlannerExecutionEvidence | None = None
+    return_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
 
     def __post_init__(self) -> None:
         outcome = PlanningOutcome(self.outcome)
@@ -361,6 +364,12 @@ class PlannerExecutionResult:
             raise ValueError("planner assignments must be TemporalAssignment records")
         if outcome is not PlanningOutcome.SOLVED and assignments:
             raise ValueError("only a solved planner result may contain assignments")
+        if self.return_code is not None and (
+            isinstance(self.return_code, bool) or not isinstance(self.return_code, int)
+        ):
+            raise TypeError("planner return code must be an integer or null")
+        if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
+            raise TypeError("planner output must be text")
         object.__setattr__(self, "outcome", outcome)
         object.__setattr__(self, "assignments", assignments)
 

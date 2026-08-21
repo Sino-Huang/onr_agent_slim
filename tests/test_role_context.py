@@ -69,11 +69,11 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.6.0",
         "1.4.0",
-        "1.22.0",
-        "1.2.0",
+        "1.25.0",
+        "1.3.0",
         "1.1.0",
         "1.1.0",
-        "1.1.0",
+        "1.1.1",
         "1.1.0",
         "1.1.0",
     ]
@@ -429,6 +429,12 @@ def test_planner_generation_skills_forbid_known_invalid_file_patterns() -> None:
     assert "exact `correction_message`" in minizinc_skill
     assert "names and nesting are flexible" in minizinc_skill
     assert "Do not assume environment keys" in minizinc_skill
+    assert "submit_planner_attempt" in minizinc_skill
+    assert "exactly one complete `write_file` call" in minizinc_skill
+    assert "Use `edit_file` to revise a planner file that already exists" in minizinc_skill
+    for obsolete in ("sentinel", "chunk", "75 values", "20 values"):
+        assert obsolete not in minizinc_skill
     assert "## Must Not Do" in pddl_skill
     assert "undeclared predicates" in pddl_skill
     assert "exact correction message" in pddl_skill
+    assert "VAL accepts the exact domain/problem pair" in pddl_skill

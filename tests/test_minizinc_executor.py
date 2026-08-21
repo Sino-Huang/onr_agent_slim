@@ -162,6 +162,32 @@ def test_minizinc_executor_persists_relative_solver_artifacts_in_run_directory(
     assert artifact in result.evidence.artifact_paths
 
 
+def test_minizinc_executor_returns_exact_failed_process_diagnostic(
+    tmp_path: Path,
+) -> None:
+    script = (
+        "import json,sys;"
+        "print(json.dumps({'type':'error','location':{'filename':sys.argv[-1]},"
+        "'message':'instance mismatch'}));"
+        "print('planner stderr', file=sys.stderr);"
+        "raise SystemExit(7)"
+    )
+    result = MiniZincExecutor(
+        executable=Path(sys.executable),
+        artifact_root=tmp_path / "artifacts",
+        arguments=("-c", script),
+    ).execute(_PLANNER_ASSETS)
+
+    assert result.outcome is PlanningOutcome.ERROR
+    assert result.return_code == 7
+    assert result.stderr == "planner stderr\n"
+    assert result.evidence is not None
+    assert str(result.evidence.artifact_directory / "data.dzn") in result.stdout
+    assert '"message": "instance mismatch"' in result.stdout
+    assert result.evidence.stdout_path.read_text(encoding="utf-8") == result.stdout
+    assert result.evidence.stderr_path.read_text(encoding="utf-8") == result.stderr
+
+
 def test_minizinc_executor_static_check_uses_real_model_and_data_parser(
     tmp_path: Path,
 ) -> None:

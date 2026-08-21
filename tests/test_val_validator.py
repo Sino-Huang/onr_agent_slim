@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from onr.adapters.val import VALPlanValidator
-from onr.contracts.planning import PlannerExecutionEvidence
+from onr.contracts.planning import PlannerExecutionEvidence, PlannerStaticCheckResult
 
 
 def _evidence(tmp_path: Path) -> PlannerExecutionEvidence:
@@ -42,6 +43,21 @@ def _validator_script(tmp_path: Path, *, valid: bool) -> Path:
     return script
 
 
+def _static_validator_script(tmp_path: Path, *, valid: bool) -> Path:
+    script = tmp_path / f"static-validator-{valid}.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "domain, problem = map(Path, sys.argv[1:])\n"
+        "assert domain.name == 'domain.pddl'\n"
+        "assert problem.name == 'problem.pddl'\n"
+        f"print({'PDDL accepted' if valid else 'PDDL malformed'!r})\n"
+        f"raise SystemExit({0 if valid else 2})\n",
+        encoding="utf-8",
+    )
+    return script
+
+
 def test_val_validator_independently_accepts_only_valid_persisted_plan(
     tmp_path: Path,
 ) -> None:
@@ -61,3 +77,31 @@ def test_val_validator_independently_accepts_only_valid_persisted_plan(
         encoding="utf-8"
     ).strip() == "Plan failed to execute"
     assert (evidence.artifact_directory / "validator.stderr").is_file()
+
+
+def test_val_validator_checks_exact_non_empty_domain_and_problem(
+    tmp_path: Path,
+) -> None:
+    assets: Mapping[str, bytes] = {
+        "domain.pddl": b"(define (domain test))",
+        "problem.pddl": b"(define (problem test))",
+    }
+    accepted = VALPlanValidator(
+        sys.executable,
+        arguments=(str(_static_validator_script(tmp_path, valid=True)),),
+    ).check(assets)
+    rejected = VALPlanValidator(
+        sys.executable,
+        arguments=(str(_static_validator_script(tmp_path, valid=False)),),
+    ).check(assets)
+    empty = VALPlanValidator(sys.executable).check(
+        {"domain.pddl": b"", "problem.pddl": assets["problem.pddl"]}
+    )
+
+    assert accepted == PlannerStaticCheckResult(True, 0, "PDDL accepted\n", "")
+    assert rejected == PlannerStaticCheckResult(False, 2, "PDDL malformed\n", "")
+    assert empty == PlannerStaticCheckResult(
+        False,
+        None,
+        stderr="VAL static check requires non-empty domain.pddl and problem.pddl.",
+    )
