@@ -560,7 +560,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     )
     assert hyper_run[2] == {
         "thread_id": "planning-run:mission:demo:1",
-        "recursion_limit": 300,
+        "recursion_limit": 120,
     }
     maneuver_call = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "maneuver"

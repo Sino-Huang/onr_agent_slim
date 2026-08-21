@@ -139,7 +139,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recursion-limit",
         type=_positive_integer,
-        default=300,
+        default=120,
         help="maximum Deep Agent graph steps for the Hyper planning episode",
     )
     parser.add_argument(

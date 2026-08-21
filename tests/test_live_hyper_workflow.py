@@ -152,7 +152,7 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     result = DeepAgentsHyperWorkflow(graph).run(
         context,
         thread_id=f"planning-run:{mission_id}:1",
-        recursion_limit=300,
+        recursion_limit=120,
     )
 
     assert result.outcome is HyperWorkflowOutcome.PLANNER_REJECTED
