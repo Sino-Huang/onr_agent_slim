@@ -12,6 +12,7 @@ import { renderTrajectory, visibleTrajectorySteps } from "./app/trajectory.js";
 import { renderTree, visibleTreeSteps } from "./app/tree.js";
 import { renderTimeline, visibleTimelineSteps } from "./app/timeline.js";
 import { renderOverview } from "./app/overview.js";
+import { renderWorkflow } from "./app/workflow.js";
 import { renderDetail } from "./app/detail.js";
 import { resetJsonViewState } from "./app/jsonview.js";
 import { invalidateArtifactCache } from "./app/artifact.js";
@@ -27,6 +28,7 @@ const viewRenderers = {
   tree: renderTree,
   timeline: renderTimeline,
   overview: renderOverview,
+  workflow: renderWorkflow,
 };
 
 function visibleStepsForView() {
@@ -84,13 +86,13 @@ function renderBanner() {
 }
 
 function preserveScrollAndFocus(render) {
-  const scrollEl = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview");
+  const scrollEl = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview, .workflow");
   const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
   const active = document.activeElement;
   const keepFocus = active && active.dataset && active.dataset.testid === "step-search";
   const caret = keepFocus ? active.selectionStart : 0;
   render();
-  const nextScroll = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview");
+  const nextScroll = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview, .workflow");
   if (nextScroll) nextScroll.scrollTop = scrollTop;
   if (keepFocus) {
     const input = viewRoot.querySelector('[data-testid="step-search"]');
@@ -108,6 +110,7 @@ const actions = {
     state.selectedStepId = "";
     state.detailTab = "";
     state.artifactRef = "";
+    state.phaseFilter = "";
     state.signature = "";
     state.run = null;
     setStepsPayload(null);
@@ -121,6 +124,18 @@ const actions = {
   setView(view) {
     if (!VIEWS.includes(view) || view === state.view) return;
     state.view = view;
+    writeHash({ push: true });
+    renderAll();
+  },
+  setWorkflowNode(node) {
+    if (node === state.workflowNode) return;
+    state.workflowNode = node;
+    writeHash({ push: true });
+    renderAll();
+  },
+  clearPhaseFilter() {
+    if (!state.phaseFilter) return;
+    state.phaseFilter = "";
     writeHash({ push: true });
     renderAll();
   },
@@ -258,6 +273,8 @@ function applyHash() {
     refreshMission();
   }
   if (hash.view && hash.view !== state.view) state.view = hash.view;
+  state.workflowNode = state.view === "workflow" && hash.node ? hash.node : "";
+  state.phaseFilter = hash.phase || "";
   if (hash.step) {
     const step = resolveHashStep(hash.step);
     if (step) {
@@ -276,6 +293,8 @@ window.addEventListener("popstate", applyHash);
 const initialHash = readHash();
 if (initialHash.view) state.view = initialHash.view;
 if (initialHash.mission) state.missionId = initialHash.mission;
+if (initialHash.node) state.workflowNode = initialHash.node;
+if (initialHash.phase) state.phaseFilter = initialHash.phase;
 renderAll();
 poll().then(() => {
   // restore deep-linked step once the first payload lands

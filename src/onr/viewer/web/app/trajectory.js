@@ -11,7 +11,9 @@ import { state } from "./store.js";
 
 function filteredSteps() {
   const query = state.search.trim().toLowerCase();
+  const needle = state.phaseFilter; // deep-link filter (#view=trajectory&phase=…)
   return state.steps.filter((step) => {
+    if (needle && step.phase !== needle && step.component !== needle) return false;
     if (state.errorsOnly && !stepErrored(step) && !(step.children || []).some(stepErrored)) return false;
     if (!query) return true;
     return stepSearchText(step).includes(query)
@@ -127,12 +129,22 @@ export function renderTrajectory(root, actions) {
     onclick: () => { state.errorsOnly = !state.errorsOnly; actions.renderView({ preserveFocus: true }); },
   }, icon("alert", 12), "Errors only");
 
+  const phaseChip = state.phaseFilter
+    ? h("span", { class: "filter-chip", "data-testid": "phase-filter", title: "Deep-linked from the Workflow view" },
+        icon("workflow", 11),
+        state.phaseFilter,
+        h("button", {
+          class: "filter-chip-clear", type: "button", "aria-label": "Clear phase filter",
+          onclick: () => actions.clearPhaseFilter(),
+        }, icon("x", 10)))
+    : null;
+
   const visible = filteredSteps();
   const count = h("span", { class: "nav-count" },
     visible.length === state.steps.length
       ? plural(visible.length, "step")
       : `${visible.length} of ${state.steps.length}`);
-  navPane.append(h("div", { class: "nav-toolbar" }, search, errorsToggle, count));
+  navPane.append(h("div", { class: "nav-toolbar" }, search, phaseChip, errorsToggle, count));
 
   const scroll = h("div", { class: "nav-scroll", "data-testid": "step-list" });
   if (!state.steps.length) {

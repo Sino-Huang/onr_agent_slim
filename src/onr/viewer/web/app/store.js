@@ -3,7 +3,7 @@
 
 import { walkSteps } from "./format.js";
 
-export const VIEWS = ["trajectory", "tree", "timeline", "overview"];
+export const VIEWS = ["trajectory", "tree", "timeline", "overview", "workflow"];
 
 export const state = {
   runtime: null,
@@ -28,6 +28,8 @@ export const state = {
   treeCollapsed: new Set(),  // step_ids collapsed in the tree view
   artifactRef: "",           // artifact open in the overview viewer
   dismissedWarnings: new Set(),
+  workflowNode: "",          // expanded workflow node: "", a node id, or "all"
+  phaseFilter: "",           // trajectory phase/component filter (deep links)
 };
 
 export function setStepsPayload(payload) {
@@ -75,6 +77,8 @@ export function readHash() {
   if (params.get("mission")) out.mission = params.get("mission");
   if (params.get("view") && VIEWS.includes(params.get("view"))) out.view = params.get("view");
   if (params.get("step")) out.step = params.get("step"); // seq number or step_id
+  if (params.get("node")) out.node = params.get("node"); // workflow L1 expansion
+  if (params.get("phase")) out.phase = params.get("phase"); // trajectory deep-link filter
   return out;
 }
 
@@ -82,6 +86,8 @@ export function currentHash() {
   const params = new URLSearchParams();
   if (state.missionId) params.set("mission", state.missionId);
   params.set("view", state.view);
+  if (state.view === "workflow" && state.workflowNode) params.set("node", state.workflowNode);
+  if (state.view === "trajectory" && state.phaseFilter) params.set("phase", state.phaseFilter);
   const selected = selectedStep();
   if (selected) params.set("step", selected.step_id);
   return "#" + params.toString();

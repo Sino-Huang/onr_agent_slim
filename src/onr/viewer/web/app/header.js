@@ -11,6 +11,7 @@ const VIEW_DEFS = [
   { id: "tree", label: "Tree", icon: "tree" },
   { id: "timeline", label: "Timeline", icon: "timeline" },
   { id: "overview", label: "Overview", icon: "overview" },
+  { id: "workflow", label: "Workflow", icon: "workflow" },
 ];
 
 function statusPill() {
