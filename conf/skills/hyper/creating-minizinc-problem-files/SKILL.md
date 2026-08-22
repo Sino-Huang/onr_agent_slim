@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.1.0'
+version: '2.1.1'
 ---
 
 # Creating MiniZinc Problem Files
@@ -27,7 +27,7 @@ version: '2.1.0'
 
 ## Examples
 
-- For event-accounting patrols, read `examples/event-information-patrol/model.mzn` and `examples/event-information-patrol/data.dzn`.
+- For event-accounting patrols matching this formulation, read `/conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`, then call `write_file` with its contents and the exact workspace `model.mzn` path returned by `record_planning_intent`. Use that as the starting model and adapt it only when the current Mission needs different planning semantics. Read `/conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/data.dzn` for the materialization sequence, then populate the workspace `data.dzn` from current evidence; its example values are teaching values only.
 - For one risk-weighted observation interval, read `examples/risk-weighted-fov/model.mzn` and `examples/risk-weighted-fov/data.dzn`.
 
 ## Authority boundary
