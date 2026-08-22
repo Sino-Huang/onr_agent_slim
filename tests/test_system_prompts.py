@@ -77,6 +77,8 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
         "planner-selection",
         "`record_planning_intent`",
         "creating-minizinc-problem-files",
+        "`initialize_event_data_materialization`",
+        "`materialize_event_information_data`",
         "creating-pddl-problem-files",
         "`write_file`",
         "`submit_planner_attempt`",

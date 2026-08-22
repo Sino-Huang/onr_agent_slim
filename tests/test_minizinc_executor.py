@@ -214,7 +214,7 @@ def test_minizinc_executor_static_check_uses_real_model_and_data_parser(
     assert rejected.error_message == rejected.stderr.strip()
 
 
-def test_event_information_patrol_example_is_optimal_and_preserves_waypoints(
+def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     tmp_path: Path,
 ) -> None:
     repository_root = Path(__file__).resolve().parents[1]
@@ -247,5 +247,26 @@ def test_event_information_patrol_example_is_optimal_and_preserves_waypoints(
 
     assert result.outcome is PlanningOutcome.SOLVED
     assert result.assignments == ()
-    assert '\\"maneuver_id\\":\\"patrol-stop-1\\"' in result.stdout
-    assert '\\"maneuver_id\\":\\"patrol-stop-2\\"' in result.stdout
+    stream = [json.loads(line) for line in result.stdout.splitlines()]
+    solution = next(item for item in stream if item["type"] == "solution")
+    assignments = json.loads(solution["output"]["default"])["assignments"]
+    assert [item["maneuver_id"] for item in assignments] == [
+        "patrol-stop-1",
+        "patrol-stop-2",
+    ]
+    assert [item["start"] for item in assignments] == [10, 40]
+    assert [item["duration"] for item in assignments] == [3, 6]
+    assert [item["parameters"]["source_event_index"] for item in assignments] == [
+        1,
+        4,
+    ]
+    assert [
+        (item["parameters"]["x"], item["parameters"]["y"]) for item in assignments
+    ] == [(90, 0), (260, 80)]
+    model_text = assets["model.mzn"].decode()
+    data_text = assets["data.dzn"].decode()
+    assert "array[STOP_SLOTS] of var bool: used" in model_text
+    assert "information_gain * (event_count + 1) - used_stop_count" in model_text
+    assert "stop_count" not in data_text
+    assert "dwell_ticks" not in data_text
+    assert "maneuver_id =" not in data_text

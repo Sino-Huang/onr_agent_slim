@@ -1,11 +1,11 @@
 % ==========================================================================
 % Example: event-information patrol on a shrunk teaching instance
-% (3 entities, 6 events, 2 stops). A real mission brings the same shape with
-% hundreds of records — copy every record in evidence order, never sample.
+% (3 entities, 6 events). The solver chooses the number, locations, starts,
+% and positive dwell durations of the patrol stops.
 %
 % ----- Original evidence received (excerpt, in evidence order) -----
 % scene_graph: {"mission_time_seconds": 0.0, "entities": {..., drone pose
-%   [0.0, 0.0, 0.0] at mission start, ...}}
+%   [45.74, -85.99, -89.32] at mission start, ...}}
 % static_info: one record per event —
 %   {"entity_id": 1, "event type": "intersection decision", "event information": {"decision": "left"},  "position": [90.0, 0.0, -250.0],   "time": 5.0}
 %   {"entity_id": 1, "event type": "course change",         "event information": {"heading": "NE"},   "position": [105.0, 12.0, -250.0],  "time": 5.5}
@@ -13,37 +13,31 @@
 %   {"entity_id": 2, "event type": "rendezvous",            "event information": {"with": "ship-2"},  "position": [260.0, 80.0, -250.0],  "time": 20.0}
 %   {"entity_id": 2, "event type": "course change",         "event information": {"heading": "S"},    "position": [275.0, 70.0, -250.0],  "time": 21.0}
 %   {"entity_id": 3, "event type": "intersection decision", "event information": {"decision": "left"},  "position": [270.0, 95.0, -250.0],  "time": 22.5}
-% belief_snapshot marginals: entity 1 → probability_risk 0.75;
-%   entity 2 → probability_risk 0.30; entity 3 → probability_risk 0.90
+% belief_snapshot marginals: entity 1 -> probability_risk 0.75;
+%   entity 2 -> probability_risk 0.30; entity 3 -> probability_risk 0.90
 %
-% ----- Mapping (copy values verbatim; model.mzn performs scaling/rounding) -----
-% event_time_s[e]  = static_info[e].time              (float seconds)
-% event_x_m[e]     = static_info[e].position[0]       (float metres)
-% event_y_m[e]     = static_info[e].position[1]       (z altitude is not planned)
-% event_entity[e]  = static_info[e].entity_id         (entity index 1..entity_count)
-% entity_risk_p[i] = probability_risk marginal of entity i (float 0..1)
-% drone_start_*    = drone pose in scene_graph at mission_time_seconds
-% horizon_ticks    = mission horizon seconds x time_scale   (30 s x 2 = 60)
-% time_scale, risk_scale = fixed conversion constants of this planner
+% ----- Event-array mappings owned by the materializer -----
+% event_time_s[e] = static_info[e].time
+% event_x_m[e] = static_info[e].position[0]
+% event_y_m[e] = static_info[e].position[1]
+% event_entity[e] = first-seen index of static_info[e].entity_id
+%
+% The remaining assignments are planner-authored or belief-derived globals.
 % ==========================================================================
 
 event_count = 6;
-stop_count = 2;
-entity_count = 3;
-horizon_ticks = 60;
-time_scale = 2;
-dwell_ticks = 2;
-maneuver_id = ["patrol-stop-1", "patrol-stop-2"];
-
 event_time_s = [5.0, 5.5, 6.0, 20.0, 21.0, 22.5];
 event_x_m = [90.0, 105.0, 80.0, 260.0, 275.0, 270.0];
 event_y_m = [0.0, 12.0, -14.0, 80.0, 70.0, 95.0];
 event_entity = [1, 1, 1, 2, 2, 3];
-entity_risk_p = [0.75, 0.30, 0.90];
 
+entity_count = 3;
+entity_risk_p = [0.75, 0.30, 0.90];
+horizon_ticks = 60;
+time_scale = 2;
 drone_start_time = 0;
-drone_start_x = 0;
-drone_start_y = 0;
+drone_start_x_m = 45.74;
+drone_start_y_m = -85.99;
 max_velocity = 20;
 fov_radius = 30;
 risk_scale = 1000;

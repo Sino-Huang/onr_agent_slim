@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.tools import ToolRuntime
 
+from onr.adapters.minizinc import MiniZincExecutor
 from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.agents.hyper_workflow import (
     HyperWorkflowContext,
     _allowed_workflow_tools,
+    _gate_workflow_tools,
     create_hyper_workflow_agent,
     handoff_execution,
+    initialize_event_data_materialization,
+    materialize_event_information_data,
     planner_executor,
     record_planning_intent,
     submit_planner_attempt,
@@ -286,6 +292,45 @@ def _execute(context: HyperWorkflowContext, planner: str, paths: list[str]) -> s
     )
 
 
+def _write_minizinc_model(context: HyperWorkflowContext) -> Path:
+    location = _paths(context, "minizinc")[0]
+    host = cast(Path, context.backend_root) / location.removeprefix("/")
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text("int: event_count;\n", encoding="utf-8")
+    return host
+
+
+def _initialize_events(
+    context: HyperWorkflowContext,
+    count: int,
+    fields: list[dict[str, str]],
+    *,
+    restart: bool = False,
+) -> dict[str, object]:
+    result = cast(Any, initialize_event_data_materialization).func(
+        total_event_count=count,
+        fields=fields,
+        restart=restart,
+        reflection="Initializing event arrays.",
+        runtime=_runtime(context),
+    )
+    return cast(dict[str, object], json.loads(result))
+
+
+def _materialize_events(
+    context: HyperWorkflowContext,
+    events: list[dict[str, object]],
+    mapping: dict[str, list[str | int]],
+) -> dict[str, object]:
+    result = cast(Any, materialize_event_information_data).func(
+        events=events,
+        mapping=mapping,
+        reflection="Materializing the next event batch.",
+        runtime=_runtime(context),
+    )
+    return cast(dict[str, object], json.loads(result))
+
+
 def _statechart() -> dict[str, object]:
     return {
         "entry_state": "surveying",
@@ -315,6 +360,354 @@ def test_tool_interfaces_are_identical_and_planner_neutral(monkeypatch: Any) -> 
     expected = {"planner_choice", "planner_model_file_locations", "reflection"}
     assert set(cast(Any, submit_planner_attempt).args) == expected
     assert set(cast(Any, planner_executor).args) == expected
+    assert set(cast(Any, initialize_event_data_materialization).args) == {
+        "total_event_count",
+        "fields",
+        "restart",
+        "reflection",
+    }
+    assert set(cast(Any, materialize_event_information_data).args) == {
+        "events",
+        "mapping",
+        "reflection",
+    }
+
+
+def test_terminal_workflow_gate_exposes_only_structured_response(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    context.current_attempt_number = context.max_planner_attempts
+    response_format = object()
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=context),
+        tools=[
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_todos"),
+            SimpleNamespace(name="submit_planner_attempt"),
+        ],
+        response_format=response_format,
+    )
+    request.override = lambda **changes: changes
+
+    overridden = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+
+    assert overridden["tools"] == []
+    assert overridden["response_format"] is response_format
+
+
+_EVENT_FIELDS = [
+    {"target": "event_time_s", "dzn_type": "float", "normalization": "identity"},
+    {"target": "event_entity", "dzn_type": "int", "normalization": "first_seen_index"},
+    {"target": "event_active", "dzn_type": "bool", "normalization": "identity"},
+    {"target": "event_label", "dzn_type": "string", "normalization": "identity"},
+    {"target": "event_order", "dzn_type": "int", "normalization": "identity"},
+]
+
+
+def test_event_materialization_tracks_progress_changes_mapping_and_writes_aligned_dzn(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    assert _allowed_workflow_tools(context) == {
+        "write_file",
+        "edit_file",
+        "initialize_event_data_materialization",
+    }
+    _write(context, "minizinc")
+    assert "submit_planner_attempt" in _allowed_workflow_tools(context)
+
+    initialized = _initialize_events(context, 3, _EVENT_FIELDS)
+    assert initialized == {
+        "status": "continue",
+        "accepted_count": 0,
+        "remaining_count": 3,
+        "next_event_number": 1,
+    }
+    assert "materialize_event_information_data" in _allowed_workflow_tools(context)
+    assert "submit_planner_attempt" not in _allowed_workflow_tools(context)
+    with pytest.raises(ValueError, match="materialization is incomplete"):
+        _submit(context, "minizinc", _paths(context, "minizinc"))
+
+    first_raw = {
+        "time": 1,
+        "entity": "ship-a",
+        "meta": {"active": True},
+        "kind": 'course "change"',
+        "seq": 7,
+    }
+    first = _materialize_events(
+        context,
+        [
+            {"event_number": 1, "event": first_raw},
+            {"event_number": 2, "event": dict(first_raw)},
+        ],
+        {
+            "event_time_s": ["time"],
+            "event_entity": ["entity"],
+            "event_active": ["meta", "active"],
+            "event_label": ["kind"],
+            "event_order": ["seq"],
+            "unused": ["ignored"],
+        },
+    )
+    assert first["accepted_count"] == 2
+    assert first["remaining_count"] == 1
+    assert first["next_event_number"] == 3
+    assert first["warnings"] == ["Ignored undeclared mapping targets: unused"]
+
+    completed = _materialize_events(
+        context,
+        [
+            {
+                "event_number": 3,
+                "event": {
+                    "payload": {
+                        "at": 2.5,
+                        "who": "ship-b",
+                        "flags": [False],
+                        "label": "rendezvous",
+                        "order": 8,
+                    }
+                },
+            }
+        ],
+        {
+            "event_time_s": ["payload", "at"],
+            "event_entity": ["payload", "who"],
+            "event_active": ["payload", "flags", 0],
+            "event_label": ["payload", "label"],
+            "event_order": ["payload", "order"],
+        },
+    )
+    assert completed["status"] == "complete"
+    assert completed["data_file_path"] == "/artifacts/workspace/001/data.dzn"
+    assert completed["entity_index_maps"] == {
+        "event_entity": {"ship-a": 1, "ship-b": 2}
+    }
+    assert "event_count = 3" not in json.dumps(completed)
+    data_path = cast(Path, context.backend_root) / "artifacts/workspace/001/data.dzn"
+    assert data_path.read_text(encoding="utf-8") == (
+        "event_count = 3;\n"
+        "event_time_s = [1.0, 1.0, 2.5];\n"
+        "event_entity = [1, 1, 2];\n"
+        "event_active = [true, true, false];\n"
+        'event_label = ["course \\"change\\"", "course \\"change\\"", "rendezvous"];\n'
+        "event_order = [7, 7, 8];\n"
+    )
+    assert "submit_planner_attempt" in _allowed_workflow_tools(context)
+
+
+def test_event_materialization_rejects_bad_batches_transactionally(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    _write_minizinc_model(context)
+    fields = [_EVENT_FIELDS[0]]
+    _initialize_events(context, 30, fields)
+    mapping: dict[str, list[str | int]] = {"event_time_s": ["time"]}
+
+    invalid_batches = [
+        [
+            {"event_number": number, "event": {"time": number}}
+            for number in range(1, 27)
+        ],
+        [
+            {"event_number": 1, "event": {"time": 1}},
+            {"event_number": 1, "event": {"time": 1}},
+        ],
+        [{"event_number": 2, "event": {"time": 2}}],
+    ]
+    for batch in invalid_batches:
+        with pytest.raises(ValueError):
+            _materialize_events(context, batch, mapping)
+        assert cast(Any, context.event_data_materialization).accepted_count == 0
+
+    for bad_mapping, event in (
+        ({}, {"event_number": 1, "event": {"time": 1}}),
+        ({"event_time_s": ["missing"]}, {"event_number": 1, "event": {"time": 1}}),
+        ({"event_time_s": ["time"]}, {"event_number": 1, "event": {"time": "one"}}),
+        ({"event_time_s": ["time", 0.5]}, {"event_number": 1, "event": {"time": [1]}}),
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            _materialize_events(context, [event], cast(Any, bad_mapping))
+        assert cast(Any, context.event_data_materialization).accepted_count == 0
+
+    accepted = _materialize_events(
+        context, [{"event_number": 1, "event": {"time": 1}}], mapping
+    )
+    assert accepted["accepted_count"] == 1
+    with pytest.raises(ValueError):
+        _materialize_events(
+            context, [{"event_number": 1, "event": {"time": 1}}], mapping
+        )
+    assert cast(Any, context.event_data_materialization).accepted_count == 1
+
+
+def test_event_materialization_restart_discards_rows_file_and_definitions(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    model = _write_minizinc_model(context)
+    model.unlink()
+    rejected = cast(Any, initialize_event_data_materialization).func(
+        total_event_count=1,
+        fields=[_EVENT_FIELDS[0]],
+        restart=False,
+        reflection="Initializing event arrays.",
+        runtime=_runtime(context),
+    )
+    assert "model.mzn must exist first" in rejected
+    assert context.event_data_materialization is None
+    _write_minizinc_model(context)
+    _initialize_events(context, 1, [_EVENT_FIELDS[0]])
+    completed = _materialize_events(
+        context,
+        [{"event_number": 1, "event": {"time": 1}}],
+        {"event_time_s": ["time"]},
+    )
+    assert completed["status"] == "complete"
+    data_path = cast(Path, context.backend_root) / "artifacts/workspace/001/data.dzn"
+    assert data_path.is_file()
+    with pytest.raises(ValueError, match="cannot change without restart"):
+        _initialize_events(context, 2, [_EVENT_FIELDS[4]])
+
+    restarted = _initialize_events(context, 2, [_EVENT_FIELDS[4]], restart=True)
+    assert restarted["accepted_count"] == 0
+    assert restarted["remaining_count"] == 2
+    assert not data_path.exists()
+    assert "submit_planner_attempt" not in _allowed_workflow_tools(context)
+
+
+def test_event_materialization_atomic_write_failure_does_not_accept_batch(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import onr.agents.hyper_workflow as module
+
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    _write_minizinc_model(context)
+    _initialize_events(context, 1, [_EVENT_FIELDS[0]])
+    monkeypatch.setattr(
+        module.os,
+        "replace",
+        lambda *_: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    with pytest.raises(OSError, match="replace failed"):
+        _materialize_events(
+            context,
+            [{"event_number": 1, "event": {"time": 1}}],
+            {"event_time_s": ["time"]},
+        )
+    assert cast(Any, context.event_data_materialization).accepted_count == 0
+    assert not (
+        cast(Path, context.backend_root) / "artifacts/workspace/001/data.dzn"
+    ).exists()
+    assert not list(
+        (cast(Path, context.backend_root) / "artifacts/workspace/001").glob(
+            ".data.dzn.tmp-*"
+        )
+    )
+
+
+def test_current_253_event_report_materializes_and_executes_within_timeout(
+    tmp_path: Path,
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    example = (
+        repository_root
+        / "conf/skills/hyper/creating-minizinc-problem-files/examples"
+        / "event-information-patrol"
+    )
+    report_path = (
+        repository_root
+        / "data/past_debug_rounds/20260822T033147.679043Z/var/environment"
+        / "mission%3Ademo/environment.json"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    events = cast(list[dict[str, object]], report["static_info"])
+    assert len(events) == 253
+    executable = (
+        repository_root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
+    )
+    executor = MiniZincExecutor(
+        executable, tmp_path / "full-report-runs", timeout_seconds=30
+    )
+    context = _context(tmp_path, minizinc=cast(Any, executor))
+    _record(context, "minizinc")
+    model_path = cast(Path, context.backend_root) / _paths(context, "minizinc")[
+        0
+    ].removeprefix("/")
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_bytes((example / "model.mzn").read_bytes())
+    fields = [
+        {"target": "event_time_s", "dzn_type": "float", "normalization": "identity"},
+        {"target": "event_x_m", "dzn_type": "float", "normalization": "identity"},
+        {"target": "event_y_m", "dzn_type": "float", "normalization": "identity"},
+        {
+            "target": "event_entity",
+            "dzn_type": "int",
+            "normalization": "first_seen_index",
+        },
+    ]
+    _initialize_events(context, len(events), fields)
+    mapping = {
+        "event_time_s": ["time"],
+        "event_x_m": ["position", 0],
+        "event_y_m": ["position", 1],
+        "event_entity": ["entity_id"],
+    }
+    completed: dict[str, object] = {}
+    for offset in range(0, len(events), 25):
+        completed = _materialize_events(
+            context,
+            [
+                {"event_number": index + 1, "event": events[index]}
+                for index in range(offset, min(offset + 25, len(events)))
+            ],
+            mapping,
+        )
+    assert completed["status"] == "complete"
+    entity_indices = cast(dict[str, dict[str, int]], completed["entity_index_maps"])[
+        "event_entity"
+    ]
+    data_path = cast(Path, context.backend_root) / _paths(context, "minizinc")[
+        1
+    ].removeprefix("/")
+    data_path.write_text(
+        data_path.read_text(encoding="utf-8")
+        + "\n"
+        + f"entity_count = {len(entity_indices)};\n"
+        + "entity_risk_p = ["
+        + ", ".join("0.5" for _ in entity_indices)
+        + "];\n"
+        # Keep the scale regression's optimum trivial; the teaching instance
+        # above separately proves non-trivial stop and schedule selection.
+        + "horizon_ticks = 1;\n"
+        + "time_scale = 2;\n"
+        + "drone_start_time = 0;\n"
+        + "drone_start_x_m = 45.74;\n"
+        + "drone_start_y_m = -85.99;\n"
+        + "max_velocity = 20;\n"
+        + "fov_radius = 30;\n"
+        + "risk_scale = 1000;\n",
+        encoding="utf-8",
+    )
+    assets = {
+        "model.mzn": model_path.read_bytes(),
+        "data.dzn": data_path.read_bytes(),
+    }
+    assert executor.check(assets).accepted is True
+    result = executor.execute(assets)
+    assert result.outcome is PlanningOutcome.SOLVED
+    assert '"status": "OPTIMAL_SOLUTION"' in result.stdout
 
 
 @pytest.mark.parametrize(

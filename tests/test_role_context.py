@@ -69,7 +69,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.0.0",
+        "2.1.0",
         "2.0.0",
         "1.1.0",
         "2.0.0",

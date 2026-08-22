@@ -134,6 +134,78 @@ def _planning_context(
     )
 
 
+def _event_materialization_context(
+    tmp_path: Path,
+) -> tuple[HyperWorkflowContext, RejectingPlanner]:
+    mission = MissionInput(
+        mission_id=f"live-event-materialization-{uuid4().hex}",
+        mission_text=(
+            "Patrol the environment and account for every event in the report. "
+            "Choose a timed drone route and dwell schedule that maximizes captured "
+            "information gain using 1 - probability_risk for each event entity."
+        ),
+        source_authority="live-workflow-test",
+    )
+    records = [
+        {
+            "entity_id": "ship-1" if index < 13 else "ship-2",
+            "event type": "course change",
+            "event information": {"sequence": index + 1},
+            "position": [float(index * 2), float(index % 3), -10.0],
+            "time": float(index + 1),
+        }
+        for index in range(26)
+    ]
+    scene = TransportEvent(
+        schema_version=1,
+        event_id=f"scene:{mission.mission_id}:1",
+        mission_id=mission.mission_id,
+        sequence=0,
+        event_kind="environment_data",
+        payload={
+            "scene_graph": {
+                "mission_id": mission.mission_id,
+                "mission_time_seconds": 0.0,
+                "entities": [
+                    {
+                        "id": "drone-1",
+                        "type": "drone",
+                        "location": {"x": 0.0, "y": 0.0, "z": 10.0},
+                        "max_velocity": 20,
+                        "fov_radius": 30,
+                    }
+                ],
+            },
+            "static_info": records,
+        },
+    )
+    snapshot = MissionSnapshot(
+        mission_id=mission.mission_id,
+        version=1,
+        created_at="2026-08-22T00:00:00+00:00",
+        environment_data=scene.event_id,
+        source_revisions={"environment_data": 1},
+        source_references={"environment_data": scene.event_id},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
+    )
+    planner = RejectingPlanner()
+    return (
+        HyperWorkflowContext(
+            mission_input=mission,
+            mission_snapshot=snapshot,
+            environment_event=scene,
+            artifact_root=tmp_path / "event-planner-artifacts",
+            backend_root=Path("/"),
+            minizinc_planner=planner,
+            fast_downward_planner=UnusedFastDownward(),
+            val_validator=UnusedVAL(),
+            max_planner_attempts=1,
+        ),
+        planner,
+    )
+
+
 def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     tmp_path: Path,
 ) -> None:
@@ -179,9 +251,7 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
         "in_progress",
         "pending",
     ]
-    debug_directory = (
-        tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
-    )
+    debug_directory = tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
     records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(debug_directory.glob("*.json"))
@@ -204,4 +274,86 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     )
     assert submission["sequence"] > successful_writes[-1]["sequence"]
     assert not any(item.get("name") == "planner_executor" for item in tool_records)
-    assert "sha256" not in json.dumps(tool_records).casefold()
+    controlled_records = [
+        item
+        for item in tool_records
+        if item.get("name")
+        in {"record_planning_intent", "submit_planner_attempt", "planner_executor"}
+    ]
+    assert "sha256" not in json.dumps(controlled_records).casefold()
+
+
+def test_live_hyper_workflow_materializes_event_data_in_multiple_batches(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.verify_llm_reachability()
+    context, planner = _event_materialization_context(tmp_path)
+    mission_id = context.mission_input.mission_id
+    model = runtime.create_chat_model(
+        mission_id=mission_id,
+        debug_scope="hyper-agent",
+    )
+    prompt = load_system_prompt(
+        _REPO_ROOT / "conf/system_prompt",
+        "hyper-agent",
+    )
+    graph = create_hyper_workflow_agent(
+        model=model,
+        system_prompt=f"You are agent {runtime.config.agent_name}. {prompt}",
+        mission_id=mission_id,
+        skill_catalog=FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills"),
+        backend_root=context.backend_root,
+        planner_workspace_location=context.planner_workspace_location,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = DeepAgentsHyperWorkflow(graph).run(
+        context,
+        thread_id=f"planning-run:{mission_id}:1",
+        recursion_limit=160,
+    )
+
+    assert result.outcome is HyperWorkflowOutcome.PLANNER_REJECTED
+    assert planner.checked_assets
+    data = planner.checked_assets[-1]["data.dzn"].decode()
+    assert "event_count = 26;" in data
+    debug_directory = tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(debug_directory.glob("*.json"))
+    ]
+    tool_records = [item for item in records if item.get("kind") == "tool"]
+    initialization = next(
+        item
+        for item in tool_records
+        if item.get("name") == "initialize_event_data_materialization"
+    )
+    batches = [
+        item
+        for item in tool_records
+        if item.get("name") == "materialize_event_information_data"
+        and item.get("error") is None
+    ]
+    assert initialization["input"]["total_event_count"] == 26
+    assert len(batches) >= 2
+    assert sum(len(item["input"]["events"]) for item in batches) == 26
+    last_batch_sequence = batches[-1]["sequence"]
+    reads_after_materialization = [
+        item
+        for item in tool_records
+        if item.get("name") == "read_file"
+        and item.get("sequence", 0) > last_batch_sequence
+    ]
+    assert {
+        Path(item["input"]["file_path"]).name for item in reads_after_materialization
+    } >= {
+        "model.mzn",
+        "data.dzn",
+    }
+    assert any(
+        item.get("name") == "edit_file"
+        and Path(item["input"]["file_path"]).name == "data.dzn"
+        and item.get("sequence", 0) > last_batch_sequence
+        for item in tool_records
+    )

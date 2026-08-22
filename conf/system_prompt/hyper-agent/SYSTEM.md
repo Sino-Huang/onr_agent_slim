@@ -34,7 +34,7 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 
 ### 3. Generate planner files
 
-- For MiniZinc, read `creating-minizinc-problem-files` and write `model.mzn` plus `data.dzn` at the exact returned paths.
+- For MiniZinc, read `creating-minizinc-problem-files` and write `model.mzn` at the exact returned path. Wait for the successful write result. If the model needs event-indexed arrays, call `initialize_event_data_materialization`, then call `materialize_event_information_data` with contiguous batches of at most 25 numbered raw events until it generates `data.dzn`. Read both generated files and add every missing non-event assignment to `data.dzn` with `edit_file`. Write `data.dzn` directly only when event materialization is unnecessary.
 - For Fast Downward, read `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
 - Create an absent planner file once with `write_file`. To change that path later,
   call `read_file` on the exact path, wait for its result, then call `edit_file`;

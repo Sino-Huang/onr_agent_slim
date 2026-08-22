@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import os
 import re
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -203,6 +206,35 @@ def _planner_files_exist(context: HyperWorkflowContext) -> bool:
         return False
 
 
+@dataclass(frozen=True, slots=True)
+class _EventDataField:
+    target: str
+    dzn_type: Literal["int", "float", "bool", "string"]
+    normalization: Literal["identity", "first_seen_index"]
+
+
+@dataclass(slots=True)
+class _EventDataMaterialization:
+    total_event_count: int
+    fields: tuple[_EventDataField, ...]
+    data_path: Path
+    data_location: str
+    values: dict[str, list[object]] = field(default_factory=dict)
+    entity_indices: dict[str, dict[str | int, int]] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    complete: bool = False
+
+    @property
+    def accepted_count(self) -> int:
+        if not self.fields:
+            return 0
+        return len(self.values[self.fields[0].target])
+
+    @property
+    def next_event_number(self) -> int:
+        return self.accepted_count + 1
+
+
 @dataclass(slots=True)
 class HyperWorkflowContext:
     """Per-run dependencies and evidence available only through workflow tools."""
@@ -236,6 +268,7 @@ class HyperWorkflowContext:
     submission_result: str | None = field(default=None, init=False)
     planner_plan: Any = field(default=None, init=False)
     planner_execution_outcome: Any = field(default=None, init=False)
+    event_data_materialization: Any = field(default=None, init=False)
     current_attempt_number: int = field(default=0, init=False)
     executed_attempt_number: int = field(default=0, init=False)
     statechart: Any = field(default=None, init=False)
@@ -327,6 +360,8 @@ _PHASE_CONTROLLED_TOOLS = frozenset(
         "record_planning_intent",
         "write_file",
         "edit_file",
+        "initialize_event_data_materialization",
+        "materialize_event_information_data",
         "submit_planner_attempt",
         "planner_executor",
         "submit_statechart_draft",
@@ -347,7 +382,19 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
         if context.current_attempt_number >= context.max_planner_attempts:
             return frozenset({"HyperWorkflowResultCandidate"})
         allowed = {"write_file", "edit_file"}
-        if _planner_files_exist(context):
+        choice = context.planner_choice.planner_choice.planner_id
+        materialization = cast(
+            _EventDataMaterialization | None, context.event_data_materialization
+        )
+        if choice == "minizinc":
+            allowed.add("initialize_event_data_materialization")
+            if materialization is not None and not materialization.complete:
+                allowed.add("materialize_event_information_data")
+        if _planner_files_exist(context) and not (
+            choice == "minizinc"
+            and materialization is not None
+            and not materialization.complete
+        ):
             allowed.add("submit_planner_attempt")
         return frozenset(allowed)
     if context.statechart is not None and context.handoff_required:
@@ -379,15 +426,18 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
     if not isinstance(context, HyperWorkflowContext):
         raise TypeError("Hyper workflow model call requires HyperWorkflowContext")
     allowed = _allowed_workflow_tools(context)
-    tools = [
-        item
-        for item in request.tools
-        if (name := _request_tool_name(item)) not in _PHASE_CONTROLLED_TOOLS
-        or name in allowed
-    ]
-    response_format = (
-        request.response_format if "HyperWorkflowResultCandidate" in allowed else None
+    terminal = "HyperWorkflowResultCandidate" in allowed
+    tools = (
+        []
+        if terminal
+        else [
+            item
+            for item in request.tools
+            if (name := _request_tool_name(item)) not in _PHASE_CONTROLLED_TOOLS
+            or name in allowed
+        ]
     )
+    response_format = request.response_format if terminal else None
     return handler(request.override(tools=tools, response_format=response_format))
 
 
@@ -535,6 +585,394 @@ def record_planning_intent(
     )
 
 
+_DZN_TYPES = frozenset({"int", "float", "bool", "string"})
+_EVENT_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _parse_event_data_fields(
+    fields: list[dict[str, str]],
+) -> tuple[_EventDataField, ...]:
+    if not fields:
+        raise ValueError("event data materialization requires at least one field")
+    parsed: list[_EventDataField] = []
+    targets: set[str] = set()
+    for definition in fields:
+        if not isinstance(definition, Mapping) or set(definition) != {
+            "target",
+            "dzn_type",
+            "normalization",
+        }:
+            raise ValueError(
+                "each event field requires exactly target, dzn_type, and normalization"
+            )
+        target = definition["target"]
+        dzn_type = definition["dzn_type"]
+        normalization = definition["normalization"]
+        if (
+            not isinstance(target, str)
+            or not _EVENT_TARGET.fullmatch(target)
+            or target == "event_count"
+        ):
+            raise ValueError("event field target must be a valid array assignment name")
+        if target in targets:
+            raise ValueError(f"event field target is repeated: {target}")
+        if dzn_type not in _DZN_TYPES:
+            raise ValueError(f"event field {target} has an unsupported DZN scalar type")
+        if normalization not in {"identity", "first_seen_index"}:
+            raise ValueError(f"event field {target} has an unsupported normalization")
+        if normalization == "first_seen_index" and dzn_type != "int":
+            raise ValueError(
+                f"event field {target} must use DZN type int for first_seen_index"
+            )
+        parsed.append(
+            _EventDataField(
+                target,
+                cast(Literal["int", "float", "bool", "string"], dzn_type),
+                cast(Literal["identity", "first_seen_index"], normalization),
+            )
+        )
+        targets.add(target)
+    return tuple(parsed)
+
+
+def _event_materialization_progress(
+    state: _EventDataMaterialization,
+) -> dict[str, object]:
+    progress: dict[str, object] = {
+        "status": "continue",
+        "accepted_count": state.accepted_count,
+        "remaining_count": state.total_event_count - state.accepted_count,
+        "next_event_number": state.next_event_number,
+    }
+    if state.warnings:
+        progress["warnings"] = list(state.warnings)
+    return progress
+
+
+def _entity_index_result(
+    state: _EventDataMaterialization,
+) -> dict[str, dict[str, int]]:
+    return {
+        event_field.target: {
+            str(key): index
+            for key, index in state.entity_indices[event_field.target].items()
+        }
+        for event_field in state.fields
+        if event_field.normalization == "first_seen_index"
+    }
+
+
+def _event_materialization_complete(
+    state: _EventDataMaterialization,
+) -> dict[str, object]:
+    return {
+        "status": "complete",
+        "accepted_count": state.accepted_count,
+        "remaining_count": 0,
+        "next_event_number": state.next_event_number,
+        "total_event_count": state.total_event_count,
+        "data_file_path": state.data_location,
+        "warnings": list(state.warnings),
+        "entity_index_maps": _entity_index_result(state),
+        "instruction": (
+            "Read model.mzn and data.dzn, then add every missing non-event "
+            "assignment to data.dzn before calling submit_planner_attempt."
+        ),
+    }
+
+
+def _extract_event_path(value: object, path: list[str | int]) -> object:
+    current = value
+    for segment in path:
+        if isinstance(segment, bool) or not isinstance(segment, (str, int)):
+            raise TypeError("mapping paths contain only string or integer segments")
+        if isinstance(segment, str):
+            if not isinstance(current, Mapping) or segment not in current:
+                raise ValueError(f"mapping path segment is missing: {segment}")
+            current = current[segment]
+        else:
+            if (
+                segment < 0
+                or not isinstance(current, (list, tuple))
+                or segment >= len(current)
+            ):
+                raise ValueError(f"mapping array index is invalid: {segment}")
+            current = current[segment]
+    return current
+
+
+def _identity_event_value(field: _EventDataField, value: object) -> object:
+    if field.dzn_type == "int":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"event field {field.target} does not match DZN type int")
+        return value
+    if field.dzn_type == "float":
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise TypeError(f"event field {field.target} does not match DZN type float")
+        return float(value)
+    if field.dzn_type == "bool":
+        if not isinstance(value, bool):
+            raise TypeError(f"event field {field.target} does not match DZN type bool")
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"event field {field.target} does not match DZN type string")
+    return value
+
+
+def _dzn_scalar(field: _EventDataField, value: object) -> str:
+    if field.dzn_type == "bool":
+        return "true" if cast(bool, value) else "false"
+    if field.dzn_type == "string":
+        return json.dumps(cast(str, value), ensure_ascii=False)
+    return str(value)
+
+
+def _serialize_event_data(
+    fields: tuple[_EventDataField, ...], values: Mapping[str, list[object]]
+) -> str:
+    count = len(values[fields[0].target])
+    lines = [f"event_count = {count};"]
+    for event_field in fields:
+        items = values[event_field.target]
+        if len(items) != count:
+            raise ValueError("materialized event arrays are not aligned")
+        serialized = ", ".join(_dzn_scalar(event_field, item) for item in items)
+        lines.append(f"{event_field.target} = [{serialized}];")
+    return "\n".join(lines) + "\n"
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.tmp-", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@tool(parse_docstring=True)
+def initialize_event_data_materialization(
+    total_event_count: int,
+    fields: list[dict[str, str]],
+    restart: bool,
+    reflection: str,
+    runtime: ToolRuntime[HyperWorkflowContext],
+) -> str:
+    """Initialize aligned event-array materialization for MiniZinc data.dzn.
+
+    Args:
+        total_event_count: Exact number of raw event records to materialize.
+        fields: Per-event arrays, each with target, DZN scalar dzn_type, and
+            identity or first_seen_index normalization.
+        restart: Discard accumulated rows and any previous generated data.dzn.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
+
+    Returns:
+        Canonical JSON progress without the generated DZN contents.
+    """
+
+    _ = reflection
+    context = _context(runtime)
+    choice = context.planner_choice
+    if choice is None or choice.planner_choice.planner_id != "minizinc":
+        raise ValueError("event data materialization requires recorded MiniZinc choice")
+    if (
+        isinstance(total_event_count, bool)
+        or not isinstance(total_event_count, int)
+        or total_event_count < 1
+    ):
+        raise ValueError("total event count must be a positive integer")
+    if not isinstance(restart, bool):
+        raise TypeError("restart must be a boolean")
+    parsed_fields = _parse_event_data_fields(fields)
+    locations = _planner_asset_locations(context, "minizinc")
+    model_path = _host_path(context, locations["model.mzn"])
+    if not model_path.is_file():
+        return (
+            "Event data initialization rejected: model.mzn must exist first. "
+            "Write model.mzn, wait for its successful result, then retry "
+            "initialize_event_data_materialization."
+        )
+    data_path = _host_path(context, locations["data.dzn"])
+    existing = cast(
+        _EventDataMaterialization | None, context.event_data_materialization
+    )
+    if existing is not None and not restart:
+        if (
+            existing.total_event_count != total_event_count
+            or existing.fields != parsed_fields
+        ):
+            raise ValueError(
+                "event field definitions and count cannot change without restart=true"
+            )
+        result = (
+            _event_materialization_complete(existing)
+            if existing.complete
+            else _event_materialization_progress(existing)
+        )
+        return _canonical_json(result)
+    if restart:
+        data_path.unlink(missing_ok=True)
+    state = _EventDataMaterialization(
+        total_event_count=total_event_count,
+        fields=parsed_fields,
+        data_path=data_path,
+        data_location=locations["data.dzn"],
+        values={event_field.target: [] for event_field in parsed_fields},
+        entity_indices={
+            event_field.target: {}
+            for event_field in parsed_fields
+            if event_field.normalization == "first_seen_index"
+        },
+    )
+    context.event_data_materialization = state
+    return _canonical_json(_event_materialization_progress(state))
+
+
+@tool(parse_docstring=True)
+def materialize_event_information_data(
+    events: list[dict[str, Any]],
+    mapping: dict[str, list[str | int]],
+    reflection: str,
+    runtime: ToolRuntime[HyperWorkflowContext],
+) -> str:
+    """Append one validated batch of raw event records to MiniZinc data.dzn.
+
+    Args:
+        events: One to 25 objects with exactly event_number and event, where event
+            contains the model-selected raw JSON record.
+        mapping: One target-to-path mapping for this batch. Each path is a list of
+            string object keys and integer array indices.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
+
+    Returns:
+        Canonical JSON progress or completion metadata without full DZN contents.
+    """
+
+    _ = reflection
+    context = _context(runtime)
+    state = cast(_EventDataMaterialization | None, context.event_data_materialization)
+    if state is None:
+        return _prerequisite_missing(
+            required_tool="initialize_event_data_materialization",
+            retry_tool="materialize_event_information_data",
+        )
+    if state.complete:
+        raise ValueError("event data materialization is already complete")
+    if not isinstance(events, list) or not 1 <= len(events) <= 25:
+        raise ValueError("each materialization batch requires 1 to 25 events")
+    if not isinstance(mapping, Mapping):
+        raise TypeError("event mapping must be a JSON object")
+    declared = {event_field.target for event_field in state.fields}
+    missing_targets = declared - set(mapping)
+    if missing_targets:
+        raise ValueError(
+            "event mapping is missing declared targets: "
+            + ", ".join(sorted(missing_targets))
+        )
+    ignored_targets = sorted(str(target) for target in set(mapping) - declared)
+    paths: dict[str, list[str | int]] = {}
+    for event_field in state.fields:
+        path = mapping[event_field.target]
+        if not isinstance(path, list) or not path:
+            raise ValueError(
+                f"event mapping path for {event_field.target} must be non-empty"
+            )
+        if any(
+            isinstance(segment, bool) or not isinstance(segment, (str, int))
+            for segment in path
+        ):
+            raise ValueError("mapping paths contain only string or integer segments")
+        paths[event_field.target] = path
+    if state.accepted_count + len(events) > state.total_event_count:
+        raise ValueError("materialization batch exceeds total event count")
+    numbers: list[int] = []
+    raw_events: list[Mapping[str, object]] = []
+    for record in events:
+        if not isinstance(record, Mapping) or set(record) != {
+            "event_number",
+            "event",
+        }:
+            raise ValueError(
+                "each batch record requires exactly event_number and event"
+            )
+        number = record["event_number"]
+        raw_event = record["event"]
+        if isinstance(number, bool) or not isinstance(number, int):
+            raise TypeError("event number must be an integer")
+        if not isinstance(raw_event, Mapping):
+            raise TypeError("raw event must be a JSON object")
+        numbers.append(number)
+        raw_events.append(raw_event)
+    if len(set(numbers)) != len(numbers):
+        raise ValueError("materialization batch repeats an event number")
+    expected_numbers = list(
+        range(state.next_event_number, state.next_event_number + len(events))
+    )
+    if numbers != expected_numbers:
+        raise ValueError(
+            f"event numbers must be contiguous and begin at {state.next_event_number}"
+        )
+
+    next_values = {target: list(items) for target, items in state.values.items()}
+    next_indices = {
+        target: dict(indices) for target, indices in state.entity_indices.items()
+    }
+    for event_number, raw_event in zip(numbers, raw_events):
+        for event_field in state.fields:
+            try:
+                raw_value = _extract_event_path(raw_event, paths[event_field.target])
+            except ValueError as exc:
+                raise ValueError(
+                    f"event {event_number} field {event_field.target}: {exc}"
+                ) from exc
+            if event_field.normalization == "identity":
+                normalized = _identity_event_value(event_field, raw_value)
+            else:
+                if isinstance(raw_value, bool) or not isinstance(raw_value, (str, int)):
+                    raise TypeError(
+                        f"event field {event_field.target} requires a string or integer categorical key"
+                    )
+                indices = next_indices[event_field.target]
+                if raw_value not in indices:
+                    indices[raw_value] = len(indices) + 1
+                normalized = indices[raw_value]
+            next_values[event_field.target].append(normalized)
+
+    next_warnings = list(state.warnings)
+    if ignored_targets:
+        warning = "Ignored undeclared mapping targets: " + ", ".join(ignored_targets)
+        if warning not in next_warnings:
+            next_warnings.append(warning)
+    complete = len(next_values[state.fields[0].target]) == state.total_event_count
+    if complete:
+        contents = _serialize_event_data(state.fields, next_values)
+        _atomic_write_text(state.data_path, contents)
+    state.values = next_values
+    state.entity_indices = next_indices
+    state.warnings = next_warnings
+    state.complete = complete
+    result = (
+        _event_materialization_complete(state)
+        if complete
+        else _event_materialization_progress(state)
+    )
+    return _canonical_json(result)
+
+
 def _normalize_provider_tool_value(value: object) -> object:
     if isinstance(value, str):
         return value.replace('<|"|>', "")
@@ -574,6 +1012,17 @@ def submit_planner_attempt(
         return _prerequisite_missing(
             required_tool="record_planning_intent",
             retry_tool="submit_planner_attempt",
+        )
+    materialization = cast(
+        _EventDataMaterialization | None, context.event_data_materialization
+    )
+    if (
+        planner_choice == "minizinc"
+        and materialization is not None
+        and not materialization.complete
+    ):
+        raise ValueError(
+            "cannot submit MiniZinc files while event data materialization is incomplete"
         )
     attempt_number = context.current_attempt_number + 1
     if attempt_number > context.max_planner_attempts:
@@ -1171,6 +1620,8 @@ def create_hyper_workflow_agent(
         ],
         tools=[
             record_planning_intent,
+            initialize_event_data_materialization,
+            materialize_event_information_data,
             submit_planner_attempt,
             planner_executor,
             submit_statechart_draft,
@@ -1379,6 +1830,8 @@ __all__ = [
     "HyperWorkflowRunResult",
     "create_hyper_workflow_agent",
     "handoff_execution",
+    "initialize_event_data_materialization",
+    "materialize_event_information_data",
     "planner_executor",
     "record_planning_intent",
     "submit_planner_attempt",
