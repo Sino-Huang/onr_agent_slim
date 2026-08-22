@@ -587,6 +587,7 @@ def record_planning_intent(
 
 _DZN_TYPES = frozenset({"int", "float", "bool", "string"})
 _EVENT_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_MAX_EVENT_MATERIALIZATION_BATCH = 25
 
 
 def _parse_event_data_fields(
@@ -638,11 +639,25 @@ def _parse_event_data_fields(
 def _event_materialization_progress(
     state: _EventDataMaterialization,
 ) -> dict[str, object]:
+    remaining_count = state.total_event_count - state.accepted_count
+    next_batch_count = min(_MAX_EVENT_MATERIALIZATION_BATCH, remaining_count)
+    next_batch_end = state.next_event_number + next_batch_count - 1
     progress: dict[str, object] = {
         "status": "continue",
         "accepted_count": state.accepted_count,
-        "remaining_count": state.total_event_count - state.accepted_count,
+        "remaining_count": remaining_count,
         "next_event_number": state.next_event_number,
+        "next_batch": {
+            "start_event_number": state.next_event_number,
+            "end_event_number": next_batch_end,
+            "event_count": next_batch_count,
+        },
+        "instruction": (
+            "Call materialize_event_information_data now with only event numbers "
+            f"{state.next_event_number} through {next_batch_end}. Do not enumerate, "
+            "count, or prepare later batches. Wait for this tool result before "
+            "preparing the next batch."
+        ),
     }
     if state.warnings:
         progress["warnings"] = list(state.warnings)
@@ -780,7 +795,8 @@ def initialize_event_data_materialization(
             next action. Do not include private reasoning.
 
     Returns:
-        Canonical JSON progress without the generated DZN contents.
+        Canonical JSON progress with the exact next-batch instruction and without
+        the generated DZN contents.
     """
 
     _ = reflection
@@ -859,7 +875,8 @@ def materialize_event_information_data(
             next action. Do not include private reasoning.
 
     Returns:
-        Canonical JSON progress or completion metadata without full DZN contents.
+        Canonical JSON progress with the exact next-batch instruction, or completion
+        metadata without full DZN contents.
     """
 
     _ = reflection
@@ -872,7 +889,10 @@ def materialize_event_information_data(
         )
     if state.complete:
         raise ValueError("event data materialization is already complete")
-    if not isinstance(events, list) or not 1 <= len(events) <= 25:
+    if (
+        not isinstance(events, list)
+        or not 1 <= len(events) <= _MAX_EVENT_MATERIALIZATION_BATCH
+    ):
         raise ValueError("each materialization batch requires 1 to 25 events")
     if not isinstance(mapping, Mapping):
         raise TypeError("event mapping must be a JSON object")

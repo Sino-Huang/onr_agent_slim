@@ -427,6 +427,16 @@ def test_event_materialization_tracks_progress_changes_mapping_and_writes_aligne
         "accepted_count": 0,
         "remaining_count": 3,
         "next_event_number": 1,
+        "next_batch": {
+            "start_event_number": 1,
+            "end_event_number": 3,
+            "event_count": 3,
+        },
+        "instruction": (
+            "Call materialize_event_information_data now with only event numbers 1 "
+            "through 3. Do not enumerate, count, or prepare later batches. Wait for "
+            "this tool result before preparing the next batch."
+        ),
     }
     assert "materialize_event_information_data" in _allowed_workflow_tools(context)
     assert "submit_planner_attempt" not in _allowed_workflow_tools(context)
@@ -547,6 +557,44 @@ def test_event_materialization_rejects_bad_batches_transactionally(
             context, [{"event_number": 1, "event": {"time": 1}}], mapping
         )
     assert cast(Any, context.event_data_materialization).accepted_count == 1
+
+
+def test_event_materialization_progress_directs_only_the_next_batch(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    _write_minizinc_model(context)
+    fields = [_EVENT_FIELDS[0]]
+
+    initialized = _initialize_events(context, 30, fields)
+
+    assert initialized["next_batch"] == {
+        "start_event_number": 1,
+        "end_event_number": 25,
+        "event_count": 25,
+    }
+    assert initialized["instruction"] == (
+        "Call materialize_event_information_data now with only event numbers 1 "
+        "through 25. Do not enumerate, count, or prepare later batches. Wait for "
+        "this tool result before preparing the next batch."
+    )
+
+    progress = _materialize_events(
+        context,
+        [
+            {"event_number": number, "event": {"time": number}}
+            for number in range(1, 26)
+        ],
+        {"event_time_s": ["time"]},
+    )
+
+    assert progress["next_batch"] == {
+        "start_event_number": 26,
+        "end_event_number": 30,
+        "event_count": 5,
+    }
+    assert "only event numbers 26 through 30" in cast(str, progress["instruction"])
 
 
 def test_event_materialization_restart_discards_rows_file_and_definitions(
