@@ -267,6 +267,11 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     data_text = assets["data.dzn"].decode()
     assert "array[STOP_SLOTS] of var bool: used" in model_text
     assert "information_gain * (event_count + 1) - used_stop_count" in model_text
+    assert "global_cardinality" not in model_text
+    assert "arg_sort" not in model_text
+    assert "wait_start" not in model_text
     assert "stop_count" not in data_text
     assert "dwell_ticks" not in data_text
     assert "maneuver_id =" not in data_text
+    assert "initialize_event_data_materialization" in data_text
+    assert "materialize_event_information_data" in data_text

@@ -1,35 +1,59 @@
-% ==========================================================================
-% Example: event-information patrol on a shrunk teaching instance
-% (3 entities, 6 events). The solver chooses the number, locations, starts,
-% and positive dwell durations of the patrol stops.
+% Event-information patrol few-shot data.
 %
-% ----- Original evidence received (excerpt, in evidence order) -----
-% scene_graph: {"mission_time_seconds": 0.0, "entities": {..., drone pose
-%   [45.74, -85.99, -89.32] at mission start, ...}}
-% static_info: one record per event —
-%   {"entity_id": 1, "event type": "intersection decision", "event information": {"decision": "left"},  "position": [90.0, 0.0, -250.0],   "time": 5.0}
-%   {"entity_id": 1, "event type": "course change",         "event information": {"heading": "NE"},   "position": [105.0, 12.0, -250.0],  "time": 5.5}
-%   {"entity_id": 1, "event type": "intersection decision", "event information": {"decision": "right"}, "position": [80.0, -14.0, -250.0],  "time": 6.0}
-%   {"entity_id": 2, "event type": "rendezvous",            "event information": {"with": "ship-2"},  "position": [260.0, 80.0, -250.0],  "time": 20.0}
-%   {"entity_id": 2, "event type": "course change",         "event information": {"heading": "S"},    "position": [275.0, 70.0, -250.0],  "time": 21.0}
-%   {"entity_id": 3, "event type": "intersection decision", "event information": {"decision": "left"},  "position": [270.0, 95.0, -250.0],  "time": 22.5}
-% belief_snapshot marginals: entity 1 -> probability_risk 0.75;
-%   entity 2 -> probability_risk 0.30; entity 3 -> probability_risk 0.90
+% This file shows the FINAL data.dzn after the new incremental workflow.
+% It is produced in three steps; the agent should not write this whole file in
+% one tool call.
 %
-% ----- Event-array mappings owned by the materializer -----
-% event_time_s[e] = static_info[e].time
-% event_x_m[e] = static_info[e].position[0]
-% event_y_m[e] = static_info[e].position[1]
-% event_entity[e] = first-seen index of static_info[e].entity_id
+% 1. After writing model.mzn, initialize the event-owned arrays:
 %
-% The remaining assignments are planner-authored or belief-derived globals.
-% ==========================================================================
+%    initialize_event_data_materialization({
+%      "total_event_count": 6,
+%      "fields": [
+%        {"target":"event_time_s","dzn_type":"float","normalization":"identity"},
+%        {"target":"event_x_m","dzn_type":"float","normalization":"identity"},
+%        {"target":"event_y_m","dzn_type":"float","normalization":"identity"},
+%        {"target":"event_entity","dzn_type":"int","normalization":"first_seen_index"}
+%      ],
+%      "restart": false,
+%      "reflection": "Initialize the six event rows."
+%    })
+%
+% 2. Send the six raw records as numbered events. Six fits in one batch; a real
+%    report uses contiguous batches of at most 25. The mapping for this batch is:
+%
+%    materialize_event_information_data({
+%      "events": [
+%        {"event_number": 1, "event": {
+%          "entity_id": 1,
+%          "position": [90.0, 0.0, -250.0],
+%          "time": 5.0,
+%          "event type": "intersection decision",
+%          "event information": {"decision": "left"}
+%        }}
+%        % ...event numbers 2 through 6 are included in the real call...
+%      ],
+%      "mapping": {
+%        "event_time_s": ["time"],
+%        "event_x_m": ["position", 0],
+%        "event_y_m": ["position", 1],
+%        "event_entity": ["entity_id"]
+%      },
+%      "reflection": "Materialize events 1 through 6."
+%    })
+%
+%    The materializer writes event_count and the four aligned arrays below.
 
 event_count = 6;
 event_time_s = [5.0, 5.5, 6.0, 20.0, 21.0, 22.5];
 event_x_m = [90.0, 105.0, 80.0, 260.0, 275.0, 270.0];
 event_y_m = [0.0, 12.0, -14.0, 80.0, 70.0, 95.0];
 event_entity = [1, 1, 1, 2, 2, 3];
+
+% 3. After materialization completes, read model.mzn and this partial data.dzn.
+%    The returned event_entity index map is {"1":1, "2":2, "3":3}, so set
+%    entity_count to 3 and put entity risks in that same index order. Append the
+%    other mission- and vehicle-level inputs too. The materializer deliberately
+%    does not write any of these non-event assignments.
 
 entity_count = 3;
 entity_risk_p = [0.75, 0.30, 0.90];
