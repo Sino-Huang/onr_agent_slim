@@ -78,7 +78,8 @@ function reasoningTab(step, rerender) {
   if (step.reasoning) {
     const paragraphs = step.reasoning.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
     const wordCount = step.reasoning.split(/\s+/).length;
-    const collapsed = step.reasoning.length > REASONING_COLLAPSE;
+    const collapsed = step.reasoning.length > REASONING_COLLAPSE
+      && !state.reasoningExpanded.has(step.step_id);
     const box = h("div", { class: "reasoning" + (collapsed ? " collapsed" : ""), "data-testid": "reasoning-body" });
     for (const para of paragraphs) box.append(h("p", {}, para));
     wrap.append(
@@ -87,7 +88,11 @@ function reasoningTab(step, rerender) {
     if (collapsed) {
       const expand = h("button", {
         class: "reasoning-expand", type: "button",
-        onclick: () => { box.classList.remove("collapsed"); expand.remove(); },
+        onclick: () => {
+          state.reasoningExpanded.add(step.step_id);
+          box.classList.remove("collapsed");
+          expand.remove();
+        },
       }, "Show full reasoning (" + wordCount.toLocaleString("en-US") + " words)");
       wrap.append(expand);
     }

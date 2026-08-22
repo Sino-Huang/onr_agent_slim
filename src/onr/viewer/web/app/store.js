@@ -26,6 +26,7 @@ export const state = {
   loadedOnce: false,
 
   treeCollapsed: new Set(),  // step_ids collapsed in the tree view
+  reasoningExpanded: new Set(),  // step_ids whose collapsed reasoning was expanded (survives poll re-renders)
   artifactRef: "",           // artifact open in the overview viewer
   dismissedWarnings: new Set(),
   workflowNode: "",          // expanded workflow node: "", a node id, or "all"
