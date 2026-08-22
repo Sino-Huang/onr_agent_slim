@@ -420,10 +420,7 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
     assert "1 - probability_risk" in mission_skill
     assert "examples/event-information-patrol/model.mzn" in minizinc_skill
     assert "examples/event-information-patrol/data.dzn" in minizinc_skill
-    assert (
-        "read `/conf/skills/hyper/creating-minizinc-problem-files/examples/"
-        "event-information-patrol/model.mzn`" in minizinc_skill
-    )
+    assert "read `examples/event-information-patrol/model.mzn`" in minizinc_skill
     assert "call `write_file` with its contents" in minizinc_skill
     assert "example values are teaching values only" in minizinc_skill
     assert "current evidence" in minizinc_skill
