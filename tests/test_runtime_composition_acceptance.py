@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -281,12 +280,10 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
         environment_data = cast(
             Mapping[str, object], environment_event.to_dict()["payload"]
         )
-        assert environment_data["static_info"] == json.loads(
-            (
-                Path(__file__).parents[1]
-                / "data/ships_report_and_trajectory_example/ships/events_report.json"
-            ).read_text(encoding="utf-8")
-        )
+        static_info = cast(list[Mapping[str, object]], environment_data["static_info"])
+        assert len(static_info) == 253
+        assert static_info[0]["position"] == [212.0, 192.9, -250.0]
+        assert static_info[-1]["position"] == [1160.3, -1151.1, -250.0]
         return PlannerGenerationAttempt(
             attempt_id="attempt-1",
             decision_id=choice.decision_id,

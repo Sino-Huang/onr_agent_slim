@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,6 +24,16 @@ _EVENT_REPORT_PATH = (
 )
 
 
+def _expected_event_report(value: object) -> object:
+    if isinstance(value, float):
+        return math.trunc(value * 10) / 10
+    if isinstance(value, list):
+        return [_expected_event_report(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _expected_event_report(item) for key, item in value.items()}
+    return value
+
+
 class FixedDecisionProvider:
     def __init__(self, decision: ManeuverControlDecision) -> None:
         self.decision = decision
@@ -41,7 +52,9 @@ class StubAdapter:
         return None
 
 
-def _command(command_id: str = "command-1", mission_id: str = "mission-1") -> ManeuverCommand:
+def _command(
+    command_id: str = "command-1", mission_id: str = "mission-1"
+) -> ManeuverCommand:
     return ManeuverCommand(
         command_id=command_id,
         correlation_id=f"decision-{command_id}",
@@ -65,7 +78,9 @@ def _transport(tmp_path: Path, mission_id: str = "mission-1") -> FileTransport:
     )
 
 
-def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_path: Path) -> None:
+def test_consumes_file_command_and_exposes_environment_data_and_source_fact(
+    tmp_path: Path,
+) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path, mission_id)
     command = _command(mission_id=mission_id)
@@ -88,13 +103,16 @@ def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_
         "ship-2",
         "ship-3",
     }
-    assert result.environment_file == tmp_path.parent / "environment" / mission_id / "environment.json"
+    assert (
+        result.environment_file
+        == tmp_path.parent / "environment" / mission_id / "environment.json"
+    )
     environment = cast(
         dict[str, Any], json.loads(result.environment_file.read_text(encoding="utf-8"))
     )
     assert environment == result.environment_event.to_dict()["payload"]
-    assert environment["static_info"] == json.loads(
-        _EVENT_REPORT_PATH.read_text(encoding="utf-8")
+    assert environment["static_info"] == _expected_event_report(
+        json.loads(_EVENT_REPORT_PATH.read_text(encoding="utf-8"))
     )
     graph = cast(dict[str, Any], environment["scene_graph"])
     entities = cast(list[dict[str, Any]], graph["entities"])
@@ -121,13 +139,20 @@ def test_consumes_file_command_and_exposes_environment_data_and_source_fact(tmp_
     )
     assert list(graph["entities"]) == entities
 
-    with transport.open_consumer(Subscription("scene-reader", mission_id, "environment-data")) as scene:
+    with transport.open_consumer(
+        Subscription("scene-reader", mission_id, "environment-data")
+    ) as scene:
         scene_delivery = scene.receive()
         assert scene_delivery is not None
         scene_event = cast(TransportEvent, scene_delivery.message)
-        assert TransportEvent.from_json(scene_event.to_canonical_json()) == result.environment_event
+        assert (
+            TransportEvent.from_json(scene_event.to_canonical_json())
+            == result.environment_event
+        )
         scene_delivery.ack()
-    with transport.open_consumer(Subscription("context-coordination", mission_id, "normalized-plans")) as context:
+    with transport.open_consumer(
+        Subscription("context-coordination", mission_id, "normalized-plans")
+    ) as context:
         source_delivery = context.receive()
         assert source_delivery is not None
         source_event = cast(TransportEvent, source_delivery.message)
@@ -162,10 +187,13 @@ def test_environment_heartbeat_publishes_data_before_any_maneuver(
     drone = next(entity for entity in entities if entity["type"] == "drone")
     assert drone["max_velocity"] == 20
     assert drone["fov_radius"] == 30
-    assert heartbeat_payload["static_info"] == json.loads(
-        _EVENT_REPORT_PATH.read_text(encoding="utf-8")
+    assert heartbeat_payload["static_info"] == _expected_event_report(
+        json.loads(_EVENT_REPORT_PATH.read_text(encoding="utf-8"))
     )
-    assert heartbeat.source_fact.payload["reference"] == heartbeat.environment_event.event_id
+    assert (
+        heartbeat.source_fact.payload["reference"]
+        == heartbeat.environment_event.event_id
+    )
 
     coordination = ContextCoordination(transport, mission_id)
     with transport.open_consumer(coordination.subscription) as consumer:
@@ -208,11 +236,48 @@ def test_static_info_content_participates_in_environment_identity(
     assert first.environment_event.event_id != second.environment_event.event_id
     assert first.source_fact.payload["reference"] == first.environment_event.event_id
     assert second.source_fact.payload["reference"] == second.environment_event.event_id
-    assert first.source_fact.payload["reference"] != second.source_fact.payload["reference"]
+    assert (
+        first.source_fact.payload["reference"]
+        != second.source_fact.payload["reference"]
+    )
     assert "content_sha256" not in first.source_fact.payload
 
 
-def test_context_coordination_consumes_environment_data_source_fact(tmp_path: Path) -> None:
+def test_static_info_floats_are_truncated_to_one_decimal(tmp_path: Path) -> None:
+    mission_id = "mission-1"
+    transport = _transport(tmp_path / "transport", mission_id)
+    report = tmp_path / "report.json"
+    report.write_text(
+        json.dumps(
+            [
+                {
+                    "entity_id": 5,
+                    "time": 1.29,
+                    "position": [802.977392832922, -802.977392832922, 0.09],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    heartbeat = FakeEnvironment(
+        transport,
+        mission_id,
+        event_report_path=report,
+    ).heartbeat()
+
+    assert heartbeat.environment_event.payload["static_info"] == (
+        {
+            "entity_id": 5,
+            "time": 1.2,
+            "position": (802.9, -802.9, 0.0),
+        },
+    )
+
+
+def test_context_coordination_consumes_environment_data_source_fact(
+    tmp_path: Path,
+) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path, mission_id)
     environment = FakeEnvironment(transport, mission_id)
@@ -230,7 +295,9 @@ def test_context_coordination_consumes_environment_data_source_fact(tmp_path: Pa
     assert snapshot.environment_data == last_result.source_fact.payload["reference"]
 
 
-def test_all_maneuver_feedback_lifecycles_are_transport_events_and_correlated(tmp_path: Path) -> None:
+def test_all_maneuver_feedback_lifecycles_are_transport_events_and_correlated(
+    tmp_path: Path,
+) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path, mission_id)
     environment = FakeEnvironment(transport, mission_id)
@@ -246,7 +313,9 @@ def test_all_maneuver_feedback_lifecycles_are_transport_events_and_correlated(tm
         assert feedback.payload["command_id"] == command.command_id
         assert feedback.payload["correlation_id"] == command.correlation_id
 
-    with transport.open_consumer(Subscription("feedback-reader", mission_id, "maneuver-feedback")) as reader:
+    with transport.open_consumer(
+        Subscription("feedback-reader", mission_id, "maneuver-feedback")
+    ) as reader:
         events: list[TransportEvent] = []
         while (delivery := reader.receive()) is not None:
             events.append(cast(TransportEvent, delivery.message))
@@ -265,7 +334,9 @@ def test_all_maneuver_feedback_lifecycles_are_transport_events_and_correlated(tm
     assert feedback[1].payload["reason"] == "overridden"
 
 
-def test_maneuver_feedback_replay_is_idempotent_across_crash_window(tmp_path: Path) -> None:
+def test_maneuver_feedback_replay_is_idempotent_across_crash_window(
+    tmp_path: Path,
+) -> None:
     source_files = sorted(Path("src/onr").rglob("*.py"))
     before = {path: hashlib.sha256(path.read_bytes()).digest() for path in source_files}
     mission_id = "mission-1"
@@ -293,17 +364,23 @@ def test_maneuver_feedback_replay_is_idempotent_across_crash_window(tmp_path: Pa
     assert second.feedback.sequence == first.feedback.sequence
     assert second.environment_file == first.environment_file
     assert second.environment_file.read_bytes() == first.environment_file.read_bytes()
-    with transport.open_consumer(Subscription("feedback-reader", mission_id, "maneuver-feedback")) as reader:
+    with transport.open_consumer(
+        Subscription("feedback-reader", mission_id, "maneuver-feedback")
+    ) as reader:
         delivery = reader.receive()
         assert delivery is not None
         event = cast(TransportEvent, delivery.message)
         delivery.ack()
         assert reader.receive() is None
     assert event.event_id == second.feedback.event_id
-    assert {path: hashlib.sha256(path.read_bytes()).digest() for path in source_files} == before
+    assert {
+        path: hashlib.sha256(path.read_bytes()).digest() for path in source_files
+    } == before
 
 
-def test_maneuver_control_heartbeat_command_reaches_fake_environment(tmp_path: Path) -> None:
+def test_maneuver_control_heartbeat_command_reaches_fake_environment(
+    tmp_path: Path,
+) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path, mission_id)
     intent = ManeuverIntent("navigate", (ManeuverParameter("speed", 2),))
@@ -320,9 +397,13 @@ def test_maneuver_control_heartbeat_command_reaches_fake_environment(tmp_path: P
         plan_revision=3,
         statechart_revision=1,
         active_state="survey-ready",
-        transition_candidates=(TransitionCandidate("advance:survey", "survey-ready", "survey-active"),),
+        transition_candidates=(
+            TransitionCandidate("advance:survey", "survey-ready", "survey-active"),
+        ),
     )
-    control = ManeuverControl(cast(Any, transport), StubAdapter(), FixedDecisionProvider(decision))
+    control = ManeuverControl(
+        cast(Any, transport), StubAdapter(), FixedDecisionProvider(decision)
+    )
 
     heartbeat = control.heartbeat(snapshot, status)
 

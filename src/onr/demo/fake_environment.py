@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 from dataclasses import dataclass
@@ -38,6 +39,16 @@ def _atomic_write_json(path: Path, value: object) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _truncate_event_report_floats(value: object) -> object:
+    if isinstance(value, float):
+        return math.trunc(value * 10) / 10
+    if isinstance(value, list):
+        return [_truncate_event_report_floats(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _truncate_event_report_floats(item) for key, item in value.items()}
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +104,9 @@ class FakeEnvironment:
             else self.transport.root.parent / "environment"
         )
         self.event_report_path = Path(event_report_path or _DEFAULT_EVENT_REPORT_PATH)
-        self.subscription = Subscription(target_service, mission_id, command_topic, max_retries)
+        self.subscription = Subscription(
+            target_service, mission_id, command_topic, max_retries
+        )
         self._results: dict[tuple[str, str], FakeEnvironmentResult] = {}
         self._environment_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
         self.last_result: FakeEnvironmentResult | None = None
@@ -175,7 +188,9 @@ class FakeEnvironment:
         if not isinstance(command, ManeuverCommand):
             raise TypeError("process_command requires a ManeuverCommand")
         if command.mission_id != self.mission_id:
-            raise ValueError("maneuver command mission ID does not match the environment")
+            raise ValueError(
+                "maneuver command mission ID does not match the environment"
+            )
         if lifecycle not in SUPPORTED_LIFECYCLES:
             raise ValueError(f"unsupported maneuver lifecycle: {lifecycle}")
         key = (command.command_id, lifecycle)
@@ -209,9 +224,10 @@ class FakeEnvironment:
             }
             self.navigation_status = "active"
         else:
-            if self.current_maneuver is None or self.current_maneuver.get(
-                "command_id"
-            ) != command.command_id:
+            if (
+                self.current_maneuver is None
+                or self.current_maneuver.get("command_id") != command.command_id
+            ):
                 self.current_maneuver = {
                     "maneuver_id": command.maneuver_id,
                     "action": command.action,
@@ -227,7 +243,10 @@ class FakeEnvironment:
             else:
                 self.current_maneuver["lifecycle"] = lifecycle
             self.navigation_status = lifecycle
-            if self._active_command is not None and self._active_command.command_id == command.command_id:
+            if (
+                self._active_command is not None
+                and self._active_command.command_id == command.command_id
+            ):
                 self._active_command = None
 
         environment_event, source_fact, environment_file = (
@@ -315,7 +334,9 @@ class FakeEnvironment:
         }
 
     def _environment_data(self, graph: dict[str, object]) -> dict[str, object]:
-        event_report = json.loads(self.event_report_path.read_text(encoding="utf-8"))
+        event_report = _truncate_event_report_floats(
+            json.loads(self.event_report_path.read_text(encoding="utf-8"))
+        )
         return {
             "scene_graph": graph,
             "static_info": event_report,
@@ -336,9 +357,7 @@ class FakeEnvironment:
             return cached
 
         environment_event_id = f"environment-data:{self.mission_id}:{reference}"
-        source_fact_id = (
-            f"source-fact:{self.mission_id}:environment_data:{reference}"
-        )
+        source_fact_id = f"source-fact:{self.mission_id}:environment_data:{reference}"
         environment_event = self.transport.get_event(environment_event_id)
         source_fact = self.transport.get_event(source_fact_id)
         if environment_event is None:
