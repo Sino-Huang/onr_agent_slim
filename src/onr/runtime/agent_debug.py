@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
-from enum import Enum
 import json
 import os
-from pathlib import Path
 import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
+from datetime import UTC, datetime
+from enum import Enum
+from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
+
+from onr.runtime.debug_context import enter_llm_invocation, leave_llm_invocation
 
 
 def _json_safe(value: Any) -> Any:
@@ -50,7 +52,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _tool_names(invocation_params: object) -> list[str]:
@@ -66,13 +68,19 @@ def _tool_names(invocation_params: object) -> list[str]:
         candidate: object = item
         if isinstance(item, Mapping) and isinstance(item.get("function"), Mapping):
             candidate = item["function"]
-        name = candidate.get("name") if isinstance(candidate, Mapping) else getattr(candidate, "name", None)
+        name = (
+            candidate.get("name")
+            if isinstance(candidate, Mapping)
+            else getattr(candidate, "name", None)
+        )
         if isinstance(name, str) and name and name not in names:
             names.append(name)
     return names
 
 
-def _invocation_name(serialized: object, invocation_params: object, fallback: str) -> str:
+def _invocation_name(
+    serialized: object, invocation_params: object, fallback: str
+) -> str:
     for candidate in (invocation_params, serialized):
         if not isinstance(candidate, Mapping):
             continue
@@ -81,22 +89,22 @@ def _invocation_name(serialized: object, invocation_params: object, fallback: st
             if isinstance(value, str) and value:
                 return value
         identifier = candidate.get("id")
-        if isinstance(identifier, Sequence) and not isinstance(identifier, (str, bytes)):
-            if identifier and isinstance(identifier[-1], str):
-                return identifier[-1]
+        if (
+            isinstance(identifier, Sequence)
+            and not isinstance(identifier, (str, bytes))
+            and identifier
+            and isinstance(identifier[-1], str)
+        ):
+            return identifier[-1]
     return fallback
 
 
 class AgentDebugRecorder:
-    """Persist durable v1 profiles and completed callback invocations."""
+    """Persist durable profiles and live callback invocations."""
 
-    def __init__(
-        self, root: Path, mission_id: str, *, role: str = "runtime"
-    ) -> None:
+    def __init__(self, root: Path, mission_id: str, *, role: str = "runtime") -> None:
         self._directory = (
-            Path(root)
-            / quote(role, safe="._-")
-            / quote(mission_id, safe="._-")
+            Path(root) / quote(role, safe="._-") / quote(mission_id, safe="._-")
         )
         self._lock = Lock()
         self._sequence = max(
@@ -116,23 +124,30 @@ class AgentDebugRecorder:
         skills: Sequence[Mapping[str, object]],
         tools: Sequence[str],
     ) -> None:
-        artifact = {
-            "schema_version": 1,
-            "agent_role": agent_role,
-            "skills": [
-                {
-                    "name": str(skill["name"]),
-                    "version": str(skill["version"]),
-                    "path": str(skill["path"]),
-                }
-                for skill in skills
-            ],
-            "tools": list(dict.fromkeys(tools)),
-        }
-        with self._lock:
-            self._profiles[agent_role] = artifact
-            path = self._directory / "profiles" / f"{quote(agent_role, safe='._-')}.json"
-            self._write_atomic(path, artifact)
+        try:
+            artifact = {
+                "schema_version": 1,
+                "agent_role": agent_role,
+                "skills": [
+                    {
+                        "name": str(skill["name"]),
+                        "version": str(skill["version"]),
+                        "path": str(skill["path"]),
+                    }
+                    for skill in skills
+                ],
+                "tools": list(dict.fromkeys(tools)),
+            }
+            with self._lock:
+                self._profiles[agent_role] = artifact
+                path = (
+                    self._directory
+                    / "profiles"
+                    / f"{quote(agent_role, safe='._-')}.json"
+                )
+                self._write_atomic(path, artifact)
+        except Exception:  # noqa: BLE001 - debug capture is fail-open
+            return
 
     def callback_for(self, agent_role: str) -> BaseCallbackHandler:
         return _AgentDebugCallback(self, agent_role)
@@ -140,14 +155,21 @@ class AgentDebugRecorder:
     def _update_tools(self, agent_role: str, tools: Sequence[str]) -> None:
         if not tools:
             return
-        with self._lock:
-            profile = self._profiles.get(agent_role)
-            if profile is None or profile["tools"] == list(tools):
-                return
-            updated = {**profile, "tools": list(dict.fromkeys(tools))}
-            self._profiles[agent_role] = updated
-            path = self._directory / "profiles" / f"{quote(agent_role, safe='._-')}.json"
-            self._write_atomic(path, updated)
+        try:
+            with self._lock:
+                profile = self._profiles.get(agent_role)
+                if profile is None or profile["tools"] == list(tools):
+                    return
+                updated = {**profile, "tools": list(dict.fromkeys(tools))}
+                self._profiles[agent_role] = updated
+                path = (
+                    self._directory
+                    / "profiles"
+                    / f"{quote(agent_role, safe='._-')}.json"
+                )
+                self._write_atomic(path, updated)
+        except Exception:  # noqa: BLE001 - debug capture is fail-open
+            return
 
     def _start(
         self,
@@ -159,15 +181,34 @@ class AgentDebugRecorder:
         name: str,
         input_value: object,
     ) -> None:
-        with self._lock:
-            self._pending[str(run_id)] = {
-                "parent_id": str(parent_run_id) if parent_run_id is not None else None,
-                "agent_role": agent_role,
-                "kind": kind,
-                "name": name,
-                "input": _json_safe(input_value),
-                "started_at": _utc_now(),
-            }
+        try:
+            with self._lock:
+                self._sequence += 1
+                now = _utc_now()
+                artifact = {
+                    "schema_version": 2,
+                    "sequence": self._sequence,
+                    "invocation_id": str(run_id),
+                    "parent_id": (
+                        str(parent_run_id) if parent_run_id is not None else None
+                    ),
+                    "agent_role": agent_role,
+                    "kind": kind,
+                    "name": name,
+                    "input": _json_safe(input_value),
+                    "output": None,
+                    "error": None,
+                    "started_at": now,
+                    "updated_at": now,
+                    "finished_at": None,
+                    "completion_state": "live",
+                    "revision": 1,
+                }
+                path = self._directory / f"{self._sequence:020d}.json"
+                self._write_atomic(path, artifact)
+                self._pending[str(run_id)] = {"path": path, "artifact": artifact}
+        except Exception:  # noqa: BLE001 - debug capture is fail-open
+            return
 
     def _finish(
         self,
@@ -176,22 +217,28 @@ class AgentDebugRecorder:
         output: object = None,
         error: BaseException | None = None,
     ) -> None:
-        with self._lock:
-            pending = self._pending.pop(str(run_id), None)
-            if pending is None:
-                return
-            self._sequence += 1
-            artifact = {
-                "schema_version": 1,
-                "sequence": self._sequence,
-                "invocation_id": str(run_id),
-                **pending,
-                "output": _json_safe(output),
-                "error": _json_safe(error),
-                "finished_at": _utc_now(),
-            }
-            path = self._directory / f"{self._sequence:020d}.json"
-            self._write_atomic(path, artifact)
+        try:
+            with self._lock:
+                pending = self._pending.pop(str(run_id), None)
+                if pending is None:
+                    return
+                artifact = dict(pending["artifact"])
+                now = _utc_now()
+                artifact.update(
+                    {
+                        "output": _json_safe(output),
+                        "error": _json_safe(error),
+                        "finished_at": now,
+                        "updated_at": now,
+                        "completion_state": "error"
+                        if error is not None
+                        else "complete",
+                        "revision": cast(int, artifact["revision"]) + 1,
+                    }
+                )
+                self._write_atomic(cast(Path, pending["path"]), artifact)
+        except Exception:  # noqa: BLE001 - debug capture is fail-open
+            return
 
     @staticmethod
     def _write_atomic(path: Path, artifact: Mapping[str, object]) -> None:
@@ -226,26 +273,38 @@ class _AgentDebugCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         invocation_params = kwargs.get("invocation_params")
-        self._recorder._update_tools(self._agent_role, _tool_names(invocation_params))
-        self._recorder._start(
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            agent_role=self._agent_role,
-            kind="llm",
-            name=_invocation_name(serialized, invocation_params, "chat_model"),
-            input_value={
-                "messages": messages,
-                "invocation_params": invocation_params,
-            },
-        )
+        enter_llm_invocation(str(run_id))
+        try:
+            self._recorder._update_tools(
+                self._agent_role, _tool_names(invocation_params)
+            )
+            self._recorder._start(
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                agent_role=self._agent_role,
+                kind="llm",
+                name=_invocation_name(serialized, invocation_params, "chat_model"),
+                input_value={
+                    "messages": messages,
+                    "invocation_params": invocation_params,
+                },
+            )
+        except Exception:  # noqa: BLE001 - callback recording is fail-open
+            return
 
     def on_llm_end(self, response: Any, *, run_id: UUID, **kwargs: Any) -> None:
-        self._recorder._finish(run_id, output=response)
+        try:
+            self._recorder._finish(run_id, output=response)
+        finally:
+            leave_llm_invocation(str(run_id))
 
     def on_llm_error(
         self, error: BaseException, *, run_id: UUID, **kwargs: Any
     ) -> None:
-        self._recorder._finish(run_id, error=error)
+        try:
+            self._recorder._finish(run_id, error=error)
+        finally:
+            leave_llm_invocation(str(run_id))
 
     def on_tool_start(
         self,
@@ -257,22 +316,31 @@ class _AgentDebugCallback(BaseCallbackHandler):
         inputs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        self._recorder._start(
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            agent_role=self._agent_role,
-            kind="tool",
-            name=_invocation_name(serialized, None, "tool"),
-            input_value=inputs if inputs is not None else input_str,
-        )
+        try:
+            self._recorder._start(
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                agent_role=self._agent_role,
+                kind="tool",
+                name=_invocation_name(serialized, None, "tool"),
+                input_value=inputs if inputs is not None else input_str,
+            )
+        except Exception:  # noqa: BLE001 - callback recording is fail-open
+            return
 
     def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
-        self._recorder._finish(run_id, output=output)
+        try:
+            self._recorder._finish(run_id, output=output)
+        except Exception:  # noqa: BLE001 - callback recording is fail-open
+            return
 
     def on_tool_error(
         self, error: BaseException, *, run_id: UUID, **kwargs: Any
     ) -> None:
-        self._recorder._finish(run_id, error=error)
+        try:
+            self._recorder._finish(run_id, error=error)
+        except Exception:  # noqa: BLE001 - callback recording is fail-open
+            return
 
 
 __all__ = ["AgentDebugRecorder"]

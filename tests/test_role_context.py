@@ -69,10 +69,10 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "1.26.0",
-        "1.3.0",
+        "2.0.0",
+        "2.0.0",
         "1.1.0",
-        "1.2.0",
+        "2.0.0",
         "1.1.1",
         "1.1.0",
         "1.1.0",
@@ -91,8 +91,8 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "maneuver-control/hyper-coordination",
     ]
     for skill in (*hyper, *maneuver):
-        _, front_matter, _ = (skill.path / "SKILL.md").read_text(encoding="utf-8").split(
-            "---", 2
+        _, front_matter, _ = (
+            (skill.path / "SKILL.md").read_text(encoding="utf-8").split("---", 2)
         )
         metadata = yaml.safe_load(front_matter)
         assert isinstance(metadata, dict)
@@ -143,7 +143,9 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
         skill_sources = kwargs["skills"]
         permissions = kwargs["permissions"]
         assert isinstance(skill_sources, list) and isinstance(permissions, list)
-        assert [permission.paths[0] for permission in permissions[:-1]] == selected_skills
+        assert [
+            permission.paths[0] for permission in permissions[:-1]
+        ] == selected_skills
         assert all(permission.mode == "deny" for permission in permissions)
 
 
@@ -298,8 +300,12 @@ def test_role_agents_persist_public_memory_and_isolate_two_missions_and_roles(
 ) -> None:
     memory = FileMissionMemoryStore(tmp_path / "memory")
     skills = _install_skills(tmp_path / "skills")
-    first_hyper, first_maneuver, _ = _make_role_agents(monkeypatch, memory, skills, "mission-1")
-    second_hyper, second_maneuver, _ = _make_role_agents(monkeypatch, memory, skills, "mission-2")
+    first_hyper, first_maneuver, _ = _make_role_agents(
+        monkeypatch, memory, skills, "mission-1"
+    )
+    second_hyper, second_maneuver, _ = _make_role_agents(
+        monkeypatch, memory, skills, "mission-2"
+    )
 
     first_hyper.write_memory("mission-1 hyper ground truth")
     first_maneuver.write_memory("mission-1 maneuver context")
@@ -351,7 +357,11 @@ def test_role_context_policy_allows_only_current_memory_and_denies_skills_and_ot
     permissions = captured["permissions"]
     assert isinstance(permissions, list)
     assert any(permission.mode == "allow" for permission in permissions)
-    assert any(permission.paths == ["/skills/hyper-agent/2.0.0", "/skills/hyper-agent/2.0.0/**"] for permission in permissions)
+    assert any(
+        permission.paths
+        == ["/skills/hyper-agent/2.0.0", "/skills/hyper-agent/2.0.0/**"]
+        for permission in permissions
+    )
     assert captured["skills"] == ["/skills/hyper-agent"]
     assert permissions[-1].mode == "deny"
     assert permissions[-1].paths == ["/**"]
@@ -400,8 +410,7 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
         _REPO_ROOT / "conf/skills/hyper/mission-parsing/SKILL.md"
     ).read_text(encoding="utf-8")
     minizinc_skill = (
-        _REPO_ROOT
-        / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
+        _REPO_ROOT / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
     ).read_text(encoding="utf-8")
 
     assert "logical role" in mission_skill
@@ -411,30 +420,29 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
     assert "1 - probability_risk" in mission_skill
     assert "examples/event-information-patrol/model.mzn" in minizinc_skill
     assert "examples/event-information-patrol/data.dzn" in minizinc_skill
-    assert "30 m FoV radius" in minizinc_skill
-    assert "20 m/s maximum velocity" in minizinc_skill
+    assert "current evidence" in minizinc_skill
+    assert "solver-native plan text" in minizinc_skill
 
 
-def test_planner_generation_skills_forbid_known_invalid_file_patterns() -> None:
+def test_planner_generation_skills_use_direct_external_tools_and_same_file_repair() -> (
+    None
+):
     minizinc_skill = (
-        _REPO_ROOT
-        / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
+        _REPO_ROOT / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
     ).read_text(encoding="utf-8")
     pddl_skill = (
         _REPO_ROOT / "conf/skills/hyper/creating-pddl-problem-files/SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert "## Must Not Do" in minizinc_skill
-    assert "int: max_velocity;" in minizinc_skill
-    assert "exact diagnostic" in minizinc_skill
-    assert "names and nesting are flexible" in minizinc_skill
-    assert "Do not assume environment keys" in minizinc_skill
-    assert "submit_planner_attempt" in minizinc_skill
-    assert "exactly one complete `write_file` call" in minizinc_skill
-    assert "Use `edit_file` to revise a planner file that already exists" in minizinc_skill
-    for obsolete in ("sentinel", "chunk", "75 values", "20 values"):
-        assert obsolete not in minizinc_skill
-    assert "## Must Not Do" in pddl_skill
-    assert "undeclared predicates" in pddl_skill
-    assert "exact correction message" in pddl_skill
-    assert "VAL accepts the exact domain/problem pair" in pddl_skill
+    for skill, planner in (
+        (minizinc_skill, 'planner_choice: "minizinc"'),
+        (pddl_skill, 'planner_choice: "fast-downward"'),
+    ):
+        assert planner in skill
+        assert "submit_planner_attempt" in skill
+        assert "planner_executor" in skill
+        assert "same submitted files" in skill
+        assert "write_todos" in skill
+        assert "edit_file" in skill
+        assert "normalization template" not in skill
+        assert "code-owned action checker" not in skill

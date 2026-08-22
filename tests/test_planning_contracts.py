@@ -1,13 +1,10 @@
 import pytest
 
 from onr.contracts.planning import (
-    ManeuverIntent,
-    NormalizedPlan,
     PlannerChoice,
+    PlannerPlan,
     PlanningOutcome,
     PlanningProfile,
-    SymbolicManeuver,
-    SymbolicPlanStep,
 )
 
 
@@ -25,35 +22,31 @@ def test_planner_choice_is_semantic_and_rejects_executable_paths() -> None:
         )
 
 
-def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
-    survey = SymbolicManeuver(
-        maneuver_id="survey",
-        intent=ManeuverIntent("survey"),
-        dependencies=(),
-        cost=4,
-    )
-    report = SymbolicManeuver(
-        maneuver_id="report",
-        intent=ManeuverIntent("report"),
-        dependencies=("survey",),
-        cost=1,
-    )
+def test_planner_plan_is_a_maneuver_free_reference_envelope() -> None:
     planner_choice = PlannerChoice("symbolic", "fast-downward")
-    plan = NormalizedPlan(
+    plan = PlannerPlan(
         mission_id="mission-symbolic",
         source_authority="mission-control",
         plan_revision=1,
         mission_snapshot_id="snapshot-1",
         planner_choice=planner_choice,
         outcome=PlanningOutcome.SOLVED,
-        maneuvers=(
-            SymbolicPlanStep(0, "survey", survey.intent, (), 4),
-            SymbolicPlanStep(1, "report", report.intent, ("survey",), 1),
-        ),
+        planner_native_plan_artifact_reference="/artifacts/sas_plan",
     )
-
-    assert '"duration"' not in plan.to_canonical_json()
-    assert '"start"' not in plan.to_canonical_json()
+    assert PlannerPlan.from_json(plan.to_canonical_json()) == plan
+    assert set(plan.to_dict()) == {
+        "mission_id",
+        "source_authority",
+        "plan_revision",
+        "mission_snapshot_id",
+        "planner_choice",
+        "outcome",
+        "planner_native_plan_artifact_reference",
+    }
+    assert all(
+        term not in plan.to_canonical_json()
+        for term in ("maneuvers", "cost", "digest", "sha")
+    )
 
     assert (
         PlannerChoice.from_json('{"planner_id":null,"planning_profile":"symbolic"}')
@@ -63,19 +56,6 @@ def test_symbolic_contracts_are_canonical_and_keep_steps_ordered() -> None:
         PlannerChoice.from_json(
             '{"planner_id":"fast-downward","planning_profile":"symbolic",'
             '"executable":"/usr/bin/fast-downward.py"}'
-        )
-    with pytest.raises(ValueError):
-        NormalizedPlan(
-            mission_id="mission-symbolic",
-            source_authority="mission-control",
-            plan_revision=1,
-            mission_snapshot_id="snapshot-1",
-            planner_choice=planner_choice,
-            outcome=PlanningOutcome.SOLVED,
-            maneuvers=(
-                SymbolicPlanStep(1, "survey", survey.intent, (), 4),
-                SymbolicPlanStep(2, "report", report.intent, ("survey",), 1),
-            ),
         )
 
 

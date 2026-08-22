@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Literal, cast
 
-STEPS_SCHEMA_VERSION = 1
+STEPS_SCHEMA_VERSION = 2
 RUN_SCHEMA_VERSION = 1
 TEXT_FIELD_LIMIT = 200_000
 MISSION_TEXT_LIMIT = 20_000
@@ -32,6 +32,7 @@ PHASES = (
 
 StepKind = Literal["llm", "tool", "decision", "feedback"]
 StepStatus = Literal["ok", "error", "unknown"]
+CompletionState = Literal["live", "complete", "partial", "error"]
 RunStatus = Literal["complete", "running", "unknown"]
 
 _SUCCESS_OUTCOMES = {
@@ -127,7 +128,8 @@ def _public_value(value: object) -> object:
         return {
             str(key): _public_value(item)
             for key, item in value.items()
-            if isinstance(key, str) and key.lower().replace("-", "_") not in _PRIVATE_KEYS
+            if isinstance(key, str)
+            and key.lower().replace("-", "_") not in _PRIVATE_KEYS
         }
     if isinstance(value, (list, tuple)):
         return [_public_value(item) for item in value]
@@ -183,6 +185,13 @@ def _duration_ms(started_at: str | None, finished_at: str | None) -> int | None:
     if started is None or finished is None or finished < started:
         return None
     return round((finished - started).total_seconds() * 1000)
+
+
+def _completion_state(record: Mapping[str, object]) -> CompletionState:
+    value = record.get("completion_state")
+    if value in {"live", "complete", "partial", "error"}:
+        return cast(CompletionState, value)
+    return "complete"
 
 
 def _limited_text(value: object) -> tuple[str | None, bool]:
@@ -286,7 +295,9 @@ def _reasoning(record: Mapping[str, object]) -> tuple[str | None, bool]:
     return combined, truncated or clipped
 
 
-def _status(outcome: object, *, error: object = None, finished: bool = False) -> StepStatus:
+def _status(
+    outcome: object, *, error: object = None, finished: bool = False
+) -> StepStatus:
     if error not in (None, "", False):
         return "error"
     selected = outcome.lower() if isinstance(outcome, str) else ""
@@ -366,7 +377,12 @@ def _attempt_number(value: object) -> int | None:
         if value.isdigit() and int(value) > 0:
             return int(value)
     if isinstance(value, Mapping):
-        for key in ("attempt", "attempt_number", "planner_attempt", "statechart_attempt"):
+        for key in (
+            "attempt",
+            "attempt_number",
+            "planner_attempt",
+            "statechart_attempt",
+        ):
             attempt = _attempt_number(value.get(key))
             if attempt is not None:
                 return attempt
@@ -400,7 +416,9 @@ def _component_for_event(record: Mapping[str, object]) -> str:
     return "transport"
 
 
-def _normal_tool_call(value: object) -> dict[str, object] | None:
+def _normal_tool_call(
+    value: object, *, partial: bool = False
+) -> dict[str, object] | None:
     if not isinstance(value, Mapping):
         return None
     function = value.get("function")
@@ -411,6 +429,27 @@ def _normal_tool_call(value: object) -> dict[str, object] | None:
     if not isinstance(name, str) or not name.strip():
         name = "tool"
     raw_args = source.get("arguments", source.get("args", value.get("args", {})))
+    if partial:
+        if isinstance(raw_args, str):
+            arguments_text = raw_args
+        else:
+            try:
+                arguments_text = json.dumps(
+                    _public_value(raw_args), separators=(",", ":"), ensure_ascii=False
+                )
+            except (TypeError, ValueError, RecursionError):
+                arguments_text = str(raw_args)
+        arguments_text, arguments_truncated = _limited_text(arguments_text)
+        return {
+            "name": name,
+            "args": {},
+            "arguments_text": arguments_text,
+            "partial": True,
+            "result": None,
+            "error": None,
+            "duration_ms": None,
+            "_truncated": arguments_truncated,
+        }
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
@@ -424,6 +463,8 @@ def _normal_tool_call(value: object) -> dict[str, object] | None:
     return {
         "name": name,
         "args": dict(args),
+        "arguments_text": None,
+        "partial": False,
         "result": _public_value(value.get("result")),
         "error": _public_value(value.get("error")),
         "duration_ms": duration if type(duration) is int and duration >= 0 else None,
@@ -434,13 +475,20 @@ def _tool_calls(record: Mapping[str, object]) -> list[dict[str, object]]:
     raw = record.get("tool_calls")
     if not isinstance(raw, (list, tuple)):
         return []
-    return [call for item in raw if (call := _normal_tool_call(item)) is not None]
+    partial = _completion_state(record) != "complete"
+    return [
+        call
+        for item in raw
+        if (call := _normal_tool_call(item, partial=partial)) is not None
+    ]
 
 
 @dataclass(frozen=True, slots=True)
 class ToolCall:
     name: str
     args: Mapping[str, object] = field(default_factory=dict)
+    arguments_text: str | None = None
+    partial: bool = False
     result: object = None
     error: object = None
     duration_ms: int | None = None
@@ -454,6 +502,8 @@ class ToolCall:
         return {
             "name": self.name,
             "args": _plain(self.args),
+            "arguments_text": self.arguments_text,
+            "partial": self.partial,
             "result": _plain(self.result),
             "error": _plain(self.error),
             "duration_ms": self.duration_ms,
@@ -505,6 +555,9 @@ class Step:
     finished_at: str | None = None
     duration_ms: int | None = None
     status: StepStatus = "unknown"
+    completion_state: CompletionState = "complete"
+    updated_at: str | None = None
+    revision: int = 1
     outcome: str | None = None
     reasoning: str | None = None
     content: str | None = None
@@ -539,6 +592,9 @@ class Step:
             "finished_at": self.finished_at,
             "duration_ms": self.duration_ms,
             "status": self.status,
+            "completion_state": self.completion_state,
+            "updated_at": self.updated_at,
+            "revision": self.revision,
             "outcome": self.outcome,
             "reasoning": self.reasoning,
             "content": self.content,
@@ -595,7 +651,9 @@ class RunOverview:
         if self.mission is not None:
             object.__setattr__(self, "mission", _frozen(self.mission))
         object.__setattr__(self, "aggregates", _frozen(self.aggregates))
-        object.__setattr__(self, "summaries", tuple(_frozen(item) for item in self.summaries))
+        object.__setattr__(
+            self, "summaries", tuple(_frozen(item) for item in self.summaries)
+        )
         if self.fsm is not None:
             object.__setattr__(self, "fsm", _frozen(self.fsm))
         if self.environment is not None:
@@ -630,6 +688,8 @@ def _draft_from_invocation(record: Mapping[str, object]) -> dict[str, object] | 
     name = _text(record.get("name")) or cast(str, kind)
     started_at = _iso(record.get("started_at"))
     finished_at = _iso(record.get("finished_at"))
+    updated_at = _iso(record.get("updated_at")) or finished_at or started_at
+    completion_state = _completion_state(record)
     error = record.get("error")
     draft: dict[str, object] = {
         "step_id": f"{role}:{seq}",
@@ -641,8 +701,15 @@ def _draft_from_invocation(record: Mapping[str, object]) -> dict[str, object] | 
         "name": name,
         "started_at": started_at,
         "finished_at": finished_at,
-        "duration_ms": _duration_ms(started_at, finished_at),
-        "status": _status(None, error=error, finished=finished_at is not None),
+        "duration_ms": _duration_ms(started_at, finished_at or updated_at),
+        "status": _status(
+            None,
+            error=error,
+            finished=completion_state == "complete",
+        ),
+        "completion_state": completion_state,
+        "updated_at": updated_at,
+        "revision": max(1, _integer(record.get("revision"), 1)),
         "outcome": "failed" if error not in (None, "", False) else None,
         "reasoning": None,
         "content": None,
@@ -666,6 +733,8 @@ def _draft_from_invocation(record: Mapping[str, object]) -> dict[str, object] | 
             {
                 "name": name,
                 "args": _mapping(record.get("input")),
+                "arguments_text": None,
+                "partial": False,
                 "result": _public_value(record.get("output")),
                 "error": _public_value(error),
                 "duration_ms": draft["duration_ms"],
@@ -681,14 +750,42 @@ def _apply_llm(draft: dict[str, object], record: Mapping[str, object]) -> None:
     draft["content"] = content
     draft["model"] = _text(record.get("model"))
     draft["finish_reason"] = _text(record.get("finish_reason"))
-    draft["tool_calls"] = _tool_calls(record)
-    draft["truncated"] = reasoning_truncated or content_truncated
+    tool_calls = _tool_calls(record)
+    tool_arguments_truncated = False
+    for call in tool_calls:
+        tool_arguments_truncated |= call.pop("_truncated", False) is True
+    draft["tool_calls"] = tool_calls
+    draft["truncated"] = (
+        reasoning_truncated or content_truncated or tool_arguments_truncated
+    )
+    completion_state = _completion_state(record)
+    draft["completion_state"] = completion_state
+    updated_at = _iso(record.get("updated_at"))
+    finished_at = _iso(record.get("finished_at"))
+    if finished_at is not None:
+        draft["finished_at"] = finished_at
+    if updated_at is not None:
+        draft["updated_at"] = updated_at
+        draft["duration_ms"] = _duration_ms(
+            cast(str | None, draft.get("started_at")),
+            finished_at or updated_at,
+        )
+    draft["revision"] = max(
+        cast(int, draft.get("revision", 1)),
+        max(1, _integer(record.get("revision"), 1)),
+    )
     status_code = record.get("status_code")
-    if type(status_code) is int and status_code >= 400:
+    if completion_state == "error" or (type(status_code) is int and status_code >= 400):
         draft["status"] = "error"
         draft["outcome"] = "failed"
-    elif type(status_code) is int and 200 <= status_code < 300:
+    elif (
+        completion_state == "complete"
+        and type(status_code) is int
+        and 200 <= status_code < 300
+    ):
         draft["status"] = "ok"
+    else:
+        draft["status"] = "unknown"
     draft["_ids"] = cast(set[str], draft["_ids"]) | _identifiers(
         {key: record.get(key) for key in _IDENTIFIER_KEYS}
     )
@@ -702,6 +799,8 @@ def _draft_from_llm(record: Mapping[str, object]) -> dict[str, object] | None:
     name = _text(record.get("name")) or _text(record.get("model")) or "llm"
     started_at = _iso(record.get("started_at"))
     finished_at = _iso(record.get("finished_at"))
+    updated_at = _iso(record.get("updated_at")) or finished_at or started_at
+    completion_state = _completion_state(record)
     draft: dict[str, object] = {
         "step_id": f"{role}:{seq}",
         "seq": seq,
@@ -712,11 +811,14 @@ def _draft_from_llm(record: Mapping[str, object]) -> dict[str, object] | None:
         "name": name,
         "started_at": started_at,
         "finished_at": finished_at,
-        "duration_ms": _duration_ms(started_at, finished_at),
+        "duration_ms": _duration_ms(started_at, finished_at or updated_at),
         "status": _status(
             "completed" if record.get("status_code") == 200 else None,
-            finished=finished_at is not None,
+            finished=completion_state == "complete",
         ),
+        "completion_state": completion_state,
+        "updated_at": updated_at,
+        "revision": max(1, _integer(record.get("revision"), 1)),
         "outcome": None,
         "reasoning": None,
         "content": None,
@@ -729,7 +831,7 @@ def _draft_from_llm(record: Mapping[str, object]) -> dict[str, object] | None:
         "children": [],
         "truncated": False,
         "_ids": _identifiers(record),
-        "_invocation_id": None,
+        "_invocation_id": _text(record.get("invocation_id")),
         "_parent_id": None,
     }
     _apply_llm(draft, record)
@@ -744,39 +846,68 @@ def _pair_llm_records(
     unmatched = list(records)
     if not drafts or not records:
         return unmatched
-    sequences = [_integer(record.get("sequence")) for record in records]
+    paired_drafts: set[int] = set()
+    by_invocation = {
+        cast(str, draft["_invocation_id"]): draft
+        for draft in drafts
+        if isinstance(draft.get("_invocation_id"), str)
+    }
+    for record in list(unmatched):
+        invocation_id = _text(record.get("invocation_id"))
+        draft = by_invocation.get(invocation_id) if invocation_id is not None else None
+        if draft is None:
+            continue
+        _apply_llm(draft, record)
+        paired_drafts.add(id(draft))
+        unmatched.remove(record)
+
+    legacy_records = [
+        record for record in unmatched if record.get("invocation_id") is None
+    ]
+    available_drafts = [draft for draft in drafts if id(draft) not in paired_drafts]
+    sequences = [_integer(record.get("sequence")) for record in legacy_records]
     dense = sequences == list(range(1, len(sequences) + 1))
-    if dense:
-        for draft, record in zip(drafts, records, strict=False):
+    if legacy_records and dense:
+        for draft, record in zip(available_drafts, legacy_records, strict=False):
             _apply_llm(draft, record)
             unmatched.remove(record)
+            paired_drafts.add(id(draft))
         return unmatched
 
-    by_sequence = {_integer(record.get("sequence")): record for record in records}
-    for draft in drafts:
+    by_sequence = {
+        _integer(record.get("sequence")): record for record in legacy_records
+    }
+    for draft in available_drafts:
         record = by_sequence.get(cast(int, draft["seq"]))
         if record is not None and record in unmatched:
             _apply_llm(draft, record)
             unmatched.remove(record)
+            paired_drafts.add(id(draft))
 
-    for record in list(unmatched):
+    for record in [item for item in unmatched if item.get("invocation_id") is None]:
         llm_time = _timestamp(record.get("started_at") or record.get("created_at"))
-        candidates = [draft for draft in drafts if draft.get("reasoning") is None]
+        candidates = [draft for draft in drafts if id(draft) not in paired_drafts]
         if llm_time is None or not candidates:
             continue
         selected = min(
             candidates,
             key=lambda draft: abs(
                 (
-                    (_timestamp(draft.get("started_at")) or datetime.min.replace(tzinfo=UTC))
+                    (
+                        _timestamp(draft.get("started_at"))
+                        or datetime.min.replace(tzinfo=UTC)
+                    )
                     - cast(datetime, llm_time)
                 ).total_seconds()
             ),
         )
         _apply_llm(selected, record)
         unmatched.remove(record)
+        paired_drafts.add(id(selected))
     if unmatched:
-        warnings.append(f"{len(unmatched)} LLM record(s) could not be paired by sequence or time.")
+        warnings.append(
+            f"{len(unmatched)} LLM record(s) could not be paired by sequence or time."
+        )
     return unmatched
 
 
@@ -786,7 +917,9 @@ def _time_distance(draft: Mapping[str, object], when: datetime) -> float:
     if started is not None and finished is not None and started <= when <= finished:
         return 0.0
     points = [point for point in (started, finished) if point is not None]
-    return min((abs((point - when).total_seconds()) for point in points), default=math.inf)
+    return min(
+        (abs((point - when).total_seconds()) for point in points), default=math.inf
+    )
 
 
 def _unique_step_id(base: str, kind: str, used: set[str]) -> str:
@@ -881,7 +1014,9 @@ def _attach_decisions(
                 selected = nearest
         if selected is None and candidates and when is None:
             sequence = _integer(record.get("sequence"))
-            selected = min(candidates, key=lambda draft: abs(cast(int, draft["seq"]) - sequence))
+            selected = min(
+                candidates, key=lambda draft: abs(cast(int, draft["seq"]) - sequence)
+            )
         if selected is None:
             drafts.append(_decision_draft(record, used))
             continue
@@ -902,9 +1037,7 @@ def _feedback_draft(record: Mapping[str, object], used: set[str]) -> dict[str, o
     seq = _integer(record.get("sequence"))
     payload = _mapping(record.get("payload"))
     when = _iso(
-        record.get("event_time")
-        or record.get("created_at")
-        or record.get("timestamp")
+        record.get("event_time") or record.get("created_at") or record.get("timestamp")
     )
     outcome = _text(payload.get("lifecycle")) or _text(payload.get("status"))
     return {
@@ -1018,6 +1151,8 @@ def _enrich_tool_results(drafts: list[dict[str, object]]) -> None:
         calls = cast(list[dict[str, object]], draft["tool_calls"])
         available = list(children)
         for call in calls:
+            if call.get("partial") is True:
+                continue
             child = next(
                 (item for item in available if item.get("name") == call.get("name")),
                 None,
@@ -1038,6 +1173,8 @@ def _step_from_draft(draft: Mapping[str, object], children: tuple[Step, ...]) ->
         ToolCall(
             name=cast(str, item["name"]),
             args=cast(Mapping[str, object], item.get("args", {})),
+            arguments_text=cast(str | None, item.get("arguments_text")),
+            partial=item.get("partial") is True,
             result=item.get("result"),
             error=item.get("error"),
             duration_ms=cast(int | None, item.get("duration_ms")),
@@ -1062,12 +1199,19 @@ def _step_from_draft(draft: Mapping[str, object], children: tuple[Step, ...]) ->
         title=_title(
             phase,
             name,
-            cast(Mapping[str, object], decision) if isinstance(decision, Mapping) else None,
+            cast(Mapping[str, object], decision)
+            if isinstance(decision, Mapping)
+            else None,
         ),
         started_at=cast(str | None, draft.get("started_at")),
         finished_at=cast(str | None, draft.get("finished_at")),
         duration_ms=cast(int | None, draft.get("duration_ms")),
         status=cast(StepStatus, draft["status"]),
+        completion_state=cast(
+            CompletionState, draft.get("completion_state", "complete")
+        ),
+        updated_at=cast(str | None, draft.get("updated_at")),
+        revision=cast(int, draft.get("revision", 1)),
         outcome=cast(str | None, draft.get("outcome")),
         reasoning=cast(str | None, draft.get("reasoning")),
         content=cast(str | None, draft.get("content")),
@@ -1113,7 +1257,9 @@ def _tree(drafts: list[dict[str, object]]) -> tuple[Step, ...]:
         if identity in active:
             return _step_from_draft(draft, ())
         active.add(identity)
-        nested = tuple(build(item) for item in sorted(children[identity], key=_sort_key))
+        nested = tuple(
+            build(item) for item in sorted(children[identity], key=_sort_key)
+        )
         active.remove(identity)
         return _step_from_draft(draft, nested)
 
@@ -1163,7 +1309,9 @@ class StepProjection:
             if role is not None:
                 records_by_role[role].append(record)
         for role in sorted(set(invocations_by_role) | set(records_by_role)):
-            role_drafts = sorted(invocations_by_role[role], key=lambda item: cast(int, item["seq"]))
+            role_drafts = sorted(
+                invocations_by_role[role], key=lambda item: cast(int, item["seq"])
+            )
             role_records = sorted(
                 records_by_role[role], key=lambda item: _integer(item.get("sequence"))
             )
@@ -1232,9 +1380,7 @@ class StepProjection:
                 if isinstance(item, Mapping)
                 and item.get("kind") == "tool"
                 and item.get("name") == "record_planning_intent"
-                and (
-                    item.get("role", item.get("agent_role")) in {None, "hyper-agent"}
-                )
+                and (item.get("role", item.get("agent_role")) in {None, "hyper-agent"})
             ),
             key=lambda item: _integer(item.get("sequence")),
         )

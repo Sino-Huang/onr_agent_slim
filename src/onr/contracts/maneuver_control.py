@@ -22,7 +22,6 @@ from onr.contracts.planning import (
     JsonScalar,
     ManeuverIntent,
     ManeuverParameter,
-    NormalizedPlan,
 )
 from onr.contracts.transport import Command
 
@@ -540,7 +539,6 @@ class ManeuverInvocation:
     correlation_id: str
     mission_id: str
     plan_revision: int
-    normalized_plan: NormalizedPlan
     statechart_reference: str
     fsm_status: FSMStatus
     environment_data: Mapping[str, object]
@@ -562,19 +560,11 @@ class ManeuverInvocation:
             or self.plan_revision < 0
         ):
             raise ValueError("Maneuver invocation plan revision must be non-negative")
-        if not isinstance(self.normalized_plan, NormalizedPlan):
-            raise TypeError("Maneuver invocation requires a NormalizedPlan")
         if not isinstance(self.fsm_status, FSMStatus):
             raise TypeError("Maneuver invocation requires live FSMStatus")
-        if (
-            self.normalized_plan.mission_id != self.mission_id
-            or self.fsm_status.mission_id != self.mission_id
-        ):
+        if self.fsm_status.mission_id != self.mission_id:
             raise ValueError("Maneuver invocation Mission identity is inconsistent")
-        if (
-            self.normalized_plan.plan_revision != self.plan_revision
-            or self.fsm_status.plan_revision != self.plan_revision
-        ):
+        if self.fsm_status.plan_revision != self.plan_revision:
             raise ValueError("Maneuver invocation plan revision is inconsistent")
         frozen_environment = _payload(
             self.environment_data, "Maneuver invocation environment data"
@@ -603,7 +593,6 @@ class ManeuverInvocation:
             "correlation_id": self.correlation_id,
             "mission_id": self.mission_id,
             "plan_revision": self.plan_revision,
-            "normalized_plan": self.normalized_plan.to_dict(),
             "statechart_reference": self.statechart_reference,
             "fsm_status": self.fsm_status.to_dict(),
             "environment_data": _json_value(self.environment_data),
@@ -636,7 +625,6 @@ class ManeuverInvocation:
             "correlation_id",
             "mission_id",
             "plan_revision",
-            "normalized_plan",
             "statechart_reference",
             "fsm_status",
             "environment_data",
@@ -646,14 +634,13 @@ class ManeuverInvocation:
         }
         if not isinstance(value, Mapping) or set(value) != fields:
             raise ValueError("Maneuver invocation contains unknown or missing fields")
-        plan = value["normalized_plan"]
         status = value["fsm_status"]
         environment = value["environment_data"]
         belief = value["belief_snapshot"]
         recipients = value["available_recipients"]
         snapshot = value["planning_snapshot"]
-        if not isinstance(plan, Mapping) or not isinstance(status, Mapping):
-            raise TypeError("Maneuver invocation plan and FSM status must be objects")
+        if not isinstance(status, Mapping):
+            raise TypeError("Maneuver invocation FSM status must be an object")
         if not isinstance(environment, Mapping):
             raise TypeError("Maneuver invocation environment data must be an object")
         if belief is not None and not isinstance(belief, Mapping):
@@ -677,7 +664,6 @@ class ManeuverInvocation:
             plan_revision=_nonnegative_int(
                 value["plan_revision"], "Maneuver invocation plan revision"
             ),
-            normalized_plan=NormalizedPlan.from_dict(plan),
             statechart_reference=statechart_reference,
             fsm_status=FSMStatus.from_dict(status),
             environment_data=environment,

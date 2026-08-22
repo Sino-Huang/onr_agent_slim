@@ -86,14 +86,19 @@ function renderBanner() {
 }
 
 function preserveScrollAndFocus(render) {
-  const scrollEl = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview, .workflow");
-  const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+  const scrollSelector = ".nav-scroll, .tl-scroll, .overview, .workflow, .detail-pane";
+  const scrollPositions = [...viewRoot.querySelectorAll(scrollSelector)]
+    .map((element) => ({ top: element.scrollTop, left: element.scrollLeft }));
   const active = document.activeElement;
   const keepFocus = active && active.dataset && active.dataset.testid === "step-search";
   const caret = keepFocus ? active.selectionStart : 0;
   render();
-  const nextScroll = viewRoot.querySelector(".nav-scroll, .tl-scroll, .overview, .workflow");
-  if (nextScroll) nextScroll.scrollTop = scrollTop;
+  [...viewRoot.querySelectorAll(scrollSelector)].forEach((element, index) => {
+    const position = scrollPositions[index];
+    if (!position) return;
+    element.scrollTop = position.top;
+    element.scrollLeft = position.left;
+  });
   if (keepFocus) {
     const input = viewRoot.querySelector('[data-testid="step-search"]');
     if (input) {
@@ -178,7 +183,7 @@ function renderView() {
 function renderAll() {
   renderHeaderIfChanged();
   renderBanner();
-  renderView();
+  preserveScrollAndFocus(renderView);
 }
 
 /* ------------------------------ polling ------------------------------ */

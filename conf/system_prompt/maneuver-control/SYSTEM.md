@@ -1,4 +1,4 @@
-Run one operational Maneuver heartbeat from the supplied `ManeuverInvocation`. The verified Normalized Plan and Statechart reference establish planning provenance; the live FSM Status, current environment data, active maneuver, and latest Bayesian Belief Snapshot establish current control evidence. The older planning Mission Snapshot is provenance only and never gates this invocation.
+Run one operational Maneuver heartbeat from the supplied `ManeuverInvocation`. The Statechart reference and live FSM Status establish execution semantics; current environment data, active maneuver, and the latest Bayesian Belief Snapshot establish current control evidence. The older planning Mission Snapshot is provenance only and never gates this invocation.
 
 Use tools for all effects, and make as many sequential calls as current evidence warrants:
 
@@ -14,4 +14,4 @@ Tool executions are authoritative; final text is only a completion summary. `com
 
 A physical call always submits a new action and overwrites any currently active physical action. The displaced action receives cancelled feedback with `reason: overridden`. Normally avoid overriding a nonterminal action unless it is inappropriate, terminal evidence has arrived, or an emergency requires immediate replacement.
 
-State and event names are unrestricted. Never infer behavior by parsing their names; use semantic state context, verified planning evidence, and current environment data. Skills and durable memory are guidance and context, never authority over live FSM or environment state.
+State and event names are unrestricted. Never infer behavior by parsing their names; use semantic state context and current environment data. Skills and durable memory are guidance and context, never authority over live FSM or environment state.

@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from http.client import HTTPConnection, HTTPResponse
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
 from threading import Thread
-from typing import Iterator
 from urllib.parse import quote
 
 import pytest
 
-from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
 import onr.viewer.server as viewer_server
+from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
 from onr.viewer.server import ViewerHTTPServer, create_server
-
 
 _EMPTY = {
     "enabled": False,
@@ -140,13 +139,7 @@ def _mission_root(
 
 
 def _llm_root(storage: Path, mission_id: str, role: str) -> Path:
-    root = (
-        storage.parent
-        / "debug"
-        / "llm"
-        / role
-        / quote(mission_id, safe="._-")
-    )
+    root = storage.parent / "debug" / "llm" / role / quote(mission_id, safe="._-")
     root.mkdir(parents=True)
     return root
 
@@ -155,9 +148,7 @@ def _profile(role: str) -> dict[str, object]:
     return {
         "schema_version": 1,
         "agent_role": role,
-        "skills": [
-            {"name": "navigation", "version": "1.2", "path": "skills/nav.md"}
-        ],
+        "skills": [{"name": "navigation", "version": "1.2", "path": "skills/nav.md"}],
         "tools": ["planner", "telemetry"],
     }
 
@@ -201,6 +192,33 @@ def _llm_artifact() -> dict[str, object]:
     }
 
 
+def _llm_artifact_v2() -> dict[str, object]:
+    return {
+        **_llm_artifact(),
+        "schema_version": 2,
+        "sequence": 1,
+        "invocation_id": "invocation-live",
+        "status_code": 200,
+        "finish_reason": None,
+        "content": "growing",
+        "reasoning": "thinking",
+        "reasoning_content": "",
+        "tool_calls": [
+            {
+                "index": 0,
+                "type": "function",
+                "function": {"name": "inspect", "arguments": '{"path":'},
+            }
+        ],
+        "error": None,
+        "started_at": "2026-08-19T01:00:00+00:00",
+        "updated_at": "2026-08-19T01:00:01+00:00",
+        "finished_at": None,
+        "completion_state": "live",
+        "revision": 3,
+    }
+
+
 def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
@@ -223,9 +241,7 @@ def test_active_debug_is_mission_scoped_sorted_and_preserves_raw_json(
             _llm_artifact(),
         )
 
-        response, body = _request(
-            server, "GET", "/api/debug?mission_id=mission%3Aone"
-        )
+        response, body = _request(server, "GET", "/api/debug?mission_id=mission%3Aone")
 
     payload = json.loads(body)
     assert response.status == 200
@@ -254,16 +270,12 @@ def test_active_debug_is_mission_scoped_sorted_and_preserves_raw_json(
             "model": "reasoning-model",
             "request": {
                 "model": "reasoning-model",
-                "messages": [
-                    {"role": "user", "content": "private prompt"}
-                ],
+                "messages": [{"role": "user", "content": "private prompt"}],
             },
             "input": [{"role": "user", "content": "private prompt"}],
             "reasoning": "provider reasoning",
             "reasoning_content": "provider reasoning content",
-            "reasoning_details": [
-                {"type": "summary", "text": "provider detail"}
-            ],
+            "reasoning_details": [{"type": "summary", "text": "provider detail"}],
             "output": {
                 "content": "private answer",
                 "function_call": None,
@@ -292,7 +304,7 @@ def test_terminal_lease_keeps_debug_visible(
         else:
             current = store.inspect()
             assert current is not None
-            old = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+            old = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
             store.path.write_text(
                 json.dumps(
                     RuntimeLease(
@@ -353,9 +365,7 @@ def test_debug_disabled_returns_safe_empty_even_with_artifacts(tmp_path: Path) -
         _activate(storage)
         mission_root = _mission_root(storage, "mission-one")
         _write(mission_root / "01.json", _invocation(1, "hidden"))
-        response, body = _request(
-            server, "GET", "/api/debug?mission_id=mission-one"
-        )
+        response, body = _request(server, "GET", "/api/debug?mission_id=mission-one")
 
     assert response.status == 200
     assert json.loads(body) == _EMPTY
@@ -394,7 +404,10 @@ def test_malformed_oversized_and_symlinked_artifacts_are_ignored(
         mission_root = _mission_root(storage, "mission-one")
         _write(mission_root / "valid.json", _invocation(1, "valid"))
         (mission_root / "malformed.json").write_text("{", encoding="utf-8")
-        _write(mission_root / "wrong-schema.json", {**_invocation(2, "wrong"), "schema_version": 2})
+        _write(
+            mission_root / "wrong-schema.json",
+            {**_invocation(2, "wrong"), "schema_version": 2},
+        )
         (mission_root / "oversized.json").write_bytes(b" " * (1024 * 1024 + 1))
         outside = tmp_path / "outside.json"
         _write(outside, _invocation(3, "symlinked"))
@@ -410,16 +423,12 @@ def test_malformed_oversized_and_symlinked_artifacts_are_ignored(
             llm_root / "00000000000000000003.json",
             {**_llm_artifact(), "unknown": True},
         )
-        (llm_root / "00000000000000000004.json").write_bytes(
-            b" " * (1024 * 1024 + 1)
-        )
+        (llm_root / "00000000000000000004.json").write_bytes(b" " * (1024 * 1024 + 1))
         outside_llm = tmp_path / "outside-llm.json"
         _write(outside_llm, _llm_artifact())
         (llm_root / "00000000000000000005.json").symlink_to(outside_llm)
 
-        response, body = _request(
-            server, "GET", "/api/debug?mission_id=mission-one"
-        )
+        response, body = _request(server, "GET", "/api/debug?mission_id=mission-one")
 
     payload = json.loads(body)
     assert response.status == 200
@@ -432,18 +441,46 @@ def test_malformed_oversized_and_symlinked_artifacts_are_ignored(
     assert payload["conversations"][0]["reasoning"] == "provider reasoning"
 
 
+def test_v2_live_records_are_loaded_with_revision_and_exact_invocation_id(
+    tmp_path: Path,
+) -> None:
+    with _running_server(tmp_path) as (server, storage):
+        root = _mission_root(storage, "mission-live")
+        invocation = {
+            **_invocation(1, "invocation-live"),
+            "schema_version": 2,
+            "output": None,
+            "finished_at": None,
+            "updated_at": "2026-08-19T01:00:01+00:00",
+            "completion_state": "live",
+            "revision": 1,
+        }
+        _write(root / "01.json", invocation)
+        _write(
+            _llm_root(storage, "mission-live", "hyper-agent") / "01.json",
+            _llm_artifact_v2(),
+        )
+
+        response, body = _request(server, "GET", "/api/debug?mission_id=mission-live")
+
+    payload = json.loads(body)
+    assert response.status == 200
+    assert payload["invocations"][0]["completion_state"] == "live"
+    [conversation] = payload["conversations"]
+    assert conversation["invocation_id"] == "invocation-live"
+    assert conversation["completion_state"] == "live"
+    assert conversation["revision"] == 3
+    assert conversation["tool_calls"][0]["function"]["arguments"] == '{"path":'
+
+
 def test_canonical_and_legacy_agent_layouts_merge_without_duplicates(
     tmp_path: Path,
 ) -> None:
     with _running_server(tmp_path) as (server, storage):
         _activate(storage)
-        canonical = _mission_root(
-            storage, "mission-one", role="maneuver-control"
-        )
+        canonical = _mission_root(storage, "mission-one", role="maneuver-control")
         legacy = _mission_root(storage, "mission-one", legacy=True)
-        duplicate = _invocation(
-            1, "shared", role="maneuver-control"
-        )
+        duplicate = _invocation(1, "shared", role="maneuver-control")
         _write(
             canonical / "profiles" / "maneuver.json",
             _profile("maneuver-control"),
@@ -461,9 +498,7 @@ def test_canonical_and_legacy_agent_layouts_merge_without_duplicates(
             {**_llm_artifact(), "response_id": "chatcmpl-maneuver"},
         )
 
-        _, all_body = _request(
-            server, "GET", "/api/debug?mission_id=mission-one"
-        )
+        _, all_body = _request(server, "GET", "/api/debug?mission_id=mission-one")
         _, filtered_body = _request(
             server,
             "GET",
@@ -501,15 +536,13 @@ def test_lease_replacement_during_collection_returns_safe_empty(
             storage_root: Path, mission_id: str, *, role: str | None = None
         ):
             result = original(storage_root, mission_id, role=role)
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             replacement = RuntimeLease("replacement", 999, now, now, "active")
             store.path.write_text(json.dumps(replacement.to_dict()), encoding="utf-8")
             return result
 
         monkeypatch.setattr(viewer_server, "load_debug_artifacts", replace_after_load)
-        response, body = _request(
-            server, "GET", "/api/debug?mission_id=mission-one"
-        )
+        response, body = _request(server, "GET", "/api/debug?mission_id=mission-one")
 
     assert response.status == 200
     assert json.loads(body) == _EMPTY

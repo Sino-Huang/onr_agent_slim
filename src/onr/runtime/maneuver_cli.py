@@ -116,9 +116,7 @@ def run_maneuver_demo(
         mission_id=plan.mission_id,
         debug_scope="maneuver-control",
     )
-    prompt = load_system_prompt(
-        repo_root / "conf/system_prompt", "maneuver-control"
-    )
+    prompt = load_system_prompt(repo_root / "conf/system_prompt", "maneuver-control")
     control = runtime.create_maneuver_control(
         environment,
         model=model,
@@ -144,7 +142,6 @@ def run_maneuver_demo(
             correlation_id=f"maneuver-demo:{plan.mission_id}",
             mission_id=plan.mission_id,
             plan_revision=plan.plan_revision,
-            normalized_plan=plan,
             statechart_reference=str(statechart_reference),
             fsm_status=status,
             environment_data=authority.current_environment_data(),
@@ -231,9 +228,7 @@ def run_maneuver_demo(
         agent_log_directory=(
             debug_root / "agent" / "maneuver-control" / mission_component
         ),
-        llm_log_directory=(
-            debug_root / "llm" / "maneuver-control" / mission_component
-        ),
+        llm_log_directory=(debug_root / "llm" / "maneuver-control" / mission_component),
     )
 
 

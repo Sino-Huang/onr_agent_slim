@@ -17,15 +17,15 @@ from onr.agents.maneuver_control import (
     create_maneuver_control_agent,
 )
 from onr.agents.structured_output import StructuredOutputRetriesExhausted
-from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
-from onr.application.planning_commands import PlanningCommandHandler
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import (
     FSMStatus,
     ManeuverDecision,
     ManeuverFeedback,
+    Statechart,
+    StatechartTransition,
     TransitionCandidate,
 )
 from onr.contracts.maneuver_control import (
@@ -38,17 +38,11 @@ from onr.contracts.maneuver_control import (
 from onr.contracts.planning import (
     ManeuverIntent,
     ManeuverParameter,
-    NormalizedPlan,
-    PlannerChoice,
-    PlanningOutcome,
-    ScheduledManeuver,
-    SymbolicPlanStep,
 )
 from onr.contracts.transport import (
     Command,
     CommandOutcome,
     TransportEvent,
-    create_normalized_plan_transport_event,
 )
 from onr.ports.transport import Subscription
 
@@ -85,7 +79,12 @@ class FixedDecisionProvider:
         self.decision = decision
         self.calls = 0
 
-    def decide(self, snapshot: MissionSnapshot, status: FSMStatus, overlay: InvocationOverlay | None = None) -> ManeuverControlDecision:
+    def decide(
+        self,
+        snapshot: MissionSnapshot,
+        status: FSMStatus,
+        overlay: InvocationOverlay | None = None,
+    ) -> ManeuverControlDecision:
         self.calls += 1
         return self.decision
 
@@ -245,7 +244,9 @@ def test_structured_output_retry_budget_is_initial_call_plus_retries(
     provider = DeepAgentsDecisionProvider(agent, max_retries=max_retries)
 
     with pytest.raises(StructuredOutputRetriesExhausted) as caught:
-        provider.decide(_snapshot("mission-recovery", 4), _status("mission-recovery", 4))
+        provider.decide(
+            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+        )
 
     assert caught.value.code == "output_structure_retries_exhausted"
     assert len(agent.calls) == max_retries + 1
@@ -255,11 +256,15 @@ def test_structured_output_retry_budget_is_initial_call_plus_retries(
     "invalid",
     [
         pytest.param(
-            lambda value: {key: item for key, item in value.items() if key != "payload"},
+            lambda value: {
+                key: item for key, item in value.items() if key != "payload"
+            },
             id="missing-field",
         ),
         pytest.param(lambda value: {**value, "extra": True}, id="extra-field"),
-        pytest.param(lambda value: {**value, "plan_revision": "4"}, id="wrong-primitive"),
+        pytest.param(
+            lambda value: {**value, "plan_revision": "4"}, id="wrong-primitive"
+        ),
         pytest.param(lambda value: {**value, "payload": []}, id="wrong-container"),
         pytest.param(lambda value: {**value, "choice": "launch"}, id="invalid-choice"),
         pytest.param(
@@ -280,9 +285,12 @@ def test_structural_decision_errors_retry(invalid: Any) -> None:
         ]
     )
 
-    assert DeepAgentsDecisionProvider(agent, max_retries=1).decide(
-        _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
-    ) == expected
+    assert (
+        DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+        )
+        == expected
+    )
     assert len(agent.calls) == 2
 
 
@@ -320,9 +328,12 @@ def test_invalid_enums_receive_allowed_values_in_safe_feedback(
         ]
     )
 
-    assert DeepAgentsDecisionProvider(agent, max_retries=1).decide(
-        _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
-    ) == expected
+    assert (
+        DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+        )
+        == expected
+    )
 
     feedback_text = _message_contents(agent.calls[1])[1]
     feedback = json.loads(feedback_text)
@@ -348,9 +359,12 @@ def test_nonmapping_malformed_json_and_tool_call_responses_retry(
         [invalid_response, {"structured_response": expected.to_dict()}]
     )
 
-    assert DeepAgentsDecisionProvider(agent, max_retries=1).decide(
-        _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
-    ) == expected
+    assert (
+        DeepAgentsDecisionProvider(agent, max_retries=1).decide(
+            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+        )
+        == expected
+    )
     assert len(agent.calls) == 2
     assert "raw-secret" not in _message_contents(agent.calls[1])[1]
 
@@ -386,9 +400,10 @@ def test_structured_output_exhaustion_has_no_maneuver_control_side_effect() -> N
         control.heartbeat(snapshot, status, event_id="exhausted-input")
 
     assert len(agent.calls) == 2
-    assert transport.latest_event(
-        "maneuver-invocations/exhausted-input", mission_id
-    ) is None
+    assert (
+        transport.latest_event("maneuver-invocations/exhausted-input", mission_id)
+        is None
+    )
     assert transport.state.events == {}
     assert transport.state.commands == {}
     assert transport.state.receipts == {}
@@ -401,9 +416,12 @@ def test_typed_decision_response_shapes_return_without_retry() -> None:
     expected = _model_decision()
     for response in (expected, {"structured_response": expected}):
         agent = RecordingDecisionAgent([response])
-        assert DeepAgentsDecisionProvider(agent, max_retries=3).decide(
-            _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
-        ) == expected
+        assert (
+            DeepAgentsDecisionProvider(agent, max_retries=3).decide(
+                _snapshot("mission-recovery", 4), _status("mission-recovery", 4)
+            )
+            == expected
+        )
         assert len(agent.calls) == 1
 
 
@@ -441,7 +459,9 @@ def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
     ]
 
 
-def test_typed_decision_application_validation_failure_is_not_retried_or_effectful() -> None:
+def test_typed_decision_application_validation_failure_is_not_retried_or_effectful() -> (
+    None
+):
     mission_id = "mission-validation"
     decision = _model_decision(mission_id="wrong-mission", plan_revision=1)
     agent = RecordingDecisionAgent([decision])
@@ -458,9 +478,9 @@ def test_typed_decision_application_validation_failure_is_not_retried_or_effectf
         )
 
     assert len(agent.calls) == 1
-    assert transport.latest_event(
-        "maneuver-invocations/invalid-input", mission_id
-    ) is None
+    assert (
+        transport.latest_event("maneuver-invocations/invalid-input", mission_id) is None
+    )
     assert transport.state.commands == {}
     assert adapter.commands == []
 
@@ -480,19 +500,21 @@ def test_stale_typed_decision_is_not_retried_or_effectful() -> None:
     )
 
     with pytest.raises(ValueError, match="plan revision does not match FSM status"):
-        control.heartbeat(
-            _snapshot(mission_id, 1), status, event_id="stale-input"
-        )
+        control.heartbeat(_snapshot(mission_id, 1), status, event_id="stale-input")
 
     assert len(agent.calls) == 1
-    assert transport.latest_event("maneuver-invocations/stale-input", mission_id) is None
+    assert (
+        transport.latest_event("maneuver-invocations/stale-input", mission_id) is None
+    )
     assert transport.state.events == {}
     assert transport.state.commands == {}
     assert status.to_dict() == original_status
     assert adapter.commands == []
 
 
-def test_structural_correction_then_typed_decision_has_one_decision_and_command_path() -> None:
+def test_structural_correction_then_typed_decision_has_one_decision_and_command_path() -> (
+    None
+):
     mission_id = "mission-success"
     expected = _model_decision(mission_id=mission_id, plan_revision=1)
     agent = RecordingDecisionAgent(
@@ -521,15 +543,20 @@ def test_structural_correction_then_typed_decision_has_one_decision_and_command_
     )
     assert marker is not None
     assert marker.payload["decision"] == expected.to_dict()
-    assert sum(
-        event.event_kind == "maneuver-invocation"
-        for events in transport.state.events.values()
-        for event in events
-    ) == 1
+    assert (
+        sum(
+            event.event_kind == "maneuver-invocation"
+            for events in transport.state.events.values()
+            for event in events
+        )
+        == 1
+    )
     queued = transport.state.commands[("maneuver-adapter", mission_id)]
     assert sum(isinstance(message, Command) for _, message in queued) == 1
     control.handle_command(result.command)
     assert len(adapter.commands) == 1
+
+
 def test_deep_agents_decision_provider_passes_attached_debug_callback() -> None:
     expected = ManeuverControlDecision(
         decision_id="decision-debug",
@@ -577,33 +604,6 @@ class AlternatingDecisionProvider:
         return decision
 
 
-def _normalized_plan(planning_profile: str) -> NormalizedPlan:
-    intent = ManeuverIntent(
-        PhysicalAction.NAVIGATE,
-        (ManeuverParameter("waypoint", "area-7"),),
-    )
-    temporal = planning_profile == "temporal"
-    choice = PlannerChoice(
-        "temporal" if temporal else "symbolic",
-        "minizinc" if temporal else "fast-downward",
-    )
-    mission_id = "mission-temporal" if temporal else "mission-symbolic"
-    maneuver = (
-        ScheduledManeuver("survey", intent, (), 0, 1)
-        if temporal
-        else SymbolicPlanStep(0, "survey", intent, (), 1)
-    )
-    return NormalizedPlan(
-        mission_id=mission_id,
-        source_authority="authority",
-        plan_revision=7,
-        mission_snapshot_id="snapshot-7",
-        planner_choice=choice,
-        outcome=PlanningOutcome.SOLVED,
-        maneuvers=(maneuver,),
-    )
-
-
 def _snapshot(mission_id: str, revision: int) -> MissionSnapshot:
     return MissionSnapshot(
         mission_id=mission_id,
@@ -630,164 +630,26 @@ def _status(mission_id: str, revision: int) -> FSMStatus:
     )
 
 
-@pytest.mark.parametrize(
-    ("planning_profile", "planner_path"),
-    (("temporal", "MiniZinc"), ("symbolic", "Fast Downward")),
-)
-def test_plan_revision_reaches_one_authoritative_maneuver_once(
-    planning_profile: str, planner_path: str
-) -> None:
-    """Run the real planner-normalization/context/FSM/transport vertical seam."""
-
-    normalized = _normalized_plan(planning_profile)
-    mission_id = normalized.mission_id
-    revision = normalized.plan_revision
-    planning_subscription = Subscription("planner", mission_id, "plan")
-    context_subscription = ContextCoordination.subscription_for(mission_id)
-    fsm_subscription = FSMRunner.subscription_for(mission_id)
-    maneuver_subscription = Subscription("maneuver-control", mission_id, "maneuver-input")
-    transport = InProcessTransport(
-        (planning_subscription, context_subscription, fsm_subscription, maneuver_subscription)
-    )
-    planning_consumer = transport.open_consumer(planning_subscription)
-    context_consumer = transport.open_consumer(context_subscription)
-    fsm_consumer = transport.open_consumer(fsm_subscription)
-    transport.send_command(
-        Command(
-            1,
-            f"plan-command-{planning_profile}",
-            "plan-correlation",
-            mission_id,
-            "planner",
-            "plan",
-            {},
-        )
-    )
-    planning_outcome = PlanningCommandHandler(
-        cast(Any, transport), lambda _: normalized
-    ).run_once(planning_consumer)
-    assert planning_outcome is not None and planning_outcome.status == "completed"
-
-    context = ContextCoordination(
-        cast(Any, transport),
-        mission_id,
-        clock=lambda: "t-1",
-        subscription=context_subscription,
-    )
-    snapshot = context.run_once(context_consumer)
-    assert snapshot is not None and snapshot.plan_revision == revision
-    fsm = FSMRunner(
-        cast(Any, transport),
-        store=InMemoryFSMStateStore(),
-        clock=lambda: 1,
-        subscription=fsm_subscription,
-    )
-    status = asyncio.run(fsm.run_once(fsm_consumer))
-    assert isinstance(status, FSMStatus)
-    context.publish_source_fact(
-        "fsm_status", revision, reference=f"fsm-status:{mission_id}:{revision}"
-    )
-    snapshot = context.run_once(context_consumer)
-    assert snapshot is not None and snapshot.fsm_status is not None
-
-    decision = ManeuverControlDecision(
-        "decision-7",
-        mission_id,
-        revision,
-        maneuver_id="survey",
-        physical_intent=normalized.maneuvers[0].intent,
-    )
-    provider = FixedDecisionProvider(decision)
-    adapter = RecordingAdapter()
-    control = ManeuverControl(cast(Any, transport), adapter, provider, target_service="maneuver-adapter")
-    event = TransportEvent(
-        1,
-        f"plan-event-{planner_path.lower().replace(' ', '-')}",
-        mission_id,
-        0,
-        "maneuver-input",
-        {"snapshot": snapshot.to_dict(), "fsm_status": status.to_dict()},
-    )
-    transport.publish_event("maneuver-input", event)
-    maneuver_consumer = transport.open_consumer(maneuver_subscription)
-    result = asyncio.run(control.run_once(maneuver_consumer))
-    maneuver_consumer.close()
-    transport.publish_event("maneuver-input", event)
-    replay_consumer = transport.open_consumer(maneuver_subscription)
-    assert asyncio.run(control.run_once(replay_consumer)) is None
-    replay_consumer.close()
-    planning_consumer.close()
-    context_consumer.close()
-    fsm_consumer.close()
-
-    assert isinstance(result, ManeuverHeartbeatResult) and result.command is not None
-    assert result.command.plan_revision == revision
-    assert result.command.mission_snapshot_id == f"{mission_id}:snapshot:{snapshot.version}"
-    generic = result.command.to_command("maneuver-adapter")
-    outcome = control.handle_command(generic)
-    assert isinstance(outcome, CommandOutcome)
-    assert outcome.status == "accepted"
-    assert outcome.command_id == generic.command_id
-    assert outcome.correlation_id == generic.correlation_id
-    assert outcome.mission_id == generic.mission_id
-    assert outcome.payload == {
-        "adapter_submission": "accepted",
-        "source": "maneuver-adapter-transport",
-    }
-    assert control.handle_command(generic) == outcome
-    candidate = status.transition_candidates[0]
-    transition_decision = ManeuverDecision(
-        "transition-after-feedback", mission_id, transition_event=candidate.event
-    )
-    if planning_profile == "symbolic":
-        without_feedback = asyncio.run(fsm.apply(candidate, transition_decision))
-        assert without_feedback.active_state == status.active_state
-    moved = asyncio.run(
-        fsm.apply(
-            candidate,
-            ManeuverFeedback("feedback-after-submit", mission_id, "survey", "completed"),
-            transition_decision,
-        )
-    )
-    assert moved.active_state == candidate.target
-    queued = transport.state.commands[("maneuver-adapter", mission_id)]
-    assert sum(isinstance(message, Command) for _, message in queued) == 1
-    assert sum(isinstance(message, CommandOutcome) for _, message in queued) == 1
-    assert len(adapter.commands) == 1
-    assert adapter.commands[0].intent.action == PhysicalAction.NAVIGATE
-    assert provider.calls == 1
-
-
-def test_physical_decision_matches_enabled_fsm_maneuver_and_plan() -> None:
+def test_maneuver_control_validates_only_mission_revision_and_enabled_transition() -> (
+    None
+):
     mission_id = "mission-context"
     snapshot = _snapshot(mission_id, 1)
     status = _status(mission_id, 1)
     stale = ManeuverControlDecision(
-        "stale", mission_id, 1, maneuver_id="unknown", action="navigate"
+        "stale",
+        mission_id,
+        1,
+        choice=NonPhysicalChoice.TRANSITION,
+        transition_event="not-enabled",
     )
     control = ManeuverControl(
-        cast(Any, InProcessTransport()), RecordingAdapter(), FixedDecisionProvider(stale)
+        cast(Any, InProcessTransport()),
+        RecordingAdapter(),
+        FixedDecisionProvider(stale),
     )
     with pytest.raises(ValueError, match="not enabled"):
         control.decide(snapshot, status)
-
-    plan = _normalized_plan("symbolic")
-    mismatch = ManeuverControlDecision(
-        "mismatch",
-        plan.mission_id,
-        plan.plan_revision,
-        maneuver_id="survey",
-        action="land",
-    )
-    plan_control = ManeuverControl(
-        cast(Any, InProcessTransport()), RecordingAdapter(), FixedDecisionProvider(mismatch)
-    )
-    with pytest.raises(ValueError, match="does not match the normalized plan"):
-        plan_control.decide(
-            _snapshot(plan.mission_id, plan.plan_revision),
-            _status(plan.mission_id, plan.plan_revision),
-            plan=plan,
-        )
 
 
 def test_adapter_failure_publishes_failed_outcome_and_retries_once() -> None:
@@ -885,7 +747,11 @@ def test_submission_intent_prevents_resubmit_after_crash_window() -> None:
     first_transport = InProcessTransport(state=state)
     interrupted = InterruptingAdapter()
     decision = ManeuverControlDecision(
-        "crash-window-decision", mission_id, revision, maneuver_id="survey", action="navigate"
+        "crash-window-decision",
+        mission_id,
+        revision,
+        maneuver_id="survey",
+        action="navigate",
     )
     first = ManeuverControl(
         cast(Any, first_transport), interrupted, FixedDecisionProvider(decision)
@@ -903,11 +769,14 @@ def test_submission_intent_prevents_resubmit_after_crash_window() -> None:
     with pytest.raises(KeyboardInterrupt, match="process interrupted"):
         first.handle_command(generic)
     assert len(interrupted.commands) == 1
-    assert first_transport.latest_event(
-        "maneuver-submissions-intents/crash-window-command",
-        mission_id,
-        event_kind="maneuver-submission-intent",
-    ) is not None
+    assert (
+        first_transport.latest_event(
+            "maneuver-submissions-intents/crash-window-command",
+            mission_id,
+            event_kind="maneuver-submission-intent",
+        )
+        is not None
+    )
     assert first_transport.get_command_outcome(command.command_id) is None
 
     restarted_adapter = RecordingAdapter()
@@ -925,53 +794,76 @@ def test_submission_intent_prevents_resubmit_after_crash_window() -> None:
     }
     assert second_transport.get_command_outcome(command.command_id) == outcome
     assert restarted_adapter.commands == []
-    assert second_transport.latest_event(
-        "maneuver-submissions/crash-window-command",
-        mission_id,
-        event_kind="maneuver-submitted",
-    ) is None
+    assert (
+        second_transport.latest_event(
+            "maneuver-submissions/crash-window-command",
+            mission_id,
+            event_kind="maneuver-submitted",
+        )
+        is None
+    )
 
 
 def test_adapter_submission_does_not_advance_fsm_without_feedback() -> None:
-    plan = _normalized_plan("symbolic")
+    mission_id = "mission-symbolic"
+    revision = 7
+    chart = Statechart(
+        mission_id=mission_id,
+        plan_revision=revision,
+        mission_snapshot_id="snapshot-7",
+        planning_profile="symbolic",
+        entry_state="ready",
+        states=("ready", "complete"),
+        transitions=(
+            StatechartTransition(
+                "advance:survey", "ready", "complete", "survey", True, True
+            ),
+        ),
+        terminal_states=("complete",),
+        state_context={"ready": {}, "complete": {}},
+    )
     transport = InProcessTransport()
     runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
-    initial = asyncio.run(
-        runner.activate(
-            create_normalized_plan_transport_event(plan, event_id="plan-event", sequence=0)
-        )
-    )
+    initial = asyncio.run(runner.activate(chart))
     candidate = initial.transition_candidates[0]
-    snapshot = _snapshot(plan.mission_id, plan.plan_revision)
+    snapshot = _snapshot(mission_id, revision)
+    intent = ManeuverIntent(
+        PhysicalAction.NAVIGATE,
+        (ManeuverParameter("waypoint", "area-7"),),
+    )
     decision = ManeuverControlDecision(
         "physical-decision",
-        plan.mission_id,
-        plan.plan_revision,
+        mission_id,
+        revision,
         maneuver_id="survey",
-        physical_intent=plan.maneuvers[0].intent,
+        physical_intent=intent,
     )
     adapter = RecordingAdapter()
-    control = ManeuverControl(cast(Any, transport), adapter, FixedDecisionProvider(decision))
+    control = ManeuverControl(
+        cast(Any, transport), adapter, FixedDecisionProvider(decision)
+    )
     result = control.heartbeat(snapshot, initial)
     assert result.command is not None
     control.handle_command(result.command.to_command("maneuver-adapter"))
     unchanged = asyncio.run(
         runner.apply(
             candidate,
-            ManeuverDecision("transition-decision", plan.mission_id, transition_event=candidate.event),
+            ManeuverDecision(
+                "transition-decision", mission_id, transition_event=candidate.event
+            ),
         )
     )
     assert unchanged.active_state == initial.active_state
     assert unchanged.lifecycle_facts == {}
-    assert transport.latest_event("maneuver-feedback", plan.mission_id) is None
+    assert transport.latest_event("maneuver-feedback", mission_id) is None
 
     moved = asyncio.run(
         runner.apply(
             candidate,
-            ManeuverFeedback(
-                "feedback-1", plan.mission_id, "survey", "completed"
+            ManeuverFeedback("feedback-1", mission_id, "survey", "completed"),
+            ManeuverDecision(
+                "transition-decision", mission_id, transition_event=candidate.event
             ),
-            ManeuverDecision("transition-decision", plan.mission_id, transition_event=candidate.event),
         )
     )
     assert moved.active_state == candidate.target
@@ -993,7 +885,9 @@ def test_cancel_maneuver_is_non_physical_until_feedback() -> None:
     control = ManeuverControl(
         cast(Any, InProcessTransport()), adapter, FixedDecisionProvider(decision)
     )
-    result = control.heartbeat(_snapshot(mission_id, revision), _status(mission_id, revision))
+    result = control.heartbeat(
+        _snapshot(mission_id, revision), _status(mission_id, revision)
+    )
     assert result.command is None
     assert adapter.commands == []
     assert "cancelled" not in result.decision.payload
@@ -1002,36 +896,59 @@ def test_cancel_maneuver_is_non_physical_until_feedback() -> None:
 def test_decisions_validate_physical_actions_and_non_physical_choices() -> None:
     for action in PhysicalAction:
         decision = ManeuverControlDecision(
-            f"decision-{action}", "mission", 1, maneuver_id="m", physical_intent=ManeuverIntent(action)
+            f"decision-{action}",
+            "mission",
+            1,
+            maneuver_id="m",
+            physical_intent=ManeuverIntent(action),
         )
         assert decision.physical_intent is not None
 
     for choice in NonPhysicalChoice:
         if choice is NonPhysicalChoice.TRANSITION:
             with pytest.raises(ValueError):
-                ManeuverControlDecision(f"decision-{choice}", "mission", 1, choice=choice)
+                ManeuverControlDecision(
+                    f"decision-{choice}", "mission", 1, choice=choice
+                )
             continue
         if choice is NonPhysicalChoice.CANCEL_MANEUVER:
             with pytest.raises(ValueError):
-                ManeuverControlDecision(f"decision-{choice}", "mission", 1, choice=choice)
+                ManeuverControlDecision(
+                    f"decision-{choice}", "mission", 1, choice=choice
+                )
             decision = ManeuverControlDecision(
                 f"decision-{choice}", "mission", 1, maneuver_id="m", choice=choice
             )
         else:
-            decision = ManeuverControlDecision(f"decision-{choice}", "mission", 1, choice=choice)
+            decision = ManeuverControlDecision(
+                f"decision-{choice}", "mission", 1, choice=choice
+            )
         assert decision.choice is choice
     transition = ManeuverControlDecision(
-        "transition", "mission", 1, choice=NonPhysicalChoice.TRANSITION, transition_event="advance"
+        "transition",
+        "mission",
+        1,
+        choice=NonPhysicalChoice.TRANSITION,
+        transition_event="advance",
     )
     assert transition.event == "advance"
-    normalized = ManeuverControlDecision("normalized", "mission", 1, transition_event="advance")
+    normalized = ManeuverControlDecision(
+        "normalized", "mission", 1, transition_event="advance"
+    )
     assert normalized.choice is NonPhysicalChoice.TRANSITION
 
     advisory = ManeuverControlDecision(
-        "advisory", "mission", 1, choice=NonPhysicalChoice.REPLAN,
-        maneuver_id="m", physical_intent=ManeuverIntent("navigate")
+        "advisory",
+        "mission",
+        1,
+        choice=NonPhysicalChoice.REPLAN,
+        maneuver_id="m",
+        physical_intent=ManeuverIntent("navigate"),
     )
-    assert advisory.physical_intent is not None and advisory.choice is NonPhysicalChoice.REPLAN
+    assert (
+        advisory.physical_intent is not None
+        and advisory.choice is NonPhysicalChoice.REPLAN
+    )
     with pytest.raises(ValueError):
         ManeuverControlDecision(
             "physical-transition",
@@ -1057,7 +974,11 @@ def test_decisions_validate_physical_actions_and_non_physical_choices() -> None:
     ):
         with pytest.raises(ValueError):
             ManeuverControlDecision(
-                "nested-lifecycle", "mission", 1, choice=NonPhysicalChoice.REPORT, payload=payload
+                "nested-lifecycle",
+                "mission",
+                1,
+                choice=NonPhysicalChoice.REPORT,
+                payload=payload,
             )
 
 
@@ -1065,7 +986,9 @@ def test_overlay_is_immutable_and_transient() -> None:
     snapshot = _snapshot("mission", 1)
     status = _status("mission", 1)
     overlay = InvocationOverlay(
-        "mission", "request-1", {"snapshot": snapshot.to_dict(), "fsm_status": status.to_dict()}
+        "mission",
+        "request-1",
+        {"snapshot": snapshot.to_dict(), "fsm_status": status.to_dict()},
     )
     assert overlay.to_dict()["values"] == {
         "snapshot": snapshot.to_dict(),

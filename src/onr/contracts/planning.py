@@ -401,6 +401,9 @@ class SymbolicPlannerExecutionResult:
     action_calls: tuple[SymbolicActionCall, ...] = ()
     total_plan_cost: int = 0
     evidence: PlannerExecutionEvidence | None = None
+    return_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
 
     def __post_init__(self) -> None:
         outcome = PlanningOutcome(self.outcome)
@@ -417,6 +420,12 @@ class SymbolicPlannerExecutionResult:
             action_calls or self.total_plan_cost
         ):
             raise ValueError("only a solved symbolic result may contain a plan")
+        if self.return_code is not None and (
+            isinstance(self.return_code, bool) or not isinstance(self.return_code, int)
+        ):
+            raise TypeError("planner return code must be an integer or null")
+        if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
+            raise TypeError("planner output must be text")
         object.__setattr__(self, "outcome", outcome)
         object.__setattr__(self, "action_calls", action_calls)
 
@@ -510,6 +519,85 @@ class SymbolicPlanStep:
             "dependencies": self.dependencies,
             "cost": self.cost,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerPlan:
+    """Reference envelope for one externally accepted planner-native plan."""
+
+    mission_id: str
+    source_authority: str
+    plan_revision: int
+    mission_snapshot_id: str
+    planner_choice: PlannerChoice
+    outcome: PlanningOutcome | str
+    planner_native_plan_artifact_reference: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.mission_id, "Planner Plan Mission ID")
+        _require_text(self.source_authority, "Planner Plan source authority")
+        if isinstance(self.plan_revision, bool) or not isinstance(
+            self.plan_revision, int
+        ):
+            raise ValueError("plan revision must be an integer")
+        if self.plan_revision < 0:
+            raise ValueError("plan revision must be non-negative")
+        _require_text(self.mission_snapshot_id, "Mission Snapshot ID")
+        if not isinstance(self.planner_choice, PlannerChoice):
+            raise TypeError("Planner Plan requires a Planner Choice")
+        object.__setattr__(self, "outcome", PlanningOutcome(self.outcome))
+        _require_text(
+            self.planner_native_plan_artifact_reference,
+            "planner-native plan artifact reference",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mission_id": self.mission_id,
+            "source_authority": self.source_authority,
+            "plan_revision": self.plan_revision,
+            "mission_snapshot_id": self.mission_snapshot_id,
+            "planner_choice": self.planner_choice.to_dict(),
+            "outcome": str(self.outcome),
+            "planner_native_plan_artifact_reference": (
+                self.planner_native_plan_artifact_reference
+            ),
+        }
+
+    def to_canonical_json(self) -> str:
+        return _canonical_json(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PlannerPlan":
+        expected = {
+            "mission_id",
+            "source_authority",
+            "plan_revision",
+            "mission_snapshot_id",
+            "planner_choice",
+            "outcome",
+            "planner_native_plan_artifact_reference",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("Planner Plan contains unknown or missing fields")
+        return cls(
+            mission_id=value["mission_id"],
+            source_authority=value["source_authority"],
+            plan_revision=value["plan_revision"],
+            mission_snapshot_id=value["mission_snapshot_id"],
+            planner_choice=PlannerChoice.from_dict(value["planner_choice"]),
+            outcome=value["outcome"],
+            planner_native_plan_artifact_reference=value[
+                "planner_native_plan_artifact_reference"
+            ],
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> "PlannerPlan":
+        decoded = _decode_json(value, "Planner Plan")
+        if not isinstance(decoded, Mapping):
+            raise ValueError("Planner Plan JSON must be an object")
+        return cls.from_dict(decoded)
 
 
 @dataclass(frozen=True, slots=True)

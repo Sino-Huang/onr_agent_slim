@@ -29,7 +29,7 @@ export function renderTimeline(root, actions) {
 
   const pane = h("div", { class: "nav-pane timeline-pane" });
 
-  const timed = state.flat.filter(({ step }) => step.started_at && step.finished_at);
+  const timed = state.flat.filter(({ step }) => step.started_at && (step.finished_at || step.updated_at));
   if (!timed.length) {
     pane.append(h("div", { class: "empty-state tall" },
       icon("timeline", 24),
@@ -42,7 +42,7 @@ export function renderTimeline(root, actions) {
   }
 
   const minStart = Math.min(...timed.map(({ step }) => Date.parse(step.started_at)));
-  const maxEnd = Math.max(...timed.map(({ step }) => Date.parse(step.finished_at)));
+  const maxEnd = Math.max(...timed.map(({ step }) => Date.parse(step.finished_at || step.updated_at)));
   const span = Math.max(1, maxEnd - minStart);
   const pad = span * 0.02;
   const t0 = minStart - pad;
@@ -68,7 +68,7 @@ export function renderTimeline(root, actions) {
     tooltip.replaceChildren(
       h("strong", {}, step.title || step.name),
       h("span", {}, `${step.component} · ${step.kind} · ${fmtDuration(step.duration_ms)}`),
-      h("span", { class: "tl-tip-time" }, `${fmtTime(step.started_at)} → ${fmtTime(step.finished_at)} · ${step.status}`));
+      h("span", { class: "tl-tip-time" }, `${fmtTime(step.started_at)} → ${fmtTime(step.finished_at || step.updated_at)} · ${step.completion_state || step.status}`));
     const rect = pane.getBoundingClientRect();
     const x = Math.min(event.clientX - rect.left + 14, rect.width - 240);
     tooltip.style.left = x + "px";
@@ -100,7 +100,7 @@ export function renderTimeline(root, actions) {
     const track = h("div", { class: "tl-track" }, grid.cloneNode(true));
     for (const step of lane.items) {
       const start = Date.parse(step.started_at);
-      const end = Date.parse(step.finished_at);
+      const end = Date.parse(step.finished_at || step.updated_at);
       const left = pct(start);
       const width = Math.max(0.35, pct(end) - left);
       const bar = h("button", {

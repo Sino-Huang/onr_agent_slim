@@ -49,7 +49,7 @@ The planning agent that owns one Hyper Workflow Episode, derives Planning Intent
 _Avoid_: Main agent, controller
 
 **Hyper Workflow Episode**:
-One checkpointed eight-stage planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, MiniZinc file generation, verification, Statechart validation, and execution handoff. It terminates with either a verified Normalized Plan and Statechart handed to execution or a recorded rejection. Invoked capabilities return evidence but do not own or update the todo state.
+One checkpointed eight-stage planning episode for a Mission Run in which the Hyper Agent alone owns its live todo state and sequences Planning Intent, planner choice, planner-native file generation and external verification, Statechart validation, and FSM execution handoff. It terminates with either a Planner Plan bound to an accepted Statechart or a recorded rejection. Invoked capabilities return evidence but do not own or update the todo state.
 _Avoid_: Planning Intent invocation, shared agent state, planner authority
 
 **Maneuver Control Agent**:
@@ -141,7 +141,7 @@ An immutable accepted-or-rejected record of one planner-native file generation a
 _Avoid_: Planner result, hidden retry
 
 **Planning Record**:
-A future durable aggregate that correlates Planner Choice and generation-attempt records with solver evidence, code-owned verification outcomes, and the resulting Normalized Plan by Mission identity, revisions, event identity, and references.
+A future durable aggregate that correlates Planner Choice and generation-attempt records with external verifier evidence and the resulting Planner Plan by Mission identity, revisions, event identity, and references.
 _Avoid_: Mission authority, planner-selection input
 
 **Operational Scene Graph**:
@@ -152,21 +152,17 @@ _Avoid_: Ground truth, sensor dump
 An immutable versioned estimate of uncertainty about operational entities and events used as planning input.
 _Avoid_: Ground truth, agent memory
 
-**Normalized Plan**:
-A planner-independent revision of abstract maneuver intent and execution constraints, derived from one verified planner result and carrying Mission ID and source authority directly.
-_Avoid_: Planner output, scene snapshot
-
-**Planner Translator**:
-A code-owned translation slice that validates generated planner files, invokes the selected planner, independently checks its result, and normalizes only a verified result.
-_Avoid_: Planner Asset Generator, planner runner
+**Planner Plan**:
+A Mission- and revision-bound reference envelope for a planner-native plan accepted by its external authority. It identifies the planner artifact without embedding, normalizing, or turning that artifact into execution semantics.
+_Avoid_: Normalized Plan, maneuver list, Statechart
 
 **Planner Asset Generator**:
-A non-authoritative Hyper capability that proposes planner-native assets and a normalization template from Mission Intent and snapshot-authorized evidence.
-_Avoid_: Planner Translator, mission authority
+A non-authoritative Hyper capability that writes planner-native assets from Mission Intent and snapshot-authorized evidence.
+_Avoid_: Planner verifier, mission authority
 
 **Planner Correction Feedback**:
-A bounded notice from the Planner Translator that preserves the exact external diagnostic identifying whether static validation, planner execution, or independent solution checking rejected generated files.
-_Avoid_: Raw solver diagnostic, private reasoning
+A notice preserving exact external verifier or planner diagnostics and directing the Hyper Agent to repair and resubmit the same planner files.
+_Avoid_: New planner workspace, private reasoning
 
 **Invocation Overlay**:
 A direct caller request considered for one agent invocation without becoming durable mission authority state.
@@ -189,8 +185,8 @@ A periodic Maneuver Control Agent invocation that evaluates the current Mission 
 _Avoid_: FSM runner invocation, plan revision
 
 **Statechart**:
-A validated declarative representation of the states and legal transitions for one plan revision.
-_Avoid_: Generated script, environment model
+A validated declarative representation of the states and legal transitions for one plan revision. Once activated, its FSM is the execution semantics; planner-native plan artifacts remain planning evidence.
+_Avoid_: Planner Plan, generated script, environment model
 
 **FSM Runner**:
 The service that maintains Statechart control state, publishes FSM status, and mechanically applies enabled transitions.

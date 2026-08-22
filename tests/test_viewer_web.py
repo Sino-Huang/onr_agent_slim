@@ -312,7 +312,6 @@ def _seed_live_artifacts(storage: Path, transport_root: Path, repo_root: Path) -
         entry_state="state-0",
         states=("state-0",),
         transitions=(),
-        normalized_plan_sha256="0" * 64,
     )
     execution = FSMExecutionRecord(
         mission_id=_LIVE_MISSION,
@@ -430,9 +429,7 @@ def test_mock_page_loads_with_header_aggregates_and_status(
                     expect(
                         page.get_by_test_id(test_id).locator(".badge-value")
                     ).not_to_have_text("—")
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -468,9 +465,7 @@ def test_trajectory_selection_populates_all_five_detail_tabs(
                     expect(tab).to_have_attribute("aria-selected", "true")
                     expect(page.get_by_test_id("detail-body")).to_contain_text(content)
 
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -485,9 +480,13 @@ def test_tool_call_cards_expand_and_show_arguments_and_result(
             with _diagnostic(page, tmp_path, "tool-card-failure"):
                 _open_mock(page, url)
                 row = _mock_planner_attempt(page)
-                inline = row.locator(
-                    "xpath=following-sibling::div[contains(@class, 'step-sub')][1]"
-                ).locator(".tool-inline").first
+                inline = (
+                    row.locator(
+                        "xpath=following-sibling::div[contains(@class, 'step-sub')][1]"
+                    )
+                    .locator(".tool-inline")
+                    .first
+                )
                 inline_head = inline.locator(".tool-inline-head")
                 inline_body = inline.locator(".tool-inline-body")
                 expect(inline_head).to_have_attribute("aria-expanded", "false")
@@ -510,9 +509,7 @@ def test_tool_call_cards_expand_and_show_arguments_and_result(
                 expect(tool_card).to_contain_text("Arguments")
                 expect(tool_card).to_contain_text("Result")
                 expect(tool_card).to_contain_text("rejected")
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -547,9 +544,7 @@ def test_json_view_formatted_raw_toggle_flips_content(
                 formatted.click()
                 expect(json_view.locator(".jv-block").first).to_be_visible()
                 expect(json_view.locator(".jv-raw")).to_have_count(0)
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -580,9 +575,7 @@ def test_tree_timeline_and_overview_views_render_without_errors(
                 expect(page.get_by_test_id("fsm-transitions")).to_be_visible()
                 expect(page.get_by_test_id("artifact-list")).to_be_visible()
                 expect(page.get_by_test_id("artifact-row").first).to_be_visible()
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -608,9 +601,7 @@ def test_deep_link_selects_step_and_reload_restores_it(
                 expect(page.get_by_test_id("detail-panel")).to_contain_text(
                     "Record the planning intent"
                 )
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -635,9 +626,7 @@ def test_keyboard_arrows_move_step_selection(
                 page.keyboard.press("ArrowUp")
                 expect(first).to_have_class(_SELECTED)
                 expect(second).not_to_have_class(_SELECTED)
-                _assert_no_browser_errors(
-                    errors, allow_mock_endpoint_404s=True
-                )
+                _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
 
@@ -689,9 +678,7 @@ def test_live_backend_uses_real_var_data_without_mock_fallback(
                     "planner-execution"
                 )
                 page.get_by_test_id("detail-tab-tools").click()
-                expect(page.get_by_test_id("tool-card")).to_contain_text(
-                    "run_minizinc"
-                )
+                expect(page.get_by_test_id("tool-card")).to_contain_text("run_minizinc")
                 page.get_by_test_id("detail-tab-feedback").click()
                 expect(page.get_by_test_id("detail-body")).to_contain_text(
                     "maneuver-feedback"
@@ -705,5 +692,104 @@ def test_live_backend_uses_real_var_data_without_mock_fallback(
                 expect(page.get_by_test_id("artifact-list")).to_be_visible()
                 expect(page.get_by_test_id("artifact-row")).to_have_count(2)
                 _assert_no_browser_errors(errors)
+        finally:
+            context.close()
+
+
+def test_polling_renders_live_revisions_without_losing_selection_focus_or_scroll(
+    chromium_browser: Browser, tmp_path: Path
+) -> None:
+    with _viewer_server(tmp_path) as (url, storage, transport):
+        _seed_live_artifacts(storage, transport, tmp_path)
+        mission_name = quote(_LIVE_MISSION, safe="._-")
+        artifact_path = (
+            storage.parent
+            / "debug"
+            / "llm"
+            / "hyper-agent"
+            / mission_name
+            / "00000000000000000001.json"
+        )
+
+        def live_record(
+            revision: int,
+            completion_state: str,
+            marker: str,
+        ) -> dict[str, object]:
+            terminal = completion_state != "live"
+            return {
+                "schema_version": 2,
+                "sequence": 1,
+                "invocation_id": "llm-live-1",
+                "request": {"model": "reasoning-model", "stream": True},
+                "response_id": "response-live-1",
+                "model": "reasoning-model",
+                "status_code": 200,
+                "finish_reason": None,
+                "content": ("growing response " * 300) + marker,
+                "function_call": None,
+                "reasoning": "The model is still evaluating the planner.",
+                "reasoning_content": "",
+                "reasoning_details": None,
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "type": "function",
+                        "function": {
+                            "name": "run_minizinc",
+                            "arguments": '{"attempt":',
+                        },
+                    }
+                ],
+                "error": (
+                    {"type": "StreamError", "message": "stream stopped"}
+                    if completion_state == "error"
+                    else None
+                ),
+                "started_at": "2026-08-21T10:00:00+00:00",
+                "updated_at": f"2026-08-21T10:00:0{revision}+00:00",
+                "finished_at": (
+                    f"2026-08-21T10:00:0{revision}+00:00" if terminal else None
+                ),
+                "completion_state": completion_state,
+                "revision": revision,
+            }
+
+        _write_json(artifact_path, live_record(1, "live", "revision one"))
+        context, page = _page(chromium_browser, height=520)
+        errors = _browser_errors(page)
+        try:
+            page.goto(url, wait_until="networkidle")
+            step = page.get_by_test_id("step-row").filter(has_text="Planner execution")
+            step.click()
+            expect(page.get_by_test_id("completion-state")).to_have_text("live")
+            expect(page.get_by_test_id("detail-body")).to_contain_text("revision one")
+            page.get_by_test_id("detail-tab-tools").click()
+            expect(page.get_by_test_id("draft-tool-arguments")).to_contain_text(
+                '{"attempt":'
+            )
+            page.get_by_test_id("detail-tab-reasoning").click()
+
+            search = page.get_by_test_id("step-search")
+            search.fill("Planner")
+            detail = page.get_by_test_id("detail-panel")
+            detail.evaluate("element => { element.scrollTop = 90; }")
+            before_scroll = detail.evaluate("element => element.scrollTop")
+            assert before_scroll > 0
+
+            _write_json(artifact_path, live_record(2, "partial", "revision two"))
+            expect(page.get_by_test_id("completion-state")).to_have_text("partial")
+            expect(page.get_by_test_id("detail-body")).to_contain_text("revision two")
+            expect(step).to_have_class(_SELECTED)
+            expect(search).to_be_focused()
+            assert detail.evaluate("element => element.scrollTop") == before_scroll
+
+            _write_json(artifact_path, live_record(3, "error", "revision tri"))
+            expect(page.get_by_test_id("completion-state")).to_have_text("error")
+            expect(page.get_by_test_id("detail-body")).to_contain_text("revision tri")
+            expect(step).to_have_class(_SELECTED)
+            expect(search).to_be_focused()
+            assert detail.evaluate("element => element.scrollTop") == before_scroll
+            _assert_no_browser_errors(errors)
         finally:
             context.close()

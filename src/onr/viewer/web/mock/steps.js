@@ -44,6 +44,9 @@ function assignSeq(step) {
   seqCounter += 1;
   step.seq = seqCounter;
   step.step_id = (step.role || step.component) + ":" + step.seq;
+  step.completion_state = step.completion_state || "complete";
+  step.updated_at = step.updated_at || step.finished_at || step.started_at || null;
+  step.revision = step.revision || 1;
   (step.children || []).forEach(assignSeq);
   return step;
 }
@@ -1005,7 +1008,7 @@ export function buildSteps() {
 export function mockStepsPayload(missionId) {
   const steps = buildSteps().map((s) => ({ ...s }));
   return {
-    schema_version: 1,
+    schema_version: 2,
     mission_id: missionId || "mission:demo",
     generated_at: iso(cursor),
     warnings: [

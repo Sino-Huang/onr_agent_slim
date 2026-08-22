@@ -5,11 +5,7 @@ from pathlib import Path
 import pytest
 
 from onr.adapters.minizinc import MiniZincExecutor
-from onr.contracts.planning import (
-    ManeuverParameter,
-    PlanningOutcome,
-    TemporalAssignment,
-)
+from onr.contracts.planning import PlanningOutcome
 
 _SOLVED_PAYLOAD = {
     "assignments": [
@@ -22,18 +18,6 @@ _SOLVED_PAYLOAD = {
         {"maneuver_id": "return-to-base", "start": 4, "duration": 2},
     ]
 }
-_EXPECTED_ASSIGNMENTS = (
-    TemporalAssignment(
-        maneuver_id="survey",
-        start=0,
-        duration=4,
-        parameters=(
-            ManeuverParameter("x", 120),
-            ManeuverParameter("y", -45),
-        ),
-    ),
-    TemporalAssignment(maneuver_id="return-to-base", start=4, duration=2),
-)
 _PLANNER_ASSETS = {"model.mzn": b"model", "data.dzn": b"data"}
 
 
@@ -49,14 +33,14 @@ def _emit(*events: object) -> str:
             _emit(
                 {
                     "type": "solution",
-                    "output": {"default": json.dumps(_SOLVED_PAYLOAD)},
+                    "output": {"default": "planner-native text"},
                     "sections": ["default"],
                 },
                 {"type": "status", "status": "OPTIMAL_SOLUTION"},
             ),
             0.5,
             PlanningOutcome.SOLVED,
-            _EXPECTED_ASSIGNMENTS,
+            (),
         ),
         (
             _emit(
@@ -68,7 +52,7 @@ def _emit(*events: object) -> str:
                 {"type": "status", "status": "SATISFIED"},
             ),
             0.5,
-            PlanningOutcome.INCOMPLETE,
+            PlanningOutcome.SOLVED,
             (),
         ),
         (
@@ -104,7 +88,7 @@ def _emit(*events: object) -> str:
     ),
     ids=(
         "optimal",
-        "satisfied-not-optimal",
+        "satisfied",
         "unsolvable",
         "incomplete",
         "timeout",
@@ -115,7 +99,7 @@ def test_minizinc_executor_maps_json_stream_to_public_results(
     script: str,
     timeout_seconds: float,
     expected_outcome: PlanningOutcome,
-    expected_assignments: tuple[TemporalAssignment, ...],
+    expected_assignments: tuple[object, ...],
     tmp_path: Path,
 ) -> None:
     executor = MiniZincExecutor(
@@ -262,47 +246,6 @@ def test_event_information_patrol_example_is_optimal_and_preserves_waypoints(
     result = executor.execute(assets)
 
     assert result.outcome is PlanningOutcome.SOLVED
-    assert [
-        (
-            item.maneuver_id,
-            item.start,
-            item.duration,
-            {parameter.name: parameter.value for parameter in item.parameters},
-        )
-        for item in result.assignments
-    ] == [
-        (
-            "patrol-stop-1",
-            10,
-            2,
-            {
-                "move_duration": 9,
-                "move_from_x": 0,
-                "move_from_y": 0,
-                "move_start": 1,
-                "source_event_index": 1,
-                "time_scale": 2,
-                "wait_duration": 1,
-                "wait_start": 0,
-                "x": 90,
-                "y": 0,
-            },
-        ),
-        (
-            "patrol-stop-2",
-            40,
-            2,
-            {
-                "move_duration": 19,
-                "move_from_x": 90,
-                "move_from_y": 0,
-                "move_start": 21,
-                "source_event_index": 4,
-                "time_scale": 2,
-                "wait_duration": 9,
-                "wait_start": 12,
-                "x": 260,
-                "y": 80,
-            },
-        ),
-    ]
+    assert result.assignments == ()
+    assert '\\"maneuver_id\\":\\"patrol-stop-1\\"' in result.stdout
+    assert '\\"maneuver_id\\":\\"patrol-stop-2\\"' in result.stdout

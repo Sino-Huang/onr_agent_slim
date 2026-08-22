@@ -43,7 +43,7 @@ def test_load_system_prompt_rejects_missing_unreadable_and_blank_files(
         load_system_prompt(tmp_path, "blank")
 
 
-def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
+def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
     prompt = load_system_prompt(
         Path(__file__).parents[1] / "conf/system_prompt",
         "hyper-agent",
@@ -51,10 +51,10 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
 
     stages = (
         "Parse Mission Intent.",
-        "Select and record MiniZinc.",
-        "Generate `model.mzn` and `data.dzn`.",
+        "Select and record the planner.",
+        "Generate planner files.",
         "Submit and statically verify the files.",
-        "Execute MiniZinc and verify the solution.",
+        "Execute the planner.",
         "Generate the Statechart.",
         "Validate and repair the Statechart.",
         "Hand off execution.",
@@ -62,22 +62,22 @@ def test_hyper_prompt_matches_the_current_minizinc_workflow() -> None:
     assert [prompt.index(stage) for stage in stages] == sorted(
         prompt.index(stage) for stage in stages
     )
-    assert "Run one todo list with exactly these eight items in this order" in prompt
+    assert "todo list with exactly these eight items in this order" in prompt
     assert "`execution_ready`" in prompt
-    assert "verified maneuver list" in prompt
-    assert "names and nesting are flexible" in prompt
-    assert "exactly one complete `write_file` call" in prompt
-    assert "sentinel" not in prompt
-    assert "revise an existing planner file through `edit_file`" in prompt
+    assert "planner-native plan" in prompt
+    assert "Fast Downward" in prompt
+    assert "VAL" in prompt
+    assert "same submitted files" in prompt
+    assert "`write_todos`" in prompt
     assert "belief marginals" in prompt
     assert "tool `reflection` arguments" in prompt
-    assert "Never expose private reasoning" in prompt
-    assert "exact planner or solution-checker diagnostic" in prompt
+    assert "Statechart/FSM is the execution semantics" in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",
         "`record_planning_intent`",
         "creating-minizinc-problem-files",
+        "creating-pddl-problem-files",
         "`write_file`",
         "`submit_planner_attempt`",
         "`planner_executor`",

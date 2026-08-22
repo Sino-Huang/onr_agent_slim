@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
@@ -18,7 +19,9 @@ def _artifacts(directory: Path) -> list[dict[str, Any]]:
     ]
 
 
-def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Path) -> None:
+def test_recorder_writes_profile_and_paired_successful_invocations(
+    tmp_path: Path,
+) -> None:
     recorder = AgentDebugRecorder(
         tmp_path / "debug/agent", "mission:demo", role="hyper-agent"
     )
@@ -50,9 +53,7 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
                 "reasoning_content": "input reasoning content",
                 "reasoning_details": [{"type": "input", "text": "detail"}],
             },
-            "tools": [
-                {"type": "function", "function": {"name": "read_file"}}
-            ],
+            "tools": [{"type": "function", "function": {"name": "read_file"}}],
         },
     )
     callback.on_tool_start(
@@ -88,9 +89,7 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
                     "provider_output": {
                         "reasoning": "output reasoning",
                         "reasoning_content": "output reasoning content",
-                        "reasoning_details": [
-                            {"type": "output", "text": "detail"}
-                        ],
+                        "reasoning_details": [{"type": "output", "text": "detail"}],
                     },
                 }
             },
@@ -114,18 +113,16 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
         ],
         "tools": ["read_file"],
     }
-    tool, llm = _artifacts(directory)
-    assert tool["sequence"] == 1
+    llm, tool = _artifacts(directory)
+    assert llm["sequence"] == 1
+    assert tool["sequence"] == 2
     assert tool["invocation_id"] == str(tool_id)
     assert tool["parent_id"] == str(llm_id)
     assert tool["kind"] == "tool"
     assert tool["name"] == "read_file"
-    assert tool["input"] == {
-        "file_path": "/original/skills/mission-parsing/SKILL.md"
-    }
+    assert tool["input"] == {"file_path": "/original/skills/mission-parsing/SKILL.md"}
     assert tool["output"] == {"content": "skill contents"}
     assert tool["error"] is None
-    assert llm["sequence"] == 2
     assert llm["invocation_id"] == str(llm_id)
     assert llm["parent_id"] == str(parent_id)
     assert llm["kind"] == "llm"
@@ -143,18 +140,62 @@ def test_recorder_writes_profile_and_paired_successful_invocations(tmp_path: Pat
         "reasoning_details": [{"type": "output", "text": "detail"}],
     }
     assert llm["error"] is None
+    assert llm["schema_version"] == tool["schema_version"] == 2
+    assert llm["completion_state"] == tool["completion_state"] == "complete"
+    assert llm["revision"] == tool["revision"] == 2
     assert isinstance(llm["started_at"], str)
     assert isinstance(llm["finished_at"], str)
     assert not list(directory.rglob("*.tmp"))
+
+
+def test_invocation_is_visible_at_start_and_replaced_in_place(tmp_path: Path) -> None:
+    recorder = AgentDebugRecorder(tmp_path / "agent", "mission")
+    callback = recorder.callback_for("hyper-agent")
+    run_id = UUID("20000000-0000-0000-0000-000000000001")
+
+    callback.on_tool_start({"name": "inspect"}, "draft", run_id=run_id)
+
+    directory = tmp_path / "agent/runtime/mission"
+    [path] = sorted(directory.glob("*.json"))
+    started = json.loads(path.read_text(encoding="utf-8"))
+    assert started["sequence"] == 1
+    assert started["invocation_id"] == str(run_id)
+    assert started["completion_state"] == "live"
+    assert started["finished_at"] is None
+    assert started["revision"] == 1
+
+    callback.on_tool_error(RuntimeError("stopped"), run_id=run_id)
+
+    assert sorted(directory.glob("*.json")) == [path]
+    finished = json.loads(path.read_text(encoding="utf-8"))
+    assert finished["completion_state"] == "error"
+    assert finished["revision"] == 2
+    assert finished["error"] == {"type": "RuntimeError", "message": "stopped"}
+
+
+def test_callback_logging_failure_is_fail_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = AgentDebugRecorder(tmp_path / "agent", "mission")
+    callback = recorder.callback_for("hyper-agent")
+    run_id = UUID("30000000-0000-0000-0000-000000000001")
+
+    def fail_write(path: Path, artifact: object) -> None:
+        del path, artifact
+        raise OSError("debug storage unavailable")
+
+    monkeypatch.setattr(recorder, "_write_atomic", fail_write)
+
+    callback.on_tool_start({"name": "inspect"}, "input", run_id=run_id)
+    callback.on_tool_end("output", run_id=run_id)
+    recorder.record_profile("hyper-agent", [], [])
 
 
 def test_recorder_pairs_errors_retains_reasoning_and_continues_sequence(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "agent"
-    recorder = AgentDebugRecorder(
-        root, "mission/demo", role="maneuver-control"
-    )
+    recorder = AgentDebugRecorder(root, "mission/demo", role="maneuver-control")
     recorder.record_profile("maneuver-control", [], ["execute"])
     callback = recorder.callback_for("maneuver-control")
     first_id = UUID("10000000-0000-0000-0000-000000000001")
@@ -177,9 +218,7 @@ def test_recorder_pairs_errors_retains_reasoning_and_continues_sequence(
     callback.on_llm_error(RuntimeError("model unavailable"), run_id=first_id)
     callback.on_tool_error(ValueError("tool failed"), run_id=second_id)
 
-    restarted = AgentDebugRecorder(
-        root, "mission/demo", role="maneuver-control"
-    )
+    restarted = AgentDebugRecorder(root, "mission/demo", role="maneuver-control")
     restarted.record_profile("maneuver-control", [], ["execute"])
     callback = restarted.callback_for("maneuver-control")
     third_id = UUID("10000000-0000-0000-0000-000000000003")

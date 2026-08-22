@@ -283,14 +283,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             thread_id=f"planning-run:{mission_input.mission_id}:1",
             recursion_limit=args.recursion_limit,
         )
-        plan = hyper_result.normalized_plan
+        planner_plan = hyper_result.planner_plan
         statechart = hyper_result.statechart
         initial_fsm_status = hyper_result.initial_fsm_status
         statechart_reference = hyper_result.statechart_reference
         handoff_outcome = hyper_result.handoff_outcome
         if (
             hyper_result.outcome is not HyperWorkflowOutcome.EXECUTION_READY
-            or plan is None
+            or planner_plan is None
             or statechart is None
             or initial_fsm_status is None
             or statechart_reference is None

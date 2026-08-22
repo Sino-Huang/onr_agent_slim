@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import stat
-from typing import Mapping, cast
+from collections.abc import Mapping
+from pathlib import Path
+from typing import cast
 from urllib.parse import quote
-
 
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 KNOWN_DEBUG_ROLES = frozenset(
@@ -16,7 +16,7 @@ KNOWN_DEBUG_ROLES = frozenset(
 )
 _PROFILE_FIELDS = {"schema_version", "agent_role", "skills", "tools"}
 _SKILL_FIELDS = {"name", "version", "path"}
-_INVOCATION_FIELDS = {
+_INVOCATION_V1_FIELDS = {
     "schema_version",
     "sequence",
     "invocation_id",
@@ -30,7 +30,12 @@ _INVOCATION_FIELDS = {
     "started_at",
     "finished_at",
 }
-_LLM_FIELDS = {
+_INVOCATION_V2_FIELDS = _INVOCATION_V1_FIELDS | {
+    "completion_state",
+    "updated_at",
+    "revision",
+}
+_LLM_V1_FIELDS = {
     "schema_version",
     "request",
     "response_id",
@@ -44,6 +49,17 @@ _LLM_FIELDS = {
     "reasoning_details",
     "tool_calls",
 }
+_LLM_V2_FIELDS = _LLM_V1_FIELDS | {
+    "sequence",
+    "invocation_id",
+    "error",
+    "started_at",
+    "updated_at",
+    "finished_at",
+    "completion_state",
+    "revision",
+}
+_COMPLETION_STATES = {"live", "complete", "partial", "error"}
 
 
 def _reject_constant(value: str) -> object:
@@ -161,20 +177,40 @@ def _profile(raw: Mapping[str, object]) -> dict[str, object] | None:
 
 
 def _invocation(raw: Mapping[str, object]) -> dict[str, object] | None:
-    if set(raw) != _INVOCATION_FIELDS or type(raw.get("schema_version")) is not int:
+    version = raw.get("schema_version")
+    if type(version) is not int or version not in {1, 2}:
+        return None
+    fields = _INVOCATION_V1_FIELDS if version == 1 else _INVOCATION_V2_FIELDS
+    if set(raw) != fields:
         return None
     sequence = raw["sequence"]
     parent_id = raw["parent_id"]
-    if raw["schema_version"] != 1 or type(sequence) is not int or sequence < 1:
+    if type(sequence) is not int or sequence < 1:
         return None
     if parent_id is not None and not _text(parent_id):
         return None
-    if not all(
-        _text(raw[field], nonempty=True)
-        for field in ("invocation_id", "agent_role", "name", "started_at", "finished_at")
-    ):
+    required_text = ("invocation_id", "agent_role", "name", "started_at")
+    if not all(_text(raw[field], nonempty=True) for field in required_text):
         return None
     if raw["kind"] not in {"llm", "tool"}:
+        return None
+    if version == 1:
+        if not _text(raw["finished_at"], nonempty=True):
+            return None
+        return dict(raw)
+    completion_state = raw["completion_state"]
+    revision = raw["revision"]
+    finished_at = raw["finished_at"]
+    if completion_state not in _COMPLETION_STATES:
+        return None
+    if type(revision) is not int or revision < 1:
+        return None
+    if not _text(raw["updated_at"], nonempty=True):
+        return None
+    if completion_state == "live":
+        if finished_at is not None:
+            return None
+    elif not _text(finished_at, nonempty=True):
         return None
     return dict(raw)
 
@@ -182,9 +218,11 @@ def _invocation(raw: Mapping[str, object]) -> dict[str, object] | None:
 def _llm_conversation(
     raw: Mapping[str, object], *, role: str, sequence: int
 ) -> dict[str, object] | None:
-    if set(raw) != _LLM_FIELDS or raw.get("schema_version") != 1:
+    version = raw.get("schema_version")
+    if type(version) is not int:
         return None
-    if type(raw.get("schema_version")) is not int:
+    fields = _LLM_V1_FIELDS if version == 1 else _LLM_V2_FIELDS
+    if version not in {1, 2} or set(raw) != fields:
         return None
     request = raw["request"]
     if request is not None and not isinstance(request, Mapping):
@@ -195,7 +233,9 @@ def _llm_conversation(
     ):
         return None
     status_code = raw["status_code"]
-    if (
+    if version == 1 and status_code is None:
+        return None
+    if status_code is not None and (
         isinstance(status_code, bool)
         or not isinstance(status_code, int)
         or not 100 <= status_code <= 599
@@ -207,8 +247,36 @@ def _llm_conversation(
         return None
     if tool_calls is not None and not isinstance(tool_calls, list):
         return None
+    if isinstance(tool_calls, list) and not all(
+        isinstance(item, Mapping) for item in tool_calls
+    ):
+        return None
+    if version == 2:
+        if raw["sequence"] != sequence:
+            return None
+        invocation_id = raw["invocation_id"]
+        completion_state = raw["completion_state"]
+        revision = raw["revision"]
+        finished_at = raw["finished_at"]
+        if invocation_id is not None and not _text(invocation_id, nonempty=True):
+            return None
+        if completion_state not in _COMPLETION_STATES:
+            return None
+        if type(revision) is not int or revision < 1:
+            return None
+        if not all(
+            _text(raw[field], nonempty=True) for field in ("started_at", "updated_at")
+        ):
+            return None
+        if completion_state == "live":
+            if finished_at is not None:
+                return None
+        elif not _text(finished_at, nonempty=True):
+            return None
+        if raw["error"] is not None and not isinstance(raw["error"], Mapping):
+            return None
     request_value = dict(request) if isinstance(request, Mapping) else None
-    return {
+    conversation = {
         "role": role,
         "sequence": sequence,
         "response_id": raw["response_id"],
@@ -233,6 +301,19 @@ def _llm_conversation(
         "finish_reason": raw["finish_reason"],
         "status_code": status_code,
     }
+    if version == 2:
+        conversation.update(
+            {
+                "invocation_id": raw["invocation_id"],
+                "error": raw["error"],
+                "started_at": raw["started_at"],
+                "updated_at": raw["updated_at"],
+                "finished_at": raw["finished_at"],
+                "completion_state": raw["completion_state"],
+                "revision": raw["revision"],
+            }
+        )
+    return conversation
 
 
 def _agent_records(
@@ -272,23 +353,21 @@ def load_debug_artifacts(
         scope = role_root.name
         if not _valid_role(scope) or (role is not None and scope != role):
             continue
-        canonical_root = _safe_directory(
-            base, "debug", "agent", scope, mission_name
-        )
+        canonical_root = _safe_directory(base, "debug", "agent", scope, mission_name)
         canonical_profiles, canonical_invocations = _agent_records(
             canonical_root, scope
         )
         for profile in canonical_profiles:
-            profile_index.setdefault(
-                (scope, cast(str, profile["agent_role"])), profile
-            )
+            profile_index.setdefault((scope, cast(str, profile["agent_role"])), profile)
         for invocation in canonical_invocations:
             invocation_index.setdefault(
                 (scope, cast(str, invocation["invocation_id"])), invocation
             )
 
     legacy_root = _safe_directory(agent_root, mission_name) if agent_root else None
-    legacy_profiles_root = _safe_directory(legacy_root, "profiles") if legacy_root else None
+    legacy_profiles_root = (
+        _safe_directory(legacy_root, "profiles") if legacy_root else None
+    )
     for path in _safe_json_files(legacy_profiles_root):
         raw = _read_mapping(path)
         profile = _profile(raw) if raw is not None else None

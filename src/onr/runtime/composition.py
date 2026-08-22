@@ -59,8 +59,6 @@ from onr.application.hyper_agent import (
     PlanningHeartbeatOutcome,
 )
 from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
-from onr.application.minizinc_translation import MiniZincTranslation
-from onr.application.pddl_translation import PDDLTranslation
 from onr.contracts.bayesian_belief import (
     BayesianBeliefSnapshot,
     BeliefKey,
@@ -265,21 +263,11 @@ class RuntimeComposition:
         summarizer: MissionLogSummarizer | None = None,
         model: Any | None = None,
     ) -> RuntimeRunResult:
-        """Execute one verified provenance-only plan through physical feedback."""
+        """Reject the retired direct NormalizedPlan execution path."""
 
-        with self.mission_session(
-            mission_input.mission_id,
-            summarizer=summarizer,
-            model=model,
-        ):
-            return self._run_mission(
-                mission_input,
-                context_coordination=context_coordination,
-                fsm_runner=fsm_runner,
-                maneuver_control=maneuver_control,
-                environment_step=environment_step,
-                plan=plan,
-            )
+        raise RuntimeError(
+            "direct NormalizedPlan execution is retired; activate a Statechart through the Hyper workflow"
+        )
 
     def _logger(self) -> OperationalLog:
         logger = self.operational_log
@@ -319,6 +307,7 @@ class RuntimeComposition:
             top_p=0.95,
             presence_penalty=0.0,
             reasoning_effort="medium",
+            streaming=True,
             timeout=800.0,
             max_retries=0,
             extra_body={
@@ -370,52 +359,6 @@ class RuntimeComposition:
 
         selected = summarizer or self.create_mission_log_summarizer()
         return selected.heartbeat(mission_id)
-
-    def create_minizinc_translation(
-        self,
-        artifact_root: Path,
-        *,
-        max_corrections: int | None = None,
-    ) -> MiniZincTranslation:
-        """Compose generated MiniZinc correction with the configured real planner."""
-
-        planner = self.config.planners.temporal
-        return MiniZincTranslation(
-            MiniZincExecutor(
-                executable=planner.entrypoint,
-                artifact_root=artifact_root,
-                timeout_seconds=planner.timeout_seconds,
-            ),
-            artifact_root / "generation-attempts",
-            max_corrections=(
-                self.config.agents.hyper_agent.output_structure_retry.max_retries
-                if max_corrections is None
-                else max_corrections
-            ),
-        )
-
-    def create_pddl_translation(self, artifact_root: Path) -> PDDLTranslation:
-        """Compose generated PDDL correction with Fast Downward and VAL."""
-
-        planner = self.config.planners.symbolic
-        validator = planner.validator_entrypoint
-        if validator is None:
-            raise ValueError("symbolic planner VAL entrypoint is not configured")
-        return PDDLTranslation(
-            FastDownwardExecutor(
-                executable=planner.entrypoint,
-                artifact_root=artifact_root,
-                timeout_seconds=planner.timeout_seconds,
-            ),
-            VALPlanValidator(
-                executable=validator,
-                timeout_seconds=planner.timeout_seconds,
-            ),
-            artifact_root / "generation-attempts",
-            max_corrections=(
-                self.config.agents.hyper_agent.output_structure_retry.max_retries
-            ),
-        )
 
     def create_human_decision_coordinator(self) -> HumanDecisionCoordinator:
         """Compose durable Human Decision pause and resume coordination."""
@@ -785,6 +728,9 @@ class RuntimeComposition:
         validated_belief = HyperAgent.validate_belief_provenance(
             mission_snapshot, belief_snapshot
         )
+        validator_entrypoint = self.config.planners.symbolic.validator_entrypoint
+        if validator_entrypoint is None:
+            raise ValueError("symbolic planner VAL entrypoint is not configured")
         planner_workspace_location = None
         if backend_root is not None:
             try:
@@ -804,9 +750,19 @@ class RuntimeComposition:
             artifact_root=artifact_root,
             backend_root=backend_root,
             planner_workspace_location=planner_workspace_location,
-            minizinc_translation=self.create_minizinc_translation(
-                artifact_root,
-                max_corrections=0,
+            minizinc_planner=MiniZincExecutor(
+                executable=self.config.planners.temporal.entrypoint,
+                artifact_root=artifact_root / "minizinc-runs",
+                timeout_seconds=self.config.planners.temporal.timeout_seconds,
+            ),
+            fast_downward_planner=FastDownwardExecutor(
+                executable=self.config.planners.symbolic.entrypoint,
+                artifact_root=artifact_root / "fast-downward-runs",
+                timeout_seconds=self.config.planners.symbolic.timeout_seconds,
+            ),
+            val_validator=VALPlanValidator(
+                executable=validator_entrypoint,
+                timeout_seconds=self.config.planners.symbolic.timeout_seconds,
             ),
             max_planner_attempts=(
                 self.config.agents.hyper_agent.output_structure_retry.max_retries + 1
@@ -1008,7 +964,6 @@ class RuntimeComposition:
                     {"normalized_plan": plan.to_dict()},
                 ),
                 event_id=invocation_id,
-                plan=plan,
             )
             if not isinstance(maneuver_result, ManeuverHeartbeatResult):
                 raise TypeError("legacy Mission Run requires ManeuverHeartbeatResult")
@@ -1344,23 +1299,8 @@ class RuntimeComposition:
         plan = translation.normalized_plan
         if plan is None:
             raise RuntimeError("verified translation did not provide a plan")
-        execution = self._run_mission(
-            mission_input,
-            plan=plan,
-            context_coordination=context_coordination,
-            fsm_runner=fsm_runner,
-            maneuver_control=maneuver_control,
-            environment_step=environment_step,
-        )
-        return PlanningMissionRunResult(
-            outcome=preparation.outcome,
-            planner_choice=preparation.planner_choice,
-            attempt=latest_attempt,
-            generation_attempts=(preparation.generation_attempts + published_attempts),
-            context_snapshot=preparation.context_snapshot,
-            environment_event=preparation.environment_event,
-            translation=translation,
-            execution=execution,
+        raise RuntimeError(
+            "translation-driven NormalizedPlan execution is retired; use the Hyper planner-artifact to Statechart workflow"
         )
 
     def _prepare_planning_mission(

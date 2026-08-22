@@ -13,7 +13,7 @@ version: '1.7.0'
 3. Derive a concrete task objective from `mission_text`; do not use the system prompt or skill text as the objective.
 4. Derive a non-authoritative `PlanningIntent`. Put only flexible planner-selection facts in `details`; use keys such as `mission_pattern`, `capture_rule`, `value_rule`, and `source_roles`. Planner files and verification evidence are later translation outputs.
 5. Apply `planner-selection`: named ships or actions do not make a mission symbolic. If drone position at event times, travel timing, FoV coverage, time windows, or weighted coverage determines feasibility or value, select MiniZinc.
-6. Call `record_planning_intent` with the objective, planner choice, rationale, details, and concise public reflection. Its acceptance immediately supplies the exact evidence and file locations for MiniZinc file generation.
+6. Call `record_planning_intent` with the objective, planner choice, rationale, details, and concise public reflection. Its acceptance immediately supplies the exact evidence and MiniZinc or PDDL file locations selected by that Planner Choice.
 
 ## Mission patterns
 

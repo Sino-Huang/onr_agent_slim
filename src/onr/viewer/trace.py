@@ -133,7 +133,6 @@ _STATECHART_FIELDS = {
     "plan_revision",
     "mission_snapshot_id",
     "planning_profile",
-    "normalized_plan_sha256",
     "entry_state",
     "states",
     "transitions",

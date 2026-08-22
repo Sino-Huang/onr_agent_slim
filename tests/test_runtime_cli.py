@@ -16,16 +16,10 @@ from onr.contracts.context_coordination import (
     MissionSnapshot,
     create_source_fact_event,
 )
-from onr.contracts.fsm import FSMStatus, Statechart
+from onr.contracts.fsm import FSMStatus, Statechart, StatechartTransition
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.planning import (
-    ManeuverIntent,
-    NormalizedPlan,
-    PlannerChoice,
-    PlanningOutcome,
-    ScheduledManeuver,
-)
+from onr.contracts.planning import PlannerChoice, PlannerPlan, PlanningOutcome
 from onr.contracts.transport import CommandOutcome, TransportEvent
 from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.ports.transport import Subscription
@@ -44,23 +38,15 @@ def _mission_file(tmp_path: Path, **overrides: object) -> Path:
     return path
 
 
-def _normalized_plan() -> NormalizedPlan:
-    return NormalizedPlan(
+def _planner_plan() -> PlannerPlan:
+    return PlannerPlan(
         mission_id="mission:demo",
         source_authority="demo-operator",
         plan_revision=3,
         mission_snapshot_id="mission:demo:snapshot:1",
         planner_choice=PlannerChoice("temporal", "minizinc"),
         outcome=PlanningOutcome.SOLVED,
-        maneuvers=(
-            ScheduledManeuver(
-                maneuver_id="survey",
-                intent=ManeuverIntent("survey"),
-                dependencies=(),
-                start=0,
-                duration=1,
-            ),
-        ),
+        planner_native_plan_artifact_reference="/tmp/minizinc.plan",
     )
 
 
@@ -215,7 +201,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
 ) -> None:
     calls: list[object] = []
     models: dict[str, object] = {}
-    plan = _normalized_plan()
+    plan = _planner_plan()
     scene = TransportEvent(
         schema_version=1,
         event_id="environment-data:mission:demo:1",
@@ -280,7 +266,17 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             "plan": True,
         },
     )
-    statechart = Statechart.from_normalized_plan(plan)
+    statechart = Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="state-0",
+        states=("state-0", "state-1"),
+        transitions=(StatechartTransition("survey-complete", "state-0", "state-1"),),
+        terminal_states=("state-1",),
+        state_context={"state-0": {}, "state-1": {}},
+    )
     initial_status = FSMStatus(
         mission_id=plan.mission_id,
         plan_revision=plan.plan_revision,
@@ -307,7 +303,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             )
             return SimpleNamespace(
                 outcome=HyperWorkflowOutcome.EXECUTION_READY,
-                normalized_plan=plan,
+                planner_plan=plan,
                 statechart=statechart,
                 statechart_reference="/tmp/accepted-statechart.json",
                 initial_fsm_status=initial_status,

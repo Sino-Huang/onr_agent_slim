@@ -47,7 +47,9 @@ function metaGrid(step) {
     ["Seq", "#" + step.seq],
     ["Started", fmtTimeMs(step.started_at)],
     ["Finished", fmtTimeMs(step.finished_at)],
+    ["Updated", fmtTimeMs(step.updated_at)],
     ["Duration", fmtDuration(step.duration_ms)],
+    ["Revision", step.revision],
   ];
   if (step.model) rows.push(["Model", step.model]);
   if (step.finish_reason) rows.push(["Finish", step.finish_reason]);
@@ -61,6 +63,13 @@ function metaGrid(step) {
 
 function reasoningTab(step, rerender) {
   const wrap = h("div", { class: "tab-body" });
+  if (step.completion_state === "live" || step.completion_state === "partial") {
+    wrap.append(h("p", { class: "partial-note", "data-testid": "generation-note" },
+      icon("alert", 12),
+      step.completion_state === "live"
+        ? " This response is still growing."
+        : " This response ended before the stream completed."));
+  }
   if (!step.reasoning && !step.content) {
     wrap.append(emptyState("llm", "No reasoning captured",
       "Reasoning appears here when the pipeline runs with debug recording enabled and the model returns reasoning content. This step produced none."));
@@ -122,15 +131,22 @@ function decisionTab(step) {
 
 function toolCallCard(step, call, index) {
   const failed = Boolean(call.error);
+  const partial = call.partial === true;
   const head = h("div", { class: "tool-card-head" },
     icon("tool", 13),
     h("code", { class: "tool-name" }, call.name),
     h("span", { class: "tool-dur" }, fmtDuration(call.duration_ms)),
-    h("span", { class: "status-pill tone-" + (failed ? "error" : "ok") }, h("span", { class: "status-dot" }), failed ? "error" : "ok"));
+    h("span", { class: "status-pill tone-" + (failed ? "error" : partial ? "running" : "ok") },
+      h("span", { class: "status-dot" }), failed ? "error" : partial ? "draft" : "ok"));
+  const argumentView = partial
+    ? h("pre", { class: "draft-arguments", "data-testid": "draft-tool-arguments" }, call.arguments_text || "")
+    : jsonView(call.args ?? {}, { stateKey: `tool-args:${step.step_id}:${index}` });
   const body = h("div", { class: "tool-card-body" },
-    h("div", { class: "section-label" }, "Arguments"),
-    jsonView(call.args ?? {}, { stateKey: `tool-args:${step.step_id}:${index}` }),
-    failed
+    h("div", { class: "section-label" }, partial ? "Draft arguments (not executed)" : "Arguments"),
+    argumentView,
+    partial
+      ? h("p", { class: "partial-note" }, "This incomplete argument text is display-only and is not an executed tool call.")
+      : failed
       ? h("div", {}, h("div", { class: "section-label" }, "Error"),
           h("pre", { class: "tool-error" }, typeof call.error === "string" ? call.error : JSON.stringify(call.error, null, 2)))
       : h("div", {}, h("div", { class: "section-label" }, "Result"),
@@ -204,6 +220,8 @@ export function renderDetail(root, step, actions) {
   const meta = KIND_META[step.kind] || KIND_META.llm;
   const errored = stepErrored(step);
   const tab = TABS.some((t) => t.id === state.detailTab) ? state.detailTab : autoTab(step);
+  const completion = step.completion_state || "complete";
+  const completionTone = completion === "error" ? "error" : completion === "live" || completion === "partial" ? "running" : "ok";
 
   const header = h("div", { class: "detail-header" },
     h("div", { class: "detail-title-row" },
@@ -211,6 +229,8 @@ export function renderDetail(root, step, actions) {
       h("h2", { class: "detail-title" }, step.title || step.name || "Step " + step.seq),
       h("span", { class: "status-pill tone-" + (step.status === "error" ? "error" : step.status === "ok" ? "ok" : "unknown"), "data-testid": "detail-status" },
         h("span", { class: "status-dot" }), step.status),
+      h("span", { class: "status-pill tone-" + completionTone, "data-testid": "completion-state" },
+        h("span", { class: "status-dot" }), completion),
       step.outcome ? h("span", { class: "outcome-chip tone-" + outcomeTone(step.outcome) }, step.outcome) : null),
     metaGrid(step),
     artifactsBlock(step, actions));

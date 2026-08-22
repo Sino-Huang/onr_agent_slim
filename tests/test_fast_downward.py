@@ -15,7 +15,7 @@ def _driver(tmp_path, body: str):
     return driver
 
 
-def test_fast_downward_executor_parses_ordered_plan_and_cost(tmp_path) -> None:
+def test_fast_downward_executor_persists_native_plan_without_parsing_it(tmp_path) -> None:
     driver = _driver(
         tmp_path,
         "from pathlib import Path\n"
@@ -41,12 +41,8 @@ def test_fast_downward_executor_parses_ordered_plan_and_cost(tmp_path) -> None:
     )
 
     assert result.outcome is PlanningOutcome.SOLVED
-    assert tuple(call.action for call in result.action_calls) == (
-        "survey",
-        "survey",
-        "return-to-base",
-    )
-    assert result.total_plan_cost == 7
+    assert result.action_calls == ()
+    assert result.total_plan_cost == 0
     assert result.evidence is not None
     assert result.evidence.artifact_directory.parent == (tmp_path / "artifacts").resolve()
     assert {path.name for path in result.evidence.artifact_paths} == {
@@ -111,7 +107,7 @@ def test_fast_downward_executor_maps_subprocess_timeout(tmp_path) -> None:
         "(survey)\n; cost = 1 (unit cost) trailing\n",
     ),
 )
-def test_fast_downward_executor_rejects_missing_or_malformed_plan_content(
+def test_fast_downward_executor_defers_plan_content_validation_to_val(
     tmp_path, plan: str
 ) -> None:
     driver = _driver(
@@ -128,7 +124,10 @@ def test_fast_downward_executor_rejects_missing_or_malformed_plan_content(
         arguments=(str(driver),),
     ).execute({"domain.pddl": b"domain", "problem.pddl": b"problem"})
 
-    assert result.outcome is PlanningOutcome.ERROR
+    assert result.outcome is PlanningOutcome.SOLVED
+    assert result.evidence is not None
+    plan_path = next(path for path in result.evidence.artifact_paths if path.name == "sas_plan")
+    assert plan_path.read_text(encoding="utf-8") == plan
 
 
 

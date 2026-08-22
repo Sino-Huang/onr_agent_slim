@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -14,17 +13,10 @@ from onr.contracts.planning import (
     PlannerExecutionEvidence,
     PlannerStaticCheckResult,
     PlanningOutcome,
-    SymbolicActionCall,
     SymbolicPlannerExecutionResult,
 )
 
-
 _SEARCH_OPTION = "astar(lmcut())"
-_COST_TRAILER = re.compile(r"; cost = ([0-9]+) \((unit cost|general cost)\)\Z")
-_ACTION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
-_ACTION_ARGUMENT = re.compile(r"[^()\s]+\Z")
-
-
 @dataclass(frozen=True, slots=True)
 class FastDownwardExecutor:
     """Execute plain PDDL assets with a configured Fast Downward driver."""
@@ -145,28 +137,48 @@ class FastDownwardExecutor:
                 return SymbolicPlannerExecutionResult(
                     PlanningOutcome.TIMEOUT,
                     evidence=evidence,
+                    return_code=completed.returncode,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
                 )
             if completed.returncode == 11:
                 return SymbolicPlannerExecutionResult(
                     PlanningOutcome.UNSOLVABLE,
                     evidence=evidence,
+                    return_code=completed.returncode,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
                 )
             if completed.returncode == 12:
                 return SymbolicPlannerExecutionResult(
                     PlanningOutcome.INCOMPLETE,
                     evidence=evidence,
+                    return_code=completed.returncode,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
                 )
             if completed.returncode != 0:
                 return SymbolicPlannerExecutionResult(
                     PlanningOutcome.ERROR,
                     evidence=evidence,
+                    return_code=completed.returncode,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
                 )
-            parsed = _parse_plan_file(plan_path)
+            if not plan_path.is_file():
+                return SymbolicPlannerExecutionResult(
+                    PlanningOutcome.ERROR,
+                    evidence=evidence,
+                    return_code=completed.returncode,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
+                )
             return SymbolicPlannerExecutionResult(
-                outcome=parsed.outcome,
-                action_calls=parsed.action_calls,
-                total_plan_cost=parsed.total_plan_cost,
+                outcome=PlanningOutcome.SOLVED,
                 evidence=evidence,
+                return_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
             )
         except subprocess.TimeoutExpired as exc:
             _persist_solver_output(
@@ -177,12 +189,18 @@ class FastDownwardExecutor:
             return SymbolicPlannerExecutionResult(
                 PlanningOutcome.TIMEOUT,
                 evidence=_execution_evidence(run_directory),
+                stdout=_output_text(exc.stdout),
+                stderr=_output_text(
+                    exc.stderr
+                    or f"solver timed out after {self.timeout_seconds} seconds"
+                ),
             )
         except (OSError, TypeError, ValueError, UnicodeError) as exc:
             _persist_solver_output(run_directory, "", f"{type(exc).__name__}: {exc}")
             return SymbolicPlannerExecutionResult(
                 PlanningOutcome.ERROR,
                 evidence=_execution_evidence(run_directory),
+                stderr=f"{type(exc).__name__}: {exc}",
             )
 
 
@@ -209,7 +227,8 @@ def _execution_evidence(directory: Path) -> PlannerExecutionEvidence:
                 (
                     path.resolve()
                     for path in directory.iterdir()
-                    if path.is_file() and path.name not in {"solver.stdout", "solver.stderr"}
+                    if path.is_file()
+                    and path.name not in {"solver.stdout", "solver.stderr"}
                 ),
                 key=lambda path: path.name,
             )
@@ -224,7 +243,9 @@ def _execution_evidence(directory: Path) -> PlannerExecutionEvidence:
     )
 
 
-def _materialize_assets(directory: Path, assets: Mapping[str, bytes]) -> dict[str, Path]:
+def _materialize_assets(
+    directory: Path, assets: Mapping[str, bytes]
+) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for name, content in assets.items():
         if not isinstance(name, str) or not name or Path(name).name != name:
@@ -239,39 +260,3 @@ def _materialize_assets(directory: Path, assets: Mapping[str, bytes]) -> dict[st
     if set(paths) != {"domain.pddl", "problem.pddl"}:
         raise ValueError("Fast Downward requires domain.pddl and problem.pddl assets")
     return paths
-
-
-def _parse_plan_file(path: Path) -> SymbolicPlannerExecutionResult:
-    try:
-        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
-    except (OSError, UnicodeError):
-        return SymbolicPlannerExecutionResult(PlanningOutcome.ERROR)
-
-    nonblank = [line for line in lines if line]
-    if not nonblank:
-        return SymbolicPlannerExecutionResult(PlanningOutcome.ERROR)
-    trailer_match = _COST_TRAILER.fullmatch(nonblank[-1])
-    if trailer_match is None:
-        return SymbolicPlannerExecutionResult(PlanningOutcome.ERROR)
-
-    calls: list[SymbolicActionCall] = []
-    for line in nonblank[:-1]:
-        if not line.startswith("(") or not line.endswith(")"):
-            return SymbolicPlannerExecutionResult(PlanningOutcome.ERROR)
-        tokens = line[1:-1].split()
-        if (
-            not tokens
-            or _ACTION_NAME.fullmatch(tokens[0]) is None
-            or any(_ACTION_ARGUMENT.fullmatch(token) is None for token in tokens[1:])
-        ):
-            return SymbolicPlannerExecutionResult(PlanningOutcome.ERROR)
-        try:
-            calls.append(SymbolicActionCall(action=tokens[0], arguments=tuple(tokens[1:])))
-        except ValueError:
-            return SymbolicPlannerExecutionResult(PlanningOutcome.ERROR)
-
-    return SymbolicPlannerExecutionResult(
-        outcome=PlanningOutcome.SOLVED,
-        action_calls=tuple(calls),
-        total_plan_cost=int(trailer_match.group(1)),
-    )

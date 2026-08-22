@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPResponse
-import json
 from pathlib import Path
 from threading import Thread
 from typing import Iterator
 
 import pytest
 
+import onr.viewer.server as viewer_server
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.operational_log import FileOperationalLog
@@ -23,7 +24,10 @@ from onr.contracts.bayesian_belief import (
     EntityAssociation,
     RiskObservation,
 )
-from onr.contracts.context_coordination import MissionSnapshot, mission_snapshot_to_transport_event
+from onr.contracts.context_coordination import (
+    MissionSnapshot,
+    mission_snapshot_to_transport_event,
+)
 from onr.contracts.fsm import (
     FSMExecutionRecord,
     FSMStatus,
@@ -35,7 +39,6 @@ from onr.contracts.transport import Command, CommandOutcome, TransportEvent
 from onr.ports.mission_log_summarizer import SummaryArtifact
 from onr.runtime.config import RuntimeConfig
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
-import onr.viewer.server as viewer_server
 from onr.viewer.server import ViewerHTTPServer, create_server
 
 
@@ -165,7 +168,9 @@ def _store_belief(
     return store, snapshot
 
 
-def test_idle_get_inspection_is_non_mutating_and_returns_no_trace(tmp_path: Path) -> None:
+def test_idle_get_inspection_is_non_mutating_and_returns_no_trace(
+    tmp_path: Path,
+) -> None:
     with _running_server(tmp_path) as (server, storage, _):
         runtime_path = storage / "runtime"
         runtime_response, runtime_body = _request(server, "GET", "/api/runtime")
@@ -220,7 +225,9 @@ def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="viewer host must"):
         create_server(host="0.0.0.0", port=0, repo_root=tmp_path, config_path=config)
     with pytest.raises(ValueError, match="viewer host must"):
-        create_server(host="example.com", port=0, repo_root=tmp_path, config_path=config)
+        create_server(
+            host="example.com", port=0, repo_root=tmp_path, config_path=config
+        )
 
     localhost = create_server(
         host="localhost", port=0, repo_root=tmp_path, config_path=config
@@ -253,16 +260,17 @@ def test_request_boundary_rejects_foreign_host_and_origin_before_routes(
             for path, headers in (
                 ("/api/runtime", {"Host": "attacker.example"}),
                 ("/", {"Host": "127.0.0.1"}),
-                ("/api/trace?mission_id=mission-one", {"Origin": "http://attacker.example"}),
+                (
+                    "/api/trace?mission_id=mission-one",
+                    {"Origin": "http://attacker.example"},
+                ),
                 ("/", {"Origin": f"https://{server.listener_authority}"}),
             )
         ]
 
     assert valid_response.status == 200
     assert viewer_server._loopback_authority("::1", 14398) == "[::1]:14398"
-    assert viewer_server._same_loopback_origin(
-        "http://[::1]:14398", "::1", 14398
-    )
+    assert viewer_server._same_loopback_origin("http://[::1]:14398", "::1", 14398)
     for response, body in rejected:
         assert response.status == 403
         assert json.loads(body) == {"error": "forbidden"}
@@ -313,13 +321,9 @@ def test_public_mapping_reader_rejects_hostile_files_without_following_links(
     valid = tmp_path / "valid.json"
     valid.write_text('{"schema_version":1}', encoding="utf-8")
     shallow = tmp_path / "shallow.json"
-    shallow.write_text(
-        '{"payload":{"items":[{"status":"ready"}]}}', encoding="utf-8"
-    )
+    shallow.write_text('{"payload":{"items":[{"status":"ready"}]}}', encoding="utf-8")
     duplicate = tmp_path / "duplicate.json"
-    duplicate.write_text(
-        '{"schema_version":1,"schema_version":1}', encoding="utf-8"
-    )
+    duplicate.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
     non_finite = tmp_path / "non-finite.json"
     non_finite.write_text('{"value":NaN}', encoding="utf-8")
     oversized = tmp_path / "oversized.json"
@@ -333,9 +337,7 @@ def test_public_mapping_reader_rejects_hostile_files_without_following_links(
     linked.symlink_to(valid)
     outside_root = tmp_path / "outside-root"
     outside_root.mkdir()
-    (outside_root / "outside.json").write_text(
-        '{"schema_version":1}', encoding="utf-8"
-    )
+    (outside_root / "outside.json").write_text('{"schema_version":1}', encoding="utf-8")
     linked_root = tmp_path / "linked-root"
     linked_root.symlink_to(outside_root, target_is_directory=True)
 
@@ -347,9 +349,10 @@ def test_public_mapping_reader_rejects_hostile_files_without_following_links(
         viewer_server._read_mapping(path) is None
         for path in (duplicate, non_finite, oversized, recursive, linked)
     )
-    assert viewer_server._read_mapping(
-        linked_root / "outside.json", root=linked_root
-    ) is None
+    assert (
+        viewer_server._read_mapping(linked_root / "outside.json", root=linked_root)
+        is None
+    )
 
 
 def test_symlinked_receipts_directory_is_not_projected(tmp_path: Path) -> None:
@@ -372,9 +375,7 @@ def test_symlinked_receipts_directory_is_not_projected(tmp_path: Path) -> None:
         receipts.rename(outside)
         receipts.symlink_to(outside, target_is_directory=True)
 
-        response, body = _request(
-            server, "GET", f"/api/trace?mission_id={mission_id}"
-        )
+        response, body = _request(server, "GET", f"/api/trace?mission_id={mission_id}")
 
     assert response.status == 200
     kinds = {item["event_kind"] for item in json.loads(body)["items"]}
@@ -414,9 +415,7 @@ def test_symlinked_transport_and_storage_parent_trees_are_not_projected(
         (transport_root / "topics").symlink_to(
             outside_transport / "topics", target_is_directory=True
         )
-        (storage / "operational-log").symlink_to(
-            outside_log, target_is_directory=True
-        )
+        (storage / "operational-log").symlink_to(outside_log, target_is_directory=True)
 
         topic_response, topic_body = _request(
             server, "GET", f"/api/trace?mission_id={topic_mission}"
@@ -511,7 +510,6 @@ def test_colon_mission_loads_raw_storage_and_encoded_transport_paths(
             entry_state="state-0",
             states=("state-0",),
             transitions=(),
-            normalized_plan_sha256="0" * 64,
         )
         execution = FSMExecutionRecord(
             mission_id=mission_id,
@@ -558,21 +556,28 @@ def test_colon_mission_loads_raw_storage_and_encoded_transport_paths(
     assert (storage / "operational-log" / mission_id).is_dir()
     assert (storage / "summaries" / mission_id).is_dir()
     assert (storage / "fsm" / mission_id).is_dir()
-    assert (transport_root / "topics" / "advisory" / "missions" / "mission%3Aalpha").is_dir()
+    assert (
+        transport_root / "topics" / "advisory" / "missions" / "mission%3Aalpha"
+    ).is_dir()
 
 
-def test_current_snapshot_hashes_project_without_raw_typed_identity_conflict(
+def test_current_snapshot_references_project_without_raw_typed_identity_conflict(
     tmp_path: Path,
 ) -> None:
     mission_id = "mission-current-snapshot"
-    content_hash = "a" * 64
+    plan_reference = "planner-plan:mission-current-snapshot:1"
     with _running_server(tmp_path) as (server, storage, transport_root):
         _activate(storage)
         snapshot = MissionSnapshot(
             mission_id,
             1,
             "2026-08-19T03:00:00+00:00",
-            source_hashes={"plan": content_hash},
+            plan_revision=1,
+            plan_reference=plan_reference,
+            source_revisions={"plan": 1},
+            source_references={"plan": plan_reference},
+            source_health={"plan": "healthy"},
+            source_freshness={"plan": True},
         )
         canonical_id = f"mission-snapshot:{mission_id}:1"
         FileTransport(transport_root).publish_event(
@@ -584,9 +589,7 @@ def test_current_snapshot_hashes_project_without_raw_typed_identity_conflict(
             ),
         )
 
-        response, body = _request(
-            server, "GET", f"/api/trace?mission_id={mission_id}"
-        )
+        response, body = _request(server, "GET", f"/api/trace?mission_id={mission_id}")
 
     assert response.status == 200
     items = json.loads(body)["items"]
@@ -596,13 +599,18 @@ def test_current_snapshot_hashes_project_without_raw_typed_identity_conflict(
         f"transport:{canonical_id}",
     }
     assert all(item["replay_disposition"] == "normal" for item in snapshots)
-    assert all(item["payload"]["source_hashes"]["plan"] == content_hash for item in snapshots)
+    assert all(
+        item["payload"]["source_references"]["plan"] == plan_reference
+        for item in snapshots
+    )
     assert not any(
         item["replay_disposition"] in {"duplicate", "conflict"} for item in items
     )
 
 
-def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path) -> None:
+def test_all_documented_public_artifact_categories_are_projected(
+    tmp_path: Path,
+) -> None:
     mission_id = "mission-live"
     with _running_server(tmp_path) as (server, storage, transport_root):
         _activate(storage)
@@ -622,9 +630,7 @@ def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path)
                 },
             ),
         )
-        snapshot = MissionSnapshot(
-            mission_id, 1, "2026-01-01T00:00:01+00:00"
-        )
+        snapshot = MissionSnapshot(mission_id, 1, "2026-01-01T00:00:01+00:00")
         transport.publish_event(
             "mission-snapshots",
             mission_snapshot_to_transport_event(
@@ -729,7 +735,6 @@ def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path)
             entry_state="state-0",
             states=("state-0",),
             transitions=(),
-            normalized_plan_sha256="0" * 64,
         )
         execution = FSMExecutionRecord(
             mission_id=mission_id,
@@ -746,9 +751,7 @@ def test_all_documented_public_artifact_categories_are_projected(tmp_path: Path)
             execution.to_canonical_json(), encoding="utf-8"
         )
 
-        response, body = _request(
-            server, "GET", f"/api/trace?mission_id={mission_id}"
-        )
+        response, body = _request(server, "GET", f"/api/trace?mission_id={mission_id}")
 
     payload = json.loads(body)
     assert response.status == 200
@@ -814,9 +817,7 @@ def test_current_belief_snapshot_is_hash_bound_public_evidence(tmp_path: Path) -
             store.current_path(mission_id).read_text(encoding="utf-8")
         )["generation"]
         partial = (
-            store.mission_root(mission_id)
-            / "generations"
-            / f"{committed + 1:020d}"
+            store.mission_root(mission_id) / "generations" / f"{committed + 1:020d}"
         )
         partial.mkdir()
         (partial / "private-partial.json").write_text(
@@ -835,9 +836,7 @@ def test_current_belief_snapshot_is_hash_bound_public_evidence(tmp_path: Path) -
 
         before = tree()
 
-        response, body = _request(
-            server, "GET", f"/api/trace?mission_id={mission_id}"
-        )
+        response, body = _request(server, "GET", f"/api/trace?mission_id={mission_id}")
         after = tree()
 
     payload = json.loads(body)
@@ -890,9 +889,7 @@ def test_corrupt_or_unbound_current_belief_is_omitted(
             artifact["marginals"][0]["probability_risk"] = 0.0
             artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
 
-        response, body = _request(
-            server, "GET", f"/api/trace?mission_id={mission_id}"
-        )
+        response, body = _request(server, "GET", f"/api/trace?mission_id={mission_id}")
 
     assert response.status == 200
     assert json.loads(body) == {"items": []}
@@ -908,9 +905,7 @@ def test_lease_expiry_during_collection_keeps_trace_available(
         )
         original = viewer_server._load_public_artifacts
 
-        def expire_after_load(
-            config: RuntimeConfig, mission_id: str | None = None
-        ):
+        def expire_after_load(config: RuntimeConfig, mission_id: str | None = None):
             artifacts = original(config, mission_id)
             current = store.inspect()
             assert current is not None
@@ -922,14 +917,10 @@ def test_lease_expiry_during_collection_keeps_trace_available(
             return artifacts
 
         monkeypatch.setattr(viewer_server, "_load_public_artifacts", expire_after_load)
-        response, body = _request(
-            server, "GET", "/api/trace?mission_id=mission-one"
-        )
+        response, body = _request(server, "GET", "/api/trace?mission_id=mission-one")
 
     assert response.status == 200
-    assert {item["mission_id"] for item in json.loads(body)["items"]} == {
-        "mission-one"
-    }
+    assert {item["mission_id"] for item in json.loads(body)["items"]} == {"mission-one"}
 
 
 def test_active_run_stopped_during_collection_keeps_trace_available(
@@ -942,23 +933,17 @@ def test_active_run_stopped_during_collection_keeps_trace_available(
         )
         original = viewer_server._load_public_artifacts
 
-        def stop_after_load(
-            config: RuntimeConfig, mission_id: str | None = None
-        ):
+        def stop_after_load(config: RuntimeConfig, mission_id: str | None = None):
             artifacts = original(config, mission_id)
             stopped = store.stop()
             assert stopped is not None and stopped.status == "stopped"
             return artifacts
 
         monkeypatch.setattr(viewer_server, "_load_public_artifacts", stop_after_load)
-        response, body = _request(
-            server, "GET", "/api/trace?mission_id=mission-one"
-        )
+        response, body = _request(server, "GET", "/api/trace?mission_id=mission-one")
 
     assert response.status == 200
-    assert {item["mission_id"] for item in json.loads(body)["items"]} == {
-        "mission-one"
-    }
+    assert {item["mission_id"] for item in json.loads(body)["items"]} == {"mission-one"}
 
 
 def test_lease_replacement_during_projection_returns_empty(
@@ -981,9 +966,7 @@ def test_lease_replacement_during_projection_returns_empty(
         monkeypatch.setattr(
             server.application._projection, "project", replace_during_projection
         )
-        response, body = _request(
-            server, "GET", "/api/trace?mission_id=mission-one"
-        )
+        response, body = _request(server, "GET", "/api/trace?mission_id=mission-one")
 
     assert response.status == 200
     assert json.loads(body) == {"items": []}
@@ -1000,7 +983,9 @@ def test_static_routes_never_expose_memory_or_traversal_and_send_csp(
         memory_response, memory_body = _request(
             server, "GET", "/mission-memory/mission-one/role/memory/AGENTS.md"
         )
-        traversal_response, traversal_body = _request(server, "GET", "/%2e%2e/secret.txt")
+        traversal_response, traversal_body = _request(
+            server, "GET", "/%2e%2e/secret.txt"
+        )
         index_response, _ = _request(server, "GET", "/")
 
     assert memory_response.status == traversal_response.status == 404

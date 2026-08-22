@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 from langchain.tools import ToolRuntime
@@ -11,8 +10,6 @@ from langchain.tools import ToolRuntime
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport
-from onr.adapters.python_statemachine import PythonStateMachineFactory
-from onr.agents.hyper_workflow import HyperWorkflowContext, handoff_execution
 from onr.agents.maneuver_control import DeepAgentsHeartbeatProvider
 from onr.agents.maneuver_tools import (
     MANEUVER_OPERATIONAL_TOOLS,
@@ -28,12 +25,9 @@ from onr.application.bayesian_belief import BayesianBeliefManager, BayesianBelie
 from onr.application.communication import TransportCommunicationPort
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl
-from onr.application.minizinc_translation import MiniZincTranslation
 from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.communication import AgentMessage
-from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import Statechart, StatechartCondition, StatechartTransition
-from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.maneuver_control import (
     ManeuverCommand,
     ManeuverHeartbeatOutcome,
@@ -47,7 +41,6 @@ from onr.contracts.planning import (
     PlanningOutcome,
     ScheduledManeuver,
 )
-from onr.contracts.transport import TransportEvent
 from onr.demo.fake_environment import FakeEnvironment
 
 
@@ -151,7 +144,6 @@ def test_transition_tool_rejects_early_then_updates_the_live_runner() -> None:
         correlation_id="correlation-1",
         mission_id=plan.mission_id,
         plan_revision=plan.plan_revision,
-        normalized_plan=plan,
         statechart_reference="accepted-statechart.json",
         fsm_status=status,
         environment_data={"mission_time_seconds": 9},
@@ -182,7 +174,6 @@ def test_transition_tool_rejects_early_then_updates_the_live_runner() -> None:
         correlation_id=invocation.correlation_id,
         mission_id=invocation.mission_id,
         plan_revision=invocation.plan_revision,
-        normalized_plan=plan,
         statechart_reference=invocation.statechart_reference,
         fsm_status=cast(Any, asyncio.run(runner.status())),
         environment_data={"mission_time_seconds": 10},
@@ -208,7 +199,9 @@ def test_fake_environment_activates_ticks_and_overrides(tmp_path: Path) -> None:
         "mission-tools",
         2,
         "first",
-        ManeuverIntent("navigate", (ManeuverParameter("x", 1), ManeuverParameter("y", 2))),
+        ManeuverIntent(
+            "navigate", (ManeuverParameter("x", 1), ManeuverParameter("y", 2))
+        ),
     )
     second = ManeuverCommand(
         "command-2",
@@ -247,7 +240,6 @@ def test_physical_tools_submit_and_override_without_application_gate(
         "action-correlation",
         plan.mission_id,
         plan.plan_revision,
-        plan,
         "statechart.json",
         status,
         {"mission_time_seconds": 10},
@@ -323,7 +315,6 @@ def test_communicate_builds_a_correlated_replan_request() -> None:
         "correlation-replan",
         plan.mission_id,
         plan.plan_revision,
-        plan,
         "statechart.json",
         status,
         {"mission_time_seconds": 0},
@@ -370,7 +361,6 @@ def test_belief_tool_uses_durable_service_without_mutating_invocation(
         "correlation",
         plan.mission_id,
         plan.plan_revision,
-        plan,
         "statechart.json",
         status,
         {"mission_time_seconds": 0},
@@ -418,7 +408,6 @@ def test_completion_consistency_uses_tool_execution_record() -> None:
         "correlation",
         plan.mission_id,
         plan.plan_revision,
-        plan,
         "statechart.json",
         status,
         {"mission_time_seconds": 0},
@@ -438,83 +427,3 @@ def test_completion_consistency_uses_tool_execution_record() -> None:
     context = ManeuverToolContext(invocation, runner, _Dispatcher())
     completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
     assert completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE
-
-
-def test_hyper_handoff_activates_runner_before_correlated_invocation(
-    tmp_path: Path,
-) -> None:
-    plan = _plan()
-    chart = _chart(plan)
-    scene = TransportEvent(
-        1,
-        "environment-1",
-        plan.mission_id,
-        0,
-        "environment_data",
-        {"mission_time_seconds": 0},
-    )
-    snapshot = MissionSnapshot(
-        plan.mission_id,
-        1,
-        "2026-08-21T00:00:00+00:00",
-        environment_data=scene.event_id,
-    )
-
-    class Planner:
-        def check(self, _: object) -> object:
-            raise AssertionError("planner was not expected")
-
-        def execute(self, _: object) -> object:
-            raise AssertionError("planner was not expected")
-
-    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
-    communication = TransportCommunicationPort(cast(Any, InProcessTransport()))
-    seen: list[ManeuverInvocation] = []
-
-    def invoke_maneuver(message: AgentMessage) -> dict[str, object]:
-        invocation = ManeuverInvocation.from_dict(message.payload)
-        seen.append(invocation)
-        return {
-            "mission_id": invocation.mission_id,
-            "request_id": invocation.request_id,
-            "outcome": "no_change",
-            "summary": "The activated entry state requires no immediate effect.",
-        }
-
-    communication.register("hyper-agent", lambda _: {"status": "received"})
-    communication.register("maneuver-control", invoke_maneuver)
-    context = HyperWorkflowContext(
-        mission_input=MissionInput(plan.mission_id, "Proceed.", "operator"),
-        mission_snapshot=snapshot,
-        environment_event=scene,
-        artifact_root=tmp_path,
-        minizinc_translation=MiniZincTranslation(
-            cast(Any, Planner()), tmp_path / "attempts"
-        ),
-        state_machine_factory=PythonStateMachineFactory(),
-        fsm_runner=runner,
-        communication_port=communication,
-    )
-    context.translation = SimpleNamespace(normalized_plan=plan)
-    context.statechart = chart
-    context.statechart_reference = str(tmp_path / "accepted-statechart.json")
-    context.handoff_correlation_id = "planning-run-1"
-    runtime = ToolRuntime(
-        state={"messages": []},
-        context=context,
-        config={},
-        stream_writer=lambda _: None,
-        tool_call_id="handoff",
-        store=None,
-    )
-
-    result = cast(Any, handoff_execution).func(
-        reflection="The verified Statechart is ready for live execution.",
-        runtime=runtime,
-    )
-
-    assert result == "Execution handoff completed."
-    assert context.handoff_outcome is not None
-    assert context.initial_fsm_status is not None
-    assert seen[0].fsm_status.active_state == chart.entry_state
-    assert seen[0].available_recipients == ("hyper-agent",)

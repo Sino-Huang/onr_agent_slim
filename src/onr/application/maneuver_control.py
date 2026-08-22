@@ -21,7 +21,7 @@ from onr.contracts.maneuver_control import (
     ManeuverHeartbeatCompletion,
     ManeuverInvocation,
 )
-from onr.contracts.planning import ManeuverIntent, NormalizedPlan
+from onr.contracts.planning import ManeuverIntent
 from onr.contracts.transport import (
     Command,
     CommandOutcome,
@@ -80,8 +80,6 @@ class ManeuverControl:
         snapshot: MissionSnapshot,
         status: FSMStatus,
         overlay: InvocationOverlay | None = None,
-        *,
-        plan: NormalizedPlan | None = None,
     ) -> ManeuverControlDecision:
         """Invoke the provider and apply the public contract validation gate."""
 
@@ -89,7 +87,7 @@ class ManeuverControl:
         try:
             raw = self._invoke_provider(snapshot, status, overlay)
             decision = self._coerce_decision(raw, snapshot.mission_id, status.plan_revision)
-            self._validate_decision(decision, snapshot, status, plan)
+            self._validate_decision(decision, snapshot, status)
         except Exception as exc:
             self._emit(
                 snapshot.mission_id,
@@ -111,7 +109,6 @@ class ManeuverControl:
         decision: ManeuverControlDecision,
         snapshot: MissionSnapshot,
         status: FSMStatus,
-        plan: NormalizedPlan | None,
     ) -> None:
         if decision.mission_id != snapshot.mission_id or decision.mission_id != status.mission_id:
             raise ValueError("maneuver decision mission ID does not match context")
@@ -119,7 +116,6 @@ class ManeuverControl:
             raise ValueError("maneuver decision plan revision does not match FSM status")
         if decision.transition_event is not None and decision.transition_event not in status.enabled_events:
             raise ValueError("maneuver decision selected a transition that is not enabled")
-        ManeuverControl._validate_physical_context(decision, snapshot, status, plan)
 
     def heartbeat(
         self,
@@ -128,12 +124,11 @@ class ManeuverControl:
         overlay: InvocationOverlay | None = None,
         *,
         event_id: str | None = None,
-        plan: NormalizedPlan | None = None,
     ) -> ManeuverHeartbeatResult | ManeuverHeartbeatCompletion:
         """Run a live tool heartbeat, or the retained deterministic legacy seam."""
 
         if isinstance(snapshot, ManeuverInvocation):
-            if status is not None or overlay is not None or event_id is not None or plan is not None:
+            if status is not None or overlay is not None or event_id is not None:
                 raise ValueError("tool-driven Maneuver heartbeat accepts only its invocation")
             return self._tool_heartbeat(self._live_invocation(snapshot))
         if status is None:
@@ -142,13 +137,13 @@ class ManeuverControl:
         self._validate_context(snapshot, status, overlay)
         stored = self._stored_invocation(event_id, snapshot.mission_id) if event_id is not None else None
         if stored is None:
-            decision = self.decide(snapshot, status, overlay, plan=plan)
+            decision = self.decide(snapshot, status, overlay)
             command = self._command_for_decision(decision, snapshot)
             if event_id is not None:
                 self._publish_invocation_marker(event_id, snapshot.mission_id, decision, command)
         else:
             decision, command = stored
-            self._validate_decision(decision, snapshot, status, plan)
+            self._validate_decision(decision, snapshot, status)
         if command is None:
             self._emit(
                 snapshot.mission_id,
@@ -256,7 +251,6 @@ class ManeuverControl:
             correlation_id=invocation.correlation_id,
             mission_id=invocation.mission_id,
             plan_revision=invocation.plan_revision,
-            normalized_plan=invocation.normalized_plan,
             statechart_reference=invocation.statechart_reference,
             fsm_status=status,
             environment_data=environment,
@@ -570,34 +564,6 @@ class ManeuverControl:
                 "source": "maneuver-adapter-transport",
             },
         )
-
-    @staticmethod
-    def _validate_physical_context(
-        decision: ManeuverControlDecision,
-        snapshot: MissionSnapshot,
-        status: FSMStatus,
-        plan: NormalizedPlan | None,
-    ) -> None:
-        if decision.physical_intent is None:
-            return
-        maneuver_id = decision.maneuver_id
-        enabled_maneuvers = {
-            event.removeprefix("advance:")
-            for event in status.enabled_events
-            if event.startswith("advance:") and event.removeprefix("advance:")
-        }
-        if maneuver_id not in enabled_maneuvers:
-            raise ValueError("physical maneuver is not enabled by the current FSM status")
-        if plan is None:
-            return
-        if plan.mission_id != snapshot.mission_id or plan.plan_revision != status.plan_revision:
-            raise ValueError("normalized plan does not match the current maneuver context")
-        planned = next(
-            (maneuver for maneuver in plan.maneuvers if maneuver.maneuver_id == maneuver_id),
-            None,
-        )
-        if planned is None or planned.intent != decision.physical_intent:
-            raise ValueError("physical maneuver does not match the normalized plan")
 
     def _invoke_provider(
         self,

@@ -14,7 +14,6 @@ from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
 from onr.agents import DeepAgentsHyperWorkflow, create_hyper_workflow_agent
 from onr.agents.hyper_workflow import HyperWorkflowContext
-from onr.application.minizinc_translation import MiniZincTranslation
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
@@ -41,6 +40,19 @@ class RejectingPlanner:
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         _ = assets
         raise AssertionError("static rejection must stop before solver execution")
+
+
+class UnusedFastDownward:
+    def execute(self, assets: Mapping[str, bytes]) -> object:
+        raise AssertionError("Fast Downward was not selected")
+
+
+class UnusedVAL:
+    def check(self, assets: Mapping[str, bytes]) -> object:
+        raise AssertionError("VAL was not selected")
+
+    def validate(self, evidence: object) -> bool:
+        raise AssertionError("VAL was not selected")
 
 
 def _runtime(tmp_path: Path) -> RuntimeComposition:
@@ -101,6 +113,7 @@ def _planning_context(
         created_at="2026-08-20T00:00:00+00:00",
         environment_data=scene.event_id,
         source_revisions={"environment_data": 1},
+        source_references={"environment_data": scene.event_id},
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
@@ -112,11 +125,9 @@ def _planning_context(
             environment_event=scene,
             artifact_root=tmp_path / "planner-artifacts",
             backend_root=Path("/"),
-            minizinc_translation=MiniZincTranslation(
-                planner,
-                tmp_path / "planner-artifacts/generation-attempts",
-                max_corrections=0,
-            ),
+            minizinc_planner=planner,
+            fast_downward_planner=UnusedFastDownward(),
+            val_validator=UnusedVAL(),
             max_planner_attempts=1,
         ),
         planner,

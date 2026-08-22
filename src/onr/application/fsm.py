@@ -16,14 +16,7 @@ from onr.contracts.fsm import (
     Statechart,
     TransitionCandidate,
 )
-from onr.contracts.planning import (
-    NormalizedPlan,
-    PlannerChoice,
-)
-from onr.contracts.transport import (
-    NormalizedPlanTransportEvent,
-    TransportEvent,
-)
+from onr.contracts.transport import TransportEvent
 from onr.ports.fsm import (
     FSMStateStore,
     FSMTransport,
@@ -38,71 +31,12 @@ class _Receivable(Protocol):
     def receive(self) -> Delivery | None: ...
 
 
-def _object(value: object, label: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
-        raise ValueError(f"{label} must be a JSON object")
-    return cast(Mapping[str, object], value)
-
-
-def _text_field(value: Mapping[str, object], key: str, label: str) -> str:
-    item = value.get(key)
-    if not isinstance(item, str) or not item.strip():
-        raise ValueError(f"{label} must be a non-empty string")
-    return item
-
-
-def _int_field(value: Mapping[str, object], key: str, label: str) -> int:
-    item = value.get(key)
-    if isinstance(item, bool) or not isinstance(item, int):
-        raise ValueError(f"{label} must be an integer")
-    return item
-
-
-def _plan_from_message(message: object) -> NormalizedPlan:
-    if isinstance(message, NormalizedPlanTransportEvent):
-        return message.normalized_plan
-    if isinstance(message, TransportEvent):
-        if message.event_kind != "normalized-plan":
-            raise ValueError("FSM Runner requires a normalized-plan event")
-        payload = _object(message.payload, "normalized-plan transport payload")
-        required = {
-            "mission_id",
-            "mission_snapshot_id",
-            "plan_revision",
-            "planner_choice",
-            "source_authority",
-            "outcome",
-            "normalized_plan",
-        }
-        if set(payload) not in (required, required | {"correlation_id"}):
-            raise ValueError("normalized-plan transport payload has invalid fields")
-        plan = NormalizedPlan.from_dict(
-            _object(payload["normalized_plan"], "normalized plan payload")
-        )
-        if payload["mission_id"] != message.mission_id or plan.mission_id != message.mission_id:
-            raise ValueError("normalized-plan transport mission ID does not match")
-        if _int_field(payload, "plan_revision", "plan revision") != plan.plan_revision:
-            raise ValueError("normalized-plan transport plan revision does not match")
-        if _text_field(payload, "mission_snapshot_id", "mission snapshot ID") != plan.mission_snapshot_id:
-            raise ValueError("normalized-plan transport snapshot ID does not match")
-        if PlannerChoice.from_dict(_object(payload["planner_choice"], "transport planner choice")) != plan.planner_choice:
-            raise ValueError("normalized-plan transport planner choice does not match")
-        if _text_field(payload, "source_authority", "source authority") != plan.source_authority:
-            raise ValueError("normalized-plan transport source authority does not match")
-        if _text_field(payload, "outcome", "planning outcome") != str(plan.outcome):
-            raise ValueError("normalized-plan transport outcome does not match")
-        return plan
-    if isinstance(message, NormalizedPlan):
-        return message
-    raise TypeError("FSM Runner requires a Normalized Plan transport event")
-
-
 def _chart_from_message(message: object) -> Statechart:
     if isinstance(message, Statechart):
         return message
     if isinstance(message, TransportEvent) and message.event_kind == "statechart":
         return Statechart.from_dict(message.payload)
-    return Statechart.from_normalized_plan(_plan_from_message(message))
+    raise TypeError("FSM Runner requires a Statechart or statechart event")
 
 
 @dataclass
@@ -269,7 +203,7 @@ class FSMRunner:
                 message = delivery.message
                 if (
                     isinstance(message, TransportEvent)
-                    and message.event_kind != "normalized-plan"
+                    and message.event_kind != "statechart"
                 ):
                     delivery.ack()
                     continue

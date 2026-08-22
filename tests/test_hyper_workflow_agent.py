@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.tools import ToolRuntime
 
 from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.agents.hyper_workflow import (
     HyperWorkflowContext,
-    TemporalManeuverCandidate,
     _allowed_workflow_tools,
     create_hyper_workflow_agent,
     handoff_execution,
@@ -20,90 +19,130 @@ from onr.agents.hyper_workflow import (
     submit_planner_attempt,
     submit_statechart_draft,
 )
-from onr.application.bayesian_belief import belief_artifact_reference
-from onr.application.minizinc_translation import MiniZincTranslation
+from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.fsm import FSMStatus
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import (
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlannerStaticCheckResult,
     PlanningOutcome,
-    TemporalAssignment,
+    SymbolicPlannerExecutionResult,
 )
 from onr.contracts.transport import CommandOutcome, TransportEvent
-from onr.demo.fake_belief import create_fake_entity_risk_snapshot
-
-_BANNED = (
-    "sha256",
-    "planner_choice_record",
-    "decision_id",
-    "created_at",
-    "mission_snapshot",
-)
 
 
-class _Planner:
+class _MiniZinc:
     def __init__(
         self,
-        evidence: PlannerExecutionEvidence,
         *,
-        static_diagnostic: str | None = None,
-        execution_diagnostic: str | None = None,
+        check: PlannerStaticCheckResult | None = None,
+        execute: PlannerExecutionResult | None = None,
     ) -> None:
-        self.evidence = evidence
-        self.static_diagnostic = static_diagnostic
-        self.execution_diagnostic = execution_diagnostic
+        self.check_result = check or PlannerStaticCheckResult(True, 0)
+        self.execute_result = execute or PlannerExecutionResult(
+            PlanningOutcome.SOLVED,
+            stdout='{"type":"status","status":"SATISFIED"}\n',
+        )
         self.checked: list[dict[str, bytes]] = []
         self.executed: list[dict[str, bytes]] = []
 
     def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         self.checked.append(dict(assets))
-        if self.static_diagnostic is not None:
-            diagnostic = self.static_diagnostic
-            self.static_diagnostic = None
-            return PlannerStaticCheckResult(False, 1, stderr=diagnostic)
-        return PlannerStaticCheckResult(True, 0)
+        return self.check_result
 
     def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
         self.executed.append(dict(assets))
-        for path in self.evidence.artifact_paths:
-            path.write_bytes(assets[path.name])
-        if self.execution_diagnostic is not None:
-            return PlannerExecutionResult(
-                PlanningOutcome.ERROR,
-                evidence=self.evidence,
-                return_code=7,
-                stderr=self.execution_diagnostic,
+        return self.execute_result
+
+
+class _FastDownward:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        outcome: PlanningOutcome = PlanningOutcome.SOLVED,
+        stdout: str = "fd stdout\n",
+        stderr: str = "",
+    ) -> None:
+        self.root = root
+        self.outcome = outcome
+        self.stdout = stdout
+        self.stderr = stderr
+        self.executed: list[dict[str, bytes]] = []
+
+    def execute(self, assets: Mapping[str, bytes]) -> SymbolicPlannerExecutionResult:
+        self.executed.append(dict(assets))
+        directory = self.root / f"run-{len(self.executed)}"
+        directory.mkdir(parents=True)
+        for name, contents in assets.items():
+            (directory / name).write_bytes(contents)
+        if self.outcome is PlanningOutcome.SOLVED:
+            (directory / "sas_plan").write_text(
+                "(survey drone-1 site-a)\n; cost = 1 (unit cost)\n",
+                encoding="utf-8",
             )
-        return PlannerExecutionResult(
-            PlanningOutcome.SOLVED,
-            (
-                TemporalAssignment(
-                    "observe-ship-1",
-                    0,
-                    1,
-                ),
+        (directory / "solver.stdout").write_text(self.stdout, encoding="utf-8")
+        (directory / "solver.stderr").write_text(self.stderr, encoding="utf-8")
+        evidence = PlannerExecutionEvidence(
+            directory,
+            tuple(
+                path
+                for path in directory.iterdir()
+                if path.name not in {"solver.stdout", "solver.stderr"}
             ),
-            self.evidence,
+            directory / "solver.stdout",
+            directory / "solver.stderr",
         )
+        return SymbolicPlannerExecutionResult(
+            self.outcome,
+            evidence=evidence,
+            return_code=0 if self.outcome is PlanningOutcome.SOLVED else 1,
+            stdout=self.stdout,
+            stderr=self.stderr,
+        )
+
+
+class _VAL:
+    def __init__(
+        self,
+        *,
+        check: PlannerStaticCheckResult | None = None,
+        accepts_plan: bool = True,
+    ) -> None:
+        self.check_result = check or PlannerStaticCheckResult(True, 0)
+        self.accepts_plan = accepts_plan
+        self.checked: list[dict[str, bytes]] = []
+        self.validated: list[PlannerExecutionEvidence] = []
+
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        self.checked.append(dict(assets))
+        return self.check_result
+
+    def validate(self, evidence: PlannerExecutionEvidence) -> bool:
+        self.validated.append(evidence)
+        (evidence.artifact_directory / "validator.stdout").write_text(
+            "Plan valid\n" if self.accepts_plan else "Plan failed\n",
+            encoding="utf-8",
+        )
+        (evidence.artifact_directory / "validator.stderr").write_text(
+            "" if self.accepts_plan else "VAL rejected exact sas_plan\n",
+            encoding="utf-8",
+        )
+        return self.accepts_plan
 
 
 class _FSMRunner:
     def __init__(self) -> None:
-        self.current = None
+        self.chart: Any = None
 
-    async def activate(self, chart: object) -> object:
-        self.current = chart
-        return self._status()
+    async def activate(self, chart: object) -> FSMStatus:
+        self.chart = chart
+        return await self.status()
 
-    async def status(self) -> object:
-        return self._status()
-
-    def _status(self) -> object:
-        chart = cast(Any, self.current)
-        from onr.contracts.fsm import FSMStatus
-
+    async def status(self) -> FSMStatus:
+        chart = self.chart
         return FSMStatus(
             mission_id=chart.mission_id,
             plan_revision=chart.plan_revision,
@@ -115,24 +154,15 @@ class _FSMRunner:
         )
 
 
-class _CommunicationPort:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
+class _Communication:
+    def __init__(self) -> None:
+        self.message: AgentMessage | None = None
 
     def available_recipients(self, sender: str) -> tuple[str, ...]:
-        _ = sender
         return ("maneuver-control",)
 
-    def request(self, message: Any) -> CommandOutcome:
-        if self.fail:
-            return CommandOutcome(
-                1,
-                message.message_id,
-                message.correlation_id,
-                message.mission_id,
-                "failed",
-                {"error": "Maneuver Control is unavailable"},
-            )
+    def request(self, message: AgentMessage) -> CommandOutcome:
+        self.message = message
         return CommandOutcome(
             1,
             message.message_id,
@@ -143,7 +173,7 @@ class _CommunicationPort:
                 "mission_id": message.mission_id,
                 "request_id": message.message_id,
                 "outcome": "no_change",
-                "summary": "No immediate effect is required.",
+                "summary": "FSM is active.",
             },
         )
 
@@ -154,318 +184,325 @@ def _runtime(context: HyperWorkflowContext) -> ToolRuntime[HyperWorkflowContext]
         context=context,
         config={},
         stream_writer=lambda _: None,
-        tool_call_id="test-tool-call",
+        tool_call_id="test",
         store=None,
     )
 
 
-def _evidence(tmp_path: Path) -> PlannerExecutionEvidence:
-    directory = tmp_path / "solver"
-    directory.mkdir(parents=True)
-    model = directory / "model.mzn"
-    data = directory / "data.dzn"
-    stdout = directory / "solver.stdout"
-    stderr = directory / "solver.stderr"
-    for path in (model, data, stdout, stderr):
-        path.write_text("", encoding="utf-8")
-    return PlannerExecutionEvidence(directory, (model, data), stdout, stderr)
-
-
 def _context(
     tmp_path: Path,
-    planner: _Planner,
     *,
-    belief: bool = False,
+    minizinc: _MiniZinc | None = None,
+    downward: _FastDownward | None = None,
+    val: _VAL | None = None,
     handoff: bool = False,
 ) -> HyperWorkflowContext:
-    mission = MissionInput(
-        "mission-hyper",
-        "Observe the risky ship at the reported time with field of view coverage.",
-        "mission-control",
+    mission = MissionInput("mission-1", "Survey and return", "mission-control")
+    event = TransportEvent(
+        1,
+        "environment:1",
+        mission.mission_id,
+        0,
+        "environment_data",
+        {"drone": {"id": "drone-1", "site": "site-a"}},
     )
-    scene = TransportEvent(
-        schema_version=1,
-        event_id="environment:mission-hyper:1",
-        mission_id=mission.mission_id,
-        sequence=0,
-        event_kind="environment_data",
-        payload={
-            "environment_file": "/host/private/environment.json",
-            "entities": [
-                {"id": "ship-1", "x": 12.5, "y": 4.25},
-                {"id": "drone-1", "x": 0.0, "y": 0.0, "fov_radius": 30},
-            ],
-            "events": [{"entity_id": "ship-1", "time": 0.5}],
-        },
-    )
-    belief_snapshot = create_fake_entity_risk_snapshot(mission.mission_id) if belief else None
-    revisions: dict[str, int] = {"environment_data": 1}
-    references: dict[str, str] = {"environment_data": scene.event_id}
-    health = {"environment_data": "healthy"}
-    freshness = {"environment_data": True}
-    if belief_snapshot is not None:
-        revisions["bayesian_belief_snapshot"] = belief_snapshot.belief_revision
-        references["bayesian_belief_snapshot"] = belief_artifact_reference(
-            belief_snapshot.mission_id, belief_snapshot.content_sha256
-        )
-        health["bayesian_belief_snapshot"] = "healthy"
-        freshness["bayesian_belief_snapshot"] = True
     snapshot = MissionSnapshot(
         mission_id=mission.mission_id,
         version=1,
-        created_at="2026-08-20T00:00:00+00:00",
-        environment_data=scene.event_id,
-        bayesian_belief_snapshot=references.get("bayesian_belief_snapshot"),
-        source_revisions=revisions,
-        source_references=references,
-        source_health=health,
-        source_freshness=freshness,
+        created_at="2026-08-22T00:00:00+10:00",
+        environment_data=event.event_id,
+        source_revisions={"environment_data": 1},
+        source_references={"environment_data": event.event_id},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
     )
-    artifacts = tmp_path / "artifacts"
+    backend = tmp_path / "backend"
+    artifacts = backend / "artifacts"
+    communication = _Communication() if handoff else None
     return HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
-        environment_event=scene,
-        belief_snapshot=belief_snapshot,
+        environment_event=event,
         artifact_root=artifacts,
-        minizinc_translation=MiniZincTranslation(
-            planner, artifacts / "generation-attempts", max_corrections=0
-        ),
+        backend_root=backend,
+        planner_workspace_location="/artifacts/workspace",
+        minizinc_planner=minizinc or _MiniZinc(),
+        fast_downward_planner=downward or _FastDownward(artifacts / "fd"),
+        val_validator=val or _VAL(),
         max_planner_attempts=2,
         max_statechart_attempts=2,
         state_machine_factory=PythonStateMachineFactory(),
         fsm_runner=_FSMRunner() if handoff else None,
-        communication_port=_CommunicationPort() if handoff else None,
+        communication_port=communication,
     )
 
 
-def _record(context: HyperWorkflowContext) -> str:
+def _record(context: HyperWorkflowContext, planner: str) -> str:
+    symbolic = planner == "fast-downward"
     return cast(Any, record_planning_intent).func(
-        objective="Observe the risky ship at its reported time",
-        planning_profile="temporal",
-        planner_id="minizinc",
-        rationale="Travel, event time, and field of view make this temporal.",
-        details={"fov_rule": "observe within supplied radius"},
-        reflection="Recording the temporal planning interpretation.",
+        objective="Survey and return",
+        planning_profile="symbolic" if symbolic else "temporal",
+        planner_id=planner,
+        rationale="Reachability only" if symbolic else "Timing affects feasibility",
+        details={"mission_pattern": "survey-return"},
+        reflection="Recording planner choice.",
         runtime=_runtime(context),
     )
 
 
-def _write_problem(context: HyperWorkflowContext, attempt: int = 1) -> None:
-    directory = context.artifact_root / "workspace" / f"{attempt:03d}"
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "model.mzn").write_text("solve satisfy;\n", encoding="utf-8")
-    (directory / "data.dzn").write_text("horizon = 2;\n", encoding="utf-8")
+def _paths(context: HyperWorkflowContext, planner: str) -> list[str]:
+    names = (
+        ("model.mzn", "data.dzn")
+        if planner == "minizinc"
+        else ("domain.pddl", "problem.pddl")
+    )
+    return [f"/artifacts/workspace/001/{name}" for name in names]
 
 
-def _submit(context: HyperWorkflowContext) -> str:
+def _write(context: HyperWorkflowContext, planner: str) -> list[str]:
+    paths = _paths(context, planner)
+    for location in paths:
+        host = cast(Path, context.backend_root) / location.removeprefix("/")
+        host.parent.mkdir(parents=True, exist_ok=True)
+        host.write_text(f"contents for {host.name}\n", encoding="utf-8")
+    return paths
+
+
+def _submit(context: HyperWorkflowContext, planner: str, paths: list[str]) -> str:
     return cast(Any, submit_planner_attempt).func(
-        horizon=2,
-        maneuvers=[
-            TemporalManeuverCandidate(
-                maneuver_id="observe-ship-1",
-                action="navigate_and_observe",
-                parameters={},
-                dependencies=[],
-                duration=1,
-            )
-        ],
-        reflection="Submitting the generated MiniZinc files.",
+        planner_choice=planner,
+        planner_model_file_locations=paths,
+        reflection="Submitting exact planner files.",
         runtime=_runtime(context),
     )
 
 
-def _execute(context: HyperWorkflowContext) -> str:
+def _execute(context: HyperWorkflowContext, planner: str, paths: list[str]) -> str:
     return cast(Any, planner_executor).func(
-        reflection="Executing the accepted MiniZinc problem.",
+        planner_choice=planner,
+        planner_model_file_locations=paths,
+        reflection="Executing exact accepted planner files.",
         runtime=_runtime(context),
     )
 
 
-def _valid_statechart() -> dict[str, object]:
+def _statechart() -> dict[str, object]:
     return {
-        "entry_state": "waiting",
+        "entry_state": "surveying",
         "terminal_states": ["complete"],
-        "states": ["waiting", "complete"],
-        "state_context": {"waiting": {}, "complete": {}},
+        "states": ["surveying", "complete"],
+        "state_context": {"surveying": {}, "complete": {}},
         "transitions": [
             {
-                "event": "finish",
-                "source": "waiting",
+                "event": "survey-complete",
+                "source": "surveying",
                 "target": "complete",
-                "conditions": [
-                    {
-                        "kind": "environment_time_at_or_after",
-                        "time_tick": 0,
-                        "time_scale": 1,
-                    }
-                ],
+                "conditions": [],
             }
         ],
     }
 
 
-def test_tool_registration_drops_context_loader_and_simplifies_inputs(
-    monkeypatch: Any,
-) -> None:
-    import onr.agents.hyper_workflow as workflow_module
+def test_tool_interfaces_are_identical_and_planner_neutral(monkeypatch: Any) -> None:
+    import onr.agents.hyper_workflow as module
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        workflow_module,
-        "_create_deep_agent",
-        lambda **kwargs: captured.update(kwargs) or object(),
+        module, "_create_deep_agent", lambda **kw: captured.update(kw) or object()
     )
-    create_hyper_workflow_agent(
-        model=object(), system_prompt="test", mission_id="mission-tools"
+    create_hyper_workflow_agent(model=object(), system_prompt="test", mission_id="m")
+    assert type(cast(list[Any], captured["middleware"])[0]) is TodoListMiddleware
+    expected = {"planner_choice", "planner_model_file_locations", "reflection"}
+    assert set(cast(Any, submit_planner_attempt).args) == expected
+    assert set(cast(Any, planner_executor).args) == expected
+
+
+@pytest.mark.parametrize(
+    ("planner", "expected_names"),
+    [
+        ("minizinc", ("model.mzn", "data.dzn")),
+        ("fast-downward", ("domain.pddl", "problem.pddl")),
+    ],
+)
+def test_recorded_choice_returns_matching_native_paths_and_reaches_verifier(
+    tmp_path: Path, planner: str, expected_names: tuple[str, str]
+) -> None:
+    context = _context(tmp_path)
+    result = _record(context, planner)
+    assert all(f"/artifacts/workspace/001/{name}" in result for name in expected_names)
+    paths = _write(context, planner)
+    submitted = _submit(context, planner, paths)
+    assert submitted.startswith("status: success")
+    verifier = (
+        context.minizinc_planner if planner == "minizinc" else context.val_validator
     )
-
-    names = [cast(Any, item).name for item in cast(list[object], captured["tools"])]
-    middleware = cast(list[object], captured["middleware"])
-    assert type(middleware[0]) is TodoListMiddleware
-    assert names == [
-        "record_planning_intent",
-        "submit_planner_attempt",
-        "planner_executor",
-        "submit_statechart_draft",
-        "handoff_execution",
-    ]
-    assert not hasattr(workflow_module, "load_planning_context")
-    assert "mission_id" not in cast(Any, record_planning_intent).args
-    assert "source_authority" not in cast(Any, record_planning_intent).args
-    assert set(cast(Any, planner_executor).args) == {"reflection"}
-    assert "attempt_number" not in cast(Any, submit_statechart_draft).args
-    assert "model_file_location" not in cast(Any, submit_planner_attempt).args
-    assert "translator_id" not in cast(Any, submit_planner_attempt).args
+    assert cast(Any, verifier).checked
+    assert _allowed_workflow_tools(context) == {"planner_executor"}
 
 
-def test_record_intent_immediately_opens_file_generation_with_exact_values(
+@pytest.mark.parametrize(
+    "locations",
+    [
+        [],
+        ["/artifacts/workspace/001/model.mzn"],
+        ["/artifacts/workspace/001/model.mzn"] * 2,
+        ["/foreign/model.mzn", "/foreign/data.dzn"],
+        [
+            "/artifacts/workspace/001/domain.pddl",
+            "/artifacts/workspace/001/problem.pddl",
+        ],
+    ],
+)
+def test_submission_rejects_missing_duplicate_foreign_and_wrong_planner_paths(
+    tmp_path: Path, locations: list[str]
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    _write(context, "minizinc")
+    with pytest.raises(ValueError):
+        _submit(context, "minizinc", locations)
+
+
+def test_static_failure_preserves_streams_remaps_paths_and_repairs_same_files(
     tmp_path: Path,
 ) -> None:
-    context = _context(tmp_path, _Planner(_evidence(tmp_path)), belief=True)
-    result = _record(context)
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    host = cast(Path, context.backend_root) / paths[0].removeprefix("/")
+    temporary = context.artifact_root / "check-abc" / "data.dzn"
+    context.minizinc_planner.check_result = PlannerStaticCheckResult(
+        False,
+        1,
+        stdout=f"checking {host}\n",
+        stderr=f"syntax error at {temporary}:7\n",
+    )
+    result = _submit(context, "minizinc", paths)
+    assert f"checking {paths[0]}\n" in result
+    assert f"syntax error at {paths[1]}:7\n" in result
+    assert "edit_file on the same submitted files" in result
+    assert "next" not in result.casefold()
+    assert all(
+        term not in result.casefold()
+        for term in ("sha", "maneuver", "cost", "diagnostic_reference")
+    )
+    assert (context.artifact_root / "planner-attempts/001/model.mzn").is_file()
 
-    assert result.startswith("Planning intent accepted.")
-    assert str(context.artifact_root / "workspace" / "001" / "model.mzn") in result
-    assert str(context.artifact_root / "workspace" / "001" / "data.dzn") in result
-    environment = context.environment_event.to_dict()["payload"]
-    environment.pop("environment_file")
-    assert json.dumps(environment, sort_keys=True, separators=(",", ":")) in result
-    expected_marginals = [item.to_dict() for item in context.belief_snapshot.marginals]
-    assert json.dumps(expected_marginals, sort_keys=True, separators=(",", ":")) in result
-    assert _allowed_workflow_tools(context) == {"write_file", "edit_file"}
-    assert all(term not in result.casefold() for term in _BANNED)
-    assert "environment_file" not in result
 
-
-def test_static_results_are_concise_and_preserve_exact_repair_diagnostic(
+def test_minizinc_success_persists_and_returns_exact_native_output(
     tmp_path: Path,
 ) -> None:
-    diagnostic = "EXACT MiniZinc parser diagnostic at data.dzn:7"
+    native = '{"type":"solution","output":{"default":"route"}}\n{"type":"status","status":"SATISFIED"}\n'
     context = _context(
-        tmp_path, _Planner(_evidence(tmp_path), static_diagnostic=diagnostic)
+        tmp_path,
+        minizinc=_MiniZinc(
+            execute=PlannerExecutionResult(PlanningOutcome.SOLVED, stdout=native)
+        ),
     )
-    _record(context)
-    _write_problem(context)
-
-    rejected = _submit(context)
-    assert diagnostic in rejected
-    assert "1 planner attempts remain" in rejected
-    assert str(context.artifact_root / "workspace" / "002" / "model.mzn") in rejected
-    assert all(term not in rejected.casefold() for term in _BANNED)
-
-    accepted = _submit(context)
-    assert accepted == "Static verification passed. Execute MiniZinc next."
-
-
-def test_execution_success_returns_every_verified_maneuver_field(tmp_path: Path) -> None:
-    context = _context(tmp_path, _Planner(_evidence(tmp_path)))
-    _record(context)
-    _write_problem(context)
-    assert _submit(context) == "Static verification passed. Execute MiniZinc next."
-
-    result = _execute(context)
-
-    assert result.startswith("MiniZinc execution and solution verification passed.")
-    maneuvers = json.loads(result.split("\n", 1)[1])
-    assert maneuvers == [
-        {
-            "dependencies": [],
-            "duration": 1,
-            "intent": {"action": "navigate_and_observe", "parameters": {}},
-            "maneuver_id": "observe-ship-1",
-            "start": 0,
-        }
-    ]
-    assert all(term not in result.casefold() for term in _BANNED)
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    _submit(context, "minizinc", paths)
+    result = _execute(context, "minizinc", paths)
+    assert result.startswith("status: success\n")
+    assert f"plan:\n{native}" in result
+    assert context.planner_plan is not None
+    reference = context.planner_plan.planner_native_plan_artifact_reference
+    assert reference.startswith("/artifacts/planner-plans/")
+    assert (
+        cast(Path, context.backend_root) / reference.removeprefix("/")
+    ).read_text() == native
 
 
-def test_execution_rejection_preserves_exact_diagnostic_and_repair_paths(
+def test_fast_downward_success_requires_val_and_returns_exact_sas_plan(
     tmp_path: Path,
 ) -> None:
-    diagnostic = "EXACT planner stderr diagnostic"
-    context = _context(
-        tmp_path, _Planner(_evidence(tmp_path), execution_diagnostic=diagnostic)
+    val = _VAL()
+    context = _context(tmp_path, val=val)
+    _record(context, "fast-downward")
+    paths = _write(context, "fast-downward")
+    _submit(context, "fast-downward", paths)
+    result = _execute(context, "fast-downward", paths)
+    plan = "(survey drone-1 site-a)\n; cost = 1 (unit cost)\n"
+    assert f"plan:\n{plan}" in result
+    assert len(val.validated) == 1
+    assert {path.name for path in val.validated[0].artifact_paths} >= {
+        "domain.pddl",
+        "problem.pddl",
+        "sas_plan",
+    }
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [PlanningOutcome.ERROR, PlanningOutcome.TIMEOUT, PlanningOutcome.UNSOLVABLE],
+)
+def test_execution_failure_returns_exact_streams_and_todo_rollback(
+    tmp_path: Path, outcome: PlanningOutcome
+) -> None:
+    execution = PlannerExecutionResult(
+        outcome,
+        stdout="planner stdout\n",
+        stderr="planner stderr\n",
     )
-    _record(context)
-    _write_problem(context)
-    _submit(context)
+    context = _context(tmp_path, minizinc=_MiniZinc(execute=execution))
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    _submit(context, "minizinc", paths)
+    result = _execute(context, "minizinc", paths)
+    assert result.startswith("status: failed")
+    assert "planner stdout\n" in result and "planner stderr\n" in result
+    assert "write_todos" in result
+    assert "'Generate planner files' back to in_progress" in result
+    assert "every later stage back to pending" in result
+    assert "edit_file on the same planner files" in result
 
-    result = _execute(context)
 
-    assert diagnostic in result
-    assert "1 planner attempts remain" in result
-    assert str(context.artifact_root / "workspace" / "002" / "data.dzn") in result
+def test_val_rejection_returns_val_streams_and_no_planner_plan(tmp_path: Path) -> None:
+    context = _context(tmp_path, val=_VAL(accepts_plan=False))
+    _record(context, "fast-downward")
+    paths = _write(context, "fast-downward")
+    _submit(context, "fast-downward", paths)
+    result = _execute(context, "fast-downward", paths)
+    assert result.startswith("status: failed")
+    assert "Plan failed\n" in result
+    assert "VAL rejected exact sas_plan\n" in result
+    assert context.planner_plan is None
 
 
-def test_statechart_tool_assigns_attempts_and_returns_exact_validation_error(
+def test_statechart_binds_planner_plan_and_handoff_contains_no_plan(
     tmp_path: Path,
 ) -> None:
-    context = _context(tmp_path, _Planner(_evidence(tmp_path)))
-    _record(context)
-    _write_problem(context)
-    _submit(context)
-    _execute(context)
-
-    rejected = cast(Any, submit_statechart_draft).func(
-        statechart={"states": []},
-        reflection="Submitting the Statechart topology.",
-        runtime=_runtime(context),
-    )
-    assert "ValueError: Statechart topology contains unknown or missing fields" in rejected
-    assert "1 Statechart attempts remain" in rejected
-
+    context = _context(tmp_path, handoff=True)
+    _record(context, "fast-downward")
+    paths = _write(context, "fast-downward")
+    _submit(context, "fast-downward", paths)
+    _execute(context, "fast-downward", paths)
     accepted = cast(Any, submit_statechart_draft).func(
-        statechart=_valid_statechart(),
-        reflection="Repairing the Statechart topology.",
+        statechart=_statechart(),
+        reflection="Binding FSM semantics.",
         runtime=_runtime(context),
     )
-    assert accepted == "Statechart validation passed. Hand off execution next."
-    assert context.current_statechart_attempt == 2
-
-
-def test_handoff_tool_returns_only_completion_or_actionable_error(tmp_path: Path) -> None:
-    context = _context(tmp_path, _Planner(_evidence(tmp_path)), handoff=True)
-    _record(context)
-    _write_problem(context)
-    _submit(context)
-    _execute(context)
-    cast(Any, submit_statechart_draft).func(
-        statechart=_valid_statechart(),
-        reflection="Submitting the verified Statechart.",
-        runtime=_runtime(context),
+    assert accepted.startswith("Statechart validation passed")
+    assert context.statechart.plan_revision == context.planner_plan.plan_revision
+    assert (
+        cast(Any, handoff_execution).func(
+            reflection="Activating FSM.", runtime=_runtime(context)
+        )
+        == "Execution handoff completed."
     )
-
-    completed = cast(Any, handoff_execution).func(
-        reflection="Handing verified execution to Maneuver Control.",
-        runtime=_runtime(context),
-    )
-    assert completed == "Execution handoff completed."
-
-    context.handoff_outcome = None
-    context.communication_port = _CommunicationPort(fail=True)
-    failed = cast(Any, handoff_execution).func(
-        reflection="Retrying the execution handoff.",
-        runtime=_runtime(context),
-    )
-    assert failed == "Execution handoff failed: Maneuver Control is unavailable."
+    communication = cast(_Communication, context.communication_port)
+    payload = cast(AgentMessage, communication.message).payload
+    assert "normalized_plan" not in payload
+    assert "planner_plan" not in payload
+    assert set(payload) == {
+        "request_id",
+        "correlation_id",
+        "mission_id",
+        "plan_revision",
+        "statechart_reference",
+        "fsm_status",
+        "environment_data",
+        "belief_snapshot",
+        "available_recipients",
+        "planning_snapshot",
+    }

@@ -1,36 +1,31 @@
 ---
 name: creating-pddl-problem-files
-description: Apply after Fast Downward is selected to generate PDDL domain and problem files from Mission Intent and the current Hyper heartbeat snapshot.
-version: '1.3.0'
+description: Apply after Fast Downward is selected to generate and repair PDDL domain and problem files from current Mission evidence.
+version: '2.0.0'
 ---
 
 # Creating PDDL Problem Files
 
 ## Procedure
 
-1. Read Mission Intent, the accepted PlanningIntent, and the current MissionSnapshot. Resolve operational facts through every relevant key in its snapshot-authorized flexible `environment_data`.
-2. Put reusable predicates, action preconditions/effects, and action costs in domain.pddl. Put current objects, initial predicates, and the goal in problem.pddl.
-3. Use portable lowercase action names. Use the same action names and costs in the normalization template.
-4. When `correction_feedback` is present, read its exact VAL diagnostic and references. Generate a fresh asset set that corrects the cited failure within the runtime's retry bound.
-5. Complete generation only after VAL accepts the exact domain/problem pair, Fast Downward returns a plan, VAL independently accepts that exact persisted domain/problem/plan set, and the code-owned action checker accepts every returned action.
+1. Read Mission Intent, the accepted Planning Intent, and the current snapshot-authorized environment and belief evidence.
+2. Put reusable predicates plus action preconditions and effects in `domain.pddl`. Put current objects, initial predicates, and the goal in `problem.pddl`.
+3. Write both files at the exact sandbox paths returned by `record_planning_intent`.
+4. Call `submit_planner_attempt` with `planner_choice: "fast-downward"`, the exact returned `domain.pddl` and `problem.pddl` paths, and reflection. Static completion requires `status: success` from VAL's domain/problem check.
+5. Call `planner_executor` with the same planner choice and exact paths. Execution completion requires Fast Downward to produce `sas_plan` and VAL to accept that exact domain/problem/plan set; the tool returns the exact `sas_plan` text and artifact reference.
+6. On either failure, call `write_todos` as instructed, use `edit_file` on the same submitted files, and resubmit those same paths. The Hyper Agent remains the todo owner.
 
-## Few-shot example
+## PDDL discipline
 
-Read examples/survey-return/domain.pddl and
-examples/survey-return/problem.pddl. They encode symbolic reachability:
-survey must complete before return-to-base, and timing has no effect on
-feasibility or value. Replace all predicates, actions, objects, and goals with
-facts traceable to the current Mission's evidence.
+- Declare every predicate, action, type, constant, and object before use.
+- Keep reusable action semantics in the domain and current state plus goal in the problem.
+- Match the problem's `:domain` name to the domain declaration and use requirements supported by the configured Fast Downward translator.
+- Use the exact VAL or Fast Downward diagnostic to repair the cited file without inventing new evidence.
 
-## Must Not Do
+## Example
 
-- Do not reference undeclared predicates, actions, types, constants, or objects. Declare reusable symbols in `domain.pddl` and current Mission objects in `problem.pddl`.
-- Do not mix current initial facts or the current goal into `domain.pddl`. Keep reusable action semantics in the domain and snapshot-authorized state in the problem.
-- Do not let the problem's `:domain` name differ from the domain declaration, and do not use requirements unsupported by the configured Fast Downward translator.
-- Do not repeat a rejected construct. Use the exact correction message and diagnostic references to repair the cited file and parser location.
+Read `examples/survey-return/domain.pddl` and `examples/survey-return/problem.pddl` for symbolic reachability where timing does not affect feasibility or value. Replace its objects, facts, actions, and goal with current Mission evidence.
 
 ## Authority boundary
 
-PDDL files and correction feedback are non-authoritative planning artifacts.
-A Fast Downward plan remains non-executable until independent VAL and the
-code-owned action checker both accept it.
+PDDL files and `sas_plan` are planning artifacts, not Mission authority. An accepted `sas_plan` remains planner-native and is interpreted into execution semantics only by the accepted Statechart/FSM.

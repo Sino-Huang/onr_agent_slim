@@ -50,15 +50,27 @@ export function signatureOf(payload, run) {
   const steps = payload.steps || [];
   const last = steps.length ? steps[steps.length - 1] : null;
   const countKind = { llm: 0, tool: 0, decision: 0, feedback: 0, error: 0 };
+  const revisions = [];
   for (const { step } of walkSteps(steps)) {
     countKind[step.kind] = (countKind[step.kind] || 0) + 1;
     if (step.status === "error") countKind.error += 1;
+    const draftLength = (step.tool_calls || []).reduce(
+      (total, call) => total + (call.arguments_text || "").length, 0);
+    revisions.push([
+      step.step_id,
+      step.revision || 0,
+      step.completion_state || "complete",
+      (step.reasoning || "").length,
+      (step.content || "").length,
+      draftLength,
+    ].join(":"));
   }
   return [
     payload.mission_id,
     steps.length,
     countKind.llm, countKind.tool, countKind.decision, countKind.feedback, countKind.error,
     last ? last.finished_at : "",
+    revisions.join(","),
     run ? run.status : "",
     run && run.aggregates ? run.aggregates.step_count : "",
   ].join("|");

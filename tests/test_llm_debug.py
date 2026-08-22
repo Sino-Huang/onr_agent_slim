@@ -7,9 +7,11 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
 
 from onr.adapters.inprocess_transport import InProcessTransport
-import onr.runtime.composition as composition
+from onr.runtime import composition
 from onr.runtime.config import (
     HeartbeatsConfig,
     LLMConfig,
@@ -21,6 +23,24 @@ from onr.runtime.config import (
     TransportConfig,
 )
 from onr.runtime.llm_debug import LLMResponseRecorder
+
+
+class _FragmentedStream(httpx.SyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+
+    def __iter__(self):
+        yield from self.chunks
+
+
+def _sse(*payloads: object, done: bool = True) -> bytes:
+    events = [
+        b"data: " + json.dumps(payload, separators=(",", ":")).encode() + b"\n\n"
+        for payload in payloads
+    ]
+    if done:
+        events.append(b"data: [DONE]\n\n")
+    return b"".join(events)
 
 
 def test_recorder_captures_raw_content_and_provider_reasoning(tmp_path: Path) -> None:
@@ -90,34 +110,27 @@ def test_recorder_captures_raw_content_and_provider_reasoning(tmp_path: Path) ->
     recorder.close()
 
     assert response.json() == response_body
-    artifacts = list(
-        (tmp_path / "debug/llm/hyper-agent/mission%3Ademo").glob("*.json")
-    )
+    artifacts = list((tmp_path / "debug/llm/hyper-agent/mission%3Ademo").glob("*.json"))
     assert len(artifacts) == 1
-    assert json.loads(artifacts[0].read_text(encoding="utf-8")) == {
-        "schema_version": 1,
-        "request": {
-            **request_body,
-            "messages": [
-                {"role": "system", "content": "Follow the private system prompt."},
-                {
-                    "role": "user",
-                    "content": "private prompt",
-                    "reasoning_content": "prior private reasoning",
-                },
-            ],
-        },
-        "response_id": "chatcmpl-debug",
-        "model": "reasoning-model",
-        "status_code": 200,
-        "finish_reason": "stop",
-        "content": "final answer",
-        "function_call": {"name": "interpret", "arguments": "{}"},
-        "reasoning": "raw reasoning",
-        "reasoning_content": "reasoning content",
-        "reasoning_details": [{"type": "summary", "text": "detail"}],
-        "tool_calls": [{"id": "call-1", "type": "function"}],
-    }
+    artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert artifact["schema_version"] == 2
+    assert artifact["sequence"] == 1
+    assert artifact["request"] == request_body
+    assert artifact["response_id"] == "chatcmpl-debug"
+    assert artifact["model"] == "reasoning-model"
+    assert artifact["status_code"] == 200
+    assert artifact["finish_reason"] == "stop"
+    assert artifact["content"] == "final answer"
+    assert artifact["function_call"] == {"name": "interpret", "arguments": "{}"}
+    assert artifact["reasoning"] == "raw reasoning"
+    assert artifact["reasoning_content"] == "reasoning content"
+    assert artifact["reasoning_details"] == [{"type": "summary", "text": "detail"}]
+    assert artifact["tool_calls"] == [{"id": "call-1", "type": "function"}]
+    assert artifact["completion_state"] == "complete"
+    assert artifact["revision"] == 2
+    assert artifact["error"] is None
+    assert isinstance(artifact["finished_at"], str)
+    assert isinstance(artifact["updated_at"], str)
     serialized = artifacts[0].read_text(encoding="utf-8")
     assert "private prompt" in serialized
     assert "raw reasoning" in serialized
@@ -159,9 +172,7 @@ def test_recorder_records_null_reasoning_and_ignores_other_responses(
     recorder.http_client.post("http://vllm.test/v1/chat/completions", json={})
     recorder.close()
 
-    artifacts = list(
-        (tmp_path / "llm/maneuver-control/mission%2Fdemo").glob("*.json")
-    )
+    artifacts = list((tmp_path / "llm/maneuver-control/mission%2Fdemo").glob("*.json"))
     assert len(artifacts) == 1
     artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert artifact["request"] == {}
@@ -181,9 +192,7 @@ def test_recorder_writes_null_for_absent_or_malformed_request_body(
         lambda request: httpx.Response(
             200,
             json={
-                "choices": [
-                    {"finish_reason": "stop", "message": {"content": "answer"}}
-                ]
+                "choices": [{"finish_reason": "stop", "message": {"content": "answer"}}]
             },
             request=request,
         )
@@ -198,9 +207,7 @@ def test_recorder_writes_null_for_absent_or_malformed_request_body(
     recorder.http_client.send(request)
     recorder.close()
 
-    artifact_path = (
-        tmp_path / "llm/mission-summary/mission/00000000000000000001.json"
-    )
+    artifact_path = tmp_path / "llm/mission-summary/mission/00000000000000000001.json"
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["request"] is None
     assert artifact["content"] == "answer"
@@ -254,7 +261,293 @@ def test_recorder_ignores_malformed_and_choice_free_completion_errors(
     recorder.http_client.post("http://vllm.test/v1/chat/completions")
     recorder.close()
 
-    assert not (tmp_path / "llm/runtime/mission").exists()
+    artifacts = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((tmp_path / "llm/runtime/mission").glob("*.json"))
+    ]
+    assert [artifact["completion_state"] for artifact in artifacts] == [
+        "error",
+        "error",
+    ]
+    assert [artifact["status_code"] for artifact in artifacts] == [500, 429]
+
+
+def test_fragmented_sse_persists_first_delta_and_folds_tool_arguments(
+    tmp_path: Path,
+) -> None:
+    first = {
+        "id": "chatcmpl-stream",
+        "model": "reasoning-model",
+        "choices": [{"index": 0, "delta": {"reasoning_content": "Think "}}],
+    }
+    second = {
+        "id": "chatcmpl-stream",
+        "model": "reasoning-model",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "content": "answer",
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "interpret",
+                                "arguments": '{"mission":',
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    third = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "reasoning_content": "carefully",
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {"arguments": '"demo"}'},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    encoded = _sse(first, second, third)
+    split = encoded.index(b"\n\n") + 2
+    chunks = [
+        encoded[:7],
+        encoded[7:split],
+        encoded[split : split + 19],
+        encoded[split + 19 :],
+    ]
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_FragmentedStream(chunks),
+            request=request,
+        )
+    )
+    recorder = LLMResponseRecorder(tmp_path / "llm", "mission", transport=transport)
+    artifact_path = tmp_path / "llm/runtime/mission/00000000000000000001.json"
+    request = recorder.http_client.build_request(
+        "POST",
+        "http://vllm.test/v1/chat/completions",
+        json={"model": "reasoning-model", "stream": True},
+    )
+
+    response = recorder.http_client.send(request, stream=True)
+    try:
+        iterator = response.iter_raw()
+        assert next(iterator) == chunks[0]
+        started = json.loads(artifact_path.read_text(encoding="utf-8"))
+        assert started["completion_state"] == "live"
+        assert started["revision"] == 1
+        assert next(iterator) == chunks[1]
+        first_delta = json.loads(artifact_path.read_text(encoding="utf-8"))
+        assert first_delta["reasoning_content"] == "Think "
+        assert first_delta["revision"] == 2
+        assert b"".join(iterator) == b"".join(chunks[2:])
+    finally:
+        response.close()
+    recorder.close()
+
+    completed = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert completed["completion_state"] == "complete"
+    assert completed["reasoning_content"] == "Think carefully"
+    assert completed["content"] == "answer"
+    assert completed["finish_reason"] == "tool_calls"
+    assert completed["tool_calls"] == [
+        {
+            "index": 0,
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "name": "interpret",
+                "arguments": '{"mission":"demo"}',
+            },
+        }
+    ]
+    assert not list(artifact_path.parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("stream_body", "expected_state"),
+    [
+        (_sse({"choices": [{"delta": {"content": "partial"}}]}, done=False), "partial"),
+        (b"data: {malformed}\n\n", "error"),
+    ],
+)
+def test_stream_finalizes_premature_eof_and_malformed_events(
+    tmp_path: Path, stream_body: bytes, expected_state: str
+) -> None:
+    recorder = LLMResponseRecorder(
+        tmp_path / "llm",
+        "mission",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                stream=_FragmentedStream([stream_body]),
+                request=request,
+            )
+        ),
+    )
+
+    response = recorder.http_client.post(
+        "http://vllm.test/v1/chat/completions",
+        json={"stream": True},
+    )
+    recorder.close()
+
+    assert response.content == stream_body
+    artifact = json.loads(
+        (tmp_path / "llm/runtime/mission/00000000000000000001.json").read_text()
+    )
+    assert artifact["completion_state"] == expected_state
+    assert isinstance(artifact["finished_at"], str)
+
+
+def test_transport_failure_finalizes_the_started_record(tmp_path: Path) -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("endpoint unavailable", request=request)
+
+    recorder = LLMResponseRecorder(
+        tmp_path / "llm", "mission", transport=httpx.MockTransport(fail)
+    )
+
+    with pytest.raises(httpx.ConnectError):
+        recorder.http_client.post(
+            "http://vllm.test/v1/chat/completions", json={"stream": True}
+        )
+    recorder.close()
+
+    artifact = json.loads(
+        (tmp_path / "llm/runtime/mission/00000000000000000001.json").read_text()
+    )
+    assert artifact["completion_state"] == "error"
+    assert artifact["status_code"] is None
+    assert artifact["error"] == {
+        "type": "ConnectError",
+        "message": "endpoint unavailable",
+    }
+
+
+def test_logging_write_failure_does_not_interrupt_the_http_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response_body = {
+        "choices": [{"finish_reason": "stop", "message": {"content": "answer"}}]
+    }
+    recorder = LLMResponseRecorder(
+        tmp_path / "llm",
+        "mission",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=response_body, request=request)
+        ),
+    )
+
+    def fail_write(path: Path, artifact: object) -> None:
+        del path, artifact
+        raise OSError("debug storage unavailable")
+
+    monkeypatch.setattr(recorder, "_write_atomic", fail_write)
+
+    response = recorder.http_client.post(
+        "http://vllm.test/v1/chat/completions", json={}
+    )
+    recorder.close()
+
+    assert response.json() == response_body
+
+
+def test_streamed_chat_openai_invoke_preserves_shape_and_pairs_invocation(
+    tmp_path: Path,
+) -> None:
+    chunks = _sse(
+        {
+            "id": "chatcmpl-integration",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "reasoning-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning_content": "Reasoning live.",
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-integration",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "reasoning-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "assembled answer"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+    recorder = LLMResponseRecorder(
+        tmp_path / "debug/llm",
+        "mission",
+        role="hyper-agent",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=_FragmentedStream([chunks[:31], chunks[31:]]),
+                request=request,
+            )
+        ),
+    )
+    agent_recorder = composition.AgentDebugRecorder(
+        tmp_path / "debug/agent", "mission", role="hyper-agent"
+    )
+    callback = agent_recorder.callback_for("hyper-agent")
+    model = ChatOpenAI(
+        base_url="http://vllm.test/v1",
+        model="reasoning-model",
+        api_key="EMPTY",
+        streaming=True,
+        max_retries=0,
+        http_client=recorder.http_client,
+    )
+
+    result = model.invoke(
+        [HumanMessage(content="hello")], config={"callbacks": [callback]}
+    )
+    recorder.close()
+
+    assert result.content == "assembled answer"
+    raw = json.loads(
+        (
+            tmp_path / "debug/llm/hyper-agent/mission/00000000000000000001.json"
+        ).read_text()
+    )
+    agent = json.loads(
+        (
+            tmp_path / "debug/agent/hyper-agent/mission/00000000000000000001.json"
+        ).read_text()
+    )
+    assert raw["reasoning_content"] == "Reasoning live."
+    assert raw["completion_state"] == "complete"
+    assert agent["completion_state"] == "complete"
+    assert raw["invocation_id"] == agent["invocation_id"]
 
 
 def _runtime_config(tmp_path: Path, *, debug: bool) -> RuntimeConfig:
@@ -326,9 +619,7 @@ def test_debug_model_owns_mission_scoped_recorder(
 
     model = cast(
         Any,
-        runtime.create_chat_model(
-            mission_id="mission:demo", debug_scope="hyper-agent"
-        ),
+        runtime.create_chat_model(mission_id="mission:demo", debug_scope="hyper-agent"),
     )
 
     assert constructed == [
@@ -336,4 +627,5 @@ def test_debug_model_owns_mission_scoped_recorder(
         (tmp_path / "var/debug/agent", "hyper-agent", "mission:demo"),
     ]
     assert model.kwargs["http_client"] is model._llm_response_recorder.http_client
+    assert model.kwargs["streaming"] is True
     assert isinstance(model._agent_debug_recorder, FakeAgentRecorder)

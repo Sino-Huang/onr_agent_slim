@@ -9,16 +9,12 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 from onr.contracts.planning import (
-    JsonScalar,
-    ManeuverParameter,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlannerStaticCheckResult,
     PlanningOutcome,
-    TemporalAssignment,
 )
 
 _MINIZINC_ARGUMENTS = (
@@ -206,7 +202,8 @@ def _execution_evidence(directory: Path) -> PlannerExecutionEvidence:
                 (
                     path.resolve()
                     for path in directory.iterdir()
-                    if path.is_file() and path.name not in {"solver.stdout", "solver.stderr"}
+                    if path.is_file()
+                    and path.name not in {"solver.stdout", "solver.stderr"}
                 ),
                 key=lambda path: path.name,
             )
@@ -243,7 +240,7 @@ def _materialize_assets(
 
 
 def _parse_json_stream(stream: str) -> PlannerExecutionResult:
-    solution: object | None = None
+    saw_solution = False
     terminal_status: str | None = None
 
     for line in stream.splitlines():
@@ -257,15 +254,7 @@ def _parse_json_stream(stream: str) -> PlannerExecutionResult:
             return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
 
         if event["type"] == "solution":
-            output = event.get("output")
-            if not isinstance(output, dict) or not isinstance(
-                output.get("default"), str
-            ):
-                return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
-            try:
-                solution = json.loads(output["default"])
-            except json.JSONDecodeError:
-                return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
+            saw_solution = True
         elif event["type"] == "status":
             status = event.get("status")
             if not isinstance(status, str):
@@ -276,64 +265,10 @@ def _parse_json_stream(stream: str) -> PlannerExecutionResult:
 
     if terminal_status == "UNSATISFIABLE":
         return PlannerExecutionResult(outcome=PlanningOutcome.UNSOLVABLE)
-    if terminal_status in (None, "UNKNOWN", "SATISFIED", "ALL_SOLUTIONS"):
+    if terminal_status in (None, "UNKNOWN"):
         return PlannerExecutionResult(outcome=PlanningOutcome.INCOMPLETE)
-    if terminal_status != _OPTIMAL_STATUS or solution is None:
+    if terminal_status not in (_OPTIMAL_STATUS, "SATISFIED", "ALL_SOLUTIONS"):
         return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
-
-    assignments = _parse_assignments(solution)
-    if assignments is None:
+    if not saw_solution:
         return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
-    return PlannerExecutionResult(
-        outcome=PlanningOutcome.SOLVED,
-        assignments=assignments,
-    )
-
-
-def _parse_assignments(value: object) -> tuple[TemporalAssignment, ...] | None:
-    if not isinstance(value, dict) or set(value) != {"assignments"}:
-        return None
-    raw_assignments = value["assignments"]
-    if not isinstance(raw_assignments, list):
-        return None
-
-    assignments = []
-    for raw_assignment in raw_assignments:
-        if not isinstance(raw_assignment, dict):
-            return None
-        required = {"maneuver_id", "start", "duration"}
-        if set(raw_assignment) not in (required, required | {"parameters"}):
-            return None
-        maneuver_id = raw_assignment["maneuver_id"]
-        start = raw_assignment["start"]
-        duration = raw_assignment["duration"]
-        raw_parameters = raw_assignment.get("parameters", {})
-        if not isinstance(raw_parameters, dict) or not all(
-            isinstance(name, str) for name in raw_parameters
-        ):
-            return None
-
-        if (
-            not isinstance(maneuver_id, str)
-            or not _is_int(start)
-            or not _is_int(duration)
-        ):
-            return None
-        try:
-            assignment = TemporalAssignment(
-                maneuver_id=maneuver_id,
-                start=start,
-                duration=duration,
-                parameters=tuple(
-                    ManeuverParameter(name, cast(JsonScalar, parameter_value))
-                    for name, parameter_value in raw_parameters.items()
-                ),
-            )
-        except (TypeError, ValueError):
-            return None
-        assignments.append(assignment)
-    return tuple(assignments)
-
-
-def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+    return PlannerExecutionResult(outcome=PlanningOutcome.SOLVED)

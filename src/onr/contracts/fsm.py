@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from onr.contracts.planning import NormalizedPlan, PlanningProfile
+from onr.contracts.planning import PlanningProfile
 
 
 def _text(value: object, label: str) -> str:
@@ -461,7 +461,7 @@ class StatechartTransition:
 
 @dataclass(frozen=True, slots=True)
 class Statechart:
-    """Validated immutable JSON topology for one Normalized Plan revision."""
+    """Validated immutable JSON topology carrying one plan revision's semantics."""
 
     mission_id: str
     plan_revision: int
@@ -556,47 +556,6 @@ class Statechart:
         object.__setattr__(self, "state_context", MappingProxyType(state_context))
         object.__setattr__(self, "deadlines", frozen_deadlines)
         object.__setattr__(self, "planning_profile", str(PlanningProfile(self.planning_profile)))
-
-    @classmethod
-    def from_normalized_plan(cls, plan: NormalizedPlan) -> "Statechart":
-        """Render a solved plan into deterministic abstract topology data."""
-
-        if not isinstance(plan, NormalizedPlan):
-            raise TypeError("Statechart construction requires a NormalizedPlan")
-        states = tuple(f"state-{index}" for index in range(len(plan.maneuvers) + 1))
-        transitions = tuple(
-            StatechartTransition(
-                event=f"advance:{maneuver.maneuver_id}",
-                source=states[index],
-                target=states[index + 1],
-                maneuver_id=maneuver.maneuver_id,
-                requires_lifecycle_fact=plan.planner_choice.planning_profile
-                is PlanningProfile.SYMBOLIC,
-                requires_decision=plan.planner_choice.planning_profile
-                is PlanningProfile.SYMBOLIC,
-            )
-            for index, maneuver in enumerate(plan.maneuvers)
-        )
-        deadlines: dict[str, int] = {}
-        if plan.planner_choice.planning_profile is PlanningProfile.TEMPORAL:
-            deadlines = {
-                states[index]: getattr(maneuver, "start")
-                for index, maneuver in enumerate(plan.maneuvers)
-            }
-        return cls(
-            mission_id=plan.mission_id,
-            plan_revision=plan.plan_revision,
-            mission_snapshot_id=plan.mission_snapshot_id,
-            planning_profile=str(plan.planner_choice.planning_profile),
-            entry_state=states[0],
-            states=states,
-            transitions=transitions,
-            terminal_states=(states[-1],),
-            state_context={state: {} for state in states},
-            deadlines=deadlines,
-        )
-
-    from_plan = from_normalized_plan
 
     @property
     def initial_state(self) -> str:

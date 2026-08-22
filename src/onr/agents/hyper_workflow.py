@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,13 +14,11 @@ from typing import Any, Literal, cast
 from langchain.agents.middleware import TodoListMiddleware, wrap_model_call
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import BaseMessage, HumanMessage
-from pydantic import BaseModel, ConfigDict, Field
 
 from onr.agents.hyper_agent import (
     _create_deep_agent,
     _parse_planning_intent_response,
 )
-from onr.application.minizinc_translation import MiniZincProblem, MiniZincTranslation
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
@@ -30,27 +29,16 @@ from onr.contracts.maneuver_control import (
     ManeuverHeartbeatCompletion,
     ManeuverInvocation,
 )
-from onr.contracts.planner_translation import (
-    PlannerCorrectionFeedback,
-    PlannerCorrectionStage,
-    PlannerGenerationContext,
-    PlanningTranslationOutcome,
-    PlanningTranslationResult,
-    validate_environment_data,
-)
+from onr.contracts.planner_translation import validate_environment_data
 from onr.contracts.planning import (
-    ManeuverIntent,
-    ManeuverParameter,
-    NormalizedPlan,
-    PlannerChoice,
+    PlannerExecutionEvidence,
+    PlannerExecutionResult,
+    PlannerPlan,
     PlannerStaticCheckResult,
-    TemporalManeuver,
+    PlanningOutcome,
+    SymbolicPlannerExecutionResult,
 )
-from onr.contracts.planning_evidence import (
-    PlannerChoiceRecord,
-    PlannerGenerationAttempt,
-    TranslationAttemptOutcome,
-)
+from onr.contracts.planning_evidence import PlannerChoiceRecord
 from onr.contracts.planning_intent import PlanningIntent
 from onr.contracts.transport import CommandOutcome, TransportEvent
 
@@ -70,24 +58,6 @@ HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
     "required": ["mission_id", "outcome"],
     "additionalProperties": False,
 }
-
-
-class TemporalManeuverCandidate(BaseModel):
-    """Strict model-facing normalization template for one temporal maneuver."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    maneuver_id: str = Field(
-        description="Portable maneuver identifier used in solver output."
-    )
-    action: str = Field(description="Abstract maneuver action for Maneuver Control.")
-    parameters: dict[str, str | int | float | bool | None] = Field(
-        description="JSON-scalar action parameters keyed by semantic name."
-    )
-    dependencies: list[str] = Field(
-        description="Maneuver IDs that must finish before this maneuver starts."
-    )
-    duration: int = Field(description="Positive integer maneuver duration.")
 
 
 def _canonical_json(value: object) -> str:
@@ -117,88 +87,119 @@ def _prerequisite_missing(*, required_tool: str, retry_tool: str) -> str:
 
 
 def _planner_asset_locations(
-    context: HyperWorkflowContext, attempt_number: int
+    context: HyperWorkflowContext, planner_id: str
 ) -> dict[str, str]:
     workspace = cast(str, context.planner_workspace_location).rstrip("/")
-    attempt = f"{attempt_number:03d}"
-    return {
-        "model_file_location": f"{workspace}/{attempt}/model.mzn",
-        "data_file_location": f"{workspace}/{attempt}/data.dzn",
-    }
+    filenames = (
+        ("model.mzn", "data.dzn")
+        if planner_id == "minizinc"
+        else ("domain.pddl", "problem.pddl")
+    )
+    return {name: f"{workspace}/001/{name}" for name in filenames}
 
 
-def _planner_asset_path(
-    context: HyperWorkflowContext, *, attempt_number: int, name: str
-) -> Path:
-    location = _planner_asset_locations(context, attempt_number)[name]
+def _host_path(context: HyperWorkflowContext, location: str) -> Path:
     if context.backend_root is not None and location.startswith("/"):
         path = context.backend_root / location.removeprefix("/")
     else:
         path = Path(location)
-    path = path.resolve()
-    expected_path = (
-        context.artifact_root
-        / "workspace"
-        / f"{attempt_number:03d}"
-        / ("model.mzn" if name == "model_file_location" else "data.dzn")
-    ).resolve()
-    if path != expected_path or not path.is_file():
-        raise ValueError("planner asset file does not exist at the expected location")
-    return path
+    return path.resolve()
 
 
-def _agent_diagnostic(context: HyperWorkflowContext, text: str) -> str:
+def _sandbox_path(context: HyperWorkflowContext, path: Path) -> str:
+    resolved = path.resolve()
     if context.backend_root is None:
-        return text
-    return text.replace(str(context.backend_root), "")
+        return str(resolved)
+    try:
+        relative = resolved.relative_to(context.backend_root)
+    except ValueError:
+        return str(resolved)
+    return "/" + relative.as_posix()
 
 
-def _persist_minizinc_check(
+def _resolve_planner_files(
     context: HyperWorkflowContext,
-    result: PlannerStaticCheckResult,
-) -> dict[str, str]:
+    planner_choice: str,
+    locations: list[str],
+) -> tuple[dict[str, bytes], dict[str, str], dict[str, Path]]:
+    choice = context.planner_choice
+    if choice is None or choice.planner_choice.planner_id != planner_choice:
+        raise ValueError("planner choice does not match the recorded Planner Choice")
+    expected = _planner_asset_locations(context, planner_choice)
+    if len(locations) != 2 or len(set(locations)) != 2:
+        raise ValueError("planner submission requires exactly two distinct file paths")
+    if set(locations) != set(expected.values()):
+        raise ValueError(
+            "planner file paths do not match the recorded planner workspace"
+        )
+    sandbox_by_name = {Path(location).name: location for location in locations}
+    host_by_name = {
+        name: _host_path(context, location)
+        for name, location in sandbox_by_name.items()
+    }
+    if set(host_by_name) != set(expected) or any(
+        not path.is_file() for path in host_by_name.values()
+    ):
+        raise ValueError("planner submission files do not exist at the expected paths")
+    assets = {name: path.read_bytes() for name, path in host_by_name.items()}
+    return assets, sandbox_by_name, host_by_name
+
+
+def _remap_planner_paths(
+    text: str,
+    sandbox_by_name: Mapping[str, str],
+    host_by_name: Mapping[str, Path],
+) -> str:
+    remapped = text
+    for name, sandbox in sandbox_by_name.items():
+        remapped = remapped.replace(str(host_by_name[name]), sandbox)
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?(?:[/\\][^\s:'\"()<>]+)*[/\\]?{re.escape(name)}"
+        )
+        remapped = pattern.sub(sandbox, remapped)
+    return remapped
+
+
+def _tool_result(
+    *,
+    success: bool,
+    stdout: str,
+    stderr: str,
+    instruction: str,
+) -> str:
+    return (
+        f"status: {'success' if success else 'failed'}\n"
+        f"stdout:\n{stdout}\n"
+        f"stderr:\n{stderr}\n"
+        f"instruction: {instruction}"
+    )
+
+
+def _snapshot_submission(
+    context: HyperWorkflowContext, assets: Mapping[str, bytes]
+) -> None:
     directory = (
-        context.artifact_root / "drafts" / f"{context.current_attempt_number:03d}"
+        context.artifact_root
+        / "planner-attempts"
+        / f"{context.current_attempt_number:03d}"
     )
     directory.mkdir(parents=True, exist_ok=True)
-    references = {}
-    for stream, contents in (("stdout", result.stdout), ("stderr", result.stderr)):
-        path = directory / f"minizinc-check.{stream}"
-        path.write_text(contents, encoding="utf-8")
-        references[stream] = str(path.resolve())
-    return references
-
-
-def _prepare_next_planner_workspace(
-    context: HyperWorkflowContext, problem: MiniZincProblem
-) -> dict[str, str]:
-    locations = _planner_asset_locations(context, context.current_attempt_number + 1)
-    workspace = (
-        context.artifact_root
-        / "workspace"
-        / f"{context.current_attempt_number + 1:03d}"
-    )
-    workspace.mkdir(parents=True, exist_ok=True)
-    for name, contents in problem.assets.items():
-        (workspace / name).write_bytes(contents)
-    return locations
+    for name, contents in assets.items():
+        (directory / name).write_bytes(contents)
 
 
 def _planner_files_exist(context: HyperWorkflowContext) -> bool:
-    attempt_number = context.current_attempt_number + 1
+    choice = context.planner_choice
+    if choice is None or choice.planner_choice.planner_id is None:
+        return False
     try:
         return all(
-            _planner_asset_path(
-                context,
-                attempt_number=attempt_number,
-                name=name,
-            )
-            .stat()
-            .st_size
-            > 0
-            for name in _planner_asset_locations(context, attempt_number)
+            _host_path(context, location).is_file()
+            for location in _planner_asset_locations(
+                context, choice.planner_choice.planner_id
+            ).values()
         )
-    except (OSError, ValueError):
+    except OSError:
         return False
 
 
@@ -213,7 +214,9 @@ class HyperWorkflowContext:
     mission_snapshot: Any
     environment_event: Any
     artifact_root: Path
-    minizinc_translation: Any
+    minizinc_planner: Any
+    fast_downward_planner: Any
+    val_validator: Any
     belief_snapshot: Any = None
     max_planner_attempts: int = 1
     max_statechart_attempts: int = 3
@@ -223,14 +226,16 @@ class HyperWorkflowContext:
     planner_workspace_location: str | None = None
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
-    minizinc_problem: Any = field(default=None, init=False)
-    draft_references: tuple[str, ...] = field(default=(), init=False)
+    submitted_planner_choice: str | None = field(default=None, init=False)
+    submitted_file_locations: tuple[str, ...] = field(default=(), init=False)
+    submitted_assets: Any = field(default=None, init=False)
+    submitted_sandbox_paths: Any = field(default=None, init=False)
+    submitted_host_paths: Any = field(default=None, init=False)
     static_check_result: Any = field(default=None, init=False)
     static_accepted: bool = field(default=False, init=False)
-    planner_generation_attempts: tuple[Any, ...] = field(default=(), init=False)
-    planner_correction_feedback: tuple[Any, ...] = field(default=(), init=False)
     submission_result: str | None = field(default=None, init=False)
-    translation: Any = field(default=None, init=False)
+    planner_plan: Any = field(default=None, init=False)
+    planner_execution_outcome: Any = field(default=None, init=False)
     current_attempt_number: int = field(default=0, init=False)
     executed_attempt_number: int = field(default=0, init=False)
     statechart: Any = field(default=None, init=False)
@@ -259,8 +264,20 @@ class HyperWorkflowContext:
             raise TypeError(
                 "Hyper workflow belief evidence must be a BayesianBeliefSnapshot"
             )
-        if not isinstance(self.minizinc_translation, MiniZincTranslation):
-            raise TypeError("Hyper workflow requires MiniZinc translation")
+        if not callable(getattr(self.minizinc_planner, "check", None)) or not callable(
+            getattr(self.minizinc_planner, "execute", None)
+        ):
+            raise TypeError(
+                "Hyper workflow MiniZinc planner must expose check and execute"
+            )
+        if not callable(getattr(self.fast_downward_planner, "execute", None)):
+            raise TypeError("Hyper workflow Fast Downward planner must expose execute")
+        if not callable(getattr(self.val_validator, "check", None)) or not callable(
+            getattr(self.val_validator, "validate", None)
+        ):
+            raise TypeError(
+                "Hyper workflow VAL verifier must expose check and validate"
+            )
         if self.operational_log is not None and not callable(
             getattr(self.operational_log, "emit", None)
         ):
@@ -326,21 +343,13 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
         context.current_attempt_number > context.executed_attempt_number
     ):
         return frozenset({"planner_executor"})
-    if context.translation is None:
+    if context.planner_plan is None:
+        if context.current_attempt_number >= context.max_planner_attempts:
+            return frozenset({"HyperWorkflowResultCandidate"})
         allowed = {"write_file", "edit_file"}
         if _planner_files_exist(context):
             allowed.add("submit_planner_attempt")
         return frozenset(allowed)
-    if context.translation.outcome is not PlanningTranslationOutcome.VERIFIED:
-        if (
-            context.translation.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED
-            and context.current_attempt_number < context.max_planner_attempts
-        ):
-            allowed = {"write_file", "edit_file"}
-            if _planner_files_exist(context):
-                allowed.add("submit_planner_attempt")
-            return frozenset(allowed)
-        return frozenset({"HyperWorkflowResultCandidate"})
     if context.statechart is not None and context.handoff_required:
         if context.handoff_outcome is None:
             return frozenset({"handoff_execution"})
@@ -391,8 +400,7 @@ class HyperWorkflowRunResult:
     messages: tuple[BaseMessage, ...]
     planning_intent: PlanningIntent | None
     planner_choice: PlannerChoiceRecord | None
-    translation: PlanningTranslationResult | None
-    normalized_plan: NormalizedPlan | None
+    planner_plan: PlannerPlan | None
     statechart: Statechart | None
     statechart_reference: str | None
     initial_fsm_status: FSMStatus | None
@@ -448,7 +456,7 @@ def record_planning_intent(
             next action. Do not include private reasoning.
 
     Returns:
-        Acceptance with MiniZinc paths and exact file-generation evidence.
+        Acceptance with planner-native paths and exact file-generation evidence.
     """
 
     context = _context(runtime)
@@ -505,7 +513,10 @@ def record_planning_intent(
             },
         )
         accepted = "Planning intent accepted."
-    locations = _planner_asset_locations(context, context.current_attempt_number + 1)
+    selected_planner = choice.planner_choice.planner_id
+    if selected_planner is None:
+        raise ValueError("recorded Planner Choice has no executable planner")
+    locations = _planner_asset_locations(context, selected_planner)
     environment = _model_environment_payload(
         context.environment_event.to_dict()["payload"]
     )
@@ -514,10 +525,11 @@ def record_planning_intent(
         if context.belief_snapshot is not None
         else None
     )
+    planner_label = "MiniZinc" if selected_planner == "minizinc" else "PDDL"
+    file_lines = "\n".join(f"{name}: {path}" for name, path in locations.items())
     return (
-        f"{accepted} Generate MiniZinc files at:\n"
-        f"model.mzn: {locations['model_file_location']}\n"
-        f"data.dzn: {locations['data_file_location']}\n"
+        f"{accepted} Generate {planner_label} files at:\n"
+        f"{file_lines}\n"
         f"Environment data:\n{_canonical_json(environment)}\n"
         f"Belief marginals:\n{_canonical_json(marginals)}"
     )
@@ -538,24 +550,22 @@ def _normalize_provider_tool_value(value: object) -> object:
 
 @tool(parse_docstring=True)
 def submit_planner_attempt(
-    horizon: int,
-    maneuvers: list[TemporalManeuverCandidate],
+    planner_choice: Literal["minizinc", "fast-downward"],
+    planner_model_file_locations: list[str],
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Freeze and statically verify one agent-written MiniZinc attempt.
-
-    Use this after reading creating-minizinc-problem-files and before calling
-    planner_executor. Each accepted call creates one attempt-specific immutable draft.
+    """Snapshot and externally verify one planner-native file set.
 
     Args:
-        horizon: Positive scheduling horizon represented by the problem.
-        maneuvers: Maneuver templates used to check solver assignments.
+        planner_choice: Selected external planner.
+        planner_model_file_locations: Exact two sandbox paths returned after planner
+            choice was recorded.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
     Returns:
-        Concise static-verification success or exact repair diagnostic.
+        Exact remapped verifier streams and the next workflow instruction.
     """
 
     context = _context(runtime)
@@ -565,249 +575,240 @@ def submit_planner_attempt(
             required_tool="record_planning_intent",
             retry_tool="submit_planner_attempt",
         )
-    if choice.planner_choice != PlannerChoice("temporal", "minizinc"):
-        raise ValueError("MiniZinc assets require the recorded MiniZinc Planner Choice")
     attempt_number = context.current_attempt_number + 1
     if attempt_number > context.max_planner_attempts:
         raise ValueError("planner asset attempt is outside the workflow retry sequence")
-
-    model_path = _planner_asset_path(
-        context,
-        attempt_number=attempt_number,
-        name="model_file_location",
+    assets, sandbox_by_name, host_by_name = _resolve_planner_files(
+        context, planner_choice, planner_model_file_locations
     )
-    data_path = _planner_asset_path(
-        context,
-        attempt_number=attempt_number,
-        name="data_file_location",
-    )
-    templates = tuple(_temporal_maneuver(item) for item in maneuvers)
-    problem = MiniZincProblem(
-        assets={
-            "model.mzn": model_path.read_bytes(),
-            "data.dzn": data_path.read_bytes(),
-        },
-        maneuvers=templates,
-        horizon=horizon,
-        translator_id="hyper-agent",
-        translator_version="1",
-    )
-    directory = context.artifact_root / "drafts" / f"{attempt_number:03d}"
-    directory.mkdir(parents=True, exist_ok=True)
-    references = []
-    for name, contents in problem.assets.items():
-        path = directory / name
-        path.write_bytes(contents)
-        references.append(str(path.resolve()))
-    context.minizinc_problem = problem
-    context.draft_references = tuple(sorted(references))
     context.current_attempt_number = attempt_number
+    _snapshot_submission(context, assets)
+    context.submitted_planner_choice = planner_choice
+    context.submitted_file_locations = tuple(planner_model_file_locations)
+    context.submitted_assets = assets
+    context.submitted_sandbox_paths = sandbox_by_name
+    context.submitted_host_paths = host_by_name
     context.submission_result = None
-    static_check = context.minizinc_translation.check_problem(problem)
+    verifier = (
+        context.minizinc_planner
+        if planner_choice == "minizinc"
+        else context.val_validator
+    )
+    static_check = verifier.check(assets)
+    if not isinstance(static_check, PlannerStaticCheckResult):
+        raise TypeError("planner verifier returned an invalid result")
     context.static_check_result = static_check
-    diagnostic_references = _persist_minizinc_check(context, static_check)
-    retries_remaining = context.max_planner_attempts - attempt_number
+    context.static_accepted = static_check.accepted
+    context.planner_plan = None
+    context.planner_execution_outcome = None
+    stdout = _remap_planner_paths(static_check.stdout, sandbox_by_name, host_by_name)
+    stderr = _remap_planner_paths(static_check.stderr, sandbox_by_name, host_by_name)
     if static_check.accepted:
-        context.static_accepted = True
-        result = "Static verification passed. Execute MiniZinc next."
+        instruction = (
+            "Call planner_executor with the same planner_choice and "
+            "planner_model_file_locations."
+        )
     else:
-        context.static_accepted = False
-        choice_record = cast(PlannerChoiceRecord, choice)
-        request = PlannerGenerationContext(
-            mission_input=context.mission_input,
-            planner_choice=choice_record,
-            mission_snapshot=context.mission_snapshot,
-            environment_event=context.environment_event,
-            attempt_number=attempt_number,
-            correction_feedback=(
-                context.planner_correction_feedback[-1]
-                if context.planner_correction_feedback
-                else None
-            ),
+        paths = ", ".join(planner_model_file_locations)
+        instruction = (
+            f"Call edit_file on the same submitted files ({paths}), then resubmit "
+            "them with the same planner choice and paths."
         )
-        attempt = context.minizinc_translation._generation_attempt(
-            request,
-            problem,
-            TranslationAttemptOutcome.REJECTED,
-        )
-        feedback = PlannerCorrectionFeedback(
-            PlannerCorrectionStage.STATIC,
-            static_check=static_check,
-            diagnostic_references=diagnostic_references,
-        )
-        context.planner_generation_attempts = (
-            *context.planner_generation_attempts,
-            attempt,
-        )
-        context.planner_correction_feedback = (
-            *context.planner_correction_feedback,
-            feedback,
-        )
-        context.translation = PlanningTranslationResult(
-            PlanningTranslationOutcome.REPAIR_EXHAUSTED,
-            len(context.planner_generation_attempts),
-            cast(
-                tuple[PlannerGenerationAttempt, ...],
-                context.planner_generation_attempts,
-            ),
-            correction_feedback=cast(
-                tuple[PlannerCorrectionFeedback, ...],
-                context.planner_correction_feedback,
-            ),
-        )
-        diagnostic = _agent_diagnostic(context, static_check.error_message)
-        if retries_remaining:
-            locations = _prepare_next_planner_workspace(
-                context, problem
-            )
-            result = (
-                f"Static verification failed:\n{diagnostic}\n"
-                f"{retries_remaining} planner attempts remain. Repair MiniZinc files at:\n"
-                f"model.mzn: {locations['model_file_location']}\n"
-                f"data.dzn: {locations['data_file_location']}"
-            )
-        else:
-            result = (
-                f"Static verification failed:\n{diagnostic}\n"
-                "No planner attempts remain."
-            )
     _emit(
         context,
         "planner-assets",
         "accepted" if static_check.accepted else "rejected",
         details={
-            "generated_assets": "model.mzn,data.dzn",
-            "planner_id": "minizinc",
+            "generated_assets": ",".join(sorted(assets)),
+            "planner_id": planner_choice,
             "sequence": attempt_number,
-            "translator_id": problem.translator_id,
-            "translator_version": problem.translator_version,
         },
     )
-    context.submission_result = result
+    context.submission_result = _tool_result(
+        success=static_check.accepted,
+        stdout=stdout,
+        stderr=stderr,
+        instruction=instruction,
+    )
     return context.submission_result
 
 
-def _temporal_maneuver(value: TemporalManeuverCandidate) -> TemporalManeuver:
-    return TemporalManeuver(
-        maneuver_id=value.maneuver_id,
-        intent=ManeuverIntent(
-            value.action,
-            tuple(
-                ManeuverParameter(name, item) for name, item in value.parameters.items()
-            ),
+def _execution_streams(
+    result: PlannerExecutionResult | SymbolicPlannerExecutionResult,
+) -> tuple[str, str]:
+    stdout = result.stdout
+    stderr = result.stderr
+    evidence = result.evidence
+    if evidence is not None:
+        if not stdout and evidence.stdout_path.is_file():
+            stdout = evidence.stdout_path.read_text(encoding="utf-8")
+        if not stderr and evidence.stderr_path.is_file():
+            stderr = evidence.stderr_path.read_text(encoding="utf-8")
+    return stdout, stderr
+
+
+def _planner_failure_instruction(context: HyperWorkflowContext) -> str:
+    paths = ", ".join(context.submitted_file_locations)
+    return (
+        "Call write_todos: move 'Generate planner files' back to in_progress; "
+        "move planner submission, planner execution, and every later stage back "
+        "to pending. Then call edit_file on the same planner files "
+        f"({paths}) and resubmit them."
+    )
+
+
+def _persist_minizinc_plan(context: HyperWorkflowContext, plan_text: str) -> Path:
+    directory = (
+        context.artifact_root
+        / "planner-plans"
+        / f"{context.current_attempt_number:03d}"
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "minizinc.plan"
+    path.write_text(plan_text, encoding="utf-8")
+    return path.resolve()
+
+
+def _fast_downward_plan(evidence: PlannerExecutionEvidence | None) -> Path | None:
+    if evidence is None:
+        return None
+    return next(
+        (
+            path.resolve()
+            for path in evidence.artifact_paths
+            if path.name == "sas_plan" and path.is_file()
         ),
-        dependencies=tuple(value.dependencies),
-        duration=value.duration,
+        None,
     )
 
 
 @tool(parse_docstring=True)
 def planner_executor(
+    planner_choice: Literal["minizinc", "fast-downward"],
+    planner_model_file_locations: list[str],
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Run the selected planner translator on one exact persisted asset draft.
-
-    This tool executes one statically accepted immutable problem, independently
-    checks its assignments, and constructs a NormalizedPlan.
+    """Execute an externally verified planner-native file set.
 
     Args:
+        planner_choice: Selected external planner.
+        planner_model_file_locations: Exact two sandbox paths used for submission.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
     Returns:
-        Concise verified maneuvers or an exact execution repair diagnostic.
+        Exact planner-native plan text or exact remapped failure streams.
     """
 
     context = _context(runtime)
     choice = context.planner_choice
-    problem = context.minizinc_problem
     if context.planning_intent is None or choice is None:
         return _prerequisite_missing(
             required_tool="record_planning_intent",
             retry_tool="planner_executor",
         )
-    if choice.planner_choice != PlannerChoice(
-        "temporal", "minizinc"
-    ):
-        raise ValueError("planner executor has no matching MiniZinc draft")
-    if problem is None:
-        return _prerequisite_missing(
-            required_tool="submit_planner_attempt",
-            retry_tool="planner_executor",
-        )
+    assets, sandbox_by_name, host_by_name = _resolve_planner_files(
+        context, planner_choice, planner_model_file_locations
+    )
     if not context.static_accepted or context.static_check_result is None:
         return _prerequisite_missing(
             required_tool="submit_planner_attempt",
             retry_tool="planner_executor",
         )
-    translation = context.minizinc_translation.execute_prechecked(
-        context.mission_input,
-        choice,
-        context.mission_snapshot,
-        context.environment_event,
-        problem,
-        plan_revision=(context.mission_snapshot.plan_revision or 0) + 1,
-        attempt_number=context.current_attempt_number,
-        prior_generation_attempts=cast(
-            tuple[PlannerGenerationAttempt, ...],
-            context.planner_generation_attempts,
-        ),
-        correction_feedback=cast(
-            tuple[PlannerCorrectionFeedback, ...],
-            context.planner_correction_feedback,
-        ),
-    )
-    context.translation = translation
+    if (
+        planner_choice != context.submitted_planner_choice
+        or tuple(planner_model_file_locations) != context.submitted_file_locations
+        or assets != context.submitted_assets
+    ):
+        raise ValueError("planner execution files do not match the accepted submission")
+    if planner_choice == "minizinc":
+        result = context.minizinc_planner.execute(context.submitted_assets)
+        if not isinstance(result, PlannerExecutionResult):
+            raise TypeError("MiniZinc planner returned an invalid result")
+    else:
+        result = context.fast_downward_planner.execute(context.submitted_assets)
+        if not isinstance(result, SymbolicPlannerExecutionResult):
+            raise TypeError("Fast Downward planner returned an invalid result")
     context.executed_attempt_number = context.current_attempt_number
     context.static_accepted = False
-    context.planner_generation_attempts = translation.generation_attempts
-    context.planner_correction_feedback = translation.correction_feedback
-    attempt = translation.generation_attempts[-1]
+    context.planner_execution_outcome = result.outcome
+    stdout, stderr = _execution_streams(result)
+    plan_path: Path | None = None
+    plan_text: str | None = None
+    if result.outcome is PlanningOutcome.SOLVED:
+        if planner_choice == "minizinc":
+            plan_text = stdout
+            plan_path = _persist_minizinc_plan(context, plan_text)
+        else:
+            plan_path = _fast_downward_plan(result.evidence)
+            if plan_path is not None and context.val_validator.validate(
+                result.evidence
+            ):
+                plan_text = plan_path.read_text(encoding="utf-8")
+            else:
+                validator_directory = (
+                    result.evidence.artifact_directory
+                    if result.evidence is not None
+                    else None
+                )
+                if validator_directory is not None:
+                    validator_stdout = validator_directory / "validator.stdout"
+                    validator_stderr = validator_directory / "validator.stderr"
+                    stdout = (
+                        validator_stdout.read_text(encoding="utf-8")
+                        if validator_stdout.is_file()
+                        else ""
+                    )
+                    stderr = (
+                        validator_stderr.read_text(encoding="utf-8")
+                        if validator_stderr.is_file()
+                        else ""
+                    )
+                plan_path = None
     _emit(
         context,
         "planner-execution",
-        str(translation.outcome),
+        (
+            "verified"
+            if plan_path is not None
+            else "rejected"
+            if result.outcome is PlanningOutcome.SOLVED
+            else str(result.outcome)
+        ),
         details={
-            "attempt_id": attempt.attempt_id,
-            "planner_id": "minizinc",
-            "plan_revision": (
-                translation.normalized_plan.plan_revision
-                if translation.normalized_plan is not None
-                else (context.mission_snapshot.plan_revision or 0) + 1
-            ),
+            "planner_id": planner_choice,
+            "plan_revision": (context.mission_snapshot.plan_revision or 0) + 1,
         },
     )
-    if translation.outcome is PlanningTranslationOutcome.VERIFIED:
-        normalized_plan = translation.normalized_plan
-        if normalized_plan is None:
-            raise RuntimeError("verified planner translation lacks a Normalized Plan")
-        maneuvers = [item.to_dict() for item in normalized_plan.maneuvers]
+    if plan_path is not None and plan_text is not None:
+        reference = _sandbox_path(context, plan_path)
+        context.planner_plan = PlannerPlan(
+            mission_id=context.mission_input.mission_id,
+            source_authority=context.mission_input.source_authority,
+            plan_revision=(context.mission_snapshot.plan_revision or 0) + 1,
+            mission_snapshot_id=(
+                f"{context.mission_input.mission_id}:snapshot:"
+                f"{context.mission_snapshot.version}"
+            ),
+            planner_choice=choice.planner_choice,
+            outcome=PlanningOutcome.SOLVED,
+            planner_native_plan_artifact_reference=reference,
+        )
         return (
-            "MiniZinc execution and solution verification passed. Generate the "
-            f"Statechart from these verified maneuvers:\n{_canonical_json(maneuvers)}"
+            "status: success\n"
+            f"plan:\n{plan_text}\n"
+            f"planner_native_plan_artifact_reference: {reference}\n"
+            "instruction: Proceed to Statechart generation from this "
+            "planner-native plan."
         )
-    if translation.outcome is PlanningTranslationOutcome.REPAIR_EXHAUSTED:
-        feedback = translation.correction_feedback[-1]
-        retries_remaining = (
-            context.max_planner_attempts - context.current_attempt_number
-        )
-        diagnostic = _agent_diagnostic(context, feedback.message)
-        if retries_remaining:
-            locations = _prepare_next_planner_workspace(
-                context, problem
-            )
-            return (
-                f"MiniZinc execution or solution verification failed:\n{diagnostic}\n"
-                f"{retries_remaining} planner attempts remain. Repair MiniZinc files at:\n"
-                f"model.mzn: {locations['model_file_location']}\n"
-                f"data.dzn: {locations['data_file_location']}"
-            )
-        return (
-            f"MiniZinc execution or solution verification failed:\n{diagnostic}\n"
-            "No planner attempts remain."
-        )
-    return f"MiniZinc execution ended with {translation.outcome}."
+    context.planner_plan = None
+    return _tool_result(
+        success=False,
+        stdout=_remap_planner_paths(stdout, sandbox_by_name, host_by_name),
+        stderr=_remap_planner_paths(stderr, sandbox_by_name, host_by_name),
+        instruction=_planner_failure_instruction(context),
+    )
 
 
 def _statechart_rejection(
@@ -840,7 +841,7 @@ def submit_statechart_draft(
 ) -> str:
     """Persist and validate one semantic Statechart topology draft.
 
-    The tool binds model-authored topology to the verified NormalizedPlan, builds
+    The tool binds model-authored topology to the accepted PlannerPlan revision, builds
     a live python-statemachine instance, and returns exact bounded repair feedback.
 
     Args:
@@ -855,13 +856,8 @@ def submit_statechart_draft(
     """
 
     context = _context(runtime)
-    translation = context.translation
-    plan = translation.normalized_plan if translation is not None else None
-    if (
-        translation is None
-        or translation.outcome is not PlanningTranslationOutcome.VERIFIED
-        or plan is None
-    ):
+    plan = context.planner_plan
+    if plan is None:
         return _prerequisite_missing(
             required_tool="planner_executor",
             retry_tool="submit_statechart_draft",
@@ -1046,8 +1042,7 @@ def handoff_execution(
     """
 
     context = _context(runtime)
-    translation = context.translation
-    plan = translation.normalized_plan if translation is not None else None
+    plan = context.planner_plan
     if (
         plan is None
         or context.statechart is None
@@ -1097,7 +1092,6 @@ def handoff_execution(
         correlation_id=correlation_id,
         mission_id=plan.mission_id,
         plan_revision=plan.plan_revision,
-        normalized_plan=plan,
         statechart_reference=context.statechart_reference,
         fsm_status=refreshed,
         environment_data=_live_environment(context),
@@ -1319,10 +1313,7 @@ class DeepAgentsHyperWorkflow:
         outcome = HyperWorkflowOutcome(cast(str, candidate["outcome"]))
         if outcome is HyperWorkflowOutcome.EXECUTION_READY:
             if (
-                context.translation is None
-                or context.translation.outcome
-                is not PlanningTranslationOutcome.VERIFIED
-                or context.translation.normalized_plan is None
+                context.planner_plan is None
                 or context.statechart is None
                 or context.statechart_reference is None
                 or context.initial_fsm_status is None
@@ -1333,18 +1324,19 @@ class DeepAgentsHyperWorkflow:
                 )
         elif outcome is HyperWorkflowOutcome.PLANNER_REJECTED:
             if (
-                context.translation is None
-                or context.translation.outcome is PlanningTranslationOutcome.VERIFIED
+                context.planner_plan is not None
                 or (
-                    context.translation.outcome
-                    is PlanningTranslationOutcome.REPAIR_EXHAUSTED
-                    and context.current_attempt_number < context.max_planner_attempts
+                    context.planner_execution_outcome is None
+                    and (
+                        context.static_check_result is None
+                        or context.static_check_result.accepted
+                    )
                 )
+                or context.current_attempt_number < context.max_planner_attempts
             ):
                 raise ValueError("Hyper workflow rejection lacks planner evidence")
         elif (
-            context.translation is None
-            or context.translation.outcome is not PlanningTranslationOutcome.VERIFIED
+            context.planner_plan is None
             or context.current_statechart_attempt < context.max_statechart_attempts
             or context.statechart is not None
         ):
@@ -1372,12 +1364,7 @@ class DeepAgentsHyperWorkflow:
             messages=tuple(cast(list[BaseMessage], raw_messages)),
             planning_intent=context.planning_intent,
             planner_choice=context.planner_choice,
-            translation=context.translation,
-            normalized_plan=(
-                context.translation.normalized_plan
-                if context.translation is not None
-                else None
-            ),
+            planner_plan=context.planner_plan,
             statechart=context.statechart,
             statechart_reference=context.statechart_reference,
             initial_fsm_status=context.initial_fsm_status,
@@ -1390,7 +1377,6 @@ __all__ = [
     "DeepAgentsHyperWorkflow",
     "HyperWorkflowContext",
     "HyperWorkflowRunResult",
-    "TemporalManeuverCandidate",
     "create_hyper_workflow_agent",
     "handoff_execution",
     "planner_executor",

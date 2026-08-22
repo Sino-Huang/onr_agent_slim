@@ -9,7 +9,6 @@ import pytest
 
 from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
-from onr.adapters.operational_log import FileOperationalLog
 from onr.application.hyper_agent import PlanningHeartbeatOutcome
 from onr.contracts import PlanningIntent
 from onr.contracts.context_coordination import MissionSnapshot
@@ -301,48 +300,23 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
             asset_references=references,
         )
 
-    result = runtime.run_planning_mission(
-        mission_input,
-        hyper_agent=hyper_agent,
-        context_coordination=context_coordination,
-        environment_heartbeat=environment.heartbeat,
-        generate=generate,
-        translator=translator,
-        asset_generator=asset_generator,
-        human_decision_coordinator=human_decisions,
-        fsm_runner=fsm_runner,
-        maneuver_control=maneuver_control,
-        environment_step=environment.run_once,
-        model=FixedSummaryModel(),
-    )
-
-    assert result.attempt == correction_attempt
-    assert [item.attempt_id for item in result.generation_attempts] == [
-        "attempt-1",
-        correction_attempt.attempt_id,
-    ]
-    assert result.context_snapshot is not None
-    assert result.environment_event is not None
-    assert result.translation is translator.result
-    assert result.execution is not None
-    assert result.execution.plan is plan
-    assert result.execution.final_status.status == "transitioned"
-    assert len(translator.calls) == 1
-    assert (
-        result.context_snapshot.environment_data == result.environment_event.event_id
-    )
-    assert (
-        runtime.transport.latest_event(
-            "mission-specifications", mission_input.mission_id
+    with pytest.raises(
+        RuntimeError, match="translation-driven NormalizedPlan execution is retired"
+    ):
+        runtime.run_planning_mission(
+            mission_input,
+            hyper_agent=hyper_agent,
+            context_coordination=context_coordination,
+            environment_heartbeat=environment.heartbeat,
+            generate=generate,
+            translator=translator,
+            asset_generator=asset_generator,
+            human_decision_coordinator=human_decisions,
+            fsm_runner=fsm_runner,
+            maneuver_control=maneuver_control,
+            environment_step=environment.run_once,
+            model=FixedSummaryModel(),
         )
-        is None
-    )
-    evidence = runtime.transport.latest_event(
-        "planning-evidence", mission_input.mission_id
-    )
-    assert evidence is not None
-    assert evidence.event_kind == "planner-generation-attempt"
-    assert evidence.payload["attempt_id"] == correction_attempt.attempt_id
 
 
 def test_planning_mission_reports_missing_environment_data_without_generation(
@@ -389,7 +363,9 @@ def test_planning_mission_reports_missing_environment_data_without_generation(
 
     assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.human_decision_request is not None
-    assert str(result.human_decision_request.category) == "insufficient_environment_data"
+    assert (
+        str(result.human_decision_request.category) == "insufficient_environment_data"
+    )
     assert result.execution is None
     assert result.planner_choice is None
     assert result.attempt is None
@@ -597,7 +573,9 @@ def test_planning_mission_reports_stale_environment_data_without_generation(
 
     assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.human_decision_request is not None
-    assert str(result.human_decision_request.category) == "insufficient_environment_data"
+    assert (
+        str(result.human_decision_request.category) == "insufficient_environment_data"
+    )
     assert result.execution is None
     assert result.context_snapshot is not None
     assert result.environment_event == scene
@@ -659,7 +637,9 @@ def test_planning_mission_reports_unreferenced_environment_data_without_generati
 
     assert result.outcome is PlanningHeartbeatOutcome.INSUFFICIENT_ENVIRONMENT_DATA
     assert result.human_decision_request is not None
-    assert str(result.human_decision_request.category) == "insufficient_environment_data"
+    assert (
+        str(result.human_decision_request.category) == "insufficient_environment_data"
+    )
     assert result.execution is None
     assert result.context_snapshot is None
     assert result.environment_event == scene
@@ -713,35 +693,15 @@ def test_direct_authority_plan_completes_physical_mission_run(tmp_path: Path) ->
         mission_input.mission_id,
     )
 
-    result = runtime.run_mission(
-        mission_input,
-        plan=plan,
-        context_coordination=context,
-        fsm_runner=fsm,
-        maneuver_control=control,
-        environment_step=environment.run_once,
-        model=FixedSummaryModel(),
-    )
-
-    assert result.plan is plan
-    assert result.command.maneuver_id == "survey"
-    assert result.feedback.maneuver_id == "survey"
-    assert result.status_before_feedback.active_state == "state-0"
-    assert result.final_status.active_state == "state-1"
-    overlay = decision_provider.overlays[-1]
-    assert overlay is not None
-    overlay_values = cast(Mapping[str, object], overlay.to_dict()["values"])
-    assert overlay_values["normalized_plan"] == json.loads(
-        plan.to_canonical_json()
-    )
-    planning_record = next(
-        record
-        for record in FileOperationalLog(
-            tmp_path / "storage" / "operational-log"
-        ).replay(mission_input.mission_id)
-        if record.event_kind == "planning"
-    )
-    assert planning_record.details == {
-        "operation": "initial_plan",
-        "plan_revision": 1,
-    }
+    with pytest.raises(
+        RuntimeError, match="direct NormalizedPlan execution is retired"
+    ):
+        runtime.run_mission(
+            mission_input,
+            plan=plan,
+            context_coordination=context,
+            fsm_runner=fsm,
+            maneuver_control=control,
+            environment_step=environment.run_once,
+            model=FixedSummaryModel(),
+        )

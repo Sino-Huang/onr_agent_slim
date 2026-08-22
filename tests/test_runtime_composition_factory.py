@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import onr.runtime.composition as composition_module
+from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
+from onr.adapters.minizinc import MiniZincExecutor
+from onr.adapters.val import VALPlanValidator
 from onr.agents import (
     DeepAgentsDecisionProvider,
     DeepAgentsHyperWorkflow,
@@ -11,8 +14,6 @@ from onr.agents import (
     HyperWorkflowContext,
 )
 from onr.application.human_decisions import HumanDecisionCoordinator
-from onr.application.minizinc_translation import MiniZincTranslation
-from onr.application.pddl_translation import PDDLTranslation
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.transport import TransportEvent
@@ -83,6 +84,7 @@ def test_chat_model_factory_uses_runtime_llm(monkeypatch) -> None:
             "top_p": 0.95,
             "presence_penalty": 0.0,
             "reasoning_effort": "medium",
+            "streaming": True,
             "timeout": 800.0,
             "max_retries": 0,
             "extra_body": {
@@ -179,26 +181,6 @@ def test_verify_llm_reachability_uses_configured_values(monkeypatch) -> None:
     ]
 
 
-def test_create_minizinc_translation_uses_configured_correction_bound(tmp_path) -> None:
-    translation = _runtime(hyper_max_retries=4).create_minizinc_translation(
-        tmp_path / "generated-minizinc"
-    )
-
-    assert isinstance(translation, MiniZincTranslation)
-    assert translation.max_corrections == 4
-
-
-def test_create_pddl_translation_uses_configured_val_and_correction_bound(
-    tmp_path,
-) -> None:
-    translation = _runtime(hyper_max_retries=5).create_pddl_translation(
-        tmp_path / "generated-pddl"
-    )
-
-    assert isinstance(translation, PDDLTranslation)
-    assert translation.max_corrections == 5
-
-
 def test_create_human_decision_coordinator_uses_runtime_storage() -> None:
     coordinator = _runtime().create_human_decision_coordinator()
 
@@ -292,7 +274,7 @@ def test_runtime_composes_one_workflow_level_hyper_deep_agent(monkeypatch) -> No
     }
 
 
-def test_runtime_builds_single_attempt_workflow_planner_context(
+def test_runtime_builds_direct_external_planner_context(
     tmp_path: Path,
 ) -> None:
     mission = MissionInput("mission", "Observe the harbor.", "mission-control")
@@ -323,7 +305,9 @@ def test_runtime_builds_single_attempt_workflow_planner_context(
     )
 
     assert isinstance(context, HyperWorkflowContext)
-    assert context.minizinc_translation.max_corrections == 0
+    assert isinstance(context.minizinc_planner, MiniZincExecutor)
+    assert isinstance(context.fast_downward_planner, FastDownwardExecutor)
+    assert isinstance(context.val_validator, VALPlanValidator)
     assert context.max_planner_attempts == 8
     assert context.artifact_root == (tmp_path / "planner-artifacts").resolve()
     assert context.planner_workspace_location == "/planner-artifacts/workspace"

@@ -27,6 +27,7 @@ export function visibleTrajectorySteps() {
 
 function toolInlineCard(step, call, index) {
   const failed = Boolean(call.error);
+  const partial = call.partial === true;
   const card = h("div", { class: "tool-inline" + (failed ? " failed" : "") });
   const head = h("button", {
     class: "tool-inline-head",
@@ -41,11 +42,17 @@ function toolInlineCard(step, call, index) {
     icon("tool", 12),
     h("code", { class: "tool-name" }, call.name),
     h("span", { class: "tool-dur" }, fmtDuration(call.duration_ms)),
-    failed ? h("span", { class: "inline-error" }, "error") : null);
+    failed ? h("span", { class: "inline-error" }, "error") : null,
+    partial ? h("span", { class: "inline-live" }, "draft") : null);
+  const argumentView = partial
+    ? h("pre", { class: "draft-arguments" }, call.arguments_text || "")
+    : jsonView(call.args ?? {}, { stateKey: `nav-tool-args:${step.step_id}:${index}` });
   const body = h("div", { class: "tool-inline-body" },
-    h("div", { class: "section-label" }, "Arguments"),
-    jsonView(call.args ?? {}, { stateKey: `nav-tool-args:${step.step_id}:${index}` }),
-    failed
+    h("div", { class: "section-label" }, partial ? "Draft arguments (not executed)" : "Arguments"),
+    argumentView,
+    partial
+      ? h("p", { class: "partial-note" }, "Incomplete display-only arguments")
+      : failed
       ? h("pre", { class: "tool-error" }, typeof call.error === "string" ? call.error : JSON.stringify(call.error, null, 2))
       : h("div", {}, h("div", { class: "section-label" }, "Result"),
           jsonView(call.result ?? null, { stateKey: `nav-tool-result:${step.step_id}:${index}` })));
@@ -57,6 +64,7 @@ function stepRow(step, actions) {
   const meta = KIND_META[step.kind] || KIND_META.llm;
   const errored = stepErrored(step);
   const selected = state.selectedStepId === step.step_id;
+  const completion = step.completion_state || "complete";
   const row = h("button", {
     class: "step-row kind-" + step.kind + (selected ? " selected" : "") + (errored ? " errored" : ""),
     type: "button",
@@ -73,6 +81,7 @@ function stepRow(step, actions) {
       h("span", { class: "row-meta" },
         step.component, step.name && step.name !== step.component && step.name !== step.model ? " · " + step.name : "")),
     h("span", { class: "row-side" },
+      completion !== "complete" ? h("span", { class: "row-live state-" + completion }, completion) : null,
       h("span", { class: "row-dur" }, fmtDuration(step.duration_ms)),
       h("span", { class: "status-dot tone-" + (step.status === "error" ? "error" : step.status === "ok" ? "ok" : "unknown"), title: "status: " + step.status })));
   return row;

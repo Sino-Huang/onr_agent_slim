@@ -29,6 +29,7 @@ from onr.contracts.maneuver_control import (
     NonPhysicalChoice,
     PhysicalAction,
 )
+from onr.contracts.planning import PlannerPlan
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
     PlannerGenerationAttempt,
@@ -54,17 +55,18 @@ __all__ = [
     "InvocationOverlay",
     "ManeuverCommand",
     "ManeuverControlDecision",
+    "ManeuverDecision",
+    "ManeuverFeedback",
     "ManeuverHeartbeatCompletion",
     "ManeuverHeartbeatOutcome",
     "ManeuverInvocation",
-    "ManeuverDecision",
-    "ManeuverFeedback",
     "MissionInput",
     "MissionSnapshot",
     "NonPhysicalChoice",
     "PhysicalAction",
     "PlannerChoiceRecord",
     "PlannerGenerationAttempt",
+    "PlannerPlan",
     "PlanningIntent",
     "ReplanRequest",
     "RoleSkill",

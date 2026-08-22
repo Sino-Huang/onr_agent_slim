@@ -16,6 +16,7 @@ from onr.viewer.server import ViewerHTTPServer, create_server
 from onr.viewer.steps import (
     MISSION_CONTENT_WARNING,
     PHASES,
+    TEXT_FIELD_LIMIT,
     StepProjection,
 )
 
@@ -176,7 +177,7 @@ def test_full_join_builds_nested_step_with_decision_feedback_and_artifact() -> N
         .to_dict()
     )
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["phases"] == list(PHASES)
     assert payload["warnings"] == []
     [step] = cast(list[dict[str, object]], payload["steps"])
@@ -203,6 +204,8 @@ def test_full_join_builds_nested_step_with_decision_feedback_and_artifact() -> N
         {
             "name": "run_minizinc",
             "args": {"attempt": 2},
+            "arguments_text": None,
+            "partial": False,
             "result": {"status": "accepted"},
             "error": None,
             "duration_ms": 500,
@@ -288,6 +291,105 @@ def test_reasoning_uses_an_explicit_allowlist_and_never_exposes_requests() -> No
     assert "sk-private" not in rendered
     assert "request" not in rendered
     assert "invocation_params" not in rendered
+
+
+def test_v2_partial_record_pairs_by_invocation_and_keeps_draft_arguments_raw() -> None:
+    invocation = {
+        **_llm_invocation(sequence=8, invocation_id="exact-invocation"),
+        "schema_version": 2,
+        "finished_at": None,
+        "updated_at": FINISHED,
+        "completion_state": "live",
+        "revision": 1,
+    }
+    partial = {
+        **_llm_record(sequence=1),
+        "schema_version": 2,
+        "invocation_id": "exact-invocation",
+        "content": "x" * (TEXT_FIELD_LIMIT + 5),
+        "finish_reason": None,
+        "started_at": STARTED,
+        "updated_at": FINISHED,
+        "finished_at": None,
+        "completion_state": "live",
+        "revision": 4,
+        "error": None,
+        "tool_calls": [
+            {
+                "index": 0,
+                "type": "function",
+                "function": {
+                    "name": "run_minizinc",
+                    "arguments": '{"attempt":',
+                },
+            }
+        ],
+    }
+
+    payload = (
+        StepProjection()
+        .project(
+            MISSION_ID,
+            llm_records=[partial],
+            agent_invocations=[invocation],
+            planner_artifacts=[_artifact()],
+        )
+        .to_dict()
+    )
+
+    [step] = cast(list[dict[str, object]], payload["steps"])
+    assert step["step_id"] == "hyper-agent:8"
+    assert step["completion_state"] == "live"
+    assert step["updated_at"] == FINISHED
+    assert step["duration_ms"] == 1000
+    assert step["revision"] == 4
+    assert step["status"] == "unknown"
+    assert len(cast(str, step["content"])) == TEXT_FIELD_LIMIT
+    assert step["truncated"] is True
+    assert step["tool_calls"] == [
+        {
+            "name": "run_minizinc",
+            "args": {},
+            "arguments_text": '{"attempt":',
+            "partial": True,
+            "result": None,
+            "error": None,
+            "duration_ms": None,
+        }
+    ]
+
+    completed = {
+        **partial,
+        "content": "done",
+        "finish_reason": "tool_calls",
+        "finished_at": FINISHED,
+        "completion_state": "complete",
+        "revision": 5,
+        "tool_calls": [
+            {
+                "index": 0,
+                "type": "function",
+                "function": {
+                    "name": "run_minizinc",
+                    "arguments": '{"attempt":2}',
+                },
+            }
+        ],
+    }
+    completed_step = (
+        StepProjection()
+        .project(
+            MISSION_ID,
+            llm_records=[completed],
+            agent_invocations=[invocation],
+            planner_artifacts=[_artifact()],
+        )
+        .to_dict()["steps"][0]
+    )
+    assert completed_step["completion_state"] == "complete"
+    assert completed_step["revision"] == 5
+    assert completed_step["tool_calls"][0]["args"] == {"attempt": 2}
+    assert completed_step["tool_calls"][0]["partial"] is False
 
 
 def test_mission_content_uses_planning_intent_tool_before_snapshot_fallback() -> None:

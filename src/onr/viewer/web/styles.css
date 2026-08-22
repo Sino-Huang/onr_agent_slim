@@ -277,6 +277,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .status-pill.tone-error { background: var(--error-soft); color: var(--error); }
 .status-pill.tone-running { background: var(--running-soft); color: var(--running); }
 
+.row-live, .inline-live {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--running);
+}
+.row-live.state-error { color: var(--error); }
+.row-live.state-live { animation: pulse 1.8s ease-in-out infinite; }
+
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--unknown); flex: none; }
 .status-dot.tone-ok { background: var(--ok); }
 .status-dot.tone-error { background: var(--error); box-shadow: 0 0 6px rgba(201, 42, 66, 0.35); }
@@ -593,6 +600,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .tool-card-body { padding: 4px 13px 12px; }
 .feedback-card > .jsonview { margin: 4px 13px 12px; }
 .tool-card-body .section-label { margin-top: 9px; }
+.draft-arguments {
+  margin: 0; padding: 9px 11px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
+  color: var(--running);
+  font: 11.5px/1.6 var(--font-mono);
+  white-space: pre-wrap; word-break: break-word;
+}
 
 /* ================================ json view ================================ */
 
