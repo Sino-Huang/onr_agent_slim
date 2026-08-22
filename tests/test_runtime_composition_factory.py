@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import onr.runtime.composition as composition_module
@@ -295,11 +296,17 @@ def test_runtime_builds_direct_external_planner_context(
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
+    environment_file = tmp_path / "environment.json"
+    environment_file.write_text(
+        json.dumps(scene.to_dict()["payload"]),
+        encoding="utf-8",
+    )
 
     context = _runtime(hyper_max_retries=7).create_hyper_workflow_context(
         mission,
         snapshot,
         scene,
+        environment_file,
         artifact_root=tmp_path / "planner-artifacts",
         backend_root=tmp_path,
     )
@@ -311,6 +318,7 @@ def test_runtime_builds_direct_external_planner_context(
     assert context.max_planner_attempts == 8
     assert context.artifact_root == (tmp_path / "planner-artifacts").resolve()
     assert context.planner_workspace_location == "/planner-artifacts/workspace"
+    assert context.environment_file_location == "environment.json"
 
 
 def test_default_maneuver_control_uses_configured_provider_retry_limit(

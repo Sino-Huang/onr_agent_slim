@@ -406,6 +406,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             mission: MissionInput,
             selected_snapshot: MissionSnapshot,
             selected_scene: TransportEvent,
+            selected_environment_file: Path,
             **kwargs: object,
         ) -> object:
             calls.append(
@@ -414,6 +415,7 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
                     mission,
                     selected_snapshot,
                     selected_scene,
+                    selected_environment_file,
                     kwargs,
                 )
             )
@@ -444,7 +446,11 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
                 reference=scene.event_id,
             )
             runtime.transport.publish_event("normalized-plans", source_fact)
-            return SimpleNamespace(environment_event=scene, source_fact=source_fact)
+            return SimpleNamespace(
+                environment_event=scene,
+                source_fact=source_fact,
+                environment_file=tmp_path / "environment.json",
+            )
 
         def run_once(self) -> str:
             calls.append("environment")
@@ -521,12 +527,13 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     )
     assert hyper_context_call[2] is snapshot
     assert hyper_context_call[3] is scene
-    assert hyper_context_call[4]["artifact_root"] == (
+    assert hyper_context_call[4] == tmp_path / "environment.json"
+    assert hyper_context_call[5]["artifact_root"] == (
         tmp_path / "var/planner-artifacts"
     )
-    assert hyper_context_call[4]["belief_snapshot"] == belief
-    assert hyper_context_call[4]["fsm_runner"] == "fsm-runner"
-    assert hyper_context_call[4]["belief_service"] == "belief-service"
+    assert hyper_context_call[5]["belief_snapshot"] == belief
+    assert hyper_context_call[5]["fsm_runner"] == "fsm-runner"
+    assert hyper_context_call[5]["belief_service"] == "belief-service"
     hyper_run = next(
         item for item in calls if isinstance(item, tuple) and item[0] == "hyper-run"
     )

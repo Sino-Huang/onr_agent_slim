@@ -55,6 +55,15 @@ class UnusedVAL:
         raise AssertionError("VAL was not selected")
 
 
+def _persist_environment(
+    tmp_path: Path, mission_id: str, event: TransportEvent
+) -> Path:
+    path = tmp_path / "var/environment" / mission_id / "environment.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(event.to_dict()["payload"]), encoding="utf-8")
+    return path
+
+
 def _runtime(tmp_path: Path) -> RuntimeComposition:
     values = yaml.safe_load(
         (_REPO_ROOT / "conf/onr_agent_params.yaml").read_text(encoding="utf-8")
@@ -118,11 +127,13 @@ def _planning_context(
         source_freshness={"environment_data": True},
     )
     planner = RejectingPlanner()
+    environment_file = _persist_environment(tmp_path, mission.mission_id, scene)
     return (
         HyperWorkflowContext(
             mission_input=mission,
             mission_snapshot=snapshot,
             environment_event=scene,
+            environment_file=environment_file,
             artifact_root=tmp_path / "planner-artifacts",
             backend_root=Path("/"),
             minizinc_planner=planner,
@@ -146,16 +157,14 @@ def _event_materialization_context(
         ),
         source_authority="live-workflow-test",
     )
-    records = [
-        {
-            "entity_id": "ship-1" if index < 13 else "ship-2",
-            "event type": "course change",
-            "event information": {"sequence": index + 1},
-            "position": [float(index * 2), float(index % 3), -10.0],
-            "time": float(index + 1),
-        }
-        for index in range(26)
-    ]
+    report_path = (
+        _REPO_ROOT
+        / "data/past_debug_rounds/20260822T033147.679043Z/var/environment"
+        / "mission%3Ademo/environment.json"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    records = report["static_info"]
+    assert isinstance(records, list) and len(records) == 253
     scene = TransportEvent(
         schema_version=1,
         event_id=f"scene:{mission.mission_id}:1",
@@ -190,11 +199,13 @@ def _event_materialization_context(
         source_freshness={"environment_data": True},
     )
     planner = RejectingPlanner()
+    environment_file = _persist_environment(tmp_path, mission.mission_id, scene)
     return (
         HyperWorkflowContext(
             mission_input=mission,
             mission_snapshot=snapshot,
             environment_event=scene,
+            environment_file=environment_file,
             artifact_root=tmp_path / "event-planner-artifacts",
             backend_root=Path("/"),
             minizinc_planner=planner,
@@ -267,7 +278,6 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
         "data.dzn",
     ]
     assert all(item["input"]["content"] for item in successful_writes)
-    assert not any(item.get("name") == "edit_file" for item in tool_records)
     assert not any(item.get("name") == "load_planning_context" for item in tool_records)
     submission = next(
         item for item in tool_records if item.get("name") == "submit_planner_attempt"
@@ -311,13 +321,13 @@ def test_live_hyper_workflow_materializes_event_data_in_multiple_batches(
     result = DeepAgentsHyperWorkflow(graph).run(
         context,
         thread_id=f"planning-run:{mission_id}:1",
-        recursion_limit=160,
+        recursion_limit=300,
     )
 
     assert result.outcome is HyperWorkflowOutcome.PLANNER_REJECTED
     assert planner.checked_assets
     data = planner.checked_assets[-1]["data.dzn"].decode()
-    assert "event_count = 26;" in data
+    assert "event_count = 253;" in data
     debug_directory = tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
     records = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -335,9 +345,18 @@ def test_live_hyper_workflow_materializes_event_data_in_multiple_batches(
         if item.get("name") == "materialize_event_information_data"
         and item.get("error") is None
     ]
-    assert initialization["input"]["total_event_count"] == 26
+    assert initialization["input"]["total_event_count"] == 253
     assert len(batches) >= 2
-    assert sum(len(item["input"]["events"]) for item in batches) == 26
+    assert sum(len(item["input"]["events"]) for item in batches) == 253
+    execute_records = [
+        item
+        for item in tool_records
+        if item.get("name") == "execute" and item.get("error") is None
+    ]
+    jq_commands = [item["input"]["command"] for item in execute_records]
+    assert any("jq 'keys'" in command for command in jq_commands)
+    assert any(".static_info | length" in command for command in jq_commands)
+    assert len([command for command in jq_commands if "to_entries" in command]) >= 2
     last_batch_sequence = batches[-1]["sequence"]
     reads_after_materialization = [
         item

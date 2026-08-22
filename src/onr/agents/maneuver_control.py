@@ -160,6 +160,7 @@ def create_maneuver_control_agent(
         skill_catalog=skill_catalog,
         skill_version=skill_version,
         backend_root=backend_root,
+        backend_kind="filesystem",
         tools=list(MANEUVER_OPERATIONAL_TOOLS),
         context_schema=ManeuverToolContext,
     )

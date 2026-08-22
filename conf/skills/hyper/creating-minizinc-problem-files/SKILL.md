@@ -1,16 +1,16 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.1.1'
+version: '2.2.0'
 ---
 
 # Creating MiniZinc Problem Files
 
 ## Procedure
 
-1. Read the raw Mission Intent and the exact environment data and belief marginals returned by `record_planning_intent`. Inspect their current structure and preserve evidence values, identifiers, order, units, and scales.
+1. Read the raw Mission Intent and the belief marginals returned by `record_planning_intent`. Inspect the returned root-relative environment JSON file with `execute` and `jq 'keys' <file>`, then obtain the exact raw-event count with `jq '.static_info | length' <file>`. Never manually count or reproduce the complete event list in model context. Preserve evidence values, identifiers, order, units, and scales.
 2. Put reusable declarations and constraints in `model.mzn`; put current authorized values in `data.dzn`. Assign each parameter in one file only.
-3. Write `model.mzn` at the exact returned path and wait for the successful write result. When the model consumes event-indexed arrays, call `initialize_event_data_materialization` with their exact total count and field objects containing exactly `target`, `dzn_type`, and `normalization`; normalization is `identity` or `first_seen_index`. Submit the raw records in contiguous batches of at most 25 through `materialize_event_information_data`; each batch record contains exactly `event_number` and `event`, and every declared target maps to a non-empty list of string object keys and integer array indices. A later batch may use different paths when its raw schema differs.
+3. Write `model.mzn` at the exact returned path and wait for the successful write result. When the model consumes event-indexed arrays, call `initialize_event_data_materialization` with the exact `jq` count and field objects containing exactly `target`, `dzn_type`, and `normalization`; normalization is `identity` or `first_seen_index`. For each tool-provided `next_batch`, run one `jq` slice that directly returns the required numbered records. The `execute` result is not batch acceptance: call `materialize_event_information_data` with that output as your very next tool call, and wait for its accepted progress result before reading any later slice. For example, for event numbers 1 through 25 in `var/environment/demo/environment.json`, run `jq --argjson start 1 --argjson end 25 '.static_info[($start - 1):$end] | to_entries | map({"event_number": ($start + .key), "event": .value})' var/environment/demo/environment.json`. Each batch record contains exactly `event_number` and `event`, and every declared target maps to a non-empty list of string object keys and integer array indices. A later batch may use different paths when its raw schema differs.
 4. After materialization completes, read the generated `model.mzn` and `data.dzn`, then add the missing planner-authored and belief-derived non-event assignments to `data.dzn` with `edit_file`. For models without event-indexed arrays, write `data.dzn` directly. Exit generation only when both files are complete.
 5. Call `submit_planner_attempt` with `planner_choice: "minizinc"`, the exact returned `model.mzn` and `data.dzn` paths, and reflection. Static completion requires `status: success` from MiniZinc instance checking.
 6. Call `planner_executor` with the same planner choice and exact paths. Execution completion requires `status: success` and returns the exact MiniZinc solver-native plan text plus its artifact reference.

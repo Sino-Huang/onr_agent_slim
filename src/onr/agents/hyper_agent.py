@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, NoReturn, TypeVar, cast
+from typing import Any, Literal, NoReturn, TypeVar, cast
 
 from langchain.agents.middleware import TodoListMiddleware
 
@@ -92,6 +93,7 @@ def create_planning_intent_agent(
         skill_catalog=skill_catalog,
         skill_version=skill_version,
         backend_root=backend_root,
+        backend_kind="filesystem",
         middleware=[TodoListMiddleware()],
     )
 
@@ -107,6 +109,7 @@ def _create_deep_agent(
     skill_catalog: object | None = None,
     skill_version: str | None = None,
     backend_root: Path | None = None,
+    backend_kind: Literal["filesystem", "local-shell"] = "filesystem",
     middleware: list[Any] | None = None,
     tools: list[Any] | None = None,
     writable_paths: list[str] | None = None,
@@ -196,12 +199,30 @@ def _create_deep_agent(
     if selected_skills:
         kwargs["skills"] = skill_sources
 
-    if context is not None or selected_skills:
-        from deepagents.backends.filesystem import FilesystemBackend
+    if context is not None or selected_skills or backend_kind == "local-shell":
+        if backend_kind == "local-shell":
+            from deepagents.backends import LocalShellBackend
 
-        kwargs["backend"] = FilesystemBackend(root_dir=backend_root)
+            shell_path = "/usr/bin:/bin"
+            if shutil.which("jq", path=shell_path) is None:
+                raise RuntimeError(
+                    f"Hyper workflow requires jq on its configured PATH ({shell_path})"
+                )
+            kwargs["backend"] = LocalShellBackend(
+                root_dir=backend_root,
+                virtual_mode=True,
+                inherit_env=False,
+                env={"PATH": shell_path},
+            )
+        else:
+            from deepagents.backends.filesystem import FilesystemBackend
 
-    if context is not None or selected_skills:
+            kwargs["backend"] = FilesystemBackend(root_dir=backend_root)
+
+    # Deep Agents cannot apply filesystem permissions to an execution-capable
+    # backend because execute is unrestricted. Hyper's LocalShellBackend is used
+    # only by the trusted local workflow and therefore intentionally omits them.
+    if backend_kind == "filesystem" and (context is not None or selected_skills):
         from deepagents.middleware.filesystem import FilesystemPermission
 
         # Rules are first-match.  The current role's Mission Memory is the

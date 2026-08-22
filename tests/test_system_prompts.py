@@ -70,6 +70,10 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
     assert "same submitted files" in prompt
     assert "`write_todos`" in prompt
     assert "belief marginals" in prompt
+    assert "root-relative environment JSON path" in prompt
+    assert "jq 'keys'" in prompt
+    assert "jq '.static_info | length'" in prompt
+    assert "to_entries" in prompt
     assert "tool `reflection` arguments" in prompt
     assert "Statechart/FSM is the execution semantics" in prompt
     for capability in (
@@ -79,6 +83,7 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
         "creating-minizinc-problem-files",
         "`initialize_event_data_materialization`",
         "`materialize_event_information_data`",
+        "`execute`",
         "creating-pddl-problem-files",
         "`write_file`",
         "`submit_planner_attempt`",

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 import yaml
 
 from onr.adapters.mission_memory import FileMissionMemoryStore
@@ -69,7 +70,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.1.1",
+        "2.2.0",
         "2.0.0",
         "1.1.0",
         "2.0.0",
@@ -172,6 +173,72 @@ def test_only_hyper_agent_receives_todo_list_middleware(monkeypatch) -> None:
     assert not any(
         isinstance(middleware, TodoListMiddleware) for middleware in maneuver_middleware
     )
+
+
+def test_only_hyper_workflow_receives_minimal_local_shell_backend(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import deepagents
+    from deepagents.backends import LocalShellBackend
+    from deepagents.backends.filesystem import FilesystemBackend
+
+    created: list[dict[str, object]] = []
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        created.append(kwargs)
+        return PublicFakeDeepAgent()
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
+    skills = _install_skills(tmp_path / "skills")
+    create_planning_intent_agent(
+        model=object(),
+        mission_id="mission-1",
+        skill_catalog=skills,
+        backend_root=tmp_path,
+    )
+    create_maneuver_control_agent(
+        model=object(),
+        mission_id="mission-1",
+        skill_catalog=skills,
+        backend_root=tmp_path,
+    )
+    create_hyper_workflow_agent(
+        model=object(),
+        system_prompt="Workflow.",
+        mission_id="mission-1",
+        skill_catalog=skills,
+        backend_root=tmp_path,
+    )
+
+    assert isinstance(created[0]["backend"], FilesystemBackend)
+    assert isinstance(created[1]["backend"], FilesystemBackend)
+    shell = created[2]["backend"]
+    assert isinstance(shell, LocalShellBackend)
+    assert shell.virtual_mode is True
+    environment = shell.execute("env")
+    assert environment.exit_code == 0
+    assert environment.output.splitlines() == [
+        "PATH=/usr/bin:/bin",
+        f"PWD={tmp_path.resolve()}",
+    ]
+
+
+def test_hyper_workflow_fails_clearly_when_jq_is_unavailable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import onr.agents.hyper_agent as hyper_agent_module
+
+    monkeypatch.setattr(
+        hyper_agent_module.shutil, "which", lambda *_args, **_kwargs: None
+    )
+
+    with pytest.raises(RuntimeError, match="requires jq"):
+        create_hyper_workflow_agent(
+            model=object(),
+            system_prompt="Workflow.",
+            mission_id="mission-1",
+            backend_root=tmp_path,
+        )
 
 
 def test_debug_agent_profile_uses_selected_skill_metadata_and_interpreter_callback(
@@ -368,7 +435,7 @@ def test_role_context_policy_allows_only_current_memory_and_denies_skills_and_ot
     assert permissions[-2].mode == "allow"
 
 
-def test_hyper_workflow_allows_only_its_planner_workspace_write_scope(
+def test_hyper_workflow_local_shell_does_not_claim_scoped_permissions(
     tmp_path: Path, monkeypatch
 ) -> None:
     import deepagents
@@ -390,19 +457,7 @@ def test_hyper_workflow_allows_only_its_planner_workspace_write_scope(
         planner_workspace_location="/planner-artifacts/workspace",
     )
 
-    permissions = captured["permissions"]
-    assert isinstance(permissions, list)
-    assert any(
-        permission.mode == "allow"
-        and permission.paths
-        == [
-            "/planner-artifacts/workspace",
-            "/planner-artifacts/workspace/**",
-        ]
-        for permission in permissions
-    )
-    assert permissions[-1].mode == "deny"
-    assert permissions[-1].paths == ["/**"]
+    assert "permissions" not in captured
 
 
 def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
@@ -425,6 +480,11 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
     assert "example values are teaching values only" in minizinc_skill
     assert "current evidence" in minizinc_skill
     assert "solver-native plan text" in minizinc_skill
+    assert "jq 'keys'" in minizinc_skill
+    assert "jq '.static_info | length'" in minizinc_skill
+    assert "to_entries" in minizinc_skill
+    assert "execute` result is not batch acceptance" in minizinc_skill
+    assert "as your very next tool call" in minizinc_skill
 
 
 def test_planner_generation_skills_use_direct_external_tools_and_same_file_repair() -> (

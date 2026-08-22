@@ -224,11 +224,18 @@ def _context(
     )
     backend = tmp_path / "backend"
     artifacts = backend / "artifacts"
+    environment_file = backend / "var/environment/mission-1/environment.json"
+    environment_file.parent.mkdir(parents=True)
+    environment_file.write_text(
+        json.dumps(event.to_dict()["payload"]),
+        encoding="utf-8",
+    )
     communication = _Communication() if handoff else None
     return HyperWorkflowContext(
         mission_input=mission,
         mission_snapshot=snapshot,
         environment_event=event,
+        environment_file=environment_file,
         artifact_root=artifacts,
         backend_root=backend,
         planner_workspace_location="/artifacts/workspace",
@@ -433,9 +440,10 @@ def test_event_materialization_tracks_progress_changes_mapping_and_writes_aligne
             "event_count": 3,
         },
         "instruction": (
-            "Call materialize_event_information_data now with only event numbers 1 "
-            "through 3. Do not enumerate, count, or prepare later batches. Wait for "
-            "this tool result before preparing the next batch."
+            "Use execute for one jq slice containing only event numbers 1 through "
+            "3, then call materialize_event_information_data with that output as "
+            "your very next tool call. An execute result does not accept a batch. "
+            "Wait for the materialization result before reading any later slice."
         ),
     }
     assert "materialize_event_information_data" in _allowed_workflow_tools(context)
@@ -531,12 +539,23 @@ def test_event_materialization_rejects_bad_batches_transactionally(
             {"event_number": 1, "event": {"time": 1}},
             {"event_number": 1, "event": {"time": 1}},
         ],
-        [{"event_number": 2, "event": {"time": 2}}],
     ]
     for batch in invalid_batches:
         with pytest.raises(ValueError):
             _materialize_events(context, batch, mapping)
         assert cast(Any, context.event_data_materialization).accepted_count == 0
+
+    rejected = _materialize_events(
+        context, [{"event_number": 2, "event": {"time": 2}}], mapping
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["error"] == "event numbers must be contiguous and begin at 1"
+    assert rejected["next_batch"] == {
+        "start_event_number": 1,
+        "end_event_number": 25,
+        "event_count": 25,
+    }
+    assert cast(Any, context.event_data_materialization).accepted_count == 0
 
     for bad_mapping, event in (
         ({}, {"event_number": 1, "event": {"time": 1}}),
@@ -552,10 +571,11 @@ def test_event_materialization_rejects_bad_batches_transactionally(
         context, [{"event_number": 1, "event": {"time": 1}}], mapping
     )
     assert accepted["accepted_count"] == 1
-    with pytest.raises(ValueError):
-        _materialize_events(
-            context, [{"event_number": 1, "event": {"time": 1}}], mapping
-        )
+    repeated = _materialize_events(
+        context, [{"event_number": 1, "event": {"time": 1}}], mapping
+    )
+    assert repeated["status"] == "rejected"
+    assert repeated["error"] == "event numbers must be contiguous and begin at 2"
     assert cast(Any, context.event_data_materialization).accepted_count == 1
 
 
@@ -575,9 +595,10 @@ def test_event_materialization_progress_directs_only_the_next_batch(
         "event_count": 25,
     }
     assert initialized["instruction"] == (
-        "Call materialize_event_information_data now with only event numbers 1 "
-        "through 25. Do not enumerate, count, or prepare later batches. Wait for "
-        "this tool result before preparing the next batch."
+        "Use execute for one jq slice containing only event numbers 1 through 25, "
+        "then call materialize_event_information_data with that output as your very "
+        "next tool call. An execute result does not accept a batch. Wait for the "
+        "materialization result before reading any later slice."
     )
 
     progress = _materialize_events(
@@ -595,6 +616,7 @@ def test_event_materialization_progress_directs_only_the_next_batch(
         "event_count": 5,
     }
     assert "only event numbers 26 through 30" in cast(str, progress["instruction"])
+    assert "very next tool call" in cast(str, progress["instruction"])
 
 
 def test_event_materialization_restart_discards_rows_file_and_definitions(
@@ -771,6 +793,11 @@ def test_recorded_choice_returns_matching_native_paths_and_reaches_verifier(
     context = _context(tmp_path)
     result = _record(context, planner)
     assert all(f"/artifacts/workspace/001/{name}" in result for name in expected_names)
+    assert "Environment file: var/environment/mission-1/environment.json" in result
+    assert "jq '.static_info | length'" in result
+    assert '"static_info":' not in result
+    assert '"scene_graph":' not in result
+    assert "drone-1" not in result
     paths = _write(context, planner)
     submitted = _submit(context, planner, paths)
     assert submitted.startswith("status: success")
@@ -779,6 +806,69 @@ def test_recorded_choice_returns_matching_native_paths_and_reaches_verifier(
     )
     assert cast(Any, verifier).checked
     assert _allowed_workflow_tools(context) == {"planner_executor"}
+
+
+def test_root_relative_environment_path_works_with_file_read_and_jq(
+    tmp_path: Path,
+) -> None:
+    from deepagents.backends import LocalShellBackend
+
+    context = _context(tmp_path)
+    backend = LocalShellBackend(
+        root_dir=context.backend_root,
+        virtual_mode=True,
+        inherit_env=False,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+
+    read_result = backend.read(context.environment_file_location)
+    assert read_result.error is None
+    assert (
+        json.loads(cast(dict[str, str], read_result.file_data)["content"])
+        == (context.environment_event.to_dict()["payload"])
+    )
+    jq_result = backend.execute(f"jq 'keys' {context.environment_file_location}")
+    assert jq_result.exit_code == 0
+    assert json.loads(jq_result.output) == ["drone"]
+
+
+def test_environment_file_validation_rejects_missing_outside_stale_and_mismatch(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+
+    def rebuild(environment_file: Path, *, backend_root: Path | None = None) -> None:
+        HyperWorkflowContext(
+            mission_input=context.mission_input,
+            mission_snapshot=context.mission_snapshot,
+            environment_event=context.environment_event,
+            environment_file=environment_file,
+            artifact_root=context.artifact_root,
+            backend_root=context.backend_root if backend_root is None else backend_root,
+            planner_workspace_location=context.planner_workspace_location,
+            minizinc_planner=context.minizinc_planner,
+            fast_downward_planner=context.fast_downward_planner,
+            val_validator=context.val_validator,
+        )
+
+    missing = cast(Path, context.backend_root) / "var/environment/missing.json"
+    with pytest.raises(ValueError, match="does not exist"):
+        rebuild(missing)
+
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(context.environment_event.to_dict()["payload"]))
+    with pytest.raises(ValueError, match="outside the backend root"):
+        rebuild(outside)
+
+    stale = cast(Path, context.backend_root) / "var/environment/stale.json"
+    stale.write_text(json.dumps({"drone": {"id": "retired-drone"}}))
+    with pytest.raises(ValueError, match="may be stale"):
+        rebuild(stale)
+
+    mismatched = cast(Path, context.backend_root) / "var/environment/mismatch.json"
+    mismatched.write_text(json.dumps({"drone": {"id": "drone-2"}}))
+    with pytest.raises(ValueError, match="does not match"):
+        rebuild(mismatched)
 
 
 @pytest.mark.parametrize(

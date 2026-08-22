@@ -73,18 +73,6 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _model_environment_payload(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            key: _model_environment_payload(item)
-            for key, item in value.items()
-            if key != "environment_file"
-        }
-    if isinstance(value, (list, tuple)):
-        return [_model_environment_payload(item) for item in value]
-    return value
-
-
 def _prerequisite_missing(*, required_tool: str, retry_tool: str) -> str:
     return f"Cannot run {retry_tool} yet. Call {required_tool} first."
 
@@ -245,6 +233,7 @@ class HyperWorkflowContext:
     mission_input: Any
     mission_snapshot: Any
     environment_event: Any
+    environment_file: Path
     artifact_root: Path
     minizinc_planner: Any
     fast_downward_planner: Any
@@ -256,6 +245,7 @@ class HyperWorkflowContext:
     operational_log: Any = None
     backend_root: Path | None = None
     planner_workspace_location: str | None = None
+    environment_file_location: str = field(default="", init=False)
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
     submitted_planner_choice: str | None = field(default=None, init=False)
@@ -343,8 +333,34 @@ class HyperWorkflowContext:
         ):
             raise TypeError("Hyper workflow communication port must expose request")
         self.artifact_root = Path(self.artifact_root).resolve()
-        if self.backend_root is not None:
-            self.backend_root = Path(self.backend_root).resolve()
+        if self.backend_root is None:
+            raise ValueError("Hyper workflow environment file requires a backend root")
+        self.backend_root = Path(self.backend_root).resolve()
+        environment_file = Path(self.environment_file).resolve()
+        try:
+            relative_environment_file = environment_file.relative_to(self.backend_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Hyper workflow environment file is outside the backend root"
+            ) from exc
+        if not environment_file.is_file():
+            raise ValueError("Hyper workflow environment file does not exist")
+        try:
+            persisted_environment = json.loads(
+                environment_file.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Hyper workflow environment file is not valid JSON"
+            ) from exc
+        authorized_environment = self.environment_event.to_dict()["payload"]
+        if persisted_environment != authorized_environment:
+            raise ValueError(
+                "Hyper workflow environment file does not match the authorized "
+                "environment event and may be stale"
+            )
+        self.environment_file = environment_file
+        self.environment_file_location = relative_environment_file.as_posix()
         if self.planner_workspace_location is None:
             self.planner_workspace_location = str(
                 (self.artifact_root / "workspace").resolve()
@@ -567,9 +583,6 @@ def record_planning_intent(
     if selected_planner is None:
         raise ValueError("recorded Planner Choice has no executable planner")
     locations = _planner_asset_locations(context, selected_planner)
-    environment = _model_environment_payload(
-        context.environment_event.to_dict()["payload"]
-    )
     marginals = (
         [item.to_dict() for item in context.belief_snapshot.marginals]
         if context.belief_snapshot is not None
@@ -580,7 +593,10 @@ def record_planning_intent(
     return (
         f"{accepted} Generate {planner_label} files at:\n"
         f"{file_lines}\n"
-        f"Environment data:\n{_canonical_json(environment)}\n"
+        f"Environment file: {context.environment_file_location}\n"
+        "Inspect it with execute and jq. Start with `jq 'keys' <file>` and use "
+        "`jq '.static_info | length' <file>` for the exact event count; never "
+        "manually count an inline event list.\n"
         f"Belief marginals:\n{_canonical_json(marginals)}"
     )
 
@@ -653,10 +669,11 @@ def _event_materialization_progress(
             "event_count": next_batch_count,
         },
         "instruction": (
-            "Call materialize_event_information_data now with only event numbers "
-            f"{state.next_event_number} through {next_batch_end}. Do not enumerate, "
-            "count, or prepare later batches. Wait for this tool result before "
-            "preparing the next batch."
+            "Use execute for one jq slice containing only event numbers "
+            f"{state.next_event_number} through {next_batch_end}, then call "
+            "materialize_event_information_data with that output as your very next "
+            "tool call. An execute result does not accept a batch. Wait for the "
+            "materialization result before reading any later slice."
         ),
     }
     if state.warnings:
@@ -943,9 +960,13 @@ def materialize_event_information_data(
         range(state.next_event_number, state.next_event_number + len(events))
     )
     if numbers != expected_numbers:
-        raise ValueError(
-            f"event numbers must be contiguous and begin at {state.next_event_number}"
+        rejected = _event_materialization_progress(state)
+        rejected["status"] = "rejected"
+        rejected["error"] = (
+            "event numbers must be contiguous and begin at "
+            f"{state.next_event_number}"
         )
+        return _canonical_json(rejected)
 
     next_values = {target: list(items) for target, items in state.values.items()}
     next_indices = {
@@ -1634,6 +1655,7 @@ def create_hyper_workflow_agent(
         skill_catalog=skill_catalog,
         skill_version=skill_version,
         backend_root=backend_root,
+        backend_kind="local-shell",
         middleware=[
             TodoListMiddleware(),
             _gate_workflow_tools,

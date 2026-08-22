@@ -270,6 +270,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mission_input,
             planning_snapshot,
             heartbeat.environment_event,
+            heartbeat.environment_file,
             artifact_root=planner_artifacts,
             belief_snapshot=belief_snapshot,
             backend_root=repo_root,
