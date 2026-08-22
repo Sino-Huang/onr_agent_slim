@@ -217,6 +217,120 @@ def test_full_join_builds_nested_step_with_decision_feedback_and_artifact() -> N
     assert child["children"] == []
 
 
+def test_tool_result_joins_by_tool_call_id_when_parent_is_a_graph_node() -> None:
+    # LangGraph records tool runs as siblings of the chat-model run: the
+    # tool's parent_run_id is a graph node run that is never recorded, so
+    # parent-based correlation fails and only the provider tool-call id joins.
+    tool = {
+        **_tool_invocation(),
+        "parent_id": "langgraph-node-run",
+        "output": {
+            "content": "accepted",
+            "status": "success",
+            "tool_call_id": "call-1",
+            "type": "tool",
+        },
+    }
+    payload = (
+        StepProjection()
+        .project(
+            MISSION_ID,
+            llm_records=[_llm_record()],
+            agent_invocations=[_llm_invocation(), tool],
+            planner_artifacts=[_artifact()],
+            generated_at="2026-08-21T10:01:00+00:00",
+        )
+        .to_dict()
+    )
+
+    steps = cast(list[dict[str, object]], payload["steps"])
+    assert len(steps) == 1
+    [step] = steps
+    assert step["kind"] == "llm"
+    [call] = cast(list[dict[str, object]], step["tool_calls"])
+    assert call["name"] == "run_minizinc"
+    assert call["result"] == {
+        "content": "accepted",
+        "status": "success",
+        "tool_call_id": "call-1",
+        "type": "tool",
+    }
+    assert call["error"] is None
+    assert call["duration_ms"] == 500
+    [child] = cast(list[dict[str, object]], step["children"])
+    assert child["kind"] == "tool"
+    assert child["name"] == "run_minizinc"
+
+
+def test_tool_result_joins_command_shaped_output_by_tool_call_id() -> None:
+    # Tools returning LangGraph Commands nest the id under update.messages.
+    tool = {
+        **_tool_invocation(),
+        "parent_id": "langgraph-node-run",
+        "output": {
+            "update": {
+                "messages": [
+                    {
+                        "content": "Updated todo list",
+                        "status": "success",
+                        "tool_call_id": "call-1",
+                        "type": "tool",
+                    }
+                ],
+                "todos": [],
+            }
+        },
+    }
+    payload = (
+        StepProjection()
+        .project(
+            MISSION_ID,
+            llm_records=[_llm_record()],
+            agent_invocations=[_llm_invocation(), tool],
+            planner_artifacts=[_artifact()],
+            generated_at="2026-08-21T10:01:00+00:00",
+        )
+        .to_dict()
+    )
+
+    [step] = cast(list[dict[str, object]], payload["steps"])
+    [call] = cast(list[dict[str, object]], step["tool_calls"])
+    # The join key is read from the raw output; the public result keeps the
+    # documented messages redaction.
+    assert call["result"] == {"update": {"todos": []}}
+    children = cast(list[dict[str, object]], step["children"])
+    assert [child["name"] for child in children] == ["run_minizinc"]
+
+
+def test_tool_without_matching_call_id_stays_a_root_step() -> None:
+    tool = {
+        **_tool_invocation(),
+        "parent_id": "langgraph-node-run",
+        "output": {"status": "accepted", "tool_call_id": "call-unrelated"},
+    }
+    payload = (
+        StepProjection()
+        .project(
+            MISSION_ID,
+            llm_records=[_llm_record()],
+            agent_invocations=[_llm_invocation(), tool],
+            planner_artifacts=[_artifact()],
+            generated_at="2026-08-21T10:01:00+00:00",
+        )
+        .to_dict()
+    )
+
+    steps = cast(list[dict[str, object]], payload["steps"])
+    assert [step["kind"] for step in steps] == ["llm", "tool"]
+    [call] = cast(list[dict[str, object]], steps[0]["tool_calls"])
+    assert call["result"] is None
+    [tool_call] = cast(list[dict[str, object]], steps[1]["tool_calls"])
+    assert tool_call["result"] == {
+        "status": "accepted",
+        "tool_call_id": "call-unrelated",
+    }
+
+
 def test_debug_absent_degrades_to_operational_and_transport_steps() -> None:
     payload = (
         StepProjection()

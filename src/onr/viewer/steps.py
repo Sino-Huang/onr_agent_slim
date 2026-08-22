@@ -416,6 +416,30 @@ def _component_for_event(record: Mapping[str, object]) -> str:
     return "transport"
 
 
+def _tool_call_id(value: object) -> str | None:
+    """Extract the provider tool-call id from a recorded tool output.
+
+    LangChain tool runs end with either a ToolMessage-shaped mapping (the id is
+    top-level) or a Command-shaped ``{"update": {"messages": [...]}}`` mapping.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    direct = _text(value.get("tool_call_id"))
+    if direct:
+        return direct
+    update = value.get("update")
+    if isinstance(update, Mapping):
+        messages = update.get("messages")
+        if isinstance(messages, (list, tuple)):
+            for message in messages:
+                if isinstance(message, Mapping):
+                    found = _text(message.get("tool_call_id"))
+                    if found:
+                        return found
+    return None
+
+
 def _normal_tool_call(
     value: object, *, partial: bool = False
 ) -> dict[str, object] | None:
@@ -449,6 +473,7 @@ def _normal_tool_call(
             "error": None,
             "duration_ms": None,
             "_truncated": arguments_truncated,
+            "_tool_call_id": _text(value.get("id")),
         }
     if isinstance(raw_args, str):
         try:
@@ -468,6 +493,7 @@ def _normal_tool_call(
         "result": _public_value(value.get("result")),
         "error": _public_value(value.get("error")),
         "duration_ms": duration if type(duration) is int and duration >= 0 else None,
+        "_tool_call_id": _text(value.get("id")),
     }
 
 
@@ -727,6 +753,9 @@ def _draft_from_invocation(record: Mapping[str, object]) -> dict[str, object] | 
         "_input": record.get("input"),
         "_output": record.get("output"),
         "_error": error,
+        "_tool_call_id": (
+            _tool_call_id(record.get("output")) if kind == "tool" else None
+        ),
     }
     if kind == "tool":
         draft["tool_calls"] = [
@@ -1139,30 +1168,69 @@ def _attach_artifacts(
 
 def _enrich_tool_results(drafts: list[dict[str, object]]) -> None:
     by_parent: dict[str, list[dict[str, object]]] = defaultdict(list)
+    by_call_id: dict[str, dict[str, object]] = {}
+    known_invocations = {
+        cast(str, draft["_invocation_id"])
+        for draft in drafts
+        if isinstance(draft.get("_invocation_id"), str)
+    }
     for draft in drafts:
         parent_id = draft.get("_parent_id")
         if isinstance(parent_id, str):
             by_parent[parent_id].append(draft)
+        call_id = draft.get("_tool_call_id")
+        if isinstance(call_id, str) and call_id and call_id not in by_call_id:
+            by_call_id[call_id] = draft
+    claimed: set[int] = set()
     for draft in drafts:
         invocation_id = draft.get("_invocation_id")
-        if not isinstance(invocation_id, str):
-            continue
-        children = by_parent.get(invocation_id, [])
+        available = (
+            list(by_parent.get(cast(str, invocation_id), []))
+            if isinstance(invocation_id, str)
+            else []
+        )
         calls = cast(list[dict[str, object]], draft["tool_calls"])
-        available = list(children)
         for call in calls:
             if call.get("partial") is True:
                 continue
-            child = next(
-                (item for item in available if item.get("name") == call.get("name")),
-                None,
-            )
+            # LangGraph records tool runs as siblings of the chat-model run
+            # (parent_run_id is the graph node run, not the LLM invocation),
+            # so the provider tool-call id is the reliable correlation key.
+            child: dict[str, object] | None = None
+            call_id = call.get("_tool_call_id")
+            if isinstance(call_id, str) and call_id:
+                candidate = by_call_id.get(call_id)
+                if (
+                    candidate is not None
+                    and candidate is not draft
+                    and id(candidate) not in claimed
+                ):
+                    child = candidate
+            if child is None:
+                child = next(
+                    (
+                        item
+                        for item in available
+                        if id(item) not in claimed
+                        and item.get("name") == call.get("name")
+                    ),
+                    None,
+                )
             if child is None:
                 continue
-            available.remove(child)
+            claimed.add(id(child))
+            if child in available:
+                available.remove(child)
             call["result"] = _public_value(child.get("_output"))
             call["error"] = _public_value(child.get("_error"))
             call["duration_ms"] = child.get("duration_ms")
+            # Reattach orphaned tool steps to the invocation that requested
+            # them so the step tree reflects the real call topology.
+            if (
+                isinstance(invocation_id, str)
+                and child.get("_parent_id") not in known_invocations
+            ):
+                child["_parent_id"] = invocation_id
 
 
 def _step_from_draft(draft: Mapping[str, object], children: tuple[Step, ...]) -> Step:
