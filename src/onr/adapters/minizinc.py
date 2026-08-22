@@ -11,19 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from onr.contracts.planning import (
+    MiniZincSolver,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlannerStaticCheckResult,
     PlanningOutcome,
 )
 
-_MINIZINC_ARGUMENTS = (
-    "--solver",
-    "gecode",
-    "--json-stream",
-    "--output-mode",
-    "json",
-)
+_MINIZINC_ARGUMENTS = ("--json-stream",)
 _OPTIMAL_STATUS = "OPTIMAL_SOLUTION"
 
 
@@ -108,7 +103,11 @@ class MiniZincExecutor:
             completed.stderr,
         )
 
-    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
+    def execute(
+        self, assets: Mapping[str, bytes], solver: MiniZincSolver
+    ) -> PlannerExecutionResult:
+        if solver not in ("coin-bc", "highs", "gecode"):
+            raise ValueError("unsupported MiniZinc solver")
         try:
             artifact_root = Path(self.artifact_root)
             artifact_root.mkdir(parents=True, exist_ok=True)
@@ -124,6 +123,8 @@ class MiniZincExecutor:
                 [
                     str(self.executable),
                     *self.arguments,
+                    "--solver",
+                    solver,
                     *_MINIZINC_ARGUMENTS,
                     *map(str, asset_paths),
                 ],
@@ -134,7 +135,7 @@ class MiniZincExecutor:
                 timeout=self.timeout_seconds,
             )
             _persist_solver_output(run_directory, completed.stdout, completed.stderr)
-            evidence = _execution_evidence(run_directory)
+            evidence = _execution_evidence(run_directory, solver)
         except subprocess.TimeoutExpired as exc:
             stdout = _output_text(exc.stdout)
             stderr = _output_text(exc.stderr) or (
@@ -147,7 +148,7 @@ class MiniZincExecutor:
             )
             return PlannerExecutionResult(
                 outcome=PlanningOutcome.TIMEOUT,
-                evidence=_execution_evidence(run_directory),
+                evidence=_execution_evidence(run_directory, solver),
                 stdout=stdout,
                 stderr=stderr,
             )
@@ -156,7 +157,7 @@ class MiniZincExecutor:
             _persist_solver_output(run_directory, "", stderr)
             return PlannerExecutionResult(
                 outcome=PlanningOutcome.ERROR,
-                evidence=_execution_evidence(run_directory),
+                evidence=_execution_evidence(run_directory, solver),
                 stderr=stderr,
             )
 
@@ -195,7 +196,9 @@ def _output_text(value: object) -> str:
     return str(value)
 
 
-def _execution_evidence(directory: Path) -> PlannerExecutionEvidence:
+def _execution_evidence(
+    directory: Path, solver: MiniZincSolver
+) -> PlannerExecutionEvidence:
     try:
         artifact_paths = tuple(
             sorted(
@@ -215,6 +218,7 @@ def _execution_evidence(directory: Path) -> PlannerExecutionEvidence:
         artifact_paths=artifact_paths,
         stdout_path=directory / "solver.stdout",
         stderr_path=directory / "solver.stderr",
+        minizinc_solver=solver,
     )
 
 

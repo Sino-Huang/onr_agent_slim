@@ -70,7 +70,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.2.0",
+        "2.3.0",
         "2.0.0",
         "1.1.0",
         "2.0.0",
@@ -475,16 +475,17 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
     assert "1 - probability_risk" in mission_skill
     assert "examples/event-information-patrol/model.mzn" in minizinc_skill
     assert "examples/event-information-patrol/data.dzn" in minizinc_skill
-    assert "read `examples/event-information-patrol/model.mzn`" in minizinc_skill
+    assert "examples/event-information-patrol/generate_data.py" in minizinc_skill
+    assert "Read `examples/event-information-patrol/model.mzn`" in minizinc_skill
     assert "call `write_file` with its contents" in minizinc_skill
     assert "example values are teaching values only" in minizinc_skill
     assert "current evidence" in minizinc_skill
     assert "solver-native plan text" in minizinc_skill
     assert "jq 'keys'" in minizinc_skill
-    assert "jq '.static_info | length'" in minizinc_skill
-    assert "to_entries" in minizinc_skill
-    assert "execute` result is not batch acceptance" in minizinc_skill
-    assert "as your very next tool call" in minizinc_skill
+    assert "schema-extraction functions" in minizinc_skill
+    assert "JSON manifest" in minizinc_skill
+    assert "bypasses `initialize_event_data_materialization`" in minizinc_skill
+    assert 'minizinc_solver: "coin-bc"' in minizinc_skill
 
 
 def test_planner_generation_skills_use_direct_external_tools_and_same_file_repair() -> (

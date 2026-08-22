@@ -9,9 +9,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 JsonScalar = str | int | float | bool | None
+MiniZincSolver = Literal["coin-bc", "highs", "gecode"]
 _MANEUVER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
 
@@ -303,12 +304,15 @@ class PlannerExecutionEvidence:
     artifact_paths: tuple[Path, ...]
     stdout_path: Path
     stderr_path: Path
+    minizinc_solver: MiniZincSolver | None = None
 
     def __post_init__(self) -> None:
         artifact_directory = Path(self.artifact_directory).resolve()
         artifact_paths = tuple(Path(path).resolve() for path in self.artifact_paths)
         stdout_path = Path(self.stdout_path).resolve()
         stderr_path = Path(self.stderr_path).resolve()
+        if self.minizinc_solver not in (None, "coin-bc", "highs", "gecode"):
+            raise ValueError("unsupported MiniZinc solver in execution evidence")
         object.__setattr__(self, "artifact_directory", artifact_directory)
         object.__setattr__(self, "artifact_paths", artifact_paths)
         object.__setattr__(self, "stdout_path", stdout_path)

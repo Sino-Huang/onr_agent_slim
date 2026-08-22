@@ -10,7 +10,7 @@ import pytest
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.tools import ToolRuntime
 
-from onr.adapters.minizinc import MiniZincExecutor
+from onr.adapters.operational_log import InProcessOperationalLog
 from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.agents.hyper_workflow import (
     HyperWorkflowContext,
@@ -52,14 +52,16 @@ class _MiniZinc:
             stdout='{"type":"status","status":"SATISFIED"}\n',
         )
         self.checked: list[dict[str, bytes]] = []
-        self.executed: list[dict[str, bytes]] = []
+        self.executed: list[tuple[dict[str, bytes], str]] = []
 
     def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         self.checked.append(dict(assets))
         return self.check_result
 
-    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
-        self.executed.append(dict(assets))
+    def execute(
+        self, assets: Mapping[str, bytes], solver: str
+    ) -> PlannerExecutionResult:
+        self.executed.append((dict(assets), solver))
         return self.execute_result
 
 
@@ -294,6 +296,7 @@ def _execute(context: HyperWorkflowContext, planner: str, paths: list[str]) -> s
     return cast(Any, planner_executor).func(
         planner_choice=planner,
         planner_model_file_locations=paths,
+        minizinc_solver="coin-bc" if planner == "minizinc" else None,
         reflection="Executing exact accepted planner files.",
         runtime=_runtime(context),
     )
@@ -366,7 +369,7 @@ def test_tool_interfaces_are_identical_and_planner_neutral(monkeypatch: Any) -> 
     assert type(cast(list[Any], captured["middleware"])[0]) is TodoListMiddleware
     expected = {"planner_choice", "planner_model_file_locations", "reflection"}
     assert set(cast(Any, submit_planner_attempt).args) == expected
-    assert set(cast(Any, planner_executor).args) == expected
+    assert set(cast(Any, planner_executor).args) == expected | {"minizinc_solver"}
     assert set(cast(Any, initialize_event_data_materialization).args) == {
         "total_event_count",
         "fields",
@@ -687,99 +690,6 @@ def test_event_materialization_atomic_write_failure_does_not_accept_batch(
     )
 
 
-def test_current_253_event_report_materializes_and_executes_within_timeout(
-    tmp_path: Path,
-) -> None:
-    repository_root = Path(__file__).resolve().parents[1]
-    example = (
-        repository_root
-        / "conf/skills/hyper/creating-minizinc-problem-files/examples"
-        / "event-information-patrol"
-    )
-    report_path = (
-        repository_root
-        / "data/past_debug_rounds/20260822T033147.679043Z/var/environment"
-        / "mission%3Ademo/environment.json"
-    )
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    events = cast(list[dict[str, object]], report["static_info"])
-    assert len(events) == 253
-    executable = (
-        repository_root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
-    )
-    executor = MiniZincExecutor(
-        executable, tmp_path / "full-report-runs", timeout_seconds=30
-    )
-    context = _context(tmp_path, minizinc=cast(Any, executor))
-    _record(context, "minizinc")
-    model_path = cast(Path, context.backend_root) / _paths(context, "minizinc")[
-        0
-    ].removeprefix("/")
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    model_path.write_bytes((example / "model.mzn").read_bytes())
-    fields = [
-        {"target": "event_time_s", "dzn_type": "float", "normalization": "identity"},
-        {"target": "event_x_m", "dzn_type": "float", "normalization": "identity"},
-        {"target": "event_y_m", "dzn_type": "float", "normalization": "identity"},
-        {
-            "target": "event_entity",
-            "dzn_type": "int",
-            "normalization": "first_seen_index",
-        },
-    ]
-    _initialize_events(context, len(events), fields)
-    mapping = {
-        "event_time_s": ["time"],
-        "event_x_m": ["position", 0],
-        "event_y_m": ["position", 1],
-        "event_entity": ["entity_id"],
-    }
-    completed: dict[str, object] = {}
-    for offset in range(0, len(events), 25):
-        completed = _materialize_events(
-            context,
-            [
-                {"event_number": index + 1, "event": events[index]}
-                for index in range(offset, min(offset + 25, len(events)))
-            ],
-            mapping,
-        )
-    assert completed["status"] == "complete"
-    entity_indices = cast(dict[str, dict[str, int]], completed["entity_index_maps"])[
-        "event_entity"
-    ]
-    data_path = cast(Path, context.backend_root) / _paths(context, "minizinc")[
-        1
-    ].removeprefix("/")
-    data_path.write_text(
-        data_path.read_text(encoding="utf-8")
-        + "\n"
-        + f"entity_count = {len(entity_indices)};\n"
-        + "entity_risk_p = ["
-        + ", ".join("0.5" for _ in entity_indices)
-        + "];\n"
-        # Keep the scale regression's optimum trivial; the teaching instance
-        # above separately proves non-trivial stop and schedule selection.
-        + "horizon_ticks = 1;\n"
-        + "time_scale = 2;\n"
-        + "drone_start_time = 0;\n"
-        + "drone_start_x_m = 45.74;\n"
-        + "drone_start_y_m = -85.99;\n"
-        + "max_velocity = 20;\n"
-        + "fov_radius = 30;\n"
-        + "risk_scale = 1000;\n",
-        encoding="utf-8",
-    )
-    assets = {
-        "model.mzn": model_path.read_bytes(),
-        "data.dzn": data_path.read_bytes(),
-    }
-    assert executor.check(assets).accepted is True
-    result = executor.execute(assets)
-    assert result.outcome is PlanningOutcome.SOLVED
-    assert '"status": "OPTIMAL_SOLUTION"' in result.stdout
-
-
 @pytest.mark.parametrize(
     ("planner", "expected_names"),
     [
@@ -942,6 +852,53 @@ def test_minizinc_success_persists_and_returns_exact_native_output(
     assert (
         cast(Path, context.backend_root) / reference.removeprefix("/")
     ).read_text() == native
+    assert cast(_MiniZinc, context.minizinc_planner).executed[-1][1] == "coin-bc"
+
+
+def test_planner_executor_requires_solver_only_for_minizinc(tmp_path: Path) -> None:
+    minizinc_context = _context(tmp_path / "minizinc")
+    _record(minizinc_context, "minizinc")
+    minizinc_paths = _write(minizinc_context, "minizinc")
+    _submit(minizinc_context, "minizinc", minizinc_paths)
+    with pytest.raises(ValueError, match="requires minizinc_solver"):
+        cast(Any, planner_executor).func(
+            planner_choice="minizinc",
+            planner_model_file_locations=minizinc_paths,
+            minizinc_solver=None,
+            reflection="Missing solver.",
+            runtime=_runtime(minizinc_context),
+        )
+
+    downward_context = _context(tmp_path / "downward")
+    _record(downward_context, "fast-downward")
+    downward_paths = _write(downward_context, "fast-downward")
+    _submit(downward_context, "fast-downward", downward_paths)
+    with pytest.raises(ValueError, match="requires minizinc_solver to be null"):
+        cast(Any, planner_executor).func(
+            planner_choice="fast-downward",
+            planner_model_file_locations=downward_paths,
+            minizinc_solver="coin-bc",
+            reflection="Wrong solver.",
+            runtime=_runtime(downward_context),
+        )
+
+
+def test_planner_execution_log_records_selected_minizinc_solver(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    operational_log = InProcessOperationalLog()
+    context.operational_log = operational_log
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    _submit(context, "minizinc", paths)
+
+    _execute(context, "minizinc", paths)
+
+    execution = next(
+        record
+        for record in operational_log.replay("mission-1")
+        if record.event_kind == "planner-execution"
+    )
+    assert execution.details["minizinc_solver"] == "coin-bc"
 
 
 def test_fast_downward_success_requires_val_and_returns_exact_sas_plan(

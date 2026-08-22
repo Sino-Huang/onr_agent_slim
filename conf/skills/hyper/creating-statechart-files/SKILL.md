@@ -19,9 +19,9 @@ version: '2.0.0'
 
 Build this linear semantic topology from the solver-selected native output:
 
-- Entry state `at-initial-location` uses the first stop's `move_from_x` and `move_from_y`.
-- For each stop `N`, create `moving-to-patrol-stop-N` with source and target coordinates, then `at-patrol-stop-N` with `x`, `y`, `source_event_index`, and dwell timing.
-- Connect the preceding location state to the moving state at `move_start`.
+- Entry state `at-initial-location` may have empty context; the accepted action list owns the destinations.
+- For each selected assignment in output order, create `moving-to-<maneuver_id>` with its target coordinates, then `at-<maneuver_id>` with `x`, `y`, `source_event_index`, captured-event count, and dwell timing.
+- Connect the preceding location state to the moving state immediately after the preceding stop, or from entry for the first assignment.
 - Connect the moving state to the stop state at the assignment `start`.
 - After the final stop, connect to `patrol-complete` at `start + duration`.
 - Use each assignment's `time_scale` unchanged on every time condition.

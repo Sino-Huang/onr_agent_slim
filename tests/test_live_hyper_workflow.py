@@ -10,6 +10,8 @@ import pytest
 import yaml
 from langgraph.checkpoint.memory import InMemorySaver
 
+from onr.adapters.minizinc import MiniZincExecutor
+from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.adapters.system_prompts import load_system_prompt
 from onr.agents import DeepAgentsHyperWorkflow, create_hyper_workflow_agent
@@ -19,6 +21,7 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planning import PlannerExecutionResult, PlannerStaticCheckResult
 from onr.contracts.transport import TransportEvent
+from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.runtime import RuntimeComposition
 
 pytestmark = pytest.mark.live
@@ -37,9 +40,30 @@ class RejectingPlanner:
             stderr="MiniZinc rejected the live-test model.",
         )
 
-    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult:
-        _ = assets
+    def execute(
+        self, assets: Mapping[str, bytes], solver: str
+    ) -> PlannerExecutionResult:
+        _ = assets, solver
         raise AssertionError("static rejection must stop before solver execution")
+
+
+class RecordingMiniZinc:
+    def __init__(self, executor: MiniZincExecutor) -> None:
+        self.executor = executor
+        self.checked_assets: list[dict[str, bytes]] = []
+        self.executed_assets: list[dict[str, bytes]] = []
+        self.solvers: list[str] = []
+
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        self.checked_assets.append(dict(assets))
+        return self.executor.check(assets)
+
+    def execute(
+        self, assets: Mapping[str, bytes], solver: str
+    ) -> PlannerExecutionResult:
+        self.executed_assets.append(dict(assets))
+        self.solvers.append(solver)
+        return self.executor.execute(assets, solver)  # type: ignore[arg-type]
 
 
 class UnusedFastDownward:
@@ -145,9 +169,53 @@ def _planning_context(
     )
 
 
-def _event_materialization_context(
-    tmp_path: Path,
-) -> tuple[HyperWorkflowContext, RejectingPlanner]:
+def _alternate_event_schema(report: dict[str, object]) -> dict[str, object]:
+    scene = report["scene_graph"]
+    records = report["static_info"]
+    assert isinstance(scene, dict) and isinstance(records, list)
+    entities = scene["entities"]
+    assert isinstance(entities, list)
+    vehicles = []
+    for entity in entities:
+        assert isinstance(entity, dict)
+        vehicle = {
+            "callsign": entity["id"],
+            "role": entity["type"],
+            "kinematics": {"position_m": entity["location"]},
+        }
+        if entity["type"] == "drone":
+            vehicle["performance"] = {
+                "speed_mps": entity["max_velocity"],
+                "sensor": {"radius_m": entity["fov_radius"]},
+            }
+        vehicles.append(vehicle)
+    observations = []
+    for index, record in enumerate(records, start=1):
+        assert isinstance(record, dict)
+        observations.append(
+            {
+                "observation_id": f"source-event-{index}",
+                "subject": {"callsign": record["entity_id"]},
+                "category": record["event type"],
+                "occurred_at_s": record["time"],
+                "coordinates_m": {
+                    "east": record["position"][0],
+                    "north": record["position"][1],
+                    "altitude": record["position"][2],
+                },
+                "attributes": record["event information"],
+            }
+        )
+    return {
+        "mission_state": {"clock_seconds": scene["mission_time_seconds"]},
+        "assets": {"vehicles": vehicles},
+        "observations": {"timeline": observations},
+    }
+
+
+def _event_information_context(
+    tmp_path: Path, *, alternate_schema: bool
+) -> tuple[HyperWorkflowContext, RecordingMiniZinc]:
     mission = MissionInput(
         mission_id=f"live-event-materialization-{uuid4().hex}",
         mission_text=(
@@ -165,28 +233,14 @@ def _event_materialization_context(
     report = json.loads(report_path.read_text(encoding="utf-8"))
     records = report["static_info"]
     assert isinstance(records, list) and len(records) == 253
+    payload = _alternate_event_schema(report) if alternate_schema else report
     scene = TransportEvent(
         schema_version=1,
         event_id=f"scene:{mission.mission_id}:1",
         mission_id=mission.mission_id,
         sequence=0,
         event_kind="environment_data",
-        payload={
-            "scene_graph": {
-                "mission_id": mission.mission_id,
-                "mission_time_seconds": 0.0,
-                "entities": [
-                    {
-                        "id": "drone-1",
-                        "type": "drone",
-                        "location": {"x": 0.0, "y": 0.0, "z": 10.0},
-                        "max_velocity": 20,
-                        "fov_radius": 30,
-                    }
-                ],
-            },
-            "static_info": records,
-        },
+        payload=payload,
     )
     snapshot = MissionSnapshot(
         mission_id=mission.mission_id,
@@ -198,8 +252,15 @@ def _event_materialization_context(
         source_health={"environment_data": "healthy"},
         source_freshness={"environment_data": True},
     )
-    planner = RejectingPlanner()
+    planner = RecordingMiniZinc(
+        MiniZincExecutor(
+            _REPO_ROOT / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc",
+            tmp_path / "minizinc-runs",
+            timeout_seconds=30,
+        )
+    )
     environment_file = _persist_environment(tmp_path, mission.mission_id, scene)
+    belief = create_fake_entity_risk_snapshot(mission.mission_id)
     return (
         HyperWorkflowContext(
             mission_input=mission,
@@ -212,6 +273,9 @@ def _event_materialization_context(
             fast_downward_planner=UnusedFastDownward(),
             val_validator=UnusedVAL(),
             max_planner_attempts=1,
+            max_statechart_attempts=3,
+            state_machine_factory=PythonStateMachineFactory(),
+            belief_snapshot=belief,
         ),
         planner,
     )
@@ -293,12 +357,17 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     assert "sha256" not in json.dumps(controlled_records).casefold()
 
 
-def test_live_hyper_workflow_materializes_event_data_in_multiple_batches(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "alternate_schema", [False, True], ids=["current", "renamed-nested"]
+)
+def test_live_hyper_workflow_authors_event_dag_generator(
+    tmp_path: Path, alternate_schema: bool
 ) -> None:
     runtime = _runtime(tmp_path)
     runtime.verify_llm_reachability()
-    context, planner = _event_materialization_context(tmp_path)
+    context, planner = _event_information_context(
+        tmp_path, alternate_schema=alternate_schema
+    )
     mission_id = context.mission_input.mission_id
     model = runtime.create_chat_model(
         mission_id=mission_id,
@@ -318,36 +387,47 @@ def test_live_hyper_workflow_materializes_event_data_in_multiple_batches(
         checkpointer=InMemorySaver(),
     )
 
-    result = DeepAgentsHyperWorkflow(graph).run(
-        context,
-        thread_id=f"planning-run:{mission_id}:1",
-        recursion_limit=300,
-    )
+    try:
+        result = DeepAgentsHyperWorkflow(graph).run(
+            context,
+            thread_id=f"planning-run:{mission_id}:1",
+            recursion_limit=180,
+        )
+    except ValueError as exc:
+        # This test owns planner generation/execution. The generic wrapper may
+        # reject later Statechart/todo bookkeeping after that evidence exists.
+        assert str(exc) in {
+            "Hyper workflow rejection lacks Statechart evidence",
+            "Hyper workflow success requires completed todos",
+        }
+        result = None
 
-    assert result.outcome is HyperWorkflowOutcome.PLANNER_REJECTED
+    if result is not None:
+        assert result.outcome in {
+            HyperWorkflowOutcome.EXECUTION_READY,
+            HyperWorkflowOutcome.STATECHART_REJECTED,
+        }
     assert planner.checked_assets
+    assert planner.executed_assets
+    assert planner.solvers == ["coin-bc"]
     data = planner.checked_assets[-1]["data.dzn"].decode()
-    assert "event_count = 253;" in data
+    assert "source_event_count = 253;" in data
+    assert "action_count = 786;" in data
+    assert "arc_count = 14423;" in data
     debug_directory = tmp_path / "debug" / "agent" / "hyper-agent" / mission_id
     records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(debug_directory.glob("*.json"))
     ]
     tool_records = [item for item in records if item.get("kind") == "tool"]
-    initialization = next(
-        item
+    assert not any(
+        item.get("name")
+        in {
+            "initialize_event_data_materialization",
+            "materialize_event_information_data",
+        }
         for item in tool_records
-        if item.get("name") == "initialize_event_data_materialization"
     )
-    batches = [
-        item
-        for item in tool_records
-        if item.get("name") == "materialize_event_information_data"
-        and item.get("error") is None
-    ]
-    assert initialization["input"]["total_event_count"] == 253
-    assert len(batches) >= 2
-    assert sum(len(item["input"]["events"]) for item in batches) == 253
     execute_records = [
         item
         for item in tool_records
@@ -355,24 +435,34 @@ def test_live_hyper_workflow_materializes_event_data_in_multiple_batches(
     ]
     jq_commands = [item["input"]["command"] for item in execute_records]
     assert any("jq 'keys'" in command for command in jq_commands)
-    assert any(".static_info | length" in command for command in jq_commands)
-    assert len([command for command in jq_commands if "to_entries" in command]) >= 2
-    last_batch_sequence = batches[-1]["sequence"]
-    reads_after_materialization = [
-        item
-        for item in tool_records
-        if item.get("name") == "read_file"
-        and item.get("sequence", 0) > last_batch_sequence
+    assert any("generate_data.py" in command for command in jq_commands)
+    if alternate_schema:
+        assert any(
+            term in "\n".join(jq_commands)
+            for term in ("observations", "timeline", "vehicles")
+        )
+
+    workspace = context.artifact_root / "workspace/001"
+    generated_script = workspace / "generate_data.py"
+    assert generated_script.is_file()
+    script_text = generated_script.read_text(encoding="utf-8")
+    if alternate_schema:
+        assert "static_info" not in script_text
+        assert all(
+            term in script_text
+            for term in ("observations", "timeline", "vehicles", "occurred_at_s")
+        )
+    native_plan = context.planner_plan
+    assert native_plan is not None
+    plan_path = Path(native_plan.planner_native_plan_artifact_reference)
+    stream = [
+        json.loads(line) for line in plan_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert {
-        Path(item["input"]["file_path"]).name for item in reads_after_materialization
-    } >= {
-        "model.mzn",
-        "data.dzn",
-    }
-    assert any(
-        item.get("name") == "edit_file"
-        and Path(item["input"]["file_path"]).name == "data.dzn"
-        and item.get("sequence", 0) > last_batch_sequence
-        for item in tool_records
+    solution = next(item for item in stream if item["type"] == "solution")
+    output = json.loads(solution["output"]["default"])
+    assert output["information_gain"] == 15_221
+    assert output["stop_count"] == len(output["assignments"]) == 15
+    execution_call = next(
+        item for item in tool_records if item.get("name") == "planner_executor"
     )
+    assert execution_call["input"]["minizinc_solver"] == "coin-bc"

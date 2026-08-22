@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Protocol
 
 from onr.contracts.planning import (
+    MiniZincSolver,
     PlannerExecutionEvidence,
     PlannerExecutionResult,
     PlannerStaticCheckResult,
@@ -14,7 +15,9 @@ from onr.contracts.planning import (
 class MiniZincPlannerExecutor(Protocol):
     """Statically validate and execute generated MiniZinc assets."""
 
-    def execute(self, assets: Mapping[str, bytes]) -> PlannerExecutionResult: ...
+    def execute(
+        self, assets: Mapping[str, bytes], solver: MiniZincSolver
+    ) -> PlannerExecutionResult: ...
 
     def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
         """Return MiniZinc acceptance plus exact process diagnostics."""

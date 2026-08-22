@@ -1096,7 +1096,10 @@ def submit_planner_attempt(
     if static_check.accepted:
         instruction = (
             "Call planner_executor with the same planner_choice and "
-            "planner_model_file_locations."
+            "planner_model_file_locations. For MiniZinc, select coin-bc for "
+            "linear/integer-flow models, highs as the secondary linear-MIP "
+            "solver, or gecode for CP models; Fast Downward requires "
+            "minizinc_solver: null."
         )
     else:
         paths = ", ".join(planner_model_file_locations)
@@ -1176,6 +1179,7 @@ def _fast_downward_plan(evidence: PlannerExecutionEvidence | None) -> Path | Non
 def planner_executor(
     planner_choice: Literal["minizinc", "fast-downward"],
     planner_model_file_locations: list[str],
+    minizinc_solver: Literal["coin-bc", "highs", "gecode"] | None,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
@@ -1184,6 +1188,7 @@ def planner_executor(
     Args:
         planner_choice: Selected external planner.
         planner_model_file_locations: Exact two sandbox paths used for submission.
+        minizinc_solver: Selected MiniZinc backend, or null for Fast Downward.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
@@ -1198,6 +1203,10 @@ def planner_executor(
             required_tool="record_planning_intent",
             retry_tool="planner_executor",
         )
+    if planner_choice == "minizinc" and minizinc_solver is None:
+        raise ValueError("MiniZinc execution requires minizinc_solver")
+    if planner_choice == "fast-downward" and minizinc_solver is not None:
+        raise ValueError("Fast Downward execution requires minizinc_solver to be null")
     assets, sandbox_by_name, host_by_name = _resolve_planner_files(
         context, planner_choice, planner_model_file_locations
     )
@@ -1213,7 +1222,9 @@ def planner_executor(
     ):
         raise ValueError("planner execution files do not match the accepted submission")
     if planner_choice == "minizinc":
-        result = context.minizinc_planner.execute(context.submitted_assets)
+        result = context.minizinc_planner.execute(
+            context.submitted_assets, minizinc_solver
+        )
         if not isinstance(result, PlannerExecutionResult):
             raise TypeError("MiniZinc planner returned an invalid result")
     else:
@@ -1269,6 +1280,7 @@ def planner_executor(
         details={
             "planner_id": planner_choice,
             "plan_revision": (context.mission_snapshot.plan_revision or 0) + 1,
+            "minizinc_solver": minizinc_solver,
         },
     )
     if plan_path is not None and plan_text is not None:
