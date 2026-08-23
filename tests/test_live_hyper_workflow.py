@@ -477,18 +477,26 @@ def test_live_hyper_workflow_authors_event_dag_generator(
         if "planner_identity" in value
     }
     assert len(planner_identities) == 15
+
+    def output_text(item: Mapping[str, object]) -> str:
+        output = item.get("output")
+        if isinstance(output, Mapping) and isinstance(output.get("content"), str):
+            return output["content"]
+        return json.dumps(output)
+
     manifest_record = next(
         item
         for item in execute_records
-        if '"planner_order_preserved":true'
-        in json.dumps(item.get("output")).replace(" ", "")
+        if '"planner_order_preserved":true' in output_text(item).replace(" ", "")
     )
-    manifest_text = json.dumps(manifest_record["output"]).replace(" ", "")
+    manifest_text = output_text(manifest_record).replace(" ", "")
     assert '"planner_items":15' in manifest_text
-    assert "15221" in manifest_text
     assert chart["terminal_states"][0] in manifest_text
     assert context.statechart is not None
     accepted = context.statechart.to_dict()
     assert accepted["schema_version"] == 2
     assert "planner_native_plan_artifact_reference" not in accepted
-    assert all(set(edge) == {"event", "source", "target", "context"} for edge in accepted["transitions"])
+    assert all(
+        set(edge) == {"event", "source", "target", "context"}
+        for edge in accepted["transitions"]
+    )

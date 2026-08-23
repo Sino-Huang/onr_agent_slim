@@ -13,15 +13,17 @@ version: '3.0.0'
 3. Keep two sections obvious in the generator: planner-output extraction and semantic-topology construction. Adapt extraction to the observed artifact schema; do not introduce a production-owned planner schema.
 4. Preserve every planner-selected item’s order, dependencies, parameters, timing, units, and identifiers in self-explanatory state or transition contexts. Describe desired operational outcomes and evidence; Maneuver Control chooses physical tools.
    Initial travel may be authorized at Mission time zero. Later travel becomes
-   eligible when the prior observation window ends; authoritative maneuver
+   eligible when the prior planner evidence interval ends; authoritative maneuver
    lifecycle feedback triggers Maneuver Control immediately, without rounding
    planner timing to the periodic heartbeat cadence. Keep observation start and
    duration distinct from travel timing.
-   Document the navigation adapter scalars `x`, `y`, `deadline_time`,
-   `observation_start`, `observation_duration`, `source_event_index`, and
-   `expected_observation_count` in the moving state's context.
+   Document only the navigation adapter parameters `x`, `y`, and `deadline_time`
+   in the moving state's context. Keep source-event identity, expected evidence,
+   and planner observation timing in readiness or evidence context.
    `deadline_time` is the continuous planner time at which the target must be
-   reached (normally the observation-window start), not a heartbeat boundary.
+   reached (normally the evidence-interval start), not a heartbeat boundary.
+   Continuous sensing needs no maneuver-owned sensing state; represent a
+   planner assignment with movement followed by its evidence-ready outcome.
 5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
 6. Run the generator. Inspect both authored files and the printed manifest. Repair the same files until their contents and manifest agree with the planner artifact.
 7. Call `submit_statechart_draft` with the exact returned `statechart_file_location`. On rejection, use the structured diagnostic to edit, rerun, inspect, and resubmit those same files.
@@ -40,9 +42,9 @@ The draft contains exactly `entry_state`, `terminal_states`, `states`, `state_co
 
 Context vocabulary belongs to this generator. Use nested objects and names that explain meaning, units, planner provenance, desired outcomes, and readiness evidence without relying on state or event names.
 
-Observation confirmation requires both the end of the planner window and the
-bounded sensed-evidence summary for that maneuver. Reaching the window start is
-not observation completion.
+Observation confirmation may use both the end of the planner evidence interval
+and matching pending sensor evidence. Sensor capture is continuous and is not
+started, stopped, or scoped by a physical maneuver.
 
 ## Repair boundary
 

@@ -113,7 +113,7 @@ class EntityObservation:
 
 @dataclass(frozen=True, slots=True)
 class EventObservation:
-    """One report event sensed in its observation window and field of view."""
+    """One report event captured by the sensor within its field of view."""
 
     observation_id: str
     entity_id: str
@@ -124,8 +124,6 @@ class EventObservation:
     event_type: str
     event_information: Mapping[str, object]
     event_time: float
-    maneuver_id: str
-    observation_window_outcome: str
 
     def __post_init__(self) -> None:
         _text(self.observation_id, "observation ID")
@@ -149,8 +147,6 @@ class EventObservation:
             raise TypeError("event information must be an object")
         object.__setattr__(self, "event_information", frozen)
         object.__setattr__(self, "event_time", _time(self.event_time, "event time"))
-        _text(self.maneuver_id, "correlated maneuver ID")
-        _text(self.observation_window_outcome, "observation-window outcome")
 
     @property
     def observation_kind(self) -> str:
@@ -168,8 +164,6 @@ class EventObservation:
             "event_type": self.event_type,
             "event_information": _thaw(self.event_information),
             "event_time": self.event_time,
-            "maneuver_id": self.maneuver_id,
-            "observation_window_outcome": self.observation_window_outcome,
         }
 
 

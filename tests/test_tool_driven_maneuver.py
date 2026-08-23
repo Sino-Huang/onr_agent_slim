@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,8 +18,10 @@ from onr.agents.maneuver_tools import (
     ManeuverToolContext,
     communicate,
     ingest_perceptions,
+    investigate,
     land,
     navigate,
+    search_area,
     transition_fsm,
 )
 from onr.application.bayesian_belief import BayesianBeliefManager, BayesianBeliefService
@@ -31,6 +34,7 @@ from onr.contracts.environment import EventObservation
 from onr.contracts.fsm import Statechart, StatechartTransition
 from onr.contracts.maneuver_control import (
     ManeuverCommand,
+    ManeuverControlDecision,
     ManeuverHeartbeatOutcome,
     ManeuverInvocation,
 )
@@ -133,13 +137,92 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "z",
         "speed",
         "deadline_time",
-        "observation_start",
-        "observation_duration",
-        "source_event_index",
-        "expected_observation_count",
         "extra_parameters",
         "reflection",
     }
+    search_schema = cast(
+        Any, MANEUVER_OPERATIONAL_TOOLS[4].tool_call_schema
+    ).model_json_schema()
+    assert "polygon" in search_schema["required"]
+    assert set(search_schema["properties"]) == {
+        "maneuver_id",
+        "polygon",
+        "reflection",
+        "altitude",
+        "speed",
+        "deadline_time",
+        "extra_parameters",
+    }
+    investigate_schema = cast(
+        Any, MANEUVER_OPERATIONAL_TOOLS[6].tool_call_schema
+    ).model_json_schema()
+    assert "deadline_time" in investigate_schema["properties"]
+    for tool_index in (2, 3, 5):
+        schema = cast(
+            Any, MANEUVER_OPERATIONAL_TOOLS[tool_index].tool_call_schema
+        ).model_json_schema()
+        assert "deadline_time" not in schema["properties"]
+
+
+def test_nested_polygon_round_trips_through_decisions_and_commands() -> None:
+    polygon = [
+        {"x": 0.0, "y": 0.0},
+        {"x": 4.0, "y": 0.0},
+        {"x": 0.0, "y": 3.0},
+    ]
+    intent = ManeuverIntent("search_area", (ManeuverParameter("polygon", polygon),))
+    decision = ManeuverControlDecision(
+        "decision-polygon",
+        "mission-tools",
+        2,
+        maneuver_id="search-polygon",
+        physical_intent=intent,
+    )
+    command = ManeuverCommand(
+        "command-polygon",
+        "correlation-polygon",
+        "mission-tools",
+        2,
+        "search-polygon",
+        intent,
+    )
+
+    assert decision.to_dict()["physical_intent"]["parameters"]["polygon"] == polygon  # type: ignore[index]
+    assert ManeuverControlDecision.from_json(decision.to_canonical_json()) == decision
+    assert command.to_dict()["intent"]["parameters"]["polygon"] == polygon  # type: ignore[index]
+    assert ManeuverCommand.from_json(command.to_canonical_json()) == command
+
+
+@pytest.mark.parametrize(
+    "polygon",
+    [
+        [{"x": 0, "y": 0}, {"x": 1, "y": 1}],
+        [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": math.inf, "y": 1}],
+        [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 2}],
+        [{"x": 0, "y": 0}, {"x": 1, "y": 0}, [2, 1]],
+    ],
+)
+def test_search_area_rejects_malformed_polygons(polygon: object) -> None:
+    with pytest.raises(ValueError, match="polygon"):
+        cast(Any, search_area).func(
+            maneuver_id="search",
+            polygon=polygon,
+            reflection="Reject malformed geometry.",
+            runtime=None,
+        )
+
+
+def test_maneuver_parameters_reject_non_json_values_and_negative_deadlines() -> None:
+    with pytest.raises(ValueError, match="JSON-safe"):
+        ManeuverParameter("polygon", {"points": {1, 2, 3}})
+    with pytest.raises(ValueError, match="non-negative"):
+        cast(Any, investigate).func(
+            maneuver_id="investigate",
+            entity_id="ship-1",
+            deadline_time=-1,
+            reflection="Reject an invalid absolute deadline.",
+            runtime=None,
+        )
 
 
 def test_transition_tool_checks_exact_candidate_without_interpreting_context() -> None:
@@ -252,23 +335,24 @@ def test_physical_tools_submit_and_override_without_application_gate(
             x=100,
             y=200,
             deadline_time=8.5,
-            observation_start=8.5,
-            observation_duration=1.5,
-            source_event_index=17,
-            expected_observation_count=3,
             reflection="Current state context calls for movement.",
             runtime=_runtime(context),
         )
     )
     assert environment.current_maneuver["parameters"] == {  # type: ignore[index]
         "deadline_time": 8.5,
-        "expected_observation_count": 3,
-        "observation_duration": 1.5,
-        "observation_start": 8.5,
-        "source_event_index": 17,
         "x": 100,
         "y": 200,
     }
+    with pytest.raises(ValueError, match="retired observation parameters"):
+        cast(Any, navigate).func(
+            maneuver_id="retired-window",
+            x=1,
+            y=2,
+            extra_parameters={"observation_start": 1},
+            reflection="Retired sensing parameters must not pass through extras.",
+            runtime=_runtime(context),
+        )
     second = json.loads(
         cast(Any, land).func(
             maneuver_id="emergency-landing",
@@ -374,8 +458,6 @@ def test_belief_tool_ingests_each_pending_event_once(
             event_type="report",
             event_information={"index": index},
             event_time=float(index),
-            maneuver_id="observe",
-            observation_window_outcome="observed",
         )
         for index, uncertainty in ((1, 0.1), (2, 0.2))
     )
@@ -461,8 +543,6 @@ def test_failed_perception_ingestion_remains_available_for_retry(
         event_type="report",
         event_information={"decision": "left"},
         event_time=1,
-        maneuver_id="observe",
-        observation_window_outcome="observed",
     )
     invocation = ManeuverInvocation(
         "heartbeat-retry",

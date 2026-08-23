@@ -68,6 +68,18 @@ _Avoid_: Agent memory, ground truth
 The ordered raw entity and event perceptions accumulated since Maneuver Control last completed belief ingestion. It is transient delivery context, not accumulated belief or an independent heartbeat trigger.
 _Avoid_: Bayesian Belief Snapshot, agent memory, perception trigger
 
+**Event Observation**:
+A sensor capture of an event occurrence within the controlled drone's field of view, retaining subject position, uncertainty, and source provenance independently of any physical maneuver.
+_Avoid_: Maneuver observation, observation-window result
+
+**Event Time**:
+The Mission time at which the observed event occurred.
+_Avoid_: Observed Time, event duration
+
+**Observed Time**:
+The Mission time at which the sensor captured an observation.
+_Avoid_: Event Time, observation duration
+
 **Transport Event**:
 An immutable published fact or outcome that may be consumed by more than one service.
 _Avoid_: Command, notification
@@ -215,6 +227,10 @@ _Avoid_: Automatic transition, plan revision
 **Maneuver Command**:
 An abstract request for one physical maneuver, identified by action, Mission, and plan context.
 _Avoid_: Environment command format, scene graph payload
+
+**Maneuver Deadline**:
+An absolute non-negative Mission time by which a supported physical maneuver should finish; it expresses best-effort timing rather than a failure boundary.
+_Avoid_: Duration, timeout
 
 **Maneuver Feedback**:
 An environment-authoritative lifecycle fact for a Maneuver Command.

@@ -168,8 +168,8 @@ class FakeEnvironment:
         self._environment_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
         self._entity_positions = self._initial_entity_positions()
         self._observed_event_indices: set[int] = set()
-        self._maneuver_observed_event_indices: set[int] = set()
-        self._arrival_feedback_commands: set[str] = set()
+        self._route_targets: tuple[tuple[float, float, float], ...] = ()
+        self._route_index = 0
         self._active_command: ManeuverCommand | None = None
         self._environment_revision = 0
         self._current_perceptions: tuple[TransportEvent, ...] = ()
@@ -296,7 +296,10 @@ class FakeEnvironment:
                 extra_payload={"reason": "overridden"},
             )
         self._active_command = command
-        self._maneuver_observed_event_indices = set()
+        self._route_targets = ()
+        self._route_index = 0
+        if command.action == "search_area":
+            self._route_targets = self._search_route(self._command_parameters(command))
         self._set_current_maneuver(command, "active")
         self.navigation_status = "active"
         feedback = self._feedback(command, lifecycle)
@@ -314,33 +317,16 @@ class FakeEnvironment:
         previous_time = self.mission_time_seconds
         self.mission_time_seconds = round(previous_time + self.tick_seconds, 10)
         feedback: list[TransportEvent] = []
-        self._advance_active_action()
         self._advance_report_entities(previous_time, self.mission_time_seconds)
+        action_feedback = self._advance_active_action()
+        if action_feedback is not None:
+            feedback.append(action_feedback)
         perceptions = self._sense_report_events(
             previous_time, self.mission_time_seconds
         )
         self._current_perceptions = perceptions
 
         active = self._active_command
-        if (
-            active is not None
-            and active.action == "navigate"
-            and active.command_id not in self._arrival_feedback_commands
-            and self._navigation_arrival_ready(active)
-            and not self._action_complete(active)
-        ):
-            feedback.append(
-                self._feedback(
-                    active,
-                    "active",
-                    extra_payload={"phase": "navigation-complete"},
-                    identity_suffix="navigation-complete",
-                )
-            )
-            self._arrival_feedback_commands.add(active.command_id)
-            self.navigation_status = "navigation-complete"
-            if self.current_maneuver is not None:
-                self.current_maneuver["phase"] = "navigation-complete"
         if active is not None and self._action_complete(active):
             feedback.append(self._feedback(active, "completed"))
             self.navigation_status = "completed"
@@ -359,13 +345,6 @@ class FakeEnvironment:
         """Return current control evidence and only the latest tick's perceptions."""
 
         maneuver = dict(self.current_maneuver) if self.current_maneuver else None
-        if maneuver is not None:
-            parameters = cast(Mapping[str, object], maneuver.get("parameters", {}))
-            maneuver["observation_summary"] = {
-                "observed_count": len(self._maneuver_observed_event_indices),
-                "expected_count": parameters.get("expected_observation_count", 0),
-                "source_event_indices": sorted(self._maneuver_observed_event_indices),
-            }
         raw_revision = cast(Mapping[str, object], self.current_maneuver or {}).get(
             "plan_revision", 0
         )
@@ -451,7 +430,7 @@ class FakeEnvironment:
         self.current_maneuver = {
             "maneuver_id": command.maneuver_id,
             "action": command.action,
-            "parameters": {item.name: item.value for item in command.parameters},
+            "parameters": command.intent.to_dict()["parameters"],
             "command_id": command.command_id,
             "correlation_id": command.correlation_id,
             "plan_revision": command.plan_revision,
@@ -459,46 +438,109 @@ class FakeEnvironment:
             "lifecycle": lifecycle,
         }
 
-    def _advance_active_action(self) -> None:
+    @staticmethod
+    def _command_parameters(command: ManeuverCommand) -> Mapping[str, object]:
+        return cast(Mapping[str, object], command.intent.to_dict()["parameters"])
+
+    def _advance_active_action(self) -> TransportEvent | None:
         command = self._active_command
-        if command is None or command.action != "navigate":
-            return
-        parameters = {item.name: item.value for item in command.parameters}
-        target = self._navigation_target(parameters)
-        delta = tuple(target[index] - self.drone_position[index] for index in range(3))
-        distance = math.sqrt(sum(item * item for item in delta))
-        speed = self._navigation_speed(parameters, distance)
+        if command is None:
+            return None
+        parameters = self._command_parameters(command)
+        remaining_distance = 0.0
+        target: tuple[float, float, float] | None = None
+        requested_speed = False
+        if command.action == "navigate":
+            target = self._navigation_target(parameters)
+            remaining_distance = math.dist(self.drone_position, target)
+            requested_speed = True
+        elif command.action == "search_area":
+            remaining_distance = self._remaining_route_distance()
+            requested_speed = True
+        elif command.action == "investigate":
+            entity_id = parameters.get("entity_id")
+            if (
+                not isinstance(entity_id, str)
+                or entity_id not in self._entity_positions
+            ):
+                feedback = self._feedback(
+                    command,
+                    "failed",
+                    extra_payload={"reason": "unknown entity"},
+                )
+                self.navigation_status = "failed"
+                self._set_current_maneuver(command, "failed")
+                self._active_command = None
+                return feedback
+            entity_position = self._entity_positions[entity_id]
+            standoff = self._standoff_distance(parameters)
+            entity_distance = math.dist(self.drone_position, entity_position)
+            remaining_distance = max(entity_distance - standoff, 0.0)
+            if remaining_distance > 1e-9:
+                scale = remaining_distance / entity_distance
+                target = tuple(
+                    self.drone_position[index]
+                    + (entity_position[index] - self.drone_position[index]) * scale
+                    for index in range(3)
+                )
+        else:
+            return None
+        speed = self._effective_speed(
+            parameters,
+            remaining_distance,
+            requested_speed=requested_speed,
+            action=command.action,
+        )
         if self.current_maneuver is not None:
             self.current_maneuver["effective_speed"] = speed
         travel = speed * self.tick_seconds
-        if distance <= travel:
+        if command.action == "search_area":
+            self._advance_route(travel)
+        elif target is not None:
+            self._move_toward(target, travel)
+        return None
+
+    def _move_toward(self, target: tuple[float, float, float], travel: float) -> None:
+        distance = math.dist(self.drone_position, target)
+        if distance <= travel or distance <= 1e-9:
             self.drone_position = target
             return
         scale = travel / distance
         self.drone_position = tuple(
-            self.drone_position[index] + delta[index] * scale for index in range(3)
+            self.drone_position[index]
+            + (target[index] - self.drone_position[index]) * scale
+            for index in range(3)
         )
 
-    def _navigation_speed(
-        self, parameters: Mapping[str, object], distance: float
+    def _effective_speed(
+        self,
+        parameters: Mapping[str, object],
+        remaining_distance: float,
+        *,
+        requested_speed: bool,
+        action: str,
     ) -> float:
         deadline = parameters.get("deadline_time")
         if deadline is None:
+            if not requested_speed:
+                return self.max_velocity
             return min(
                 _positive_number(
-                    parameters.get("speed", self.max_velocity), "navigation speed"
+                    parameters.get("speed", self.max_velocity), f"{action} speed"
                 ),
                 self.max_velocity,
             )
-        deadline_time = _finite_number(deadline, "navigation deadline time")
+        deadline_time = _finite_number(deadline, f"{action} deadline time")
         if deadline_time < 0:
-            raise ValueError("navigation deadline time must be non-negative")
+            raise ValueError(f"{action} deadline time must be non-negative")
         interval_start = self.mission_time_seconds - self.tick_seconds
         remaining_time = deadline_time - interval_start
-        if distance <= 1e-9:
+        if remaining_distance <= 1e-9:
             return 0.0
         required_speed = (
-            distance / remaining_time if remaining_time > 0 else self.max_velocity
+            remaining_distance / remaining_time
+            if remaining_time > 0
+            else self.max_velocity
         )
         return min(required_speed, self.max_velocity)
 
@@ -507,29 +549,93 @@ class FakeEnvironment:
     ) -> tuple[float, float, float]:
         return (
             _finite_number(
-                parameters.get("x", parameters.get("target_x", self.drone_position[0])),
+                parameters.get("x"),
                 "navigation target x",
             ),
             _finite_number(
-                parameters.get("y", parameters.get("target_y", self.drone_position[1])),
+                parameters.get("y"),
                 "navigation target y",
             ),
             _finite_number(
-                parameters.get("z", parameters.get("target_z", self.drone_position[2])),
+                parameters.get("z", self.drone_position[2]),
                 "navigation target z",
             ),
         )
 
+    def _search_route(
+        self, parameters: Mapping[str, object]
+    ) -> tuple[tuple[float, float, float], ...]:
+        polygon = parameters.get("polygon")
+        if not isinstance(polygon, (list, tuple)) or len(polygon) < 3:
+            raise ValueError("search polygon must contain at least three points")
+        altitude = _finite_number(
+            parameters.get("altitude", self.drone_position[2]), "search altitude"
+        )
+        points: list[tuple[float, float, float]] = []
+        for point in polygon:
+            if not isinstance(point, Mapping) or set(point) != {"x", "y"}:
+                raise ValueError("search polygon points must contain exactly x and y")
+            points.append(
+                (
+                    _finite_number(point["x"], "search polygon x"),
+                    _finite_number(point["y"], "search polygon y"),
+                    altitude,
+                )
+            )
+        return (*points, points[0])
+
+    def _remaining_route_distance(self) -> float:
+        if self._route_index >= len(self._route_targets):
+            return 0.0
+        distance = math.dist(
+            self.drone_position, self._route_targets[self._route_index]
+        )
+        for index in range(self._route_index, len(self._route_targets) - 1):
+            distance += math.dist(
+                self._route_targets[index], self._route_targets[index + 1]
+            )
+        return distance
+
+    def _advance_route(self, travel: float) -> None:
+        while self._route_index < len(self._route_targets):
+            target = self._route_targets[self._route_index]
+            distance = math.dist(self.drone_position, target)
+            if distance <= 1e-9:
+                self.drone_position = target
+                self._route_index += 1
+                continue
+            if travel < distance:
+                self._move_toward(target, travel)
+                return
+            self.drone_position = target
+            self._route_index += 1
+            travel -= distance
+
+    @staticmethod
+    def _standoff_distance(parameters: Mapping[str, object]) -> float:
+        value = _finite_number(
+            parameters.get("standoff_distance", 0.0), "investigation standoff distance"
+        )
+        if value < 0:
+            raise ValueError("investigation standoff distance must be non-negative")
+        return value
+
     def _action_complete(self, command: ManeuverCommand) -> bool:
-        parameters = {item.name: item.value for item in command.parameters}
+        parameters = self._command_parameters(command)
         if command.action == "navigate":
-            arrived = (
+            return (
                 math.dist(self.drone_position, self._navigation_target(parameters))
                 <= 1e-9
             )
-            window = self._window(parameters)
-            return arrived and (
-                window is None or self.mission_time_seconds >= window[1]
+        if command.action == "search_area":
+            return self._route_index >= len(self._route_targets)
+        if command.action == "investigate":
+            entity_id = parameters.get("entity_id")
+            return (
+                isinstance(entity_id, str)
+                and entity_id in self._entity_positions
+                and math.dist(self.drone_position, self._entity_positions[entity_id])
+                <= self._standoff_distance(parameters) + 1e-9
             )
         duration = parameters.get(
             "duration_seconds", parameters.get("duration", self.tick_seconds)
@@ -542,28 +648,9 @@ class FakeEnvironment:
         )
         return self.mission_time_seconds >= start + float(cast(int | float, duration))
 
-    def _navigation_arrival_ready(self, command: ManeuverCommand) -> bool:
-        parameters = {item.name: item.value for item in command.parameters}
-        arrived = (
-            math.dist(self.drone_position, self._navigation_target(parameters)) <= 1e-9
-        )
-        deadline = parameters.get("deadline_time")
-        return arrived and (
-            deadline is None
-            or self.mission_time_seconds
-            >= _finite_number(deadline, "navigation deadline time")
-        )
-
     def _sense_report_events(
         self, previous_time: float, current_time: float
     ) -> tuple[TransportEvent, ...]:
-        command = self._active_command
-        if command is None:
-            return ()
-        parameters = {item.name: item.value for item in command.parameters}
-        window = self._window(parameters)
-        if window is None:
-            return ()
         result: list[TransportEvent] = []
         for source_index, record in enumerate(self._report, start=1):
             event_time = float(record["time"])
@@ -577,8 +664,6 @@ class FakeEnvironment:
                 float(raw_position[2]),
             )
             if source_index in self._observed_event_indices:
-                continue
-            if not (window[0] <= event_time < window[1]):
                 continue
             if math.dist(self.drone_position, position) > self.fov_radius:
                 continue
@@ -602,8 +687,6 @@ class FakeEnvironment:
                     Mapping[str, object], record["event information"]
                 ),
                 event_time=event_time,
-                maneuver_id=command.maneuver_id,
-                observation_window_outcome="observed",
             )
             for perception in (entity, event):
                 sequence = self.transport.next_event_sequence(
@@ -618,7 +701,6 @@ class FakeEnvironment:
                     )
                 )
             self._observed_event_indices.add(source_index)
-            self._maneuver_observed_event_indices.add(source_index)
         return tuple(result)
 
     def _advance_report_entities(
@@ -634,27 +716,6 @@ class FakeEnvironment:
                 float(raw_position[1]),
                 float(raw_position[2]),
             )
-
-    @staticmethod
-    def _window(parameters: Mapping[str, object]) -> tuple[float, float] | None:
-        raw_start = parameters.get(
-            "observation_start_seconds", parameters.get("observation_start")
-        )
-        raw_duration = parameters.get(
-            "observation_duration_seconds", parameters.get("observation_duration")
-        )
-        if raw_start is None or raw_duration is None:
-            return None
-        start = float(cast(int | float, raw_start))
-        duration = float(cast(int | float, raw_duration))
-        if (
-            not math.isfinite(start)
-            or start < 0
-            or not math.isfinite(duration)
-            or duration <= 0
-        ):
-            raise ValueError("observation window must contain finite positive timing")
-        return start, start + duration
 
     @staticmethod
     def _uncertainty(source_index: int, entity_id: str) -> float:

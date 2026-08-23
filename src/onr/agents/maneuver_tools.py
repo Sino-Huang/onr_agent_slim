@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from threading import Thread
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from langchain.tools import ToolRuntime, tool
+from pydantic import Field
+from typing_extensions import TypedDict
 
 from onr.application.bayesian_belief import create_risk_observation_event
 from onr.contracts.bayesian_belief import EntityAssociation, RiskObservation
@@ -26,6 +29,22 @@ from onr.contracts.planning import ManeuverIntent, ManeuverParameter
 from onr.contracts.transport import CommandOutcome, TransportEvent
 
 JsonScalar = str | int | float | bool | None
+_RETIRED_OBSERVATION_PARAMETERS = frozenset(
+    {
+        "observation_start",
+        "observation_duration",
+        "source_event_index",
+        "expected_observation_count",
+    }
+)
+
+
+class PlanarPoint(TypedDict):
+    x: float
+    y: float
+
+
+Polygon = Annotated[list[PlanarPoint], Field(min_length=3)]
 
 
 def _canonical_json(value: object) -> str:
@@ -219,12 +238,49 @@ def transition_fsm(
 
 
 def _parameters(
-    required: Mapping[str, JsonScalar],
+    required: Mapping[str, object],
     extra_parameters: Mapping[str, JsonScalar] | None,
 ) -> tuple[ManeuverParameter, ...]:
-    values = dict(extra_parameters or {})
+    extras = dict(extra_parameters or {})
+    retired = _RETIRED_OBSERVATION_PARAMETERS.intersection(extras)
+    if retired:
+        retired_names = ", ".join(sorted(retired))
+        raise ValueError(
+            f"retired observation parameters are not accepted: {retired_names}"
+        )
+    for value in extras.values():
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            raise ValueError("extra parameters must contain only JSON scalars")
+    values: dict[str, object] = extras
     values.update(required)
     return tuple(ManeuverParameter(name, value) for name, value in values.items())
+
+
+def _deadline(value: float) -> float:
+    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError("deadline_time must be a finite non-negative Mission time")
+    return value
+
+
+def _polygon(value: object) -> list[dict[str, float]]:
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        raise ValueError("polygon must contain at least three planar points")
+    result: list[dict[str, float]] = []
+    for point in value:
+        if not isinstance(point, Mapping) or set(point) != {"x", "y"}:
+            raise ValueError("polygon points must contain exactly x and y")
+        coordinates: dict[str, float] = {}
+        for name in ("x", "y"):
+            coordinate = point[name]
+            if (
+                isinstance(coordinate, bool)
+                or not isinstance(coordinate, (int, float))
+                or not math.isfinite(float(coordinate))
+            ):
+                raise ValueError("polygon coordinates must be finite numbers")
+            coordinates[name] = float(coordinate)
+        result.append(coordinates)
+    return result
 
 
 def _physical(
@@ -278,13 +334,9 @@ def navigate(
     z: float | None = None,
     speed: float | None = None,
     deadline_time: float | None = None,
-    observation_start: float | None = None,
-    observation_duration: float | None = None,
-    source_event_index: int | None = None,
-    expected_observation_count: int | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
-    """Submit deadline-aware navigation and its correlated observation window.
+    """Submit deadline-aware navigation.
 
     Args:
         maneuver_id: Action identity selected for this navigation.
@@ -293,11 +345,7 @@ def navigate(
         reflection: Concise public evidence summary for this action.
         z: Optional target altitude or depth.
         speed: Optional requested speed.
-        deadline_time: Continuous Mission time by which the target must be reached.
-        observation_start: Continuous Mission time at which sensing begins.
-        observation_duration: Duration in seconds of the sensing window.
-        source_event_index: Planner-correlated source event identity.
-        expected_observation_count: Expected event observations in the window.
+        deadline_time: Absolute non-negative Mission time by which to reach the target.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
@@ -307,15 +355,7 @@ def navigate(
     if speed is not None:
         required["speed"] = speed
     if deadline_time is not None:
-        required["deadline_time"] = deadline_time
-    if observation_start is not None:
-        required["observation_start"] = observation_start
-    if observation_duration is not None:
-        required["observation_duration"] = observation_duration
-    if source_event_index is not None:
-        required["source_event_index"] = source_event_index
-    if expected_observation_count is not None:
-        required["expected_observation_count"] = expected_observation_count
+        required["deadline_time"] = _deadline(deadline_time)
     context = _context(runtime)
     return _physical(
         context,
@@ -393,29 +433,33 @@ def land(
 @tool(parse_docstring=True)
 def search_area(
     maneuver_id: str,
-    area_id: str,
+    polygon: Polygon,
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
     altitude: float | None = None,
     speed: float | None = None,
+    deadline_time: float | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
-    """Submit an area-search action.
+    """Submit a perimeter search over an ordered planar polygon.
 
     Args:
         maneuver_id: Action identity selected for the search.
-        area_id: Environment area identifier to search.
+        polygon: At least three finite x/y points in authoritative traversal order.
         reflection: Concise public evidence summary for this action.
         altitude: Optional search altitude.
         speed: Optional requested speed.
+        deadline_time: Absolute non-negative Mission time by which to finish the route.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
-    required: dict[str, JsonScalar] = {"area_id": area_id}
+    required: dict[str, object] = {"polygon": _polygon(polygon)}
     if altitude is not None:
         required["altitude"] = altitude
     if speed is not None:
         required["speed"] = speed
+    if deadline_time is not None:
+        required["deadline_time"] = _deadline(deadline_time)
     context = _context(runtime)
     return _physical(
         context,
@@ -471,6 +515,7 @@ def investigate(
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
     standoff_distance: float | None = None,
+    deadline_time: float | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
     """Submit an entity-investigation action.
@@ -480,12 +525,15 @@ def investigate(
         entity_id: Environment entity identifier to investigate.
         reflection: Concise public evidence summary for this action.
         standoff_distance: Optional desired separation distance.
+        deadline_time: Absolute non-negative Mission time by which to reach standoff.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
     required: dict[str, JsonScalar] = {"entity_id": entity_id}
     if standoff_distance is not None:
         required["standoff_distance"] = standoff_distance
+    if deadline_time is not None:
+        required["deadline_time"] = _deadline(deadline_time)
     context = _context(runtime)
     return _physical(
         context,

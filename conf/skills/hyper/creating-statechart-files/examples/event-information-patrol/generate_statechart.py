@@ -134,9 +134,8 @@ def build_statechart(
     for item in items:
         identifier = item["identifier"]
         moving = f"assignment-{item['order']}-in-progress"
-        observing = f"assignment-{item['order']}-observation-window-active"
         achieved = f"assignment-{item['order']}-outcome-achieved"
-        states.extend((moving, observing, achieved))
+        states.extend((moving, achieved))
         shared = {
             "planner_identity": identifier,
             "planner_order": item["order"],
@@ -153,34 +152,23 @@ def build_statechart(
                 "x": item["x"],
                 "y": item["y"],
                 "deadline_time": item["start_tick"] / item["time_scale"],
-                "observation_start": item["start_tick"] / item["time_scale"],
-                "observation_duration": item["duration_tick"] / item["time_scale"],
-                "source_event_index": item["source_event_index"],
-                "expected_observation_count": item["expected_observation_count"],
             },
         }
-        state_context[observing] = {
+        state_context[achieved] = {
             **shared,
-            "desired_outcome": {
-                "kind": "planner_selected_patrol_observation_complete",
-                "location": {"x": item["x"], "y": item["y"]},
-            },
-            "observation_window": {
+            "desired_outcome": "the planner-selected evidence interval is complete",
+            "planner_evidence_interval": {
                 "start": scaled_time(item["start_tick"], item["time_scale"]),
                 "duration": scaled_time(item["duration_tick"], item["time_scale"]),
                 "source_event_index": item["source_event_index"],
                 "expected_observation_count": item["expected_observation_count"],
             },
         }
-        state_context[achieved] = {
-            **shared,
-            "desired_outcome": "the planner-selected observation window is complete",
-        }
         if item["order"] == 1:
             state_context[achieved]["hyper_evaluation"] = {
                 "kind": "replan",
                 "reason": (
-                    "Evaluate whether the first completed live observation window "
+                    "Evaluate whether the first completed planner evidence interval "
                     "materially changes the active plan."
                 ),
                 "send_once": True,
@@ -203,26 +191,13 @@ def build_statechart(
                     },
                 },
                 {
-                    "event": f"assignment-{item['order']}-observation-may-begin",
-                    "source": moving,
-                    "target": observing,
-                    "context": {
-                        "desired_outcome": "confirm the selected observation outcome",
-                        "readiness": {
-                            "live_evidence": "the drone is at the selected location",
-                            "not_before": scaled_time(
-                                item["start_tick"], item["time_scale"]
-                            ),
-                        },
-                    },
-                },
-                {
                     "event": f"assignment-{item['order']}-outcome-confirmed",
-                    "source": observing,
+                    "source": moving,
                     "target": achieved,
                     "context": {
-                        "desired_outcome": "confirm the completed observation window",
+                        "desired_outcome": "confirm the completed evidence interval",
                         "readiness": {
+                            "live_evidence": "the drone is at the selected location",
                             "not_before": scaled_time(
                                 observation_end_tick, item["time_scale"]
                             ),

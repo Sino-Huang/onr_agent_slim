@@ -12,6 +12,8 @@ from onr.contracts.fsm import (
     Statechart,
     StatechartTransition,
 )
+from onr.contracts.hyper_agent import MissionInput
+from onr.demo.maneuver_patrol import create_demo_patrol
 
 
 def _chart() -> Statechart:
@@ -195,3 +197,16 @@ def test_event_patrol_semantic_topology_instantiates_all_four_stops() -> None:
 
     assert machine.current_state == "patrol-complete"
     assert machine.allowed_events == ()
+
+
+def test_demo_patrol_exposes_absolute_navigation_deadlines() -> None:
+    artifacts = create_demo_patrol(
+        MissionInput("mission-demo-deadlines", "Patrol four stops.", "test")
+    )
+
+    assert [
+        artifacts.statechart.state_context[f"moving-to-patrol-stop-{number}"][
+            "deadline_time"
+        ]
+        for number in range(1, 5)
+    ] == [5, 10, 15, 20]

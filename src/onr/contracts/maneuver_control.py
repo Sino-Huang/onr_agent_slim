@@ -19,11 +19,7 @@ from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.environment import Perception, perception_from_dict
 from onr.contracts.fsm import FSMStatus
 from onr.contracts.hyper_agent import HyperHeartbeatDecision
-from onr.contracts.planning import (
-    JsonScalar,
-    ManeuverIntent,
-    ManeuverParameter,
-)
+from onr.contracts.planning import ManeuverIntent, ManeuverParameter
 from onr.contracts.transport import Command
 
 
@@ -65,12 +61,6 @@ def _string_mapping(value: object, label: str) -> Mapping[str, object]:
             raise ValueError(f"{label} keys must be strings")
         result[key] = item
     return result
-
-
-def _scalar(value: object, label: str) -> JsonScalar:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    raise ValueError(f"{label} must be a JSON scalar")
 
 
 def _nonnegative_int(value: object, label: str) -> int:
@@ -208,7 +198,7 @@ class ManeuverControlDecision:
             physical_intent = ManeuverIntent(
                 raw_action,
                 tuple(
-                    ManeuverParameter(name, _scalar(value, "maneuver parameter value"))
+                    ManeuverParameter(name, value)
                     for name, value in _string_mapping(
                         parameters, "physical maneuver parameters"
                     ).items()
@@ -349,7 +339,7 @@ class ManeuverControlDecision:
             physical = ManeuverIntent(
                 action,
                 tuple(
-                    ManeuverParameter(name, _scalar(item, "maneuver parameter value"))
+                    ManeuverParameter(name, item)
                     for name, item in _string_mapping(
                         parameters, "physical intent parameters"
                     ).items()
@@ -504,7 +494,7 @@ class ManeuverCommand:
             ManeuverIntent(
                 action,
                 tuple(
-                    ManeuverParameter(name, _scalar(item, "maneuver parameter value"))
+                    ManeuverParameter(name, item)
                     for name, item in _string_mapping(
                         parameters, "maneuver command parameters"
                     ).items()
@@ -553,7 +543,7 @@ class ManeuverCommand:
             ManeuverIntent(
                 action,
                 tuple(
-                    ManeuverParameter(name, _scalar(value, "maneuver parameter value"))
+                    ManeuverParameter(name, value)
                     for name, value in _string_mapping(
                         parameters, "maneuver command parameters"
                     ).items()

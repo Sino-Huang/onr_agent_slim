@@ -59,8 +59,8 @@ evidence:
 - After a successful transition, use only the returned active_state_context for
   every remaining physical, belief, or communication choice in that heartbeat;
   do not act on the source-state context. If phase is moving, call navigate using
-  its maneuver_id, target_x, target_y, and speed. Do not call a physical tool for
-  waiting, observing, or complete phases.
+  its maneuver_id, target_x, target_y, speed, and deadline_time. Do not call a
+  physical tool for waiting, observing, or complete phases.
 - If pending_perceptions contains event observations, call ingest_perceptions
   once for the complete pending batch.
 - If an observing context contains report_to_hyper, call communicate to
@@ -128,6 +128,7 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
             "target_x": x,
             "target_y": y,
             "speed": 10,
+            "deadline_time": arrive,
         }
         contexts[at_stop] = {
             "phase": "observing",

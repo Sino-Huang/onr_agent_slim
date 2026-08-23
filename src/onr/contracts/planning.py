@@ -9,9 +9,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, cast
+from types import MappingProxyType
+from typing import Any, Literal, TypeAlias, cast
 
 JsonScalar = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | Mapping[str, "JsonValue"]
 MiniZincSolver = Literal["coin-bc", "highs", "gecode"]
 _MANEUVER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
@@ -44,11 +46,28 @@ def _require_text(value: object, label: str) -> str:
     return value
 
 
-def _require_json_scalar(value: object, label: str) -> JsonScalar:
+def _freeze_json_value(value: object, label: str) -> JsonValue:
+    if isinstance(value, Mapping):
+        frozen: dict[str, JsonValue] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{label} object keys must be strings")
+            frozen[key] = _freeze_json_value(item, label)
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item, label) for item in value)
     if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"{label} must be finite")
-    if value is not None and not isinstance(value, (str, int, float, bool)):
-        raise ValueError(f"{label} must be a JSON scalar")
+        raise ValueError(f"{label} must contain only finite numbers")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ValueError(f"{label} must contain only JSON-safe values")
+
+
+def _thaw_json_value(value: JsonValue) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
     return value
 
 
@@ -72,7 +91,7 @@ def _maneuver_intent_from_dict(value: object) -> ManeuverIntent:
     if not isinstance(action, str) or not isinstance(parameters, Mapping):
         raise ValueError("maneuver intent fields have invalid types")
     parsed = tuple(
-        ManeuverParameter(name, _require_json_scalar(item, "maneuver parameter value"))
+        ManeuverParameter(name, item)
         for name, item in parameters.items()
         if isinstance(name, str)
     )
@@ -146,11 +165,15 @@ class ManeuverParameter:
     """One typed parameter carried by an abstract maneuver intent."""
 
     name: str
-    value: JsonScalar
+    value: JsonValue
 
     def __post_init__(self) -> None:
         _require_text(self.name, "maneuver parameter name")
-        _require_json_scalar(self.value, "maneuver parameter value")
+        object.__setattr__(
+            self,
+            "value",
+            _freeze_json_value(self.value, "maneuver parameter value"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +198,9 @@ class ManeuverIntent:
     def to_dict(self) -> dict[str, Any]:
         return {
             "action": self.action,
-            "parameters": {item.name: item.value for item in self.parameters},
+            "parameters": {
+                item.name: _thaw_json_value(item.value) for item in self.parameters
+            },
         }
 
 

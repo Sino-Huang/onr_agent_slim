@@ -5,6 +5,8 @@ import math
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from harness.fake_environment import FakeEnvironment
 from onr.adapters.file_transport import FileTransport
 from onr.application.context_coordination import ContextCoordination
@@ -43,9 +45,9 @@ def _command(
     mission_id: str = "mission-1",
     x: float = 10,
     speed: float | None = 2,
-    extras: dict[str, int | float] | None = None,
+    extras: dict[str, object] | None = None,
 ) -> ManeuverCommand:
-    parameters: dict[str, int | float] = {"x": x, "y": 0.0, "z": -250.0}
+    parameters: dict[str, object] = {"x": x, "y": 0.0, "z": -250.0}
     if speed is not None:
         parameters["speed"] = speed
     parameters.update(extras or {})
@@ -57,6 +59,25 @@ def _command(
         maneuver_id=f"maneuver:{command_id}",
         intent=ManeuverIntent(
             "navigate",
+            tuple(ManeuverParameter(name, value) for name, value in parameters.items()),
+        ),
+    )
+
+
+def _action_command(
+    action: str,
+    parameters: dict[str, object],
+    *,
+    command_id: str,
+) -> ManeuverCommand:
+    return ManeuverCommand(
+        command_id=command_id,
+        correlation_id=f"correlation:{command_id}",
+        mission_id="mission-1",
+        plan_revision=1,
+        maneuver_id=f"maneuver:{command_id}",
+        intent=ManeuverIntent(
+            action,
             tuple(ManeuverParameter(name, value) for name, value in parameters.items()),
         ),
     )
@@ -130,7 +151,43 @@ def test_active_cancelled_and_completed_feedback_is_correlated_and_idempotent(
     )
 
 
-def test_navigation_deadline_derives_speed_and_emits_arrival_phase_feedback(
+@pytest.mark.parametrize(
+    ("action", "parameters"),
+    [
+        ("navigate", {"x": 1, "y": 2}),
+        ("takeoff", {"altitude": -100}),
+        ("land", {"x": 1, "y": 2}),
+        (
+            "search_area",
+            {
+                "polygon": [
+                    {"x": 0, "y": 0},
+                    {"x": 1, "y": 0},
+                    {"x": 0, "y": 1},
+                ]
+            },
+        ),
+        ("pursue", {"entity_id": "1"}),
+        ("investigate", {"entity_id": "1"}),
+    ],
+)
+def test_lifecycle_feedback_correlates_every_physical_action(
+    tmp_path: Path, action: str, parameters: dict[str, object]
+) -> None:
+    transport = _transport(tmp_path / action)
+    report = _report(tmp_path / f"{action}.json", [])
+    environment = FakeEnvironment(transport, "mission-1", event_report_path=report)
+    command = _action_command(action, parameters, command_id=action)
+
+    result = environment.process_command(command, lifecycle="completed")
+    feedback = ManeuverFeedback.from_dict(result.feedback.payload)
+
+    assert feedback.maneuver_id == command.maneuver_id
+    assert feedback.payload["command_id"] == command.command_id
+    assert feedback.payload["correlation_id"] == command.correlation_id
+
+
+def test_navigation_deadline_derives_speed_and_completes_on_arrival(
     tmp_path: Path,
 ) -> None:
     transport = _transport(tmp_path / "transport")
@@ -140,11 +197,7 @@ def test_navigation_deadline_derives_speed_and_emits_arrival_phase_feedback(
         _command(
             x=10,
             speed=None,
-            extras={
-                "deadline_time": 5,
-                "observation_start": 5,
-                "observation_duration": 1,
-            },
+            extras={"deadline_time": 5},
         )
     )
 
@@ -158,29 +211,217 @@ def test_navigation_deadline_derives_speed_and_emits_arrival_phase_feedback(
     assert arrival.current_time == 5.0
     assert environment.drone_position[0] == 10.0
     assert len(arrival.feedback_events) == 1
-    phase = ManeuverFeedback.from_dict(arrival.feedback_events[0].payload)
-    assert phase.lifecycle == "active"
-    assert phase.payload["phase"] == "navigation-complete"
-    assert environment.navigation_status == "navigation-complete"
+    assert ManeuverFeedback.from_dict(arrival.feedback_events[0].payload).lifecycle == (
+        "completed"
+    )
+    assert environment.navigation_status == "completed"
 
+
+def test_navigation_continues_at_maximum_speed_after_infeasible_deadline(
+    tmp_path: Path,
+) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [])
+    environment = FakeEnvironment(
+        transport,
+        "mission-1",
+        event_report_path=report,
+        tick_seconds=1,
+        max_velocity=2,
+    )
+    environment.submit(_command(x=10, speed=0.5, extras={"deadline_time": 1}))
+
+    first = environment.tick()
+    assert first.feedback_events == ()
+    assert environment.drone_position[0] == 2
+    assert environment.current_maneuver["effective_speed"] == 2  # type: ignore[index]
+    for _ in range(3):
+        assert environment.tick().feedback_events == ()
     completed = environment.tick()
-    assert completed.current_time == 5.5
-    assert completed.feedback_events == ()
+    assert environment.drone_position[0] == 10
+    assert (
+        ManeuverFeedback.from_dict(completed.feedback_events[0].payload).lifecycle
+        == "completed"
+    )
+
+
+def test_search_area_traverses_and_closes_polygon_at_deadline_speed(
+    tmp_path: Path,
+) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [])
+    environment = FakeEnvironment(
+        transport,
+        "mission-1",
+        event_report_path=report,
+        tick_seconds=1,
+        initial_position=(0, 0, -10),
+        max_velocity=20,
+    )
+    polygon = [
+        {"x": 0, "y": 0},
+        {"x": 2, "y": 0},
+        {"x": 2, "y": 2},
+        {"x": 0, "y": 2},
+    ]
+    environment.submit(
+        _action_command(
+            "search_area",
+            {
+                "polygon": polygon,
+                "altitude": -5,
+                "speed": 0.5,
+                "deadline_time": 4,
+            },
+            command_id="search",
+        )
+    )
+
+    assert environment.tick().feedback_events == ()
+    assert environment.drone_position == (0.0, 0.0, -6.75)
+    assert environment.current_maneuver["effective_speed"] == 3.25  # type: ignore[index]
+    environment.tick()
+    environment.tick()
     completed = environment.tick()
-    assert completed.current_time == 6.0
-    assert ManeuverFeedback.from_dict(
-        completed.feedback_events[0].payload
-    ).lifecycle == ("completed")
+    assert environment.drone_position == (0.0, 0.0, -5.0)
+    assert (
+        ManeuverFeedback.from_dict(completed.feedback_events[0].payload).maneuver_id
+        == "maneuver:search"
+    )
 
 
-def test_events_are_sensed_only_in_window_and_fov_and_map_exactly_to_belief(
+def test_search_area_continues_at_maximum_speed_after_missed_deadline(
+    tmp_path: Path,
+) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [])
+    environment = FakeEnvironment(
+        transport,
+        "mission-1",
+        event_report_path=report,
+        tick_seconds=1,
+        initial_position=(0, 0, 0),
+        max_velocity=2,
+    )
+    environment.submit(
+        _action_command(
+            "search_area",
+            {
+                "polygon": [
+                    {"x": 0, "y": 0},
+                    {"x": 4, "y": 0},
+                    {"x": 4, "y": 3},
+                ],
+                "deadline_time": 1,
+            },
+            command_id="late-search",
+        )
+    )
+
+    first = environment.tick()
+    assert first.feedback_events == ()
+    assert environment.drone_position == (2.0, 0.0, 0.0)
+    assert environment.current_maneuver["effective_speed"] == 2  # type: ignore[index]
+    for _ in range(4):
+        assert environment.tick().feedback_events == ()
+    completed = environment.tick()
+    assert environment.drone_position == (0.0, 0.0, 0.0)
+    assert (
+        ManeuverFeedback.from_dict(completed.feedback_events[0].payload).lifecycle
+        == "completed"
+    )
+
+
+def test_investigate_uses_feasible_deadline_to_reach_standoff(
+    tmp_path: Path,
+) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [_event(time=100, x=10)])
+    environment = FakeEnvironment(
+        transport,
+        "mission-1",
+        event_report_path=report,
+        tick_seconds=1,
+        initial_position=(0, 0, -250),
+        max_velocity=20,
+    )
+    environment.submit(
+        _action_command(
+            "investigate",
+            {"entity_id": "1", "standoff_distance": 2, "deadline_time": 4},
+            command_id="scheduled-investigation",
+        )
+    )
+
+    first = environment.tick()
+    assert first.feedback_events == ()
+    assert environment.drone_position == (2.0, 0.0, -250.0)
+    assert environment.current_maneuver["effective_speed"] == 2  # type: ignore[index]
+    environment.tick()
+    environment.tick()
+    completed = environment.tick()
+    assert environment.drone_position == (8.0, 0.0, -250.0)
+    assert (
+        ManeuverFeedback.from_dict(completed.feedback_events[0].payload).lifecycle
+        == "completed"
+    )
+
+
+def test_investigate_reaches_standoff_and_unknown_entity_fails(
+    tmp_path: Path,
+) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [_event(time=100, x=10)])
+    environment = FakeEnvironment(
+        transport,
+        "mission-1",
+        event_report_path=report,
+        tick_seconds=1,
+        initial_position=(0, 0, -250),
+        max_velocity=2,
+    )
+    environment.submit(
+        _action_command(
+            "investigate",
+            {"entity_id": "1", "standoff_distance": 2, "deadline_time": 1},
+            command_id="investigate",
+        )
+    )
+
+    first = environment.tick()
+    assert first.feedback_events == ()
+    assert environment.current_maneuver["effective_speed"] == 2  # type: ignore[index]
+    for _ in range(2):
+        assert environment.tick().feedback_events == ()
+    completed = environment.tick()
+    assert environment.drone_position == (8.0, 0.0, -250.0)
+    assert (
+        ManeuverFeedback.from_dict(completed.feedback_events[0].payload).lifecycle
+        == "completed"
+    )
+
+    environment.submit(
+        _action_command(
+            "investigate",
+            {"entity_id": "missing"},
+            command_id="missing",
+        )
+    )
+    failed = environment.tick()
+    fact = ManeuverFeedback.from_dict(failed.feedback_events[0].payload)
+    assert fact.lifecycle == "failed"
+    assert fact.maneuver_id == "maneuver:missing"
+    assert fact.payload["reason"] == "unknown entity"
+
+
+def test_events_are_sensed_continuously_in_fov_without_updating_belief(
     tmp_path: Path,
 ) -> None:
     mission_id = "mission-1"
     transport = _transport(tmp_path / "transport", mission_id)
     report = _report(
         tmp_path / "report.json",
-        [_event(time=0.5, x=1), _event(time=1.0, x=100, entity_id=2)],
+        [_event(time=0.2, x=1), _event(time=1.0, x=100, entity_id=2)],
     )
     environment = FakeEnvironment(
         transport,
@@ -189,19 +430,6 @@ def test_events_are_sensed_only_in_window_and_fov_and_map_exactly_to_belief(
         tick_seconds=0.5,
         fov_radius=30,
     )
-    environment.submit(
-        _command(
-            x=1,
-            speed=20,
-            extras={
-                "observation_start": 0,
-                "observation_duration": 1.5,
-                "source_event_index": 1,
-                "expected_observation_count": 1,
-            },
-        )
-    )
-
     first = environment.tick()
     assert len(first.perception_events) == 2
     event_payload = next(
@@ -212,8 +440,11 @@ def test_events_are_sensed_only_in_window_and_fov_and_map_exactly_to_belief(
     event = perception_from_dict(event_payload)
     assert isinstance(event, EventObservation)
     assert event.source_event_index == 1
-    assert event.maneuver_id == "maneuver:command-1"
-    assert event.observation_window_outcome == "observed"
+    assert event.event_time == 0.2
+    assert event.observed_time == 0.5
+    assert perception_from_dict(event.to_dict()) == event
+    assert "maneuver_id" not in event.to_dict()
+    assert "observation_window_outcome" not in event.to_dict()
     assert math.isfinite(event.uncertainty_score)
 
     assert (
@@ -229,22 +460,40 @@ def test_events_are_sensed_only_in_window_and_fov_and_map_exactly_to_belief(
     assert transport.next_event_sequence("belief-observations", mission_id) == 0
 
 
-def test_out_of_window_event_produces_no_perception_or_belief_input(
+def test_uncertainty_is_deterministic_across_environment_replay(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path / "report.json", [_event(time=0.5, x=0)])
+    scores = []
+    for run in ("first", "second"):
+        environment = FakeEnvironment(
+            _transport(tmp_path / run),
+            "mission-1",
+            event_report_path=report,
+        )
+        payload = next(
+            item.payload
+            for item in environment.tick().perception_events
+            if item.event_kind == "event.observed"
+        )
+        observation = perception_from_dict(payload)
+        assert isinstance(observation, EventObservation)
+        scores.append(observation.uncertainty_score)
+    assert scores[0] == scores[1]
+
+
+def test_event_outside_fov_is_missed_and_not_emitted_later(
     tmp_path: Path,
 ) -> None:
     transport = _transport(tmp_path / "transport")
-    report = _report(tmp_path / "report.json", [_event(time=0.5, x=0)])
-    environment = FakeEnvironment(transport, "mission-1", event_report_path=report)
-    environment.submit(
-        _command(
-            x=0,
-            speed=20,
-            extras={"observation_start": 1, "observation_duration": 1},
-        )
+    report = _report(tmp_path / "report.json", [_event(time=0.5, x=100)])
+    environment = FakeEnvironment(
+        transport, "mission-1", event_report_path=report, fov_radius=30
     )
 
     result = environment.tick()
     assert result.perception_events == ()
+    assert environment.tick().perception_events == ()
     assert transport.next_event_sequence("belief-observations", "mission-1") == 0
 
 
@@ -256,7 +505,9 @@ def test_report_entities_persist_and_move_without_becoming_perceptions(
         tmp_path / "report.json",
         [_event(time=0.5, x=10), _event(time=1.0, x=20)],
     )
-    environment = FakeEnvironment(transport, "mission-1", event_report_path=report)
+    environment = FakeEnvironment(
+        transport, "mission-1", event_report_path=report, fov_radius=1
+    )
 
     assert environment.tick().perception_events == ()
     assert environment.tick().perception_events == ()
@@ -284,13 +535,6 @@ def test_current_context_is_latest_only_while_planning_view_keeps_full_report(
     assert len(heartbeat.environment_event.payload["scene_graph"]["entities"]) == 2
     assert "static_info" not in environment.current_environment_data()
 
-    environment.submit(
-        _command(
-            x=0,
-            speed=20,
-            extras={"observation_start": 0, "observation_duration": 2},
-        )
-    )
     environment.tick()
     first_context = environment.current_environment_data()
     environment.tick()
@@ -345,13 +589,6 @@ def test_environment_never_writes_bayesian_observations(
         mission_id,
         event_report_path=report,
         context_topic="planning-evidence",
-    )
-    environment.submit(
-        _command(
-            x=0,
-            speed=20,
-            extras={"observation_start": 0, "observation_duration": 1},
-        )
     )
     tick = environment.tick()
     assert len(tick.perception_events) == 2

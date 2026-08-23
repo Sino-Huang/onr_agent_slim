@@ -317,7 +317,6 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "non_physical_choice",
     "observation_id",
     "observation_kind",
-    "observation_window_outcome",
     "observed_time",
     "normalized_plan",
     "objective",

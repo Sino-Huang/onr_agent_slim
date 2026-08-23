@@ -6,9 +6,7 @@ from pathlib import Path
 from onr.contracts.fsm import Statechart
 
 
-def test_statechart_example_preserves_windows_and_immediate_lifecycle_departures() -> (
-    None
-):
+def test_statechart_example_preserves_evidence_intervals_and_departures() -> None:
     namespace = runpy.run_path(
         str(
             Path(
@@ -73,11 +71,9 @@ def test_statechart_example_preserves_windows_and_immediate_lifecycle_departures
         "x": 10,
         "y": 20,
         "deadline_time": 10.0,
-        "observation_start": 10.0,
-        "observation_duration": 2.0,
-        "source_event_index": 3,
-        "expected_observation_count": 2,
     }
+    assert len(draft["states"]) == 6
+    assert len(draft["transitions"]) == 5
     assert manifest["represented_once"] == ["first", "second"]
 
     chart = Statechart.from_dict(
