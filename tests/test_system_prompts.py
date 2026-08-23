@@ -76,6 +76,14 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
     assert "to_entries" in prompt
     assert "tool `reflection` arguments" in prompt
     assert "Statechart/FSM is the execution semantics" in prompt
+    for supervisory_instruction in (
+        "HyperHeartbeatInvocation",
+        "HyperHeartbeatDecisionCandidate",
+        "`no_change`",
+        "`replan`",
+        "`decline`",
+    ):
+        assert supervisory_instruction not in prompt
     for capability in (
         "mission-parsing",
         "planner-selection",
@@ -100,6 +108,30 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
         "authoring",
     ):
         assert removed not in prompt
+
+
+def test_hyper_supervisor_prompt_is_heartbeat_only() -> None:
+    prompt = load_system_prompt(
+        Path(__file__).parents[1] / "conf/system_prompt",
+        "hyper-supervisor",
+    )
+
+    assert "You are the Hyper Agent" in prompt
+    assert "HyperHeartbeatInvocation" in prompt
+    assert "HyperHeartbeatDecisionCandidate" in prompt
+    for disposition in ("`no_change`", "`replan`", "`decline`"):
+        assert disposition in prompt
+    for planning_instruction in (
+        "todo list with exactly these eight items",
+        "Generate planner files",
+        "record_planning_intent",
+        "write_file",
+        "submit_planner_attempt",
+        "planner_executor",
+        "submit_statechart_draft",
+        "HyperWorkflowResultCandidate",
+    ):
+        assert planning_instruction not in prompt
 
 
 def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -> None:

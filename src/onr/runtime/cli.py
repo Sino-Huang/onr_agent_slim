@@ -230,6 +230,7 @@ def run_closed_loop_demo(
         raise RuntimeError("demo mission requires transport.backend=file")
     prompt_root = repo_root / "conf/system_prompt"
     hyper_prompt = load_system_prompt(prompt_root, "hyper-agent")
+    supervisor_prompt = load_system_prompt(prompt_root, "hyper-supervisor")
     maneuver_prompt = load_system_prompt(prompt_root, "maneuver-control")
     skills = FilesystemRoleSkillCatalog(repo_root / "conf/skills")
     context_coordination = runtime.create_context_coordination(
@@ -302,7 +303,7 @@ def run_closed_loop_demo(
     )
     supervisor = runtime.create_hyper_supervisor(
         model=supervisor_model,
-        system_prompt=hyper_prompt,
+        system_prompt=supervisor_prompt,
         mission_id=mission_input.mission_id,
         skill_catalog=skills,
         backend_root=planning_backend_root,
@@ -404,6 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stage = "system prompt loading"
         load_system_prompt(repo_root / "conf/system_prompt", "hyper-agent")
+        load_system_prompt(repo_root / "conf/system_prompt", "hyper-supervisor")
         load_system_prompt(repo_root / "conf/system_prompt", "maneuver-control")
 
         stage = "closed-loop Mission run"

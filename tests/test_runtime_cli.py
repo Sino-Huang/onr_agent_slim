@@ -12,6 +12,7 @@ import pytest
 
 import onr.runtime.cli as runtime_cli
 from onr.adapters.file_transport import FileTransport
+from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import PlannerChoice, PlannerPlan, PlanningOutcome
 from onr.runtime.lease import RuntimeLeaseStore
@@ -50,7 +51,142 @@ def _role_prompt_files(tmp_path: Path) -> str:
     hyper_path = prompt_root / "hyper-agent/SYSTEM.md"
     hyper_path.parent.mkdir(parents=True, exist_ok=True)
     hyper_path.write_text("Temporary Hyper role prompt.", encoding="utf-8")
+    supervisor_path = prompt_root / "hyper-supervisor/SYSTEM.md"
+    supervisor_path.parent.mkdir(parents=True, exist_ok=True)
+    supervisor_path.write_text("Temporary Hyper supervisor prompt.", encoding="utf-8")
     return maneuver_prompt
+
+
+def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts = {
+        "hyper-agent": "Planning workflow prompt.",
+        "hyper-supervisor": "Supervisory heartbeat prompt.",
+        "maneuver-control": "Maneuver prompt.",
+    }
+    workflow_prompts: list[str] = []
+    supervisor_prompts: list[str] = []
+    planning_snapshot = MissionSnapshot(
+        "mission:demo",
+        1,
+        "2026-08-23T00:00:00+10:00",
+        plan_revision=1,
+        plan_reference="planner-plan.json",
+        source_revisions={"environment_data": 1},
+        source_health={"environment_data": "healthy"},
+        source_freshness={"environment_data": True},
+    )
+    planning_view = SimpleNamespace(
+        environment_event=object(),
+        environment_file=tmp_path / "environment.json",
+    )
+    closed_loop_result = object()
+
+    class FakeTransport:
+        def open_consumer(self, subscription: object) -> nullcontext[object]:
+            _ = subscription
+            return nullcontext(object())
+
+    class FakeEnvironment:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            self.event_report: dict[str, object] = {}
+
+        def heartbeat(self) -> object:
+            return planning_view
+
+    class PlanningContext:
+        subscription = object()
+
+        def drain_to_latest(self, consumer: object) -> MissionSnapshot:
+            _ = consumer
+            return planning_snapshot
+
+    class ClosedLoopContext:
+        def __init__(self, replan_workflow: object) -> None:
+            self.replan_workflow = replan_workflow
+
+        def run(self, active: object) -> object:
+            _ = active
+            replan = self.replan_workflow
+            assert callable(replan)
+            replan(object(), 2, planning_snapshot, planning_view)
+            return closed_loop_result
+
+        def handle_agent_message(self, message: object) -> None:
+            _ = message
+
+    class Communication:
+        def register(self, role: str, handler: object) -> None:
+            _ = role, handler
+
+    belief_service = SimpleNamespace(load_current_snapshot=lambda: object())
+    supervisor = SimpleNamespace(handle_agent_message=lambda message: message)
+
+    class FakeRuntime:
+        transport = FakeTransport()
+        config = SimpleNamespace(
+            agent_name="test-agent",
+            heartbeats=SimpleNamespace(maneuver_seconds=5, hyper_seconds=10),
+            transport=SimpleNamespace(root=tmp_path / "transport"),
+        )
+
+        def create_context_coordination(self, **kwargs: object) -> object:
+            if "environment" not in kwargs:
+                return PlanningContext()
+            return ClosedLoopContext(kwargs["replan_workflow"])
+
+        def create_bayesian_belief_service(self, **kwargs: object) -> object:
+            _ = kwargs
+            return belief_service
+
+        def create_chat_model(self, **kwargs: object) -> object:
+            return kwargs["debug_scope"]
+
+        def create_hyper_supervisor(self, **kwargs: object) -> object:
+            supervisor_prompts.append(str(kwargs["system_prompt"]))
+            return supervisor
+
+        def create_communication_port(self, **kwargs: object) -> Communication:
+            _ = kwargs
+            return Communication()
+
+        def create_fsm_runner(self, **kwargs: object) -> object:
+            _ = kwargs
+            return object()
+
+        def create_maneuver_control(self, *args: object, **kwargs: object) -> object:
+            _ = args, kwargs
+            return object()
+
+    def run_revision(*args: object, **kwargs: object) -> object:
+        _ = args
+        workflow_prompts.append(str(kwargs["system_prompt"]))
+        return object()
+
+    monkeypatch.setattr(runtime_cli, "FileTransport", FakeTransport)
+    monkeypatch.setattr(runtime_cli, "FakeEnvironment", FakeEnvironment)
+    monkeypatch.setattr(
+        runtime_cli,
+        "load_system_prompt",
+        lambda prompt_root, role: prompts[role],
+    )
+    monkeypatch.setattr(runtime_cli, "seed_event_risk_beliefs", lambda *args: object())
+    monkeypatch.setattr(runtime_cli, "_run_hyper_revision", run_revision)
+
+    result = runtime_cli.run_closed_loop_demo(
+        FakeRuntime(),  # type: ignore[arg-type]
+        MissionInput("mission:demo", "Patrol the area.", "operator"),
+        repo_root=tmp_path,
+        planner_artifacts=tmp_path / "planner-artifacts",
+        recursion_limit=120,
+        simulation_limit_seconds=30,
+    )
+
+    assert result is closed_loop_result
+    assert workflow_prompts == [prompts["hyper-agent"], prompts["hyper-agent"]]
+    assert supervisor_prompts == [prompts["hyper-supervisor"]]
 
 
 def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
