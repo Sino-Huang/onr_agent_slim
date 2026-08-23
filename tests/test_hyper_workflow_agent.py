@@ -302,6 +302,23 @@ def _execute(context: HyperWorkflowContext, planner: str, paths: list[str]) -> s
     )
 
 
+def test_planner_submission_accepts_equivalent_backend_relative_paths(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    expected = _write(context, "minizinc")
+    relative = [location.removeprefix("/") for location in expected]
+
+    result = _submit(context, "minizinc", relative)
+
+    assert result.startswith("status: success\n")
+    assert cast(_MiniZinc, context.minizinc_planner).checked[-1] == {
+        "model.mzn": b"contents for model.mzn\n",
+        "data.dzn": b"contents for data.dzn\n",
+    }
+
+
 def _write_minizinc_model(context: HyperWorkflowContext) -> Path:
     location = _paths(context, "minizinc")[0]
     host = cast(Path, context.backend_root) / location.removeprefix("/")
@@ -352,10 +369,20 @@ def _statechart() -> dict[str, object]:
                 "event": "survey-complete",
                 "source": "surveying",
                 "target": "complete",
-                "conditions": [],
+                "context": {"arbitrary": {"nested": [1, "two"]}},
             }
         ],
     }
+
+
+def _write_statechart(context: HyperWorkflowContext, value: object) -> str:
+    location = cast(str, context.statechart_file_location)
+    host = cast(Path, context.backend_root) / location.removeprefix("/")
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text(json.dumps(value), encoding="utf-8")
+    generator = host.with_name("generate_statechart.py")
+    generator.write_text("# mission-specific generator\n", encoding="utf-8")
+    return location
 
 
 def test_tool_interfaces_are_identical_and_planner_neutral(monkeypatch: Any) -> None:
@@ -398,6 +425,7 @@ def test_terminal_workflow_gate_exposes_only_structured_response(
             SimpleNamespace(name="submit_planner_attempt"),
         ],
         response_format=response_format,
+        state={"todos": []},
     )
     request.override = lambda **changes: changes
 
@@ -407,6 +435,57 @@ def test_terminal_workflow_gate_exposes_only_structured_response(
 
     assert overridden["tools"] == []
     assert overridden["response_format"] is response_format
+
+
+def test_success_gate_requires_final_todo_update_before_structured_response(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    context.planning_intent = object()
+    context.planner_choice = object()
+    context.planner_plan = object()
+    context.statechart = object()
+    response_format = object()
+    write_todos = SimpleNamespace(name="write_todos")
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=context),
+        tools=[write_todos, SimpleNamespace(name="read_file")],
+        response_format=response_format,
+        state={"todos": [{"content": "step", "status": "in_progress"}]},
+    )
+    request.override = lambda **changes: changes
+
+    update = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+    assert update == {"tools": [write_todos], "response_format": None}
+
+    request.state = {
+        "todos": [
+            {"content": f"step-{index}", "status": "completed"} for index in range(8)
+        ]
+    }
+    terminal = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+    assert terminal == {"tools": [], "response_format": response_format}
+
+
+def test_handoff_tool_recovers_when_verification_workflow_requires_no_handoff(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    context.planner_plan = object()
+    context.statechart = object()
+    context.statechart_reference = "accepted-statechart.json"
+
+    result = cast(Any, handoff_execution).func(
+        reflection="Statechart verification passed.",
+        runtime=_runtime(context),
+    )
+
+    assert "owned by Context Coordination" in result
+    assert "return execution_ready" in result
 
 
 _EVENT_FIELDS = [
@@ -833,7 +912,10 @@ def test_static_failure_preserves_streams_remaps_paths_and_repairs_same_files(
 def test_minizinc_success_persists_and_returns_exact_native_output(
     tmp_path: Path,
 ) -> None:
-    native = '{"type":"solution","output":{"default":"route"}}\n{"type":"status","status":"SATISFIED"}\n'
+    native = (
+        '{"type":"solution","output":{"default":"route"}}\n'
+        '{"type":"status","status":"SATISFIED"}\n'
+    )
     context = _context(
         tmp_path,
         minizinc=_MiniZinc(
@@ -853,6 +935,14 @@ def test_minizinc_success_persists_and_returns_exact_native_output(
         cast(Path, context.backend_root) / reference.removeprefix("/")
     ).read_text() == native
     assert cast(_MiniZinc, context.minizinc_planner).executed[-1][1] == "coin-bc"
+    assert (
+        "statechart_generator_file_location: "
+        "/artifacts/workspace/001/generate_statechart.py"
+        in result
+    )
+    assert (
+        "statechart_file_location: /artifacts/workspace/001/statechart.json" in result
+    )
 
 
 def test_planner_executor_requires_solver_only_for_minizinc(tmp_path: Path) -> None:
@@ -957,7 +1047,7 @@ def test_val_rejection_returns_val_streams_and_no_planner_plan(tmp_path: Path) -
     assert context.planner_plan is None
 
 
-def test_statechart_binds_planner_plan_and_handoff_contains_no_plan(
+def test_statechart_binds_planner_plan_without_direct_agent_handoff(
     tmp_path: Path,
 ) -> None:
     context = _context(tmp_path, handoff=True)
@@ -965,32 +1055,75 @@ def test_statechart_binds_planner_plan_and_handoff_contains_no_plan(
     paths = _write(context, "fast-downward")
     _submit(context, "fast-downward", paths)
     _execute(context, "fast-downward", paths)
+    location = _write_statechart(context, _statechart())
     accepted = cast(Any, submit_statechart_draft).func(
-        statechart=_statechart(),
+        statechart_file_location=location,
         reflection="Binding FSM semantics.",
         runtime=_runtime(context),
     )
-    assert accepted.startswith("Statechart validation passed")
+    feedback = json.loads(accepted)
+    assert feedback["status"] == "accepted"
+    assert feedback["graph_counts"] == {"states": 2, "transitions": 1}
     assert context.statechart.plan_revision == context.planner_plan.plan_revision
+    accepted_document = context.statechart.to_dict()
+    assert accepted_document["schema_version"] == 2
+    assert "planner_native_plan_artifact_reference" not in accepted_document
+    assert "maneuver_id" not in accepted_document["transitions"][0]
+    assert Path(cast(str, context.statechart_reference)).is_file()
+    assert (context.artifact_root / "statechart-attempts/001/statechart.json").is_file()
     assert (
-        cast(Any, handoff_execution).func(
-            reflection="Activating FSM.", runtime=_runtime(context)
-        )
-        == "Execution handoff completed."
+        cast(Path, context.backend_root)
+        / "artifacts/workspace/001/generate_statechart.py"
+    ).is_file()
+    assert "owned by Context Coordination" in cast(Any, handoff_execution).func(
+        reflection="Returning accepted execution artifacts.",
+        runtime=_runtime(context),
     )
     communication = cast(_Communication, context.communication_port)
-    payload = cast(AgentMessage, communication.message).payload
-    assert "normalized_plan" not in payload
-    assert "planner_plan" not in payload
-    assert set(payload) == {
-        "request_id",
-        "correlation_id",
-        "mission_id",
-        "plan_revision",
-        "statechart_reference",
-        "fsm_status",
-        "environment_data",
-        "belief_snapshot",
-        "available_recipients",
-        "planning_snapshot",
-    }
+    assert communication.message is None
+
+
+def test_statechart_submission_accepts_only_returned_path_and_repairs_same_files(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    context.max_statechart_attempts = 3
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    _submit(context, "minizinc", paths)
+    _execute(context, "minizinc", paths)
+    location = _write_statechart(context, {**_statechart(), "extra": True})
+
+    wrong_path = cast(Any, submit_statechart_draft).func(
+        statechart_file_location=str(
+            cast(Path, context.backend_root) / location.removeprefix("/")
+        ),
+        reflection="Submitting an alternate representation.",
+        runtime=_runtime(context),
+    )
+    wrong = json.loads(wrong_path)
+    assert wrong["stage"] == "workspace_path"
+    assert wrong["draft_path"] != location
+
+    rejected_text = cast(Any, submit_statechart_draft).func(
+        statechart_file_location=location,
+        reflection="Submitting the authored draft.",
+        runtime=_runtime(context),
+    )
+    rejected = json.loads(rejected_text)
+    assert rejected["status"] == "rejected"
+    assert rejected["stage"] == "schema"
+    assert rejected["draft_path"] == location
+    assert "same returned workspace paths" in rejected["required_next_action"]
+    assert (context.artifact_root / "statechart-attempts/002/statechart.json").is_file()
+
+    _write_statechart(context, _statechart())
+    repaired_text = cast(Any, submit_statechart_draft).func(
+        statechart_file_location=location,
+        reflection="Resubmitting the repaired files at the same paths.",
+        runtime=_runtime(context),
+    )
+    repaired = json.loads(repaired_text)
+    assert repaired["status"] == "accepted"
+    assert repaired["attempt_number"] == 3
+    assert (context.artifact_root / "statechart-attempts/003/statechart.json").is_file()

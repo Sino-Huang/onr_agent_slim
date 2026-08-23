@@ -1,7 +1,6 @@
 """Immutable declarative Statechart and FSM execution contracts.
 
-The asset deliberately contains topology only.  It is data that can be loaded
-by a state-machine implementation with ``trusted=False`` semantics; it never
+The asset deliberately contains topology and finite JSON context only; it never
 contains Python source, callbacks, or serialized runtime objects.
 """
 
@@ -46,7 +45,7 @@ def _json_value(value: object, label: str = "JSON value") -> object:
         frozen: dict[str, object] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ValueError(f"{label} object keys must be strings")
+                raise TypeError(f"{label} object keys must be strings")
             frozen[key] = _json_value(item, label)
         return MappingProxyType(frozen)
     if isinstance(value, (list, tuple)):
@@ -81,14 +80,14 @@ def _decode(value: str, label: str) -> Mapping[str, Any]:
     except (TypeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"{label} JSON is invalid") from exc
     if not isinstance(decoded, Mapping):
-        raise ValueError(f"{label} JSON must be an object")
+        raise TypeError(f"{label} JSON must be an object")
     return decoded
 
 
 def _payload(value: object, label: str) -> Mapping[str, object]:
     frozen = _json_value(value, label)
     if not isinstance(frozen, Mapping):
-        raise ValueError(f"{label} must be a JSON object")
+        raise TypeError(f"{label} must be a JSON object")
     return frozen
 
 
@@ -155,12 +154,12 @@ class FSMEvent:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "FSMEvent":
+    def from_dict(cls, value: Mapping[str, Any]) -> FSMEvent:
         _strict_fields(value, {"schema_version", "event_id", "event_kind", "payload"}, "FSM Event")
         return cls(**value)
 
     @classmethod
-    def from_json(cls, value: str) -> "FSMEvent":
+    def from_json(cls, value: str) -> FSMEvent:
         return cls.from_dict(_decode(value, "FSM Event"))
 
 
@@ -238,7 +237,7 @@ class ManeuverFeedback:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "ManeuverFeedback":
+    def from_dict(cls, value: Mapping[str, Any]) -> ManeuverFeedback:
         _strict_fields(
             value,
             {"schema_version", "feedback_id", "mission_id", "maneuver_id", "lifecycle", "payload"},
@@ -247,7 +246,7 @@ class ManeuverFeedback:
         return cls(**value)
 
     @classmethod
-    def from_json(cls, value: str) -> "ManeuverFeedback":
+    def from_json(cls, value: str) -> ManeuverFeedback:
         return cls.from_dict(_decode(value, "Maneuver Feedback"))
 
 
@@ -352,7 +351,7 @@ class ManeuverDecision:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "ManeuverDecision":
+    def from_dict(cls, value: Mapping[str, Any]) -> ManeuverDecision:
         _strict_fields(
             value,
             {"schema_version", "decision_id", "mission_id", "transition_event", "maneuver_id", "physical_maneuver", "payload"},
@@ -361,39 +360,8 @@ class ManeuverDecision:
         return cls(**value)
 
     @classmethod
-    def from_json(cls, value: str) -> "ManeuverDecision":
+    def from_json(cls, value: str) -> ManeuverDecision:
         return cls.from_dict(_decode(value, "Maneuver Decision"))
-
-
-@dataclass(frozen=True, slots=True)
-class StatechartCondition:
-    """One plan-derived condition interpreted by Maneuver Control."""
-
-    time_tick: int
-    time_scale: int
-    kind: str = "environment_time_at_or_after"
-
-    def __post_init__(self) -> None:
-        if self.kind != "environment_time_at_or_after":
-            raise ValueError("Statechart condition kind is invalid")
-        _non_negative_int(self.time_tick, "Statechart condition time tick")
-        _positive_int(self.time_scale, "Statechart condition time scale")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "time_tick": self.time_tick,
-            "time_scale": self.time_scale,
-        }
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "StatechartCondition":
-        _strict_fields(
-            value,
-            {"kind", "time_tick", "time_scale"},
-            "Statechart condition",
-        )
-        return cls(**value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,60 +371,34 @@ class StatechartTransition:
     event: str
     source: str
     target: str
-    maneuver_id: str | None = None
-    requires_lifecycle_fact: bool = False
-    requires_decision: bool = False
-    conditions: tuple[StatechartCondition, ...] = ()
+    context: Mapping[str, object] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         _text(self.event, "transition event")
         _text(self.source, "transition source")
         _text(self.target, "transition target")
-        if self.maneuver_id is not None:
-            _text(self.maneuver_id, "transition maneuver ID")
-        if not isinstance(self.requires_lifecycle_fact, bool):
-            raise ValueError("transition lifecycle requirement must be boolean")
-        if not isinstance(self.requires_decision, bool):
-            raise ValueError("transition decision requirement must be boolean")
-        conditions = tuple(self.conditions)
-        if not all(isinstance(item, StatechartCondition) for item in conditions):
-            raise ValueError("transition conditions must be Statechart conditions")
-        object.__setattr__(self, "conditions", conditions)
+        object.__setattr__(
+            self,
+            "context",
+            _payload(self.context, "Statechart transition context"),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "event": self.event,
             "source": self.source,
             "target": self.target,
-            "maneuver_id": self.maneuver_id,
-            "requires_lifecycle_fact": self.requires_lifecycle_fact,
-            "requires_decision": self.requires_decision,
-            "conditions": [item.to_dict() for item in self.conditions],
+            "context": _mapping_json(self.context),
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "StatechartTransition":
-        legacy = {
-            "event",
-            "source",
-            "target",
-            "maneuver_id",
-            "requires_lifecycle_fact",
-            "requires_decision",
-        }
-        if not isinstance(value, Mapping) or set(value) not in {
-            frozenset(legacy),
-            frozenset(legacy | {"conditions"}),
-        }:
-            raise ValueError("Statechart transition contains unknown or missing fields")
-        conditions = value.get("conditions", ())
-        if not isinstance(conditions, (list, tuple)):
-            raise ValueError("Statechart transition conditions must be an array")
-        payload = dict(value)
-        payload["conditions"] = tuple(
-            StatechartCondition.from_dict(item) for item in conditions
+    def from_dict(cls, value: Mapping[str, Any]) -> StatechartTransition:
+        _strict_fields(
+            value,
+            {"event", "source", "target", "context"},
+            "Statechart transition",
         )
-        return cls(**payload)
+        return cls(**value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,11 +412,9 @@ class Statechart:
     entry_state: str
     states: tuple[str, ...]
     transitions: tuple[StatechartTransition, ...]
-    terminal_states: tuple[str, ...] = ()
-    state_context: Mapping[str, Mapping[str, object]] = MappingProxyType({})
-    deadlines: Mapping[str, int | float] = MappingProxyType({})
-    trusted: bool = False
-    schema_version: int = 1
+    terminal_states: tuple[str, ...]
+    state_context: Mapping[str, Mapping[str, object]]
+    schema_version: int = 2
 
     def __post_init__(self) -> None:
         _text(self.mission_id, "Statechart mission ID")
@@ -492,7 +432,9 @@ class Statechart:
             raise ValueError("Statechart states must be unique")
         if self.entry_state not in states:
             raise ValueError("Statechart entry state must be declared")
-        terminal_states = tuple(self.terminal_states) or (states[-1],)
+        terminal_states = tuple(self.terminal_states)
+        if not terminal_states:
+            raise ValueError("Statechart terminal states must be explicit")
         if not all(item in states for item in terminal_states):
             raise ValueError("Statechart terminal states must be declared")
         if len(set(terminal_states)) != len(terminal_states):
@@ -529,7 +471,7 @@ class Statechart:
             can_reach_terminal = expanded
         if can_reach_terminal != set(states):
             raise ValueError("Statechart states must reach a terminal state")
-        raw_context = self.state_context or {state: {} for state in states}
+        raw_context = self.state_context
         if not isinstance(raw_context, Mapping) or set(raw_context) != set(states):
             raise ValueError("Statechart context must describe every state")
         state_context: dict[str, Mapping[str, object]] = {}
@@ -537,24 +479,12 @@ class Statechart:
             state_context[state] = _payload(
                 context, f"Statechart context for {state}"
             )
-        frozen_deadlines = _json_value(self.deadlines, "Statechart deadlines")
-        if not isinstance(frozen_deadlines, Mapping):
-            raise ValueError("Statechart deadlines must be a JSON object")
-        for state, deadline in frozen_deadlines.items():
-            if state not in states:
-                raise ValueError("Statechart deadline must reference a declared state")
-            if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
-                raise ValueError("Statechart deadlines must be numbers")
-            if deadline < 0:
-                raise ValueError("Statechart deadlines must be non-negative")
-        if self.trusted is not False:
-            raise ValueError("Statechart assets must be loaded with trusted=False")
-        _positive_int(self.schema_version, "Statechart schema version")
+        if self.schema_version != 2:
+            raise ValueError("Statechart schema version must be 2")
         object.__setattr__(self, "states", states)
         object.__setattr__(self, "transitions", transitions)
         object.__setattr__(self, "terminal_states", terminal_states)
         object.__setattr__(self, "state_context", MappingProxyType(state_context))
-        object.__setattr__(self, "deadlines", frozen_deadlines)
         object.__setattr__(self, "planning_profile", str(PlanningProfile(self.planning_profile)))
 
     @property
@@ -564,16 +494,6 @@ class Statechart:
     @property
     def statechart_revision(self) -> int:
         return self.plan_revision
-
-    @property
-    def timers(self) -> Mapping[str, int | float]:
-        """JSON-declarative timer deadlines keyed by state."""
-
-        return self.deadlines
-
-    @property
-    def timer_deadlines(self) -> Mapping[str, int | float]:
-        return self.deadlines
 
     def context_for(self, state: str) -> Mapping[str, object]:
         return self.state_context[state]
@@ -593,42 +513,35 @@ class Statechart:
                 state: _mapping_json(context)
                 for state, context in sorted(self.state_context.items())
             },
-            "timers": _as_json(self.deadlines),
-            "trusted": self.trusted,
         }
 
     def to_canonical_json(self) -> str:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any], *, trusted: bool = False) -> "Statechart":
-        legacy = {
+    def from_dict(cls, value: Mapping[str, Any]) -> Statechart:
+        expected = {
             "schema_version",
             "mission_id",
             "plan_revision",
             "mission_snapshot_id",
             "planning_profile",
             "entry_state",
+            "terminal_states",
             "states",
+            "state_context",
             "transitions",
-            "trusted",
         }
-        keys = set(value) if isinstance(value, Mapping) else set()
-        timer_key = "timers" if "timers" in keys else "deadlines"
-        semantic = {"terminal_states", "state_context"}
-        if keys not in (legacy | {timer_key}, legacy | semantic | {timer_key}):
-            raise ValueError("Statechart contains unknown or missing fields")
-        if trusted or value["trusted"] is not False:
-            raise ValueError("Statechart assets must be loaded with trusted=False")
+        _strict_fields(value, expected, "Statechart")
         states = value["states"]
         transitions = value["transitions"]
-        terminal_states = value.get("terminal_states", ())
+        terminal_states = value["terminal_states"]
         if (
             not isinstance(states, (list, tuple))
             or not isinstance(transitions, (list, tuple))
             or not isinstance(terminal_states, (list, tuple))
         ):
-            raise ValueError("Statechart states and transitions must be arrays")
+            raise TypeError("Statechart states and transitions must be arrays")
         return cls(
             mission_id=value["mission_id"],
             plan_revision=value["plan_revision"],
@@ -638,15 +551,13 @@ class Statechart:
             states=tuple(states),
             transitions=tuple(StatechartTransition.from_dict(item) for item in transitions),
             terminal_states=tuple(terminal_states),
-            state_context=value.get("state_context", {}),
-            deadlines=value[timer_key],
-            trusted=False,
+            state_context=value["state_context"],
             schema_version=value["schema_version"],
         )
 
     @classmethod
-    def from_json(cls, value: str, *, trusted: bool = False) -> "Statechart":
-        return cls.from_dict(_decode(value, "Statechart"), trusted=trusted)
+    def from_json(cls, value: str) -> Statechart:
+        return cls.from_dict(_decode(value, "Statechart"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,23 +567,20 @@ class TransitionCandidate:
     event: str
     source: str
     target: str
-    requires_lifecycle_fact: bool = False
-    requires_decision: bool = False
-    schema_version: int = 1
-    conditions: tuple[StatechartCondition, ...] = ()
+    transition_context: Mapping[str, object] = MappingProxyType({})
     source_state_context: Mapping[str, object] = MappingProxyType({})
     target_state_context: Mapping[str, object] = MappingProxyType({})
+    schema_version: int = 2
 
     def __post_init__(self) -> None:
         _text(self.event, "transition candidate event")
         _text(self.source, "transition candidate source")
         _text(self.target, "transition candidate target")
-        if not isinstance(self.requires_lifecycle_fact, bool) or not isinstance(self.requires_decision, bool):
-            raise ValueError("transition candidate requirements must be boolean")
-        conditions = tuple(self.conditions)
-        if not all(isinstance(item, StatechartCondition) for item in conditions):
-            raise ValueError("transition candidate conditions are invalid")
-        object.__setattr__(self, "conditions", conditions)
+        object.__setattr__(
+            self,
+            "transition_context",
+            _payload(self.transition_context, "transition context"),
+        )
         object.__setattr__(
             self,
             "source_state_context",
@@ -683,7 +591,8 @@ class TransitionCandidate:
             "target_state_context",
             _payload(self.target_state_context, "transition target-state context"),
         )
-        _positive_int(self.schema_version, "transition candidate schema version")
+        if self.schema_version != 2:
+            raise ValueError("transition candidate schema version must be 2")
 
     @property
     def event_name(self) -> str:
@@ -695,9 +604,7 @@ class TransitionCandidate:
             "event": self.event,
             "source": self.source,
             "target": self.target,
-            "requires_lifecycle_fact": self.requires_lifecycle_fact,
-            "requires_decision": self.requires_decision,
-            "conditions": [item.to_dict() for item in self.conditions],
+            "transition_context": _mapping_json(self.transition_context),
             "source_state_context": _mapping_json(self.source_state_context),
             "target_state_context": _mapping_json(self.target_state_context),
         }
@@ -706,30 +613,24 @@ class TransitionCandidate:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "TransitionCandidate":
-        legacy = {
-            "schema_version", "event", "source", "target",
-            "requires_lifecycle_fact", "requires_decision",
-        }
-        semantic = {
-            "conditions", "source_state_context", "target_state_context"
-        }
-        if not isinstance(value, Mapping) or set(value) not in (
-            legacy,
-            legacy | semantic,
-        ):
-            raise ValueError("Transition Candidate contains unknown or missing fields")
-        conditions = value.get("conditions", ())
-        if not isinstance(conditions, (list, tuple)):
-            raise ValueError("Transition Candidate conditions must be an array")
-        payload = dict(value)
-        payload["conditions"] = tuple(
-            StatechartCondition.from_dict(item) for item in conditions
+    def from_dict(cls, value: Mapping[str, Any]) -> TransitionCandidate:
+        _strict_fields(
+            value,
+            {
+                "schema_version",
+                "event",
+                "source",
+                "target",
+                "transition_context",
+                "source_state_context",
+                "target_state_context",
+            },
+            "Transition Candidate",
         )
-        return cls(**payload)
+        return cls(**value)
 
     @classmethod
-    def from_json(cls, value: str) -> "TransitionCandidate":
+    def from_json(cls, value: str) -> TransitionCandidate:
         return cls.from_dict(_decode(value, "Transition Candidate"))
 
 
@@ -745,13 +646,9 @@ class FSMExecutionRecord:
     last_applied_event: str | None = None
     transition_history: tuple[str, ...] = ()
     superseded_plan_revision: int | None = None
-    superseded_maneuver_ids: tuple[str, ...] = ()
-    retained_maneuver_ids: tuple[str, ...] = ()
     record_revision: int = 1
     last_applied_event_identity: str | None = None
     applied_event_identities: tuple[str, ...] = ()
-    timer_due_markers: tuple[str, ...] = ()
-    lifecycle_facts: Mapping[str, object] = MappingProxyType({})
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -771,27 +668,14 @@ class FSMExecutionRecord:
             _text(self.last_applied_event_identity, "execution record last event identity")
         if self.superseded_plan_revision is not None:
             _non_negative_int(self.superseded_plan_revision, "execution record superseded revision")
-        superseded_ids = tuple(self.superseded_maneuver_ids)
-        if not all(isinstance(item, str) and item for item in superseded_ids):
-            raise ValueError("execution record superseded maneuver IDs must be strings")
-        retained_ids = tuple(self.retained_maneuver_ids) or superseded_ids
-        if not all(isinstance(item, str) and item for item in retained_ids):
-            raise ValueError("execution record retained maneuver IDs must be strings")
         applied_ids = tuple(self.applied_event_identities)
         if not all(isinstance(item, str) and item for item in applied_ids):
             raise ValueError("execution record applied event identities must be strings")
-        timer_markers = tuple(self.timer_due_markers)
-        if not all(isinstance(item, str) and item for item in timer_markers):
-            raise ValueError("execution record timer due markers must be strings")
-        object.__setattr__(self, "lifecycle_facts", _payload(self.lifecycle_facts, "execution record lifecycle facts"))
         _positive_int(self.record_revision, "execution record revision")
         _positive_int(self.schema_version, "execution record schema version")
         object.__setattr__(self, "active_configuration", configuration)
         object.__setattr__(self, "transition_history", history)
-        object.__setattr__(self, "superseded_maneuver_ids", superseded_ids)
-        object.__setattr__(self, "retained_maneuver_ids", retained_ids)
         object.__setattr__(self, "applied_event_identities", applied_ids)
-        object.__setattr__(self, "timer_due_markers", timer_markers)
 
     @property
     def active_plan_revision(self) -> int:
@@ -805,14 +689,6 @@ class FSMExecutionRecord:
     def applied_event_ids(self) -> tuple[str, ...]:
         return self.applied_event_identities
 
-    @property
-    def timer_due(self) -> tuple[str, ...]:
-        return self.timer_due_markers
-
-    @property
-    def retained_maneuver_visibility(self) -> tuple[str, ...]:
-        return self.retained_maneuver_ids
-
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -824,49 +700,38 @@ class FSMExecutionRecord:
             "last_applied_event": self.last_applied_event,
             "transition_history": list(self.transition_history),
             "superseded_plan_revision": self.superseded_plan_revision,
-            "superseded_maneuver_ids": list(self.superseded_maneuver_ids),
-            "retained_maneuver_ids": list(self.retained_maneuver_ids),
             "record_revision": self.record_revision,
             "last_applied_event_identity": self.last_applied_event_identity,
             "applied_event_identities": list(self.applied_event_identities),
-            "timer_due_markers": list(self.timer_due_markers),
-            "lifecycle_facts": _mapping_json(self.lifecycle_facts),
         }
 
     def to_canonical_json(self) -> str:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "FSMExecutionRecord":
+    def from_dict(cls, value: Mapping[str, Any]) -> FSMExecutionRecord:
         expected = {
             "schema_version", "mission_id", "plan_revision", "statechart_revision",
             "active_state", "active_configuration", "last_applied_event",
-            "transition_history", "superseded_plan_revision", "superseded_maneuver_ids",
-            "retained_maneuver_ids", "record_revision", "last_applied_event_identity",
-            "applied_event_identities", "timer_due_markers", "lifecycle_facts",
+            "transition_history", "superseded_plan_revision", "record_revision",
+            "last_applied_event_identity", "applied_event_identities",
         }
         if not isinstance(value, Mapping) or set(value) != expected:
             raise ValueError("FSM Execution Record contains unknown or missing fields")
         if (
             not isinstance(value["active_configuration"], (list, tuple))
             or not isinstance(value["transition_history"], (list, tuple))
-            or not isinstance(value["superseded_maneuver_ids"], (list, tuple))
-            or not isinstance(value["retained_maneuver_ids"], (list, tuple))
             or not isinstance(value["applied_event_identities"], (list, tuple))
-            or not isinstance(value["timer_due_markers"], (list, tuple))
         ):
-            raise ValueError("FSM Execution Record arrays are invalid")
+            raise TypeError("FSM Execution Record arrays are invalid")
         payload = dict(value)
         payload["active_configuration"] = tuple(value["active_configuration"])
         payload["transition_history"] = tuple(value["transition_history"])
-        payload["superseded_maneuver_ids"] = tuple(value["superseded_maneuver_ids"])
-        payload["retained_maneuver_ids"] = tuple(value["retained_maneuver_ids"])
         payload["applied_event_identities"] = tuple(value["applied_event_identities"])
-        payload["timer_due_markers"] = tuple(value["timer_due_markers"])
         return cls(**payload)
 
     @classmethod
-    def from_json(cls, value: str) -> "FSMExecutionRecord":
+    def from_json(cls, value: str) -> FSMExecutionRecord:
         return cls.from_dict(_decode(value, "FSM Execution Record"))
 
 
@@ -879,14 +744,9 @@ class FSMStatus:
     statechart_revision: int
     active_state: str
     transition_candidates: tuple[TransitionCandidate, ...] = ()
-    timer_due: bool = False
     status: str = "ready"
     superseded_plan_revision: int | None = None
-    superseded_maneuver_ids: tuple[str, ...] = ()
     last_applied_event: str | None = None
-    timer_due_markers: tuple[str, ...] = ()
-    lifecycle_facts: Mapping[str, object] = MappingProxyType({})
-    retained_maneuver_ids: tuple[str, ...] = ()
     schema_version: int = 1
     active_state_context: Mapping[str, object] = MappingProxyType({})
 
@@ -898,28 +758,13 @@ class FSMStatus:
         candidates = tuple(self.transition_candidates)
         if not all(isinstance(item, TransitionCandidate) for item in candidates):
             raise ValueError("FSM status candidates must be Transition Candidate records")
-        if not isinstance(self.timer_due, bool):
-            raise ValueError("FSM status timer_due must be boolean")
         _text(self.status, "FSM status kind")
-        maneuver_ids = tuple(self.superseded_maneuver_ids)
-        if not all(isinstance(item, str) and item for item in maneuver_ids):
-            raise ValueError("superseded maneuver IDs must be strings")
         if self.superseded_plan_revision is not None:
             _non_negative_int(self.superseded_plan_revision, "FSM status superseded revision")
         if self.last_applied_event is not None:
             _text(self.last_applied_event, "FSM status last event")
-        timer_markers = tuple(self.timer_due_markers)
-        if not all(isinstance(item, str) and item for item in timer_markers):
-            raise ValueError("FSM status timer due markers must be strings")
-        retained_ids = tuple(self.retained_maneuver_ids) or maneuver_ids
-        if not all(isinstance(item, str) and item for item in retained_ids):
-            raise ValueError("FSM status retained maneuver IDs must be strings")
-        object.__setattr__(self, "lifecycle_facts", _payload(self.lifecycle_facts, "FSM status lifecycle facts"))
         _positive_int(self.schema_version, "FSM status schema version")
         object.__setattr__(self, "transition_candidates", candidates)
-        object.__setattr__(self, "superseded_maneuver_ids", maneuver_ids)
-        object.__setattr__(self, "timer_due_markers", timer_markers)
-        object.__setattr__(self, "retained_maneuver_ids", retained_ids)
         object.__setattr__(
             self,
             "active_state_context",
@@ -934,14 +779,6 @@ class FSMStatus:
     def enabled_transition_candidates(self) -> tuple[TransitionCandidate, ...]:
         return self.transition_candidates
 
-    @property
-    def timer_due_markers_seen(self) -> tuple[str, ...]:
-        return self.timer_due_markers
-
-    @property
-    def retained_maneuver_visibility(self) -> tuple[str, ...]:
-        return self.retained_maneuver_ids
-
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -950,14 +787,9 @@ class FSMStatus:
             "statechart_revision": self.statechart_revision,
             "active_state": self.active_state,
             "transition_candidates": [item.to_dict() for item in self.transition_candidates],
-            "timer_due": self.timer_due,
             "status": self.status,
             "superseded_plan_revision": self.superseded_plan_revision,
-            "superseded_maneuver_ids": list(self.superseded_maneuver_ids),
             "last_applied_event": self.last_applied_event,
-            "timer_due_markers": list(self.timer_due_markers),
-            "lifecycle_facts": _mapping_json(self.lifecycle_facts),
-            "retained_maneuver_ids": list(self.retained_maneuver_ids),
             "active_state_context": _mapping_json(self.active_state_context),
         }
 
@@ -965,33 +797,23 @@ class FSMStatus:
         return _canonical(self.to_dict())
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "FSMStatus":
+    def from_dict(cls, value: Mapping[str, Any]) -> FSMStatus:
         expected = {
             "schema_version", "mission_id", "plan_revision", "statechart_revision",
-            "active_state", "transition_candidates", "timer_due", "status",
-            "superseded_plan_revision", "superseded_maneuver_ids", "last_applied_event",
-            "timer_due_markers", "lifecycle_facts", "retained_maneuver_ids",
+            "active_state", "transition_candidates", "status",
+            "superseded_plan_revision", "last_applied_event", "active_state_context",
         }
-        if not isinstance(value, Mapping) or set(value) not in (
-            expected,
-            expected | {"active_state_context"},
-        ):
+        if not isinstance(value, Mapping) or set(value) != expected:
             raise ValueError("FSM Status contains unknown or missing fields")
         candidates = value["transition_candidates"]
-        maneuver_ids = value["superseded_maneuver_ids"]
-        if not isinstance(candidates, (list, tuple)) or not isinstance(maneuver_ids, (list, tuple)):
-            raise ValueError("FSM Status arrays are invalid")
-        if not isinstance(value["timer_due_markers"], (list, tuple)) or not isinstance(value["retained_maneuver_ids"], (list, tuple)):
-            raise ValueError("FSM Status timer and retained arrays are invalid")
+        if not isinstance(candidates, (list, tuple)):
+            raise TypeError("FSM Status arrays are invalid")
         payload = dict(value)
         payload["transition_candidates"] = tuple(
             TransitionCandidate.from_dict(item) for item in candidates
         )
-        payload["superseded_maneuver_ids"] = tuple(maneuver_ids)
-        payload["timer_due_markers"] = tuple(value["timer_due_markers"])
-        payload["retained_maneuver_ids"] = tuple(value["retained_maneuver_ids"])
         return cls(**payload)
 
     @classmethod
-    def from_json(cls, value: str) -> "FSMStatus":
+    def from_json(cls, value: str) -> FSMStatus:
         return cls.from_dict(_decode(value, "FSM Status"))

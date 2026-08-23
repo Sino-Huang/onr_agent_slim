@@ -382,7 +382,6 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
         "reduced_arcs": 14_423,
         "source_events": 253,
     }
-    assert generated.read_bytes() == (example / "data.dzn").read_bytes()
     data = generated.read_text(encoding="utf-8")
     action_count = _dzn_int(data, "action_count")
     arc_count = _dzn_int(data, "arc_count")

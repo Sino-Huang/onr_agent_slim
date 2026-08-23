@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -30,7 +29,9 @@ from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.adapters.val import VALPlanValidator
 from onr.adapters.vllm_reachability import probe_vllm_reachability
 from onr.agents.hyper_agent import (
+    DeepAgentsHyperHeartbeatProvider,
     DeepAgentsPlanningIntentInterpreter,
+    create_hyper_heartbeat_agent,
     create_planning_intent_agent,
 )
 from onr.agents.hyper_workflow import (
@@ -58,14 +59,15 @@ from onr.application.hyper_agent import (
     HyperPlanningHeartbeatResult,
     PlanningHeartbeatOutcome,
 )
-from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
+from onr.application.hyper_supervisor import HyperSupervisor
+from onr.application.maneuver_control import ManeuverControl
 from onr.contracts.bayesian_belief import (
     BayesianBeliefSnapshot,
     BeliefKey,
     ForbiddenBeliefCombination,
 )
 from onr.contracts.context_coordination import MissionSnapshot
-from onr.contracts.fsm import FSMStatus, ManeuverDecision, ManeuverFeedback
+from onr.contracts.fsm import FSMStatus, ManeuverFeedback
 from onr.contracts.human_decision import (
     HumanDecision,
     HumanDecisionDisposition,
@@ -75,7 +77,6 @@ from onr.contracts.human_decision import (
 )
 from onr.contracts.hyper_agent import MissionInput, ReplanRequest
 from onr.contracts.maneuver_control import (
-    InvocationOverlay,
     ManeuverCommand,
     ManeuverControlDecision,
 )
@@ -83,14 +84,13 @@ from onr.contracts.planner_translation import (
     PlanningTranslationOutcome,
     PlanningTranslationResult,
 )
-from onr.contracts.planning import NormalizedPlan, PlanningOutcome
+from onr.contracts.planning import NormalizedPlan
 from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
     PlannerGenerationAttempt,
 )
 from onr.contracts.transport import (
     TransportEvent,
-    create_normalized_plan_transport_event,
 )
 from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
@@ -266,7 +266,8 @@ class RuntimeComposition:
         """Reject the retired direct NormalizedPlan execution path."""
 
         raise RuntimeError(
-            "direct NormalizedPlan execution is retired; activate a Statechart through the Hyper workflow"
+            "direct NormalizedPlan execution is retired; activate a Statechart "
+            "through the Hyper workflow"
         )
 
     def _logger(self) -> OperationalLog:
@@ -371,7 +372,6 @@ class RuntimeComposition:
         self,
         *,
         mission_id: str,
-        clock: Callable[[], int | float] | None = None,
     ) -> FSMRunner:
         """Compose the pure FSM service with the selected transport and JSON store."""
 
@@ -382,13 +382,10 @@ class RuntimeComposition:
             service_id=self.config.services.fsm_runner,
         )
         if subscription not in self.transport.subscriptions:
-            self.transport.subscriptions = self.transport.subscriptions + (
-                subscription,
-            )
+            self.transport.subscriptions = (*self.transport.subscriptions, subscription)
         return FSMRunner(
             self.transport,
             store=JsonFSMStateStore(self.config.storage.root / "fsm" / mission_id),
-            clock=clock,
             subscription=subscription,
             operational_log=self._logger(),
             machine_factory=PythonStateMachineFactory(),
@@ -401,6 +398,15 @@ class RuntimeComposition:
         clock: Callable[[], str] | None = None,
         input_topic: str = "normalized-plans",
         snapshot_topic: str = "mission-snapshots",
+        environment: object | None = None,
+        fsm_runner: object | None = None,
+        maneuver_control: object | None = None,
+        hyper_supervisor: object | None = None,
+        belief_service: object | None = None,
+        replan_workflow: Callable[..., object] | None = None,
+        maneuver_seconds: float = 5,
+        hyper_seconds: float = 10,
+        simulation_limit_seconds: float = 600,
     ) -> ContextCoordination:
         """Compose Context Coordination and register its static input subscription."""
 
@@ -412,9 +418,7 @@ class RuntimeComposition:
             service_id=self.config.services.context_coordination,
         )
         if subscription not in self.transport.subscriptions:
-            self.transport.subscriptions = self.transport.subscriptions + (
-                subscription,
-            )
+            self.transport.subscriptions = (*self.transport.subscriptions, subscription)
         return ContextCoordination(
             cast(Any, self.transport),
             mission_id,
@@ -424,6 +428,15 @@ class RuntimeComposition:
             clock=clock,
             subscription=subscription,
             operational_log=self._logger(),
+            environment=environment,
+            fsm_runner=fsm_runner,
+            maneuver_control=maneuver_control,
+            hyper_supervisor=hyper_supervisor,
+            belief_service=belief_service,
+            replan_workflow=cast(Any, replan_workflow),
+            maneuver_seconds=maneuver_seconds,
+            hyper_seconds=hyper_seconds,
+            simulation_limit_seconds=simulation_limit_seconds,
         )
 
     def create_bayesian_belief_service(
@@ -490,7 +503,8 @@ class RuntimeComposition:
                     )
                 if float(transition_probability) != manager.transition_probability:
                     raise ValueError(
-                        "configured transition probability does not match the durable checkpoint"
+                        "configured transition probability does not match the "
+                        "durable checkpoint"
                     )
             if seed is not None:
                 raise ValueError(
@@ -501,9 +515,7 @@ class RuntimeComposition:
             observation_topic=observation_topic,
         )
         if subscription not in self.transport.subscriptions:
-            self.transport.subscriptions = self.transport.subscriptions + (
-                subscription,
-            )
+            self.transport.subscriptions = (*self.transport.subscriptions, subscription)
         return BayesianBeliefService(
             manager,
             store,
@@ -537,7 +549,8 @@ class RuntimeComposition:
         if decision_provider is None:
             if mission_id is None:
                 raise ValueError(
-                    "create_maneuver_control requires a provider or model and Mission ID"
+                    "create_maneuver_control requires a provider or model and "
+                    "Mission ID"
                 )
             if model is None:
                 model = self.create_chat_model(
@@ -576,7 +589,11 @@ class RuntimeComposition:
             communication_port=communication_port,
         )
 
-    def create_communication_port(self) -> TransportCommunicationPort:
+    def create_communication_port(
+        self,
+        *,
+        hyper_handler: Callable[[Any], object] | None = None,
+    ) -> TransportCommunicationPort:
         """Compose the shared correlated agent-message registry."""
 
         port = TransportCommunicationPort(cast(Any, self.transport))
@@ -600,7 +617,7 @@ class RuntimeComposition:
                 "message": message.payload.get("message"),
             }
 
-        port.register("hyper-agent", handle_hyper_message)
+        port.register("hyper-agent", hyper_handler or handle_hyper_message)
         return port
 
     def create_hyper_agent(
@@ -649,6 +666,49 @@ class RuntimeComposition:
             interpreter,
             transport=self.transport,
             planning_evidence_topic=planning_evidence_topic,
+            operational_log=self._logger(),
+        )
+
+    def create_hyper_supervisor(
+        self,
+        *,
+        model: Any | None = None,
+        system_prompt: str,
+        mission_id: str,
+        memory_store: object | None = None,
+        skill_catalog: object | None = None,
+        skill_version: str | None = None,
+        backend_root: Path | None = None,
+    ) -> HyperSupervisor:
+        """Compose independent Hyper evaluation episodes with Mission Memory only."""
+
+        if model is None:
+            model = self.create_chat_model(
+                mission_id=mission_id,
+                debug_scope="hyper-agent-supervisor",
+            )
+        if memory_store is None:
+            memory_store = FileMissionMemoryStore(
+                self.config.storage.root / "mission-memory"
+            )
+        agent = create_hyper_heartbeat_agent(
+            model=model,
+            system_prompt=system_prompt,
+            mission_id=mission_id,
+            memory_store=memory_store,
+            skill_catalog=skill_catalog,
+            skill_version=skill_version,
+            backend_root=backend_root,
+        )
+        provider = DeepAgentsHyperHeartbeatProvider(
+            agent,
+            max_retries=(
+                self.config.agents.hyper_agent.output_structure_retry.max_retries
+            ),
+        )
+        return HyperSupervisor(
+            provider,
+            transport=self.transport,
             operational_log=self._logger(),
         )
 
@@ -779,355 +839,6 @@ class RuntimeComposition:
             belief_service=belief_service,
             communication_port=communication_port,
         )
-
-    def _run_mission(
-        self,
-        mission_input: MissionInput,
-        *,
-        context_coordination: ContextCoordination,
-        fsm_runner: FSMRunner,
-        maneuver_control: ManeuverControl,
-        environment_step: Callable[[], object],
-        plan: NormalizedPlan,
-    ) -> RuntimeRunResult:
-        """Run one deterministic MissionInput-to-authoritative-feedback seam."""
-
-        if not isinstance(mission_input, MissionInput):
-            raise TypeError("run_mission requires a MissionInput")
-        if not callable(environment_step):
-            raise TypeError("environment_step must be callable")
-        if not isinstance(plan, NormalizedPlan):
-            raise TypeError("run_mission requires a NormalizedPlan")
-        mission_id = mission_input.mission_id
-        logger = self._logger()
-        logger.emit(
-            mission_id,
-            "runtime",
-            "agent",
-            "started",
-            details={"operation": "run_mission"},
-        )
-        if context_coordination.subscription.mission_id != mission_id:
-            raise ValueError(
-                "Context Coordination mission ID does not match MissionInput"
-            )
-        fsm_subscription = fsm_runner.subscription or FSMRunner.subscription_for(
-            mission_id,
-            service_id=self.config.services.fsm_runner,
-        )
-        if fsm_subscription.mission_id != mission_id:
-            raise ValueError("FSM Runner mission ID does not match MissionInput")
-
-        required_subscriptions = (
-            context_coordination.subscription,
-            fsm_subscription,
-            Subscription(maneuver_control.target_service, mission_id, "maneuver"),
-            Subscription(
-                "runtime-environment-observer", mission_id, "environment-data"
-            ),
-            Subscription("runtime-feedback-observer", mission_id, "maneuver-feedback"),
-            Subscription(
-                "runtime-status-observer", mission_id, fsm_runner.status_topic
-            ),
-        )
-        for subscription in required_subscriptions:
-            if subscription not in self.transport.subscriptions:
-                self.transport.subscriptions = self.transport.subscriptions + (
-                    subscription,
-                )
-
-        def consume_event(consumer: Any, event_kind: str) -> TransportEvent:
-            delivery = consumer.receive()
-            if delivery is None or not isinstance(delivery.message, TransportEvent):
-                if delivery is not None:
-                    delivery.nack()
-                logger.emit(
-                    mission_id,
-                    "runtime",
-                    "error",
-                    "failed",
-                    details={
-                        "operation": "consume_transport_event",
-                        "error_type": "RuntimeError",
-                    },
-                )
-                raise RuntimeError(f"expected a {event_kind} transport event")
-            if delivery.message.event_kind != event_kind:
-                delivery.nack()
-                logger.emit(
-                    mission_id,
-                    "runtime",
-                    "error",
-                    "failed",
-                    details={
-                        "operation": "consume_transport_event",
-                        "error_type": "RuntimeError",
-                    },
-                )
-                raise RuntimeError(
-                    f"expected a {event_kind} transport event, got {delivery.message.event_kind}"
-                )
-            event = delivery.message
-            delivery.ack()
-            logger.emit(
-                event.mission_id,
-                "runtime",
-                "transport",
-                "received",
-                details={
-                    "event_id": event.event_id,
-                    "event_kind": event.event_kind,
-                    "topic": event_kind,
-                    "transport_sequence": event.sequence,
-                },
-            )
-            return event
-
-        def run_async(awaitable: Any) -> Any:
-            return asyncio.run(awaitable)
-
-        with ExitStack() as consumers:
-            context_consumer = consumers.enter_context(
-                self.transport.open_consumer(context_coordination.subscription)
-            )
-            fsm_consumer = consumers.enter_context(
-                self.transport.open_consumer(fsm_subscription)
-            )
-            environment_consumer = consumers.enter_context(
-                self.transport.open_consumer(required_subscriptions[3])
-            )
-            feedback_consumer = consumers.enter_context(
-                self.transport.open_consumer(required_subscriptions[4])
-            )
-            status_consumer = consumers.enter_context(
-                self.transport.open_consumer(required_subscriptions[5])
-            )
-
-            planning_details: dict[str, object] = {"operation": "initial_plan"}
-            if (
-                plan.mission_id != mission_id
-                or plan.source_authority != mission_input.source_authority
-            ):
-                raise RuntimeError(
-                    "Normalized Plan does not match Mission Input authority"
-                )
-            topic = context_coordination.input_topic
-            event = create_normalized_plan_transport_event(
-                plan,
-                event_id=f"normalized-plan:{mission_id}:{plan.plan_revision}",
-                sequence=self.transport.next_event_sequence(topic, mission_id),
-            )
-            self.transport.publish_event(topic, event)
-            if plan.outcome is not PlanningOutcome.SOLVED or len(plan.maneuvers) != 1:
-                raise RuntimeError("Mission Run requires one solved maneuver")
-            planning_details["plan_revision"] = plan.plan_revision
-            logger.emit(
-                mission_id,
-                "runtime",
-                "planning",
-                "solved",
-                details=planning_details,
-            )
-
-            plan_snapshot = context_coordination.run_once(context_consumer)
-            if (
-                plan_snapshot is None
-                or plan_snapshot.plan_revision != plan.plan_revision
-            ):
-                raise RuntimeError(
-                    "Context Coordination did not publish the normalized-plan snapshot"
-                )
-            activated = run_async(fsm_runner.run_once(fsm_consumer))
-            if not isinstance(activated, FSMStatus):
-                raise RuntimeError("FSM Runner did not activate the normalized plan")
-            status_before_feedback = FSMStatus.from_dict(
-                consume_event(status_consumer, "fsm-status").payload
-            )
-            if status_before_feedback != activated:
-                raise RuntimeError("FSM status evidence does not match activation")
-            logger.emit(
-                mission_id,
-                "runtime",
-                "fsm",
-                "activated",
-                details={
-                    "plan_revision": activated.plan_revision,
-                    "state": activated.active_state,
-                },
-            )
-
-            invocation_id = f"maneuver-heartbeat:{mission_id}:{plan.plan_revision}"
-            maneuver_result = maneuver_control.heartbeat(
-                plan_snapshot,
-                status_before_feedback,
-                InvocationOverlay(
-                    mission_id,
-                    invocation_id,
-                    {"normalized_plan": plan.to_dict()},
-                ),
-                event_id=invocation_id,
-            )
-            if not isinstance(maneuver_result, ManeuverHeartbeatResult):
-                raise TypeError("legacy Mission Run requires ManeuverHeartbeatResult")
-            decision = maneuver_result.decision
-            command = maneuver_result.command
-            if (
-                not isinstance(decision, ManeuverControlDecision)
-                or decision.physical_intent is None
-                or not isinstance(command, ManeuverCommand)
-                or command.mission_id != mission_id
-                or command.plan_revision != plan.plan_revision
-                or command.maneuver_id != plan.maneuvers[0].maneuver_id
-                or command.mission_snapshot_id
-                != f"{mission_id}:snapshot:{plan_snapshot.version}"
-            ):
-                raise RuntimeError("Maneuver Control did not emit one physical command")
-            logger.emit(
-                mission_id,
-                "runtime",
-                "control",
-                "completed",
-                details={
-                    "command_id": command.command_id,
-                    "maneuver_id": command.maneuver_id,
-                    "plan_revision": command.plan_revision,
-                },
-            )
-
-            try:
-                environment_step()
-            except Exception as exc:
-                logger.emit(
-                    mission_id,
-                    "runtime",
-                    "error",
-                    "failed",
-                    details={
-                        "operation": "environment_step",
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                raise
-            logger.emit(
-                mission_id,
-                "runtime",
-                "environment",
-                "completed",
-                details={"operation": "environment_step"},
-            )
-            environment_event = consume_event(environment_consumer, "environment_data")
-            feedback_event = consume_event(feedback_consumer, "maneuver-feedback")
-            feedback = ManeuverFeedback.from_dict(feedback_event.payload)
-            if (
-                feedback_event.mission_id != mission_id
-                or feedback_event.event_id != feedback.feedback_id
-                or feedback.mission_id != command.mission_id
-                or feedback.maneuver_id != command.maneuver_id
-                or feedback.payload.get("command_id") != command.command_id
-                or feedback.payload.get("correlation_id") != command.correlation_id
-            ):
-                raise RuntimeError(
-                    "maneuver feedback does not match the physical command"
-                )
-            graph = environment_event.payload.get("scene_graph")
-            expected_parameters = {
-                parameter.name: parameter.value for parameter in command.parameters
-            }
-            maneuvers = graph.get("maneuvers") if isinstance(graph, Mapping) else None
-            maneuver = (
-                maneuvers[0]
-                if isinstance(maneuvers, (list, tuple)) and len(maneuvers) == 1
-                else None
-            )
-            if (
-                environment_event.mission_id != mission_id
-                or not isinstance(graph, Mapping)
-                or graph.get("mission_id") != mission_id
-                or graph.get("plan_revision") != plan.plan_revision
-                or not isinstance(maneuver, Mapping)
-                or maneuver.get("maneuver_id") != command.maneuver_id
-                or maneuver.get("action") != command.action
-                or maneuver.get("parameters") != expected_parameters
-            ):
-                raise RuntimeError(
-                    "environment data does not match the physical command"
-                )
-
-            context_snapshot = context_coordination.run_once(context_consumer)
-            if (
-                context_snapshot is None
-                or context_snapshot.plan_revision != plan.plan_revision
-                or context_snapshot.environment_data != environment_event.event_id
-            ):
-                raise RuntimeError(
-                    "Context Coordination did not consume the environment data source fact"
-                )
-
-            if status_before_feedback.active_state != activated.active_state:
-                raise RuntimeError(
-                    "FSM active state changed before authoritative feedback"
-                )
-            candidate = next(
-                (
-                    item
-                    for item in status_before_feedback.transition_candidates
-                    if item.event == f"advance:{command.maneuver_id}"
-                ),
-                None,
-            )
-            if candidate is None:
-                raise RuntimeError("FSM status did not expose the commanded maneuver")
-            transition_decision = (
-                ManeuverDecision(
-                    decision_id=f"transition:{feedback.feedback_id}",
-                    mission_id=mission_id,
-                    transition_event=candidate.event,
-                )
-                if candidate.requires_decision
-                else None
-            )
-            applied = run_async(
-                fsm_runner.apply(
-                    candidate,
-                    feedback=feedback,
-                    maneuver_decision=transition_decision,
-                )
-            )
-            if (
-                not isinstance(applied, FSMStatus)
-                or applied.active_state == status_before_feedback.active_state
-            ):
-                raise RuntimeError(
-                    "FSM did not advance after authoritative maneuver feedback"
-                )
-            final_status = FSMStatus.from_dict(
-                consume_event(status_consumer, "fsm-status").payload
-            )
-            if final_status != applied:
-                raise RuntimeError(
-                    "final FSM status evidence does not match the applied transition"
-                )
-            logger.emit(
-                mission_id,
-                "runtime",
-                "fsm",
-                "transitioned",
-                details={
-                    "state": final_status.active_state,
-                    "status": final_status.status,
-                },
-            )
-
-            return RuntimeRunResult(
-                plan=plan,
-                context_snapshot=context_snapshot,
-                status_before_feedback=status_before_feedback,
-                decision=decision,
-                command=command,
-                environment_event=environment_event,
-                feedback=feedback,
-                final_status=final_status,
-            )
 
     def run_planning_mission(
         self,
@@ -1302,7 +1013,8 @@ class RuntimeComposition:
         if plan is None:
             raise RuntimeError("verified translation did not provide a plan")
         raise RuntimeError(
-            "translation-driven NormalizedPlan execution is retired; use the Hyper planner-artifact to Statechart workflow"
+            "translation-driven NormalizedPlan execution is retired; use the "
+            "Hyper planner-artifact to Statechart workflow"
         )
 
     def _prepare_planning_mission(
@@ -1402,10 +1114,7 @@ class RuntimeComposition:
             belief_reference = snapshot.source_references[belief_source]
             belief_snapshot = None
             if belief_revision is not None or belief_reference is not None:
-                if (
-                    belief_revision is None
-                    or belief_reference is None
-                ):
+                if belief_revision is None or belief_reference is None:
                     raise ValueError("MissionSnapshot belief provenance is incomplete")
                 if bayesian_belief_service is None:
                     raise ValueError(

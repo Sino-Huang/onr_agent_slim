@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -89,6 +89,8 @@ class HeartbeatsConfig:
     summary_seconds: int | float = 30
 
     def __post_init__(self) -> None:
+        _positive_duration(self.hyper_seconds, "heartbeats.hyper_seconds")
+        _positive_duration(self.maneuver_seconds, "heartbeats.maneuver_seconds")
         _positive_duration(self.summary_seconds, "heartbeats.summary_seconds")
 
     @property
@@ -155,7 +157,9 @@ class RuntimeConfig:
     agents: AgentsConfig = DEFAULT_AGENTS_CONFIG
 
 
-def _path(value: object, label: str, repo_root: Path, *, executable: bool = False) -> Path:
+def _path(
+    value: object, label: str, repo_root: Path, *, executable: bool = False
+) -> Path:
     raw = Path(_text(value, label))
     result = (raw if raw.is_absolute() else repo_root / raw).resolve()
     if not result.exists() or not result.is_file():
@@ -184,7 +188,11 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     """Load a complete stable config; environment variables never overlay fields."""
 
     root = Path(repo_root).resolve()
-    selected = Path(path) if path is not None else Path(os.environ.get("ONR_CONFIG_PATH", "conf/onr_agent_params.yaml"))
+    selected = (
+        Path(path)
+        if path is not None
+        else Path(os.environ.get("ONR_CONFIG_PATH", "conf/onr_agent_params.yaml"))
+    )
     if not selected.is_absolute():
         selected = root / selected
     try:
@@ -275,14 +283,26 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     backend = _text(transport_values["backend"], "transport.backend")
     if backend not in {"file", "inprocess"}:
         raise ValueError("transport.backend must be file or inprocess")
-    transport = TransportConfig(backend, _config_path(transport_values["root"], "transport.root", root))
+    transport = TransportConfig(
+        backend, _config_path(transport_values["root"], "transport.root", root)
+    )
     storage_values = _exact(top["storage"], {"root"}, "storage")
     storage = StorageConfig(_config_path(storage_values["root"], "storage.root", root))
-    service_values = _exact(top["services"], {"hyper_agent", "maneuver_control", "context_coordination", "fsm_runner", "planner"}, "services")
-    services = ServicesConfig(**{key: _text(service_values[key], f"services.{key}") for key in service_values})
-    agent_values = _exact(
-        top["agents"], {"hyper_agent", "maneuver_control"}, "agents"
+    service_values = _exact(
+        top["services"],
+        {
+            "hyper_agent",
+            "maneuver_control",
+            "context_coordination",
+            "fsm_runner",
+            "planner",
+        },
+        "services",
     )
+    services = ServicesConfig(
+        **{key: _text(service_values[key], f"services.{key}") for key in service_values}
+    )
+    agent_values = _exact(top["agents"], {"hyper_agent", "maneuver_control"}, "agents")
     agent_records: dict[str, AgentConfig] = {}
     for name in ("hyper_agent", "maneuver_control"):
         values = _exact(

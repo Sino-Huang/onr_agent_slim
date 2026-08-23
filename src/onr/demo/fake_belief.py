@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from onr.application.bayesian_belief import BayesianBeliefManager
+from collections.abc import Mapping, Sequence
+
+from onr.application.bayesian_belief import (
+    BayesianBeliefManager,
+    BayesianBeliefService,
+    create_risk_observation_event,
+)
 from onr.contracts.bayesian_belief import (
     BayesianBeliefSnapshot,
     BeliefKey,
@@ -41,3 +47,60 @@ def create_fake_entity_risk_snapshot(mission_id: str) -> BayesianBeliefSnapshot:
     if snapshot is None:
         raise RuntimeError("fake belief generation produced no snapshot")
     return snapshot
+
+
+def seed_event_risk_beliefs(
+    service: BayesianBeliefService,
+    report: Sequence[Mapping[str, object]],
+) -> BayesianBeliefSnapshot:
+    """Seed one observation per report entity through transport and the real service."""
+
+    if not isinstance(service, BayesianBeliefService):
+        raise TypeError("belief seeding requires BayesianBeliefService")
+    first_by_entity: dict[str, tuple[int, Mapping[str, object]]] = {}
+    for source_index, record in enumerate(report, start=1):
+        entity_id = str(record.get("entity_id"))
+        if not entity_id or entity_id == "None":
+            raise ValueError("event report entity ID is missing")
+        first_by_entity.setdefault(entity_id, (source_index, record))
+    expected = {item.entity_id for item in service.manager.keys}
+    if set(first_by_entity) != expected:
+        raise ValueError("event report entities do not match event-risk belief keys")
+
+    for input_revision, entity_id in enumerate(
+        sorted(first_by_entity, key=int), start=1
+    ):
+        source_index, _record = first_by_entity[entity_id]
+        uncertainty = 0.1 + ((source_index * 37) % 35) / 100
+        event_id = f"initial-event-risk:{service.manager.mission_id}:{entity_id}"
+        if service.transport.get_event(event_id) is not None:
+            continue
+        sequence = service.transport.next_event_sequence(
+            service.observation_topic, service.manager.mission_id
+        )
+        observation = RiskObservation(
+            event_id=event_id,
+            input_revision=input_revision,
+            risk_type="event-risk",
+            associations=(EntityAssociation(entity_id, 1.0),),
+            likelihood_given_risk=1.0 - uncertainty,
+            likelihood_given_safe=uncertainty,
+        )
+        service.transport.publish_event(
+            service.observation_topic,
+            create_risk_observation_event(
+                service.manager.mission_id,
+                observation,
+                sequence=sequence,
+            ),
+        )
+
+    with service.transport.open_consumer(service.subscription) as consumer:
+        latest = service.drain_to_latest(consumer)
+    snapshot = latest or service.load_current_snapshot()
+    if not isinstance(snapshot, BayesianBeliefSnapshot):
+        raise RuntimeError("event-risk belief seeding produced no snapshot")
+    return snapshot
+
+
+__all__ = ["create_fake_entity_risk_snapshot", "seed_event_risk_beliefs"]

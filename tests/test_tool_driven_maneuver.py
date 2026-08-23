@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from langchain.tools import ToolRuntime
 
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
@@ -13,13 +14,12 @@ from onr.adapters.inprocess_transport import InProcessTransport
 from onr.agents.maneuver_control import DeepAgentsHeartbeatProvider
 from onr.agents.maneuver_tools import (
     MANEUVER_OPERATIONAL_TOOLS,
-    EntityAssociationInput,
     ManeuverToolContext,
     communicate,
+    ingest_perceptions,
     land,
     navigate,
     transition_fsm,
-    update_belief,
 )
 from onr.application.bayesian_belief import BayesianBeliefManager, BayesianBeliefService
 from onr.application.communication import TransportCommunicationPort
@@ -27,7 +27,8 @@ from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl
 from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.communication import AgentMessage
-from onr.contracts.fsm import Statechart, StatechartCondition, StatechartTransition
+from onr.contracts.environment import EventObservation
+from onr.contracts.fsm import Statechart, StatechartTransition
 from onr.contracts.maneuver_control import (
     ManeuverCommand,
     ManeuverHeartbeatOutcome,
@@ -86,8 +87,9 @@ def _chart(plan: NormalizedPlan) -> Statechart:
                 event="any event text",
                 source="arbitrary origin",
                 target="arbitrary destination",
-                requires_decision=True,
-                conditions=(StatechartCondition(10, 1),),
+                context={
+                    "readiness": {"mission_clock": {"minimum": 10, "unit": "seconds"}}
+                },
             ),
         ),
     )
@@ -118,7 +120,7 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "search_area",
         "pursue",
         "investigate",
-        "update_belief",
+        "ingest_perceptions",
         "communicate",
     ]
     navigate_schema = cast(
@@ -130,12 +132,17 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "y",
         "z",
         "speed",
+        "deadline_time",
+        "observation_start",
+        "observation_duration",
+        "source_event_index",
+        "expected_observation_count",
         "extra_parameters",
         "reflection",
     }
 
 
-def test_transition_tool_rejects_early_then_updates_the_live_runner() -> None:
+def test_transition_tool_checks_exact_candidate_without_interpreting_context() -> None:
     plan = _plan()
     runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
@@ -150,40 +157,26 @@ def test_transition_tool_rejects_early_then_updates_the_live_runner() -> None:
     )
     context = ManeuverToolContext(invocation, runner, _Dispatcher())
 
-    early = json.loads(
+    missing = json.loads(
         cast(Any, transition_fsm).func(
-            event="any event text",
-            reflection="The temporal threshold has not arrived.",
+            event="not a candidate",
+            reflection="This event is not exposed by the live FSM.",
             runtime=_runtime(context),
         )
     )
 
-    assert early["status"] == "rejected"
-    assert early["current_state"] == "arbitrary origin"
-    assert early["candidates"][0]["conditions"] == [
-        {
-            "kind": "environment_time_at_or_after",
-            "time_tick": 10,
-            "time_scale": 1,
-        }
-    ]
+    assert missing["status"] == "rejected"
+    assert missing["current_state"] == "arbitrary origin"
+    assert missing["candidates"][0]["transition_context"] == {
+        "readiness": {"mission_clock": {"minimum": 10, "unit": "seconds"}}
+    }
     assert asyncio.run(runner.status()).active_state == "arbitrary origin"  # type: ignore[union-attr]
 
-    ready = ManeuverInvocation(
-        request_id=invocation.request_id,
-        correlation_id=invocation.correlation_id,
-        mission_id=invocation.mission_id,
-        plan_revision=invocation.plan_revision,
-        statechart_reference=invocation.statechart_reference,
-        fsm_status=cast(Any, asyncio.run(runner.status())),
-        environment_data={"mission_time_seconds": 10},
-    )
-    ready_context = ManeuverToolContext(ready, runner, _Dispatcher())
     moved = json.loads(
         cast(Any, transition_fsm).func(
             event="any event text",
-            reflection="The exact candidate threshold is satisfied.",
-            runtime=_runtime(ready_context),
+            reflection="Live evidence has been judged appropriate.",
+            runtime=_runtime(context),
         )
     )
     assert moved["status"] == "transitioned"
@@ -221,10 +214,10 @@ def test_fake_environment_activates_ticks_and_overrides(tmp_path: Path) -> None:
         == "overridden"
     )
     assert environment.current_maneuver["command_id"] == "command-2"  # type: ignore[index]
-    environment.tick(mission_time_seconds=12)
+    environment.tick()
     assert environment.navigation_status == "completed"
     graph = environment.current_environment_data()["scene_graph"]
-    assert graph["mission_time_seconds"] == 12  # type: ignore[index]
+    assert graph["mission_time_seconds"] == 0.5  # type: ignore[index]
 
 
 def test_physical_tools_submit_and_override_without_application_gate(
@@ -258,10 +251,24 @@ def test_physical_tools_submit_and_override_without_application_gate(
             maneuver_id="not-in-normalized-plan",
             x=100,
             y=200,
+            deadline_time=8.5,
+            observation_start=8.5,
+            observation_duration=1.5,
+            source_event_index=17,
+            expected_observation_count=3,
             reflection="Current state context calls for movement.",
             runtime=_runtime(context),
         )
     )
+    assert environment.current_maneuver["parameters"] == {  # type: ignore[index]
+        "deadline_time": 8.5,
+        "expected_observation_count": 3,
+        "observation_duration": 1.5,
+        "observation_start": 8.5,
+        "source_event_index": 17,
+        "x": 100,
+        "y": 200,
+    }
     second = json.loads(
         cast(Any, land).func(
             maneuver_id="emergency-landing",
@@ -350,12 +357,28 @@ def test_communicate_builds_a_correlated_replan_request() -> None:
     assert seen[0].payload["replan_request"]["requester"] == "maneuver-control"  # type: ignore[index]
 
 
-def test_belief_tool_uses_durable_service_without_mutating_invocation(
+def test_belief_tool_ingests_each_pending_event_once(
     tmp_path: Path,
 ) -> None:
     plan = _plan()
     runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
+    perceptions = tuple(
+        EventObservation(
+            observation_id=f"event-observed:{index}",
+            entity_id="ship-1",
+            position=(0, 0, 0),
+            observed_time=float(index),
+            uncertainty_score=uncertainty,
+            source_event_index=index,
+            event_type="report",
+            event_information={"index": index},
+            event_time=float(index),
+            maneuver_id="observe",
+            observation_window_outcome="observed",
+        )
+        for index, uncertainty in ((1, 0.1), (2, 0.2))
+    )
     invocation = ManeuverInvocation(
         "heartbeat-belief",
         "correlation",
@@ -364,10 +387,11 @@ def test_belief_tool_uses_durable_service_without_mutating_invocation(
         "statechart.json",
         status,
         {"mission_time_seconds": 0},
+        pending_perceptions=perceptions,
     )
     manager = BayesianBeliefManager(
         plan.mission_id,
-        (BeliefKey("ship-1", "collision"),),
+        (BeliefKey("ship-1", "event-risk"),),
         particle_count=128,
         seed=3,
     )
@@ -384,19 +408,132 @@ def test_belief_tool_uses_durable_service_without_mutating_invocation(
     )
 
     result = json.loads(
-        cast(Any, update_belief).func(
-            risk_type="collision",
-            associations=[EntityAssociationInput(entity_id="ship-1", weight=1.0)],
-            likelihood_given_risk=0.9,
-            likelihood_given_safe=0.1,
+        cast(Any, ingest_perceptions).func(
             reflection="The current sensor association supports a risk update.",
             runtime=_runtime(context),
         )
     )
 
-    assert result == {"status": "updated_complete"}
-    assert invocation.belief_snapshot is None
+    assert result["status"] == "updated_complete"
+    assert result["event_count"] == 2
+    assert result["belief_revisions"] == [1, 2]
     assert service.load_current_snapshot() is not None
+    assert (
+        service.transport.next_event_sequence(
+            service.observation_topic, plan.mission_id
+        )
+        == 2
+    )
+    persisted = service.transport.latest_event(
+        service.observation_topic, plan.mission_id, event_kind="risk.observed"
+    )
+    assert persisted is not None
+    assert persisted.payload["input_revision"] == 2
+    assert persisted.payload["risk_type"] == "event-risk"
+    assert tuple(cast(Any, persisted.payload["associations"])) == (
+        {"entity_id": "ship-1", "weight": 1.0},
+    )
+    assert persisted.payload["likelihood_given_risk"] == 0.8
+    assert persisted.payload["likelihood_given_safe"] == 0.2
+
+    with pytest.raises(RuntimeError, match="unavailable after success"):
+        cast(Any, ingest_perceptions).func(
+            reflection="A repeated batch must be unavailable.",
+            runtime=_runtime(context),
+        )
+    current = service.load_current_snapshot()
+    assert current is not None and current.belief_revision == 2
+
+
+def test_failed_perception_ingestion_remains_available_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _plan()
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    perception = EventObservation(
+        observation_id="event-observed:retry",
+        entity_id="ship-1",
+        position=(0, 0, 0),
+        observed_time=1,
+        uncertainty_score=0.25,
+        source_event_index=1,
+        event_type="report",
+        event_information={"decision": "left"},
+        event_time=1,
+        maneuver_id="observe",
+        observation_window_outcome="observed",
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-retry",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        status,
+        {"mission_time_seconds": 1},
+        pending_perceptions=(perception,),
+    )
+    service = BayesianBeliefService(
+        BayesianBeliefManager(
+            plan.mission_id,
+            (BeliefKey("ship-1", "event-risk"),),
+            particle_count=128,
+            seed=4,
+        ),
+        FileBayesianBeliefStore(tmp_path / "belief"),
+        FileTransport(tmp_path / "transport"),
+    )
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        belief_service=service,
+    )
+    original_handle = service.handle
+    monkeypatch.setattr(
+        service,
+        "handle",
+        lambda _event: (_ for _ in ()).throw(RuntimeError("ingestion failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="ingestion failed"):
+        cast(Any, ingest_perceptions).func(
+            reflection="Attempt the pending batch.",
+            runtime=_runtime(context),
+        )
+
+    assert context.perception_batch_ingested is False
+    assert context.execution_record.executions == []
+    assert invocation.pending_perceptions == (perception,)
+
+    monkeypatch.setattr(service, "handle", original_handle)
+    retried = json.loads(
+        cast(Any, ingest_perceptions).func(
+            reflection="Retry the retained pending batch.",
+            runtime=_runtime(context),
+        )
+    )
+    assert retried["belief_revisions"] == [1]
+    persisted = service.transport.latest_event(
+        service.observation_topic, plan.mission_id, event_kind="risk.observed"
+    )
+    assert persisted is not None
+    assert persisted.payload["input_revision"] == 1
+
+    with pytest.raises(RuntimeError, match="unavailable after success"):
+        cast(Any, ingest_perceptions).func(
+            reflection="A repeated batch must be unavailable.",
+            runtime=_runtime(context),
+        )
+    current = service.load_current_snapshot()
+    assert current is not None and current.belief_revision == 1
+    assert (
+        service.transport.next_event_sequence(
+            service.observation_topic, plan.mission_id
+        )
+        == 1
+    )
 
 
 def test_completion_consistency_uses_tool_execution_record() -> None:

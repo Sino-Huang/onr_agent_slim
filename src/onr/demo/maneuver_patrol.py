@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
-from onr.contracts.fsm import Statechart, StatechartCondition, StatechartTransition
+from onr.contracts.fsm import Statechart, StatechartTransition
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import (
     ManeuverIntent,
@@ -53,16 +53,16 @@ MANEUVER_DEMO_INSTRUCTIONS = """
 For this live post-Hyper patrol demo, act deterministically from the injected
 evidence:
 
-- When the exact live transition candidate's time condition is satisfied, call
-  transition_fsm once with that exact event.
+- Interpret the exact live transition context against mission time and other live
+  evidence. When its desired readiness is satisfied, call transition_fsm once
+  with that exact event.
 - After a successful transition, use only the returned active_state_context for
   every remaining physical, belief, or communication choice in that heartbeat;
   do not act on the source-state context. If phase is moving, call navigate using
   its maneuver_id, target_x, target_y, and speed. Do not call a physical tool for
   waiting, observing, or complete phases.
-- If an observing context contains belief_observation and belief_snapshot is
-  null, call update_belief with the stated values and one association for its
-  entity_id with weight 1.0.
+- If pending_perceptions contains event observations, call ingest_perceptions
+  once for the complete pending batch.
 - If an observing context contains report_to_hyper, call communicate to
   hyper-agent with kind report and that exact message.
 - If environment_data.scene_graph.emergency_override is present, do not attempt
@@ -135,13 +135,6 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
             "x": x,
             "y": y,
         }
-        if number == 2:
-            contexts[at_stop]["belief_observation"] = {
-                "risk_type": "collision",
-                "entity_id": "ship-1",
-                "likelihood_given_risk": 0.9,
-                "likelihood_given_safe": 0.1,
-            }
         if number == 3:
             contexts[at_stop]["report_to_hyper"] = (
                 "Patrol stop 3 has been reached under the verified plan."
@@ -152,15 +145,29 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
                     event=f"depart for waypoint {number}",
                     source=source,
                     target=moving,
-                    conditions=(StatechartCondition(move_start, 1),),
-                    requires_decision=True,
+                    context={
+                        "desired_outcome": "begin travel to the next patrol stop",
+                        "readiness": {
+                            "mission_time": {
+                                "at_or_after": move_start,
+                                "unit": "seconds",
+                            }
+                        },
+                    },
                 ),
                 StatechartTransition(
                     event=f"confirm waypoint {number}",
                     source=moving,
                     target=at_stop,
-                    conditions=(StatechartCondition(arrive, 1),),
-                    requires_decision=True,
+                    context={
+                        "desired_outcome": "the patrol stop has been reached",
+                        "readiness": {
+                            "mission_time": {
+                                "at_or_after": arrive,
+                                "unit": "seconds",
+                            }
+                        },
+                    },
                 ),
             )
         )
@@ -172,8 +179,10 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
             event="close the patrol",
             source=source,
             target="patrol-complete",
-            conditions=(StatechartCondition(21, 1),),
-            requires_decision=True,
+            context={
+                "desired_outcome": "all planned patrol observations are complete",
+                "readiness": {"mission_time": {"at_or_after": 21, "unit": "seconds"}},
+            },
         )
     )
     statechart = Statechart(

@@ -6,8 +6,13 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
+
+from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.fsm import FSMStatus
 
 _HYPER_AGENT_TOKEN = object()
 
@@ -60,7 +65,9 @@ def _thaw(value: object) -> object:
 
 
 def _canonical(value: object) -> str:
-    return json.dumps(_thaw(value), allow_nan=False, separators=(",", ":"), sort_keys=True)
+    return json.dumps(
+        _thaw(value), allow_nan=False, separators=(",", ":"), sort_keys=True
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +96,6 @@ class MissionInput:
 
     def to_canonical_json(self) -> str:
         return _canonical(self.to_dict())
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +199,152 @@ class ReplanRequest:
         except (TypeError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError("replan request JSON is invalid") from exc
         return cls.from_dict(decoded)
+
+
+class HyperHeartbeatDisposition(StrEnum):
+    """Closed set of supervisory outcomes without importing planner outcomes."""
+
+    NO_CHANGE = "no_change"
+    REPLAN = "replan"
+    DECLINE = "decline"
+
+
+@dataclass(frozen=True, slots=True)
+class HyperHeartbeatInvocation:
+    """Latest-only evidence supplied to one stateless Hyper supervisory episode."""
+
+    mission_id: str
+    plan_revision: int
+    trigger_identities: tuple[str, ...]
+    mission_snapshot: MissionSnapshot
+    planner_plan_reference: str
+    statechart_reference: str
+    fsm_status: FSMStatus
+    environment_data: Mapping[str, object]
+    belief_snapshot: BayesianBeliefSnapshot | None = None
+    maneuver_requests: tuple[ReplanRequest, ...] = ()
+
+    def __post_init__(self) -> None:
+        _text(self.mission_id, "Hyper invocation Mission ID")
+        _nonnegative_int(self.plan_revision, "Hyper invocation plan revision")
+        triggers = tuple(self.trigger_identities)
+        if not triggers or not all(
+            isinstance(item, str) and item.strip() for item in triggers
+        ):
+            raise ValueError("Hyper invocation triggers must be non-empty identities")
+        object.__setattr__(self, "trigger_identities", tuple(sorted(set(triggers))))
+        if not isinstance(self.mission_snapshot, MissionSnapshot):
+            raise TypeError("Hyper invocation requires a Mission Snapshot")
+        _text(self.planner_plan_reference, "Planner Plan reference")
+        _text(self.statechart_reference, "Statechart reference")
+        if not isinstance(self.fsm_status, FSMStatus):
+            raise TypeError("Hyper invocation requires FSM Status")
+        if (
+            self.mission_snapshot.mission_id != self.mission_id
+            or self.fsm_status.mission_id != self.mission_id
+            or self.fsm_status.plan_revision != self.plan_revision
+        ):
+            raise ValueError(
+                "Hyper invocation Mission/revision identity is inconsistent"
+            )
+        environment = _freeze(self.environment_data, "Hyper environment data")
+        if not isinstance(environment, Mapping):
+            raise TypeError("Hyper environment data must be an object")
+        object.__setattr__(self, "environment_data", environment)
+        if self.belief_snapshot is not None:
+            if not isinstance(self.belief_snapshot, BayesianBeliefSnapshot):
+                raise TypeError("Hyper invocation belief must be a Bayesian snapshot")
+            if self.belief_snapshot.mission_id != self.mission_id:
+                raise ValueError("Hyper invocation belief Mission ID does not match")
+        requests = tuple(self.maneuver_requests)
+        if not all(
+            isinstance(item, ReplanRequest) and item.mission_id == self.mission_id
+            for item in requests
+        ):
+            raise ValueError("Hyper invocation Maneuver requests are inconsistent")
+        object.__setattr__(self, "maneuver_requests", requests)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mission_id": self.mission_id,
+            "plan_revision": self.plan_revision,
+            "trigger_identities": list(self.trigger_identities),
+            "mission_snapshot": self.mission_snapshot.to_dict(),
+            "planner_plan_reference": self.planner_plan_reference,
+            "statechart_reference": self.statechart_reference,
+            "fsm_status": self.fsm_status.to_dict(),
+            "environment_data": _thaw(self.environment_data),
+            "belief_snapshot": (
+                self.belief_snapshot.to_dict()
+                if self.belief_snapshot is not None
+                else None
+            ),
+            "maneuver_requests": [item.to_dict() for item in self.maneuver_requests],
+        }
+
+    def to_canonical_json(self) -> str:
+        return _canonical(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class HyperHeartbeatDecision:
+    """Public, durable conclusion of one Hyper supervisory evaluation."""
+
+    mission_id: str
+    plan_revision: int
+    disposition: HyperHeartbeatDisposition | str
+    evidence_summary: str
+    trigger_identities: tuple[str, ...] = ()
+    request_identities: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _text(self.mission_id, "Hyper decision Mission ID")
+        _nonnegative_int(self.plan_revision, "Hyper decision plan revision")
+        object.__setattr__(
+            self, "disposition", HyperHeartbeatDisposition(self.disposition)
+        )
+        _text(self.evidence_summary, "Hyper decision evidence summary")
+        for name in ("trigger_identities", "request_identities"):
+            values = tuple(getattr(self, name))
+            if not all(isinstance(item, str) and item.strip() for item in values):
+                raise ValueError(f"Hyper decision {name} must contain identities")
+            object.__setattr__(self, name, tuple(sorted(set(values))))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mission_id": self.mission_id,
+            "plan_revision": self.plan_revision,
+            "disposition": str(self.disposition),
+            "evidence_summary": self.evidence_summary,
+            "trigger_identities": list(self.trigger_identities),
+            "request_identities": list(self.request_identities),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> HyperHeartbeatDecision:
+        expected = {
+            "mission_id",
+            "plan_revision",
+            "disposition",
+            "evidence_summary",
+            "trigger_identities",
+            "request_identities",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError(
+                "Hyper heartbeat decision contains unknown or missing fields"
+            )
+        return cls(
+            mission_id=value["mission_id"],
+            plan_revision=value["plan_revision"],
+            disposition=value["disposition"],
+            evidence_summary=value["evidence_summary"],
+            trigger_identities=tuple(value["trigger_identities"]),
+            request_identities=tuple(value["request_identities"]),
+        )
+
+    def to_canonical_json(self) -> str:
+        return _canonical(self.to_dict())
 
 
 @dataclass(frozen=True, slots=True, init=False)

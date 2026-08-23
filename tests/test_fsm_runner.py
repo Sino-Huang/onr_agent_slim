@@ -3,18 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from onr.adapters.fsm_store import JsonFSMStateStore
 from onr.adapters.inprocess_transport import InProcessTransport
+from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.contracts.fsm import (
-    FSMEvent,
     FSMExecutionRecord,
     FSMStatus,
     ManeuverDecision,
-    ManeuverFeedback,
     Statechart,
     StatechartTransition,
     TransitionCandidate,
@@ -34,270 +34,287 @@ from onr.runtime.config import (
 )
 
 
-def _temporal_plan(revision: int = 1) -> Statechart:
+def _chart(revision: int = 1) -> Statechart:
     return Statechart(
         mission_id="mission-fsm",
         plan_revision=revision,
         mission_snapshot_id=f"snapshot-{revision}",
         planning_profile="temporal",
         entry_state="state-0",
-        states=("state-0", "state-1", "state-2"),
-        transitions=(
-            StatechartTransition("advance:survey", "state-0", "state-1", "survey"),
-            StatechartTransition("advance:report", "state-1", "state-2", "report"),
-        ),
         terminal_states=("state-2",),
-        state_context={"state-0": {}, "state-1": {}, "state-2": {}},
-        deadlines={"state-0": 0, "state-1": 2},
+        states=("state-0", "state-1", "state-2"),
+        state_context={
+            "state-0": {"renamed": {"phase": "waiting"}},
+            "state-1": {"nested": {"desired": ["observe", {"sector": 3}]}},
+            "state-2": {"completion": True},
+        },
+        transitions=(
+            StatechartTransition(
+                "edge-alpha",
+                "state-0",
+                "state-1",
+                {"readiness": {"clock": {"minimum": 2.5, "unit": "seconds"}}},
+            ),
+            StatechartTransition(
+                "edge-beta",
+                "state-1",
+                "state-2",
+                {"evidence": {"kind": "operator-authored", "values": [1, 2]}},
+            ),
+        ),
     )
 
 
-def _symbolic_plan(revision: int = 1) -> Statechart:
-    return Statechart(
-        mission_id="mission-fsm-symbolic",
-        plan_revision=revision,
-        mission_snapshot_id=f"snapshot-symbolic-{revision}",
-        planning_profile="symbolic",
-        entry_state="state-0",
-        states=("state-0", "state-1", "state-2"),
-        transitions=(
-            StatechartTransition(
-                "advance:survey", "state-0", "state-1", "survey", True, True
-            ),
-            StatechartTransition(
-                "advance:report", "state-1", "state-2", "report", True, True
-            ),
-        ),
-        terminal_states=("state-2",),
-        state_context={"state-0": {}, "state-1": {}, "state-2": {}},
-    )
-
-
-def _event(plan: Statechart, event_id: str = "statechart-event") -> Statechart:
-    _ = event_id
-    return plan
-
-
-def _wire_event(
-    chart: Statechart, event_id: str = "statechart-event"
-) -> TransportEvent:
+def _wire_event(chart: Statechart) -> TransportEvent:
     return TransportEvent(
-        1, event_id, chart.mission_id, 0, "statechart", chart.to_dict()
+        1, "statechart-event", chart.mission_id, 0, "statechart", chart.to_dict()
     )
 
 
-def test_statechart_is_deterministic_immutable_and_untrusted() -> None:
-    chart = _temporal_plan()
-    assert chart.trusted is False
-    assert (
-        chart.to_canonical_json()
-        == Statechart.from_json(chart.to_canonical_json()).to_canonical_json()
+def _decision(chart: Statechart, event: str, identity: str = "decision-1") -> ManeuverDecision:
+    return ManeuverDecision(
+        identity,
+        chart.mission_id,
+        transition_event=event,
+        payload={"plan_revision": chart.plan_revision},
     )
-    assert isinstance(chart.to_dict()["states"], list)
-
-    untrusted = json.loads(chart.to_canonical_json())
-    frozen = Statechart.from_dict(untrusted)
-    untrusted["states"].append("attacker-state")
-    assert "attacker-state" not in chart.states
-    assert "attacker-state" not in frozen.states
-    with pytest.raises(ValueError):
-        Statechart.from_dict({**json.loads(chart.to_canonical_json()), "trusted": True})
-    with pytest.raises(ValueError):
-        Statechart.from_json(
-            '{"states": ["ok"], "entry_state": "ok", "transitions": [], "trusted": false, "schema_version": 1, "mission_id": "m", "plan_revision": 1, "mission_snapshot_id": "s", "planning_profile": "temporal", "deadlines": {"ok": NaN}}'
-        )
 
 
-def test_execution_and_transition_contracts_have_canonical_round_trips() -> None:
-    candidate = TransitionCandidate("advance:survey", "state-0", "state-1")
+def test_schema_v2_round_trips_flexible_contexts_unchanged() -> None:
+    chart = _chart()
+    round_trip = Statechart.from_json(chart.to_canonical_json())
+
+    assert round_trip == chart
+    assert round_trip.schema_version == 2
+    assert round_trip.context_for("state-1") == chart.context_for("state-1")
+    assert round_trip.transitions[0].context == chart.transitions[0].context
+    assert "planner_native_plan_artifact_reference" not in round_trip.to_dict()
+    assert "maneuver_id" not in round_trip.transitions[0].to_dict()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"timers": {}},
+        {"deadlines": {}},
+        {"trusted": False},
+    ],
+)
+def test_schema_v2_rejects_retired_statechart_fields(extra: dict[str, object]) -> None:
+    document = _chart().to_dict()
+    document.update(extra)
+    with pytest.raises(ValueError, match="unknown or missing"):
+        Statechart.from_dict(document)
+
+
+@pytest.mark.parametrize(
+    "transition_extra",
+    [
+        {"conditions": []},
+        {"maneuver_id": "physical-1"},
+        {"requires_lifecycle_fact": True},
+        {"requires_decision": True},
+    ],
+)
+def test_schema_v2_rejects_version_1_transition_fields(
+    transition_extra: dict[str, object],
+) -> None:
+    document = _chart().to_dict()
+    transitions = cast(list[dict[str, Any]], document["transitions"])
+    transition = dict(transitions[0])
+    transition.update(transition_extra)
+    transitions[0] = transition
+    with pytest.raises(ValueError, match="unknown or missing"):
+        Statechart.from_dict(document)
+
+
+def test_schema_v2_rejects_non_finite_context_numbers() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        StatechartTransition("edge", "a", "b", {"value": float("nan")})
+
+
+def test_schema_v2_rejects_malformed_json() -> None:
+    with pytest.raises(ValueError, match="JSON is invalid"):
+        Statechart.from_json('{"schema_version":2,')
+
+
+@pytest.mark.parametrize(
+    ("mutation", "diagnostic"),
+    [
+        (lambda value: value["state_context"].pop("state-1"), "every state"),
+        (
+            lambda value: value["transitions"][0].update(target="undeclared"),
+            "declared states",
+        ),
+        (
+            lambda value: value["transitions"][1].update(event="edge-alpha"),
+            "globally unique",
+        ),
+        (
+            lambda value: value["transitions"].pop(0),
+            "reachable from the entry",
+        ),
+        (
+            lambda value: (
+                value["states"].append("dead-end"),
+                value["state_context"].update({"dead-end": {}}),
+                value["transitions"].append(
+                    {
+                        "event": "edge-dead-end",
+                        "source": "state-0",
+                        "target": "dead-end",
+                        "context": {},
+                    }
+                ),
+            ),
+            "reach a terminal",
+        ),
+    ],
+)
+def test_schema_v2_rejects_universal_graph_integrity_failures(
+    mutation: Any,
+    diagnostic: str,
+) -> None:
+    document = _chart().to_dict()
+    mutation(document)
+    with pytest.raises(ValueError, match=diagnostic):
+        Statechart.from_dict(document)
+
+
+def test_execution_and_candidate_contracts_round_trip_three_contexts() -> None:
+    chart = _chart()
+    candidate = TransitionCandidate(
+        event="edge-alpha",
+        source="state-0",
+        target="state-1",
+        transition_context=chart.transitions[0].context,
+        source_state_context=chart.context_for("state-0"),
+        target_state_context=chart.context_for("state-1"),
+    )
     assert TransitionCandidate.from_json(candidate.to_canonical_json()) == candidate
+
     record = FSMExecutionRecord(
-        mission_id="mission-fsm",
+        mission_id=chart.mission_id,
         plan_revision=1,
         statechart_revision=1,
         active_state="state-1",
         active_configuration=("state-1",),
-        last_applied_event="advance:survey",
-        transition_history=("advance:survey",),
+        last_applied_event="edge-alpha",
+        transition_history=("edge-alpha",),
     )
     assert FSMExecutionRecord.from_json(record.to_canonical_json()) == record
+
     status = FSMStatus(
-        mission_id="mission-fsm",
+        mission_id=chart.mission_id,
         plan_revision=1,
         statechart_revision=1,
-        active_state="state-1",
+        active_state="state-0",
         transition_candidates=(candidate,),
+        active_state_context=chart.context_for("state-0"),
     )
     assert FSMStatus.from_json(status.to_canonical_json()) == status
 
 
-def test_public_event_decision_feedback_contracts_are_strict_and_immutable() -> None:
-    event = FSMEvent(
-        "event-1", "transition", {"event": "advance:survey", "nested": [1]}
+def test_runner_exposes_context_without_interpreting_it_and_requires_decision() -> None:
+    chart = _chart()
+    runner = FSMRunner(
+        InProcessTransport(),
+        store=InMemoryFSMStateStore(),
+        machine_factory=PythonStateMachineFactory(),
     )
-    decision = ManeuverDecision(
-        "decision-1", "mission-fsm", transition_event="advance:survey"
+    initial = asyncio.run(runner.activate(chart))
+    candidate = initial.transition_candidates[0]
+
+    assert candidate.transition_context == chart.transitions[0].context
+    assert candidate.source_state_context == chart.context_for("state-0")
+    assert candidate.target_state_context == chart.context_for("state-1")
+    assert initial.enabled_events == ("edge-alpha",)
+
+    wrong_mission = ManeuverDecision(
+        "wrong-mission",
+        "other",
+        transition_event=candidate.event,
+        payload={"plan_revision": chart.plan_revision},
     )
-    feedback = ManeuverFeedback(
-        "feedback-1", "mission-fsm", "survey", "completed", {"source": "environment"}
+    assert asyncio.run(runner.apply(candidate, wrong_mission)).active_state == "state-0"
+
+    wrong_event = _decision(chart, "edge-beta", "wrong-event")
+    assert asyncio.run(runner.apply(candidate, wrong_event)).active_state == "state-0"
+
+    stale_revision = ManeuverDecision(
+        "stale-revision",
+        chart.mission_id,
+        transition_event=candidate.event,
+        payload={"plan_revision": 0},
     )
-    assert FSMEvent.from_json(event.to_canonical_json()) == event
-    assert ManeuverDecision.from_json(decision.to_canonical_json()) == decision
-    assert ManeuverFeedback.from_json(feedback.to_canonical_json()) == feedback
-    with pytest.raises(TypeError):
-        event.payload["nested"] = (2,)  # type: ignore[index]
-    with pytest.raises(ValueError):
-        ManeuverDecision(
-            "decision-2",
-            "mission-fsm",
-            transition_event="advance:survey",
-            physical_maneuver={"action": "survey"},
-        )
-    with pytest.raises(ValueError):
-        ManeuverDecision(
-            "decision-3",
-            "mission-fsm",
-            maneuver_id="survey",
-            payload={"status": "completed"},
-        )
+    assert asyncio.run(runner.apply(candidate, stale_revision)).active_state == "state-0"
+
+    applied = asyncio.run(runner.apply(candidate, _decision(chart, candidate.event)))
+    assert applied.active_state == "state-1"
 
 
-def test_runner_applies_only_enabled_events_and_publishes_status() -> None:
-    plan = _temporal_plan()
-    transport = InProcessTransport()
-    runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: 0)
+def test_runner_rejects_stale_candidate_and_replayed_decision() -> None:
+    chart = _chart()
+    runner = FSMRunner(InProcessTransport(), machine_factory=PythonStateMachineFactory())
+    first = asyncio.run(runner.activate(chart))
+    candidate = first.transition_candidates[0]
+    decision = _decision(chart, candidate.event)
 
-    initial = asyncio.run(runner.handle(_event(plan)))
-    assert initial.active_state == "state-0"
-    unchanged = asyncio.run(runner.transition("not-enabled"))
-    assert unchanged.active_state == "state-0"
-    updated = asyncio.run(runner.transition("advance:survey"))
-    assert updated.active_state == "state-1"
-    assert transport.latest_event("fsm-status", plan.mission_id) is not None
+    moved = asyncio.run(runner.apply(candidate, decision))
+    assert moved.active_state == "state-1"
+    assert asyncio.run(runner.apply(candidate, decision)).active_state == "state-1"
+    record = runner.store.load_execution_record()
+    assert record is not None and record.applied_event_identities == ("decision-1",)
 
 
-def test_runner_consumes_statechart_transport_event() -> None:
-    plan = _temporal_plan()
-    subscription = Subscription("fsm", plan.mission_id, "normalized-plans")
+def test_runner_consumes_only_statechart_transport_events() -> None:
+    chart = _chart()
+    subscription = Subscription("fsm", chart.mission_id, "normalized-plans")
     transport = InProcessTransport((subscription,))
-    transport.publish_event("normalized-plans", _wire_event(plan))
+    transport.publish_event("normalized-plans", _wire_event(chart))
     consumer = transport.open_consumer(subscription)
-    runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: 0)
+    runner = FSMRunner(transport, store=InMemoryFSMStateStore())
+
     status = asyncio.run(runner.run_once(consumer))
-    assert status is not None and status.mission_id == plan.mission_id
+    assert status is not None and status.mission_id == chart.mission_id
     assert consumer.receive() is None
     consumer.close()
 
 
-def test_temporal_deadline_publishes_timer_due_without_transition() -> None:
-    plan = _temporal_plan()
+def test_same_revision_activation_is_idempotent_without_publication() -> None:
+    chart = _chart()
     transport = InProcessTransport()
-    runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: 2)
-
-    status = asyncio.run(runner.handle(_event(plan)))
-    assert status.timer_due is True
-    assert status.active_state == "state-0"
-
-
-def test_temporal_event_is_not_enabled_before_its_deadline() -> None:
-    now = [-1]
-    plan = _temporal_plan()
-    runner = FSMRunner(
-        InProcessTransport(), store=InMemoryFSMStateStore(), clock=lambda: now[0]
-    )
-    initial = asyncio.run(runner.handle(_event(plan)))
-    assert initial.transition_candidates == ()
-    assert asyncio.run(runner.transition("advance:survey")).active_state == "state-0"
-    now[0] = 0
-    assert asyncio.run(runner.transition("advance:survey")).active_state == "state-1"
+    runner = FSMRunner(transport)
+    asyncio.run(runner.activate(chart))
+    next_sequence = transport.next_event_sequence("fsm-status", chart.mission_id)
+    asyncio.run(runner.activate(chart))
+    assert transport.next_event_sequence("fsm-status", chart.mission_id) == next_sequence
 
 
-def test_runner_public_activate_apply_tick_and_event_idempotency() -> None:
-    now = [-1]
-    plan = _temporal_plan()
-    transport = InProcessTransport()
-    runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: now[0])
-    initial = asyncio.run(runner.activate(_event(plan)))
-    assert initial.enabled_transition_candidates == ()
-    before = transport.next_event_sequence("fsm-status", plan.mission_id)
-    due = asyncio.run(runner.tick(0))
-    assert due is not None and due.timer_due is True and due.active_state == "state-0"
-    after_first_tick = transport.next_event_sequence("fsm-status", plan.mission_id)
-    assert after_first_tick == before + 1
-    asyncio.run(runner.tick(0))
-    assert (
-        transport.next_event_sequence("fsm-status", plan.mission_id) == after_first_tick
-    )
-    candidate = due.enabled_transition_candidates[0]
-    event = FSMEvent("transition-1", "transition", {"event": candidate.event})
-    applied = asyncio.run(runner.apply(candidate, event))
-    assert applied.active_state == "state-1"
-    duplicate = asyncio.run(runner.apply(candidate, event))
-    assert duplicate.active_state == "state-1"
-    assert len(runner.store.load_execution_record().applied_event_identities) == 1  # type: ignore[union-attr]
-    restarted = FSMRunner(transport, store=runner.store, clock=lambda: 0)
-    replayed = asyncio.run(restarted.apply(candidate, event))
-    assert replayed.active_state == "state-1"
-    assert len(restarted.store.load_execution_record().applied_event_identities) == 1  # type: ignore[union-attr]
-
-
-def test_same_revision_activation_is_idempotent_without_status_publication() -> None:
-    plan = _temporal_plan()
-    transport = InProcessTransport()
-    runner = FSMRunner(transport, store=InMemoryFSMStateStore(), clock=lambda: 0)
-    asyncio.run(runner.activate(_event(plan, "plan-1")))
-    next_sequence = transport.next_event_sequence("fsm-status", plan.mission_id)
-    asyncio.run(runner.activate(_event(plan, "plan-2")))
-    assert transport.next_event_sequence("fsm-status", plan.mission_id) == next_sequence
-
-
-def test_timer_due_marker_remains_authoritative_after_clock_change_and_restart() -> (
-    None
-):
-    now = [-1]
-    plan = _temporal_plan()
-    store = InMemoryFSMStateStore()
-    transport = InProcessTransport()
-    runner = FSMRunner(transport, store=store, clock=lambda: now[0])
-    asyncio.run(runner.activate(_event(plan)))
-    due = asyncio.run(runner.tick(0))
-    assert due is not None and due.timer_due
-    now[0] = -1
-    restarted = FSMRunner(transport, store=store, clock=lambda: now[0])
-    restored = asyncio.run(restarted.status())
-    assert restored is not None and restored.timer_due
-    applied = asyncio.run(
-        restarted.apply(
-            restored.enabled_transition_candidates[0],
-            FSMEvent("after-restart", "transition", {"event": "advance:survey"}),
-        )
-    )
-    assert applied.active_state == "state-1"
-
-
-def test_generic_statechart_event_rejects_unknown_fields() -> None:
-    plan = _temporal_plan()
-    wire = _wire_event(plan, "wire-statechart")
+def test_unknown_statechart_transport_fields_are_rejected() -> None:
+    chart = _chart()
+    wire = _wire_event(chart)
     payload = dict(wire.payload)
-    payload["planner_plan"] = {"unexpected": True}
+    payload["planner_native_plan_artifact_reference"] = "forbidden"
     tampered = TransportEvent(
-        schema_version=wire.schema_version,
-        event_id=wire.event_id,
-        mission_id=wire.mission_id,
-        sequence=wire.sequence,
-        event_kind=wire.event_kind,
-        payload=payload,
+        wire.schema_version,
+        wire.event_id,
+        wire.mission_id,
+        wire.sequence,
+        wire.event_kind,
+        payload,
     )
     with pytest.raises(ValueError):
         asyncio.run(FSMRunner(InProcessTransport()).activate(tampered))
 
 
 def test_inconsistent_persisted_execution_record_is_rejected() -> None:
-    plan = _temporal_plan()
+    chart = _chart()
     store = InMemoryFSMStateStore()
-    runner = FSMRunner(InProcessTransport(), store=store, clock=lambda: 0)
-    asyncio.run(runner.activate(_event(plan)))
-    record = json.loads(store.execution_record_json)  # type: ignore[arg-type]
+    runner = FSMRunner(InProcessTransport(), store=store)
+    asyncio.run(runner.activate(chart))
+    assert store.execution_record_json is not None
+    record = json.loads(store.execution_record_json)
     record["active_state"] = "undeclared"
     record["active_configuration"] = ["undeclared"]
     store.execution_record_json = json.dumps(record)
@@ -305,15 +322,63 @@ def test_inconsistent_persisted_execution_record_is_rejected() -> None:
         FSMRunner(InProcessTransport(), store=store)
 
 
-def test_runtime_registers_fsm_runner_subscription() -> None:
+def test_restart_rebuilds_machine_at_recorded_state_and_tracks_plan_supersession() -> None:
+    chart = _chart()
+    store = InMemoryFSMStateStore()
+    transport = InProcessTransport()
+    first = FSMRunner(
+        transport, store=store, machine_factory=PythonStateMachineFactory()
+    )
+    initial = asyncio.run(first.activate(chart))
+    asyncio.run(
+        first.apply(
+            initial.transition_candidates[0],
+            _decision(chart, "edge-alpha"),
+        )
+    )
+
+    restarted = FSMRunner(
+        transport, store=store, machine_factory=PythonStateMachineFactory()
+    )
+    restored = asyncio.run(restarted.status())
+    assert restored is not None and restored.active_state == "state-1"
+    assert restored.enabled_events == ("edge-beta",)
+
+    replacement = _chart(2)
+    swapped = asyncio.run(restarted.activate(replacement))
+    assert swapped.active_state == replacement.entry_state
+    assert swapped.superseded_plan_revision == 1
+
+
+def test_file_store_restart_rebuilds_dynamic_machine(tmp_path: Path) -> None:
+    chart = _chart()
+    transport = InProcessTransport()
+    first = FSMRunner(
+        transport,
+        store=JsonFSMStateStore(tmp_path / "fsm"),
+        machine_factory=PythonStateMachineFactory(),
+    )
+    initial = asyncio.run(first.activate(chart))
+    asyncio.run(first.apply(initial.transition_candidates[0], _decision(chart, "edge-alpha")))
+
+    restarted = FSMRunner(
+        transport,
+        store=JsonFSMStateStore(tmp_path / "fsm"),
+        machine_factory=PythonStateMachineFactory(),
+    )
+    status = asyncio.run(restarted.status())
+    assert status is not None and status.active_state == "state-1"
+
+
+def test_runtime_registers_fsm_runner_subscription(tmp_path: Path) -> None:
     config = RuntimeConfig(
         llm=LLMConfig("test", "http://127.0.0.1:14398/v1", "model", "test-key", 0),
         planners=PlannersConfig(
             PlannerConfig(Path(__file__), 1), PlannerConfig(Path(__file__), 1)
         ),
         heartbeats=HeartbeatsConfig(1, 1),
-        transport=TransportConfig("inprocess", Path(__file__).parent / "transport"),
-        storage=StorageConfig(Path(__file__).parent / "storage"),
+        transport=TransportConfig("inprocess", tmp_path / "transport"),
+        storage=StorageConfig(tmp_path / "storage"),
         services=ServicesConfig(
             "hyper", "maneuver", "context", "fsm-service", "planner"
         ),
@@ -321,109 +386,9 @@ def test_runtime_registers_fsm_runner_subscription() -> None:
         agent_name="test-agent",
     )
     transport = InProcessTransport()
-    runtime = RuntimeComposition(config, transport)
-    runner = runtime.create_fsm_runner(mission_id="mission-fsm")
+    runner = RuntimeComposition(config, transport).create_fsm_runner(
+        mission_id="mission-fsm"
+    )
     assert runner.subscription is not None
     assert runner.subscription.service_id == "fsm-service"
     assert runner.subscription in transport.subscriptions
-    consumer = transport.open_consumer(runner.subscription)
-    consumer.close()
-
-
-def test_symbolic_progression_requires_feedback_and_decision() -> None:
-    plan = _symbolic_plan()
-    runner = FSMRunner(
-        InProcessTransport(), store=InMemoryFSMStateStore(), clock=lambda: 0
-    )
-    asyncio.run(runner.handle(_event(plan)))
-
-    assert asyncio.run(runner.transition("advance:survey")).active_state == "state-0"
-    assert (
-        asyncio.run(
-            runner.transition(
-                "advance:survey",
-                lifecycle_facts={"survey": "completed"},
-            )
-        ).active_state
-        == "state-0"
-    )
-    status = asyncio.run(
-        runner.transition(
-            "advance:survey",
-            lifecycle_facts={"survey": "completed"},
-            maneuver_decision={"event": "advance:survey"},
-        )
-    )
-    assert status.active_state == "state-1"
-
-
-def test_symbolic_apply_requires_authoritative_feedback_and_matching_decision() -> None:
-    plan = _symbolic_plan()
-    runner = FSMRunner(
-        InProcessTransport(), store=InMemoryFSMStateStore(), clock=lambda: 0
-    )
-    initial = asyncio.run(runner.activate(_event(plan)))
-    candidate = initial.enabled_transition_candidates[0]
-    feedback = ManeuverFeedback("feedback-1", plan.mission_id, "survey", "completed")
-    wrong_mission = ManeuverDecision(
-        "decision-wrong", "other-mission", transition_event=candidate.event
-    )
-    assert (
-        asyncio.run(runner.apply(candidate, feedback, wrong_mission)).active_state
-        == "state-0"
-    )
-    decision = ManeuverDecision(
-        "decision-1", plan.mission_id, transition_event=candidate.event
-    )
-    assert asyncio.run(runner.apply(candidate, feedback)).active_state == "state-0"
-    assert (
-        asyncio.run(
-            runner.apply(
-                candidate,
-                ManeuverFeedback("feedback-2", plan.mission_id, "survey", "completed"),
-                decision,
-            )
-        ).active_state
-        == "state-1"
-    )
-
-
-def test_restart_reconstructs_from_persisted_json_and_plan_swap_is_visible() -> None:
-    plan = _temporal_plan()
-    store = InMemoryFSMStateStore()
-    transport = InProcessTransport()
-    first = FSMRunner(transport, store=store, clock=lambda: 0)
-    asyncio.run(first.handle(_event(plan)))
-    asyncio.run(first.transition("advance:survey"))
-    assert store.statechart_json.startswith("{")
-    assert store.execution_record_json.startswith("{")
-
-    restarted = FSMRunner(transport, store=store, clock=lambda: 0)
-    assert asyncio.run(restarted.status()).active_state == "state-1"
-    replacement = _temporal_plan(2)
-    swapped = asyncio.run(restarted.handle(_event(replacement, "replacement")))
-    assert swapped.plan_revision == 2
-    assert swapped.active_state == "state-0"
-    assert swapped.superseded_plan_revision == 1
-    assert swapped.retained_maneuver_visibility == ("survey", "report")
-
-
-def test_file_json_store_reconstructs_without_python_runtime_state(tmp_path) -> None:
-    plan = _temporal_plan()
-    transport = InProcessTransport()
-    store = JsonFSMStateStore(tmp_path / "fsm")
-    first = FSMRunner(transport, store=store, clock=lambda: 0)
-    asyncio.run(first.handle(_event(plan)))
-    asyncio.run(first.transition("advance:survey"))
-    restarted = FSMRunner(
-        transport, store=JsonFSMStateStore(tmp_path / "fsm"), clock=lambda: 0
-    )
-    assert asyncio.run(restarted.status()).active_state == "state-1"
-
-
-def test_statechart_is_the_execution_semantics_without_embedded_plan() -> None:
-    chart = _temporal_plan()
-    assert chart.mission_id == "mission-fsm"
-    assert chart.plan_revision == 1
-    assert chart.mission_snapshot_id == "snapshot-1"
-    assert "planner_plan" not in chart.to_dict()

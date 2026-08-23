@@ -9,8 +9,9 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from onr.contracts.planning import PlannerChoice
+from onr.contracts.planning import PlannerChoice, PlannerPlan
 from onr.contracts.planning_intent import PlanningIntent
+from onr.contracts.transport import TransportEvent
 
 
 def _text(value: object, label: str) -> str:
@@ -150,7 +151,9 @@ class PlannerGenerationAttempt:
         try:
             outcome = TranslationAttemptOutcome(self.outcome)
         except (TypeError, ValueError) as exc:
-            raise ValueError("generation attempt outcome must be accepted or rejected") from exc
+            raise ValueError(
+                "generation attempt outcome must be accepted or rejected"
+            ) from exc
         references = _string_mapping(self.asset_references, "asset references")
         if outcome is TranslationAttemptOutcome.ACCEPTED and not references:
             raise ValueError("accepted generation attempt requires asset references")
@@ -212,8 +215,101 @@ class PlannerGenerationAttempt:
         return cls.from_dict(_decode(value, "generation attempt"))
 
 
+@dataclass(frozen=True, slots=True)
+class PlannerRevisionEvidence:
+    """Accepted planner-native plan and Statechart references for one revision."""
+
+    planner_plan: PlannerPlan
+    planner_plan_reference: str
+    accepted_statechart_reference: str
+    mission_snapshot_id: str
+    plan_revision: int
+    schema_version: int = field(default=1, init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.planner_plan, PlannerPlan):
+            raise TypeError("planner revision evidence requires a PlannerPlan")
+        _text(self.planner_plan_reference, "PlannerPlan reference")
+        _text(self.accepted_statechart_reference, "accepted Statechart reference")
+        _text(self.mission_snapshot_id, "planner revision Mission Snapshot ID")
+        if (
+            isinstance(self.plan_revision, bool)
+            or not isinstance(self.plan_revision, int)
+            or self.plan_revision < 1
+        ):
+            raise ValueError("planner revision must be a positive integer")
+        if (
+            self.planner_plan.plan_revision != self.plan_revision
+            or self.planner_plan.mission_snapshot_id != self.mission_snapshot_id
+        ):
+            raise ValueError("planner revision evidence identity is inconsistent")
+
+    @property
+    def mission_id(self) -> str:
+        return self.planner_plan.mission_id
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "planner_plan": self.planner_plan.to_dict(),
+            "planner_plan_reference": self.planner_plan_reference,
+            "accepted_statechart_reference": self.accepted_statechart_reference,
+            "mission_snapshot_id": self.mission_snapshot_id,
+            "plan_revision": self.plan_revision,
+        }
+
+    def to_canonical_json(self) -> str:
+        return _canonical_json(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> PlannerRevisionEvidence:
+        expected = {
+            "schema_version",
+            "planner_plan",
+            "planner_plan_reference",
+            "accepted_statechart_reference",
+            "mission_snapshot_id",
+            "plan_revision",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError(
+                "planner revision evidence contains unknown or missing fields"
+            )
+        if value["schema_version"] != 1:
+            raise ValueError(
+                "planner revision evidence schema version must be exactly 1"
+            )
+        return cls(
+            planner_plan=PlannerPlan.from_dict(value["planner_plan"]),
+            planner_plan_reference=value["planner_plan_reference"],
+            accepted_statechart_reference=value["accepted_statechart_reference"],
+            mission_snapshot_id=value["mission_snapshot_id"],
+            plan_revision=value["plan_revision"],
+        )
+
+
+def planner_revision_to_transport_event(
+    evidence: PlannerRevisionEvidence,
+    *,
+    event_id: str,
+    sequence: int,
+) -> TransportEvent:
+    if not isinstance(evidence, PlannerRevisionEvidence):
+        raise TypeError("planner revision event requires PlannerRevisionEvidence")
+    return TransportEvent(
+        schema_version=1,
+        event_id=event_id,
+        mission_id=evidence.mission_id,
+        sequence=sequence,
+        event_kind="planner-revision",
+        payload=evidence.to_dict(),
+    )
+
+
 __all__ = [
     "PlannerChoiceRecord",
     "PlannerGenerationAttempt",
+    "PlannerRevisionEvidence",
     "TranslationAttemptOutcome",
+    "planner_revision_to_transport_event",
 ]

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from threading import Thread
 from typing import Any, cast
 
-from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverDecision
@@ -42,7 +41,9 @@ class ManeuverHeartbeatResult:
     receipt: CommandReceipt | None = None
 
 
-DecisionProvider = Callable[[MissionSnapshot, FSMStatus, InvocationOverlay | None], object]
+DecisionProvider = Callable[
+    [MissionSnapshot, FSMStatus, InvocationOverlay | None], object
+]
 
 
 class ManeuverControl:
@@ -86,7 +87,9 @@ class ManeuverControl:
         self._validate_context(snapshot, status, overlay)
         try:
             raw = self._invoke_provider(snapshot, status, overlay)
-            decision = self._coerce_decision(raw, snapshot.mission_id, status.plan_revision)
+            decision = self._coerce_decision(
+                raw, snapshot.mission_id, status.plan_revision
+            )
             self._validate_decision(decision, snapshot, status)
         except Exception as exc:
             self._emit(
@@ -110,12 +113,22 @@ class ManeuverControl:
         snapshot: MissionSnapshot,
         status: FSMStatus,
     ) -> None:
-        if decision.mission_id != snapshot.mission_id or decision.mission_id != status.mission_id:
+        if (
+            decision.mission_id != snapshot.mission_id
+            or decision.mission_id != status.mission_id
+        ):
             raise ValueError("maneuver decision mission ID does not match context")
         if decision.plan_revision != status.plan_revision:
-            raise ValueError("maneuver decision plan revision does not match FSM status")
-        if decision.transition_event is not None and decision.transition_event not in status.enabled_events:
-            raise ValueError("maneuver decision selected a transition that is not enabled")
+            raise ValueError(
+                "maneuver decision plan revision does not match FSM status"
+            )
+        if (
+            decision.transition_event is not None
+            and decision.transition_event not in status.enabled_events
+        ):
+            raise ValueError(
+                "maneuver decision selected a transition that is not enabled"
+            )
 
     def heartbeat(
         self,
@@ -129,18 +142,26 @@ class ManeuverControl:
 
         if isinstance(snapshot, ManeuverInvocation):
             if status is not None or overlay is not None or event_id is not None:
-                raise ValueError("tool-driven Maneuver heartbeat accepts only its invocation")
-            return self._tool_heartbeat(self._live_invocation(snapshot))
+                raise ValueError(
+                    "tool-driven Maneuver heartbeat accepts only its invocation"
+                )
+            return self._tool_heartbeat(snapshot)
         if status is None:
             raise TypeError("legacy Maneuver heartbeat requires FSMStatus")
 
         self._validate_context(snapshot, status, overlay)
-        stored = self._stored_invocation(event_id, snapshot.mission_id) if event_id is not None else None
+        stored = (
+            self._stored_invocation(event_id, snapshot.mission_id)
+            if event_id is not None
+            else None
+        )
         if stored is None:
             decision = self.decide(snapshot, status, overlay)
             command = self._command_for_decision(decision, snapshot)
             if event_id is not None:
-                self._publish_invocation_marker(event_id, snapshot.mission_id, decision, command)
+                self._publish_invocation_marker(
+                    event_id, snapshot.mission_id, decision, command
+                )
         else:
             decision, command = stored
             self._validate_decision(decision, snapshot, status)
@@ -149,7 +170,10 @@ class ManeuverControl:
                 snapshot.mission_id,
                 "heartbeat",
                 "completed",
-                {"operation": "maneuver_heartbeat", "plan_revision": status.plan_revision},
+                {
+                    "operation": "maneuver_heartbeat",
+                    "plan_revision": status.plan_revision,
+                },
             )
             return ManeuverHeartbeatResult(decision)
         receipt = self.transport.send_command(command.to_command(self.target_service))
@@ -165,12 +189,17 @@ class ManeuverControl:
         )
         return ManeuverHeartbeatResult(decision, command, receipt)
 
-    def handle_agent_message(self, message: AgentMessage) -> ManeuverHeartbeatCompletion:
+    def handle_agent_message(
+        self, message: AgentMessage
+    ) -> ManeuverHeartbeatCompletion:
         """Handle one correlated Hyper invocation synchronously."""
 
         if not isinstance(message, AgentMessage):
             raise TypeError("Maneuver Control communication requires AgentMessage")
-        if message.recipient != "maneuver-control" or message.kind is not AgentMessageKind.INVOKE:
+        if (
+            message.recipient != "maneuver-control"
+            or message.kind is not AgentMessageKind.INVOKE
+        ):
             raise ValueError("Maneuver Control accepts only correlated invoke messages")
         invocation = ManeuverInvocation.from_dict(message.payload)
         if (
@@ -179,7 +208,9 @@ class ManeuverControl:
             or invocation.mission_id != message.mission_id
             or invocation.plan_revision != message.plan_revision
         ):
-            raise ValueError("Maneuver invocation does not match its communication envelope")
+            raise ValueError(
+                "Maneuver invocation does not match its communication envelope"
+            )
         return cast(ManeuverHeartbeatCompletion, self.heartbeat(invocation))
 
     def _tool_heartbeat(
@@ -217,47 +248,6 @@ class ManeuverControl:
             },
         )
         return completion
-
-    def _live_invocation(self, invocation: ManeuverInvocation) -> ManeuverInvocation:
-        if self.fsm_runner is None:
-            return invocation
-        status = _run_sync(cast(Any, self.fsm_runner).status())
-        if not isinstance(status, FSMStatus):
-            raise TypeError("live FSM Runner status did not return FSMStatus")
-        environment = _current_environment_data(
-            self.environment_authority, invocation.environment_data
-        )
-        belief = invocation.belief_snapshot
-        if self.belief_service is not None:
-            loader = getattr(self.belief_service, "load_current_snapshot", None)
-            if callable(loader):
-                current_belief = loader()
-                if current_belief is not None and not isinstance(
-                    current_belief, BayesianBeliefSnapshot
-                ):
-                    raise TypeError("belief service returned invalid current snapshot")
-                if current_belief is not None:
-                    belief = current_belief
-        recipients = invocation.available_recipients
-        if self.communication_port is not None:
-            available = getattr(self.communication_port, "available_recipients", None)
-            if callable(available):
-                recipients = cast(
-                    tuple[str, ...],
-                    tuple(cast(Any, available("maneuver-control"))),
-                )
-        return ManeuverInvocation(
-            request_id=invocation.request_id,
-            correlation_id=invocation.correlation_id,
-            mission_id=invocation.mission_id,
-            plan_revision=invocation.plan_revision,
-            statechart_reference=invocation.statechart_reference,
-            fsm_status=status,
-            environment_data=environment,
-            belief_snapshot=belief,
-            available_recipients=recipients,
-            planning_snapshot=invocation.planning_snapshot,
-        )
 
     def dispatch_physical(
         self,
@@ -299,9 +289,16 @@ class ManeuverControl:
     def handle_command(self, command: Command | ManeuverCommand) -> CommandOutcome:
         """Submit a command at most once and return its correlated outcome."""
 
-        if isinstance(command, Command) and command.target_service != self.target_service:
+        if (
+            isinstance(command, Command)
+            and command.target_service != self.target_service
+        ):
             raise ValueError("maneuver command target service does not match adapter")
-        typed = command if isinstance(command, ManeuverCommand) else ManeuverCommand.from_command(command)
+        typed = (
+            command
+            if isinstance(command, ManeuverCommand)
+            else ManeuverCommand.from_command(command)
+        )
         generic = typed.to_command(self.target_service)
         self.transport.send_command(generic)
         if typed.command_id in self._submitted:
@@ -394,7 +391,9 @@ class ManeuverControl:
     def _submission_intent_topic_for(self, command_id: str) -> str:
         return f"{self.submission_topic}-intents/{command_id}"
 
-    async def run_once(self, consumer_or_message: Consumer | object) -> ManeuverHeartbeatResult | object | None:
+    async def run_once(
+        self, consumer_or_message: Consumer | object
+    ) -> ManeuverHeartbeatResult | object | None:
         """Process one event or command delivery, acknowledging after success."""
 
         if hasattr(consumer_or_message, "receive"):
@@ -426,7 +425,10 @@ class ManeuverControl:
         if isinstance(message, tuple) and len(message) == 2:
             snapshot, status = message
             return self.heartbeat(snapshot, status)
-        raise TypeError("maneuver control message must be a TransportEvent, Command, or context pair")
+        raise TypeError(
+            "maneuver control message must be a TransportEvent, Command, "
+            "or context pair"
+        )
 
     def _submission_marker(self, command: ManeuverCommand) -> TransportEvent | None:
         latest = self.transport.latest_event(
@@ -438,7 +440,9 @@ class ManeuverControl:
             return None
         return latest
 
-    def _submission_intent_marker(self, command: ManeuverCommand) -> TransportEvent | None:
+    def _submission_intent_marker(
+        self, command: ManeuverCommand
+    ) -> TransportEvent | None:
         latest = self.transport.latest_event(
             self._submission_intent_topic_for(command.command_id),
             command.mission_id,
@@ -452,7 +456,9 @@ class ManeuverControl:
         self, event_id: str, mission_id: str
     ) -> tuple[ManeuverControlDecision, ManeuverCommand | None] | None:
         marker = self.transport.latest_event(
-            self._invocation_topic(event_id), mission_id, event_kind="maneuver-invocation"
+            self._invocation_topic(event_id),
+            mission_id,
+            event_kind="maneuver-invocation",
         )
         if marker is None or marker.payload.get("input_event_id") != event_id:
             return None
@@ -463,7 +469,9 @@ class ManeuverControl:
         if raw_command is not None and not isinstance(raw_command, Mapping):
             raise ValueError("maneuver invocation marker command is invalid")
         decision = ManeuverControlDecision.from_dict(raw_decision)
-        command = ManeuverCommand.from_dict(raw_command) if raw_command is not None else None
+        command = (
+            ManeuverCommand.from_dict(raw_command) if raw_command is not None else None
+        )
         return decision, command
 
     def _publish_invocation_marker(
@@ -545,7 +553,10 @@ class ManeuverControl:
             status="failed",
             payload={
                 "adapter_submission": "unknown",
-                "error": "prior adapter submission outcome is unknown; command will not be submitted again",
+                "error": (
+                    "prior adapter submission outcome is unknown; command will "
+                    "not be submitted again"
+                ),
                 "source": "maneuver-adapter-transport",
             },
         )
@@ -583,7 +594,9 @@ class ManeuverControl:
         raise TypeError("decision provider must be callable or expose decide/invoke")
 
     @staticmethod
-    def _coerce_decision(raw: object, mission_id: str, plan_revision: int) -> ManeuverControlDecision:
+    def _coerce_decision(
+        raw: object, mission_id: str, plan_revision: int
+    ) -> ManeuverControlDecision:
         if isinstance(raw, ManeuverControlDecision):
             return raw
         if isinstance(raw, ManeuverDecision):
@@ -599,7 +612,10 @@ class ManeuverControl:
                 )
             if raw.transition_event is not None:
                 return ManeuverControlDecision(
-                    raw.decision_id, raw.mission_id, plan_revision, transition_event=raw.transition_event
+                    raw.decision_id,
+                    raw.mission_id,
+                    plan_revision,
+                    transition_event=raw.transition_event,
                 )
         if isinstance(raw, Mapping):
             return ManeuverControlDecision.from_dict(raw)
@@ -611,12 +627,16 @@ class ManeuverControl:
         status: FSMStatus,
         overlay: InvocationOverlay | None,
     ) -> None:
-        if not isinstance(snapshot, MissionSnapshot) or not isinstance(status, FSMStatus):
+        if not isinstance(snapshot, MissionSnapshot) or not isinstance(
+            status, FSMStatus
+        ):
             raise TypeError("maneuver heartbeat requires MissionSnapshot and FSMStatus")
         if snapshot.mission_id != status.mission_id:
             raise ValueError("Mission Snapshot and FSM status mission IDs do not match")
         if snapshot.plan_revision != status.plan_revision:
-            raise ValueError("Mission Snapshot and FSM status plan revisions do not match")
+            raise ValueError(
+                "Mission Snapshot and FSM status plan revisions do not match"
+            )
         if overlay is not None and overlay.mission_id != snapshot.mission_id:
             raise ValueError("invocation overlay mission ID does not match context")
 

@@ -1,8 +1,4 @@
-"""Packaged deterministic demo environment built on the public transport seam.
-
-This module emits external environment evidence for demonstrations. It does not
-apply maneuver feedback to mission state and is not production authority.
-"""
+"""Deterministic fixed-rate environment engine for the complete report demo."""
 
 from __future__ import annotations
 
@@ -10,15 +6,20 @@ import hashlib
 import json
 import math
 import os
-import random
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import quote
 
 from onr.adapters.file_transport import FileTransport
-from onr.application.bayesian_belief import create_risk_observation_event
-from onr.contracts.bayesian_belief import EntityAssociation, RiskObservation
 from onr.contracts.context_coordination import create_source_fact_event
+from onr.contracts.environment import (
+    EntityObservation,
+    EnvironmentTickResult,
+    EventObservation,
+    perception_to_transport_event,
+)
 from onr.contracts.fsm import ManeuverFeedback
 from onr.contracts.maneuver_control import ManeuverCommand
 from onr.contracts.transport import Command, TransportEvent
@@ -35,7 +36,8 @@ def _atomic_write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     temporary.write_text(
-        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        + "\n",
         encoding="utf-8",
     )
     os.replace(temporary, path)
@@ -51,21 +53,47 @@ def _truncate_event_report_floats(value: object) -> object:
     return value
 
 
+def _plain(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _positive_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{label} must be a finite positive number")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError(f"{label} must be a finite positive number")
+    return result
+
+
+def _finite_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{label} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{label} must be a finite number")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class FakeEnvironmentResult:
-    """The immutable evidence emitted for one consumed maneuver command."""
+    """Evidence emitted when one maneuver lifecycle is accepted or completed."""
 
     command: ManeuverCommand
     environment_event: TransportEvent
     source_fact: TransportEvent
-    risk_observation: TransportEvent
+    risk_observation: TransportEvent | None
     feedback: TransportEvent
     environment_file: Path
 
 
 @dataclass(frozen=True, slots=True)
 class FakeEnvironmentHeartbeat:
-    """Environment evidence emitted before any maneuver command."""
+    """Current planning view emitted before planning or replanning."""
 
     environment_event: TransportEvent
     source_fact: TransportEvent
@@ -73,7 +101,7 @@ class FakeEnvironmentHeartbeat:
 
 
 class FakeEnvironment:
-    """Consume file-backed maneuver commands and publish deterministic evidence."""
+    """Advance kinematics and report sensing without consuming wall-clock time."""
 
     def __init__(
         self,
@@ -83,32 +111,68 @@ class FakeEnvironment:
         target_service: str = "maneuver-adapter",
         command_topic: str = "maneuver",
         feedback_topic: str = "maneuver-feedback",
+        perception_topic: str = "environment-perceptions",
         environment_topic: str = "environment-data",
         context_topic: str = "normalized-plans",
         max_retries: int = 3,
         output_root: Path | str | None = None,
         event_report_path: Path | str | None = None,
+        tick_seconds: float = 0.5,
+        initial_position: tuple[float, float, float] = (0, 0, -250),
+        max_velocity: float = 20,
+        fov_radius: float = 30,
     ) -> None:
         if not isinstance(transport, FileTransport):
             raise TypeError("FakeEnvironment requires a FileTransport")
+        if not isinstance(mission_id, str) or not mission_id.strip():
+            raise ValueError("FakeEnvironment Mission ID must be non-empty")
         self.transport = transport
         self.mission_id = mission_id
         self.target_service = target_service
         self.command_topic = command_topic
         self.feedback_topic = feedback_topic
+        self.perception_topic = perception_topic
         self.environment_topic = environment_topic
         self.context_topic = context_topic
+        self.tick_seconds = _positive_number(tick_seconds, "simulation tick")
+        self.max_velocity = _positive_number(max_velocity, "maximum velocity")
+        self.fov_radius = _positive_number(fov_radius, "field-of-view radius")
+        if len(initial_position) != 3 or any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+            for item in initial_position
+        ):
+            raise ValueError("initial drone position must contain three finite numbers")
+        self.drone_position = (
+            float(initial_position[0]),
+            float(initial_position[1]),
+            float(initial_position[2]),
+        )
         self.output_root = (
             Path(output_root)
             if output_root is not None
             else self.transport.root.parent / "environment"
         )
         self.event_report_path = Path(event_report_path or _DEFAULT_EVENT_REPORT_PATH)
+        raw_report = json.loads(self.event_report_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_report, list):
+            raise TypeError("event report must be a JSON array")
+        self._report = cast(
+            list[dict[str, Any]], _truncate_event_report_floats(raw_report)
+        )
         self.subscription = Subscription(
             target_service, mission_id, command_topic, max_retries
         )
         self._results: dict[tuple[str, str], FakeEnvironmentResult] = {}
         self._environment_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
+        self._entity_positions = self._initial_entity_positions()
+        self._observed_event_indices: set[int] = set()
+        self._maneuver_observed_event_indices: set[int] = set()
+        self._arrival_feedback_commands: set[str] = set()
+        self._active_command: ManeuverCommand | None = None
+        self._environment_revision = 0
+        self._current_perceptions: tuple[TransportEvent, ...] = ()
         self.last_result: FakeEnvironmentResult | None = None
         self.last_output_path: Path | None = None
         self.latest_environment_event: TransportEvent | None = None
@@ -116,7 +180,6 @@ class FakeEnvironment:
         self.mission_time_seconds = 0.0
         self.current_maneuver: dict[str, object] | None = None
         self.navigation_status = "idle"
-        self._active_command: ManeuverCommand | None = None
 
     @staticmethod
     def subscription_for(
@@ -126,42 +189,42 @@ class FakeEnvironment:
         command_topic: str = "maneuver",
         max_retries: int = 3,
     ) -> Subscription:
-        """Return the command subscription to register on ``FileTransport``."""
-
         return Subscription(target_service, mission_id, command_topic, max_retries)
 
-    def heartbeat(
-        self, mission_time_seconds: float | None = None
-    ) -> FakeEnvironmentHeartbeat:
-        """Publish the current environment data before planner generation."""
+    @property
+    def event_report(self) -> tuple[Mapping[str, object], ...]:
+        """Read-only planning source; it is never part of live model context."""
 
-        if mission_time_seconds is not None:
-            self._set_mission_time(mission_time_seconds)
+        return tuple(self._report)
 
-        environment_file = (
-            self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
-        )
-        self.last_output_path = environment_file
-        graph = self._graph(
-            plan_revision=(
-                self._active_command.plan_revision if self._active_command else 0
-            ),
-            entities=self._entities_for_seed(f"{self.mission_id}:heartbeat"),
-            environment_file=environment_file,
-        )
-        environment_data = self._environment_data(graph)
+    @property
+    def active_command(self) -> ManeuverCommand | None:
+        return self._active_command
+
+    def heartbeat(self) -> FakeEnvironmentHeartbeat:
+        """Publish the complete planning view without advancing simulation time."""
+
+        environment_file = self._environment_file()
+        environment_data = self.planning_environment_data()
         _atomic_write_json(environment_file, environment_data)
+        self.last_output_path = environment_file
         environment_event, source_fact = self._publish_environment_data(
-            environment_data, 0
+            environment_data
         )
         return FakeEnvironmentHeartbeat(
-            environment_event=environment_event,
-            source_fact=source_fact,
-            environment_file=environment_file,
+            environment_event, source_fact, environment_file
         )
 
+    def planning_environment_data(self) -> dict[str, object]:
+        """Return current control state plus the complete report for Hyper planning."""
+
+        current = self.current_environment_data()
+        graph = dict(cast(Mapping[str, object], current["scene_graph"]))
+        graph["entities"] = self._planning_entities()
+        return {"scene_graph": graph, "static_info": self._report}
+
     def run_once(self, lifecycle: str = "active") -> FakeEnvironmentResult | None:
-        """Consume and acknowledge at most one command from the registered subscription."""
+        """Consume and acknowledge one file-backed Maneuver command."""
 
         with self.transport.open_consumer(self.subscription) as consumer:
             delivery = consumer.receive()
@@ -177,31 +240,54 @@ class FakeEnvironment:
                 delivery.nack()
                 raise
             delivery.ack()
-            self.last_result = result
             return result
 
     def process_command(
         self, command: ManeuverCommand, lifecycle: str = "active"
     ) -> FakeEnvironmentResult:
-        """Publish deterministic evidence for a command without changing mission authority."""
+        """Compatibility seam for explicit lifecycle tests and adapter submission."""
 
-        if not isinstance(command, ManeuverCommand):
-            raise TypeError("process_command requires a ManeuverCommand")
-        if command.mission_id != self.mission_id:
-            raise ValueError(
-                "maneuver command mission ID does not match the environment"
-            )
         if lifecycle not in SUPPORTED_LIFECYCLES:
             raise ValueError(f"unsupported maneuver lifecycle: {lifecycle}")
+        if lifecycle in {"accepted", "active"}:
+            return self.submit(command, lifecycle=lifecycle)
         key = (command.command_id, lifecycle)
         existing = self._results.get(key)
         if existing is not None:
-            self.last_result = existing
             return existing
-
+        if command.mission_id != self.mission_id:
+            raise ValueError("maneuver command Mission ID does not match environment")
+        self._set_current_maneuver(command, lifecycle)
         if (
-            lifecycle in {"accepted", "active"}
-            and self._active_command is not None
+            self._active_command is not None
+            and self._active_command.command_id == command.command_id
+        ):
+            self._active_command = None
+        self.navigation_status = lifecycle
+        feedback = self._feedback(command, lifecycle)
+        environment_event, source_fact, environment_file = self._publish_current_view()
+        result = FakeEnvironmentResult(
+            command, environment_event, source_fact, None, feedback, environment_file
+        )
+        self._results[key] = result
+        self.last_result = result
+        return result
+
+    def submit(
+        self, command: ManeuverCommand, *, lifecycle: str = "active"
+    ) -> FakeEnvironmentResult:
+        """Activate one physical action and immediately publish feedback."""
+
+        if not isinstance(command, ManeuverCommand):
+            raise TypeError("submit requires a ManeuverCommand")
+        if command.mission_id != self.mission_id:
+            raise ValueError("maneuver command Mission ID does not match environment")
+        key = (command.command_id, lifecycle)
+        existing = self._results.get(key)
+        if existing is not None:
+            return existing
+        if (
+            self._active_command is not None
             and self._active_command.command_id != command.command_id
         ):
             self.last_override_feedback = self._feedback(
@@ -209,157 +295,404 @@ class FakeEnvironment:
                 "cancelled",
                 extra_payload={"reason": "overridden"},
             )
-        if lifecycle in {"accepted", "active"}:
-            self._active_command = command
-            self.current_maneuver = {
-                "maneuver_id": command.maneuver_id,
-                "action": command.action,
-                "parameters": {
-                    parameter.name: parameter.value for parameter in command.parameters
-                },
-                "command_id": command.command_id,
-                "correlation_id": command.correlation_id,
-                "start_time": self.mission_time_seconds,
-                "lifecycle": "active",
-            }
-            self.navigation_status = "active"
-        else:
-            if (
-                self.current_maneuver is None
-                or self.current_maneuver.get("command_id") != command.command_id
-            ):
-                self.current_maneuver = {
-                    "maneuver_id": command.maneuver_id,
-                    "action": command.action,
-                    "parameters": {
-                        parameter.name: parameter.value
-                        for parameter in command.parameters
-                    },
-                    "command_id": command.command_id,
-                    "correlation_id": command.correlation_id,
-                    "start_time": self.mission_time_seconds,
-                    "lifecycle": lifecycle,
-                }
-            else:
-                self.current_maneuver["lifecycle"] = lifecycle
-            self.navigation_status = lifecycle
-            if (
-                self._active_command is not None
-                and self._active_command.command_id == command.command_id
-            ):
-                self._active_command = None
-
-        environment_event, source_fact, environment_file = (
-            self._environment_event_and_fact(command)
-        )
-        risk_observation = self._risk_observation(command)
+        self._active_command = command
+        self._maneuver_observed_event_indices = set()
+        self._set_current_maneuver(command, "active")
+        self.navigation_status = "active"
         feedback = self._feedback(command, lifecycle)
+        environment_event, source_fact, environment_file = self._publish_current_view()
         result = FakeEnvironmentResult(
-            command,
-            environment_event,
-            source_fact,
-            risk_observation,
-            feedback,
-            environment_file,
+            command, environment_event, source_fact, None, feedback, environment_file
         )
         self._results[key] = result
         self.last_result = result
         return result
 
-    def submit(self, command: ManeuverCommand) -> FakeEnvironmentResult:
-        """Maneuver-adapter seam: make a submitted action active immediately."""
+    def tick(self) -> EnvironmentTickResult:
+        """Advance one configured tick and publish only current perceptions."""
 
-        return self.process_command(command, lifecycle="active")
+        previous_time = self.mission_time_seconds
+        self.mission_time_seconds = round(previous_time + self.tick_seconds, 10)
+        feedback: list[TransportEvent] = []
+        self._advance_active_action()
+        self._advance_report_entities(previous_time, self.mission_time_seconds)
+        perceptions = self._sense_report_events(
+            previous_time, self.mission_time_seconds
+        )
+        self._current_perceptions = perceptions
 
-    def tick(
-        self, mission_time_seconds: float | None = None
-    ) -> FakeEnvironmentResult | FakeEnvironmentHeartbeat:
-        """Advance fake Mission time and complete the currently active action."""
-
-        if mission_time_seconds is not None:
-            self._set_mission_time(mission_time_seconds)
         active = self._active_command
-        if active is None:
-            return self.heartbeat()
-        return self.process_command(active, lifecycle="completed")
+        if (
+            active is not None
+            and active.action == "navigate"
+            and active.command_id not in self._arrival_feedback_commands
+            and self._navigation_arrival_ready(active)
+            and not self._action_complete(active)
+        ):
+            feedback.append(
+                self._feedback(
+                    active,
+                    "active",
+                    extra_payload={"phase": "navigation-complete"},
+                    identity_suffix="navigation-complete",
+                )
+            )
+            self._arrival_feedback_commands.add(active.command_id)
+            self.navigation_status = "navigation-complete"
+            if self.current_maneuver is not None:
+                self.current_maneuver["phase"] = "navigation-complete"
+        if active is not None and self._action_complete(active):
+            feedback.append(self._feedback(active, "completed"))
+            self.navigation_status = "completed"
+            self._set_current_maneuver(active, "completed")
+            self._active_command = None
+
+        environment_event, _source_fact, _path = self._publish_current_view()
+        return EnvironmentTickResult(
+            current_time=self.mission_time_seconds,
+            environment_data=environment_event.payload,
+            feedback_events=tuple(feedback),
+            perception_events=perceptions,
+        )
 
     def current_environment_data(self) -> dict[str, object]:
-        """Return the latest model-visible environment payload."""
+        """Return current control evidence and only the latest tick's perceptions."""
 
-        if self.latest_environment_event is None:
-            return dict(self.heartbeat().environment_event.payload)
-        return dict(self.latest_environment_event.payload)
-
-    def _set_mission_time(self, value: float) -> None:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError("fake environment Mission time must be numeric")
-        self.mission_time_seconds = float(value)
-
-    def _environment_event_and_fact(
-        self, command: ManeuverCommand
-    ) -> tuple[TransportEvent, TransportEvent, Path]:
-        environment_file = (
-            self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
-        )
-        self.last_output_path = environment_file
-        graph = self._graph(
-            plan_revision=command.plan_revision,
-            entities=self._entities(command),
-            environment_file=environment_file,
-        )
-        environment_data = self._environment_data(graph)
-        _atomic_write_json(environment_file, environment_data)
-        environment_event, source_fact = self._publish_environment_data(
-            environment_data, command.plan_revision
-        )
-        return environment_event, source_fact, environment_file
-
-    def _graph(
-        self,
-        *,
-        plan_revision: int,
-        entities: list[dict[str, object]],
-        environment_file: Path,
-    ) -> dict[str, object]:
         maneuver = dict(self.current_maneuver) if self.current_maneuver else None
-        return {
+        if maneuver is not None:
+            parameters = cast(Mapping[str, object], maneuver.get("parameters", {}))
+            maneuver["observation_summary"] = {
+                "observed_count": len(self._maneuver_observed_event_indices),
+                "expected_count": parameters.get("expected_observation_count", 0),
+                "source_event_indices": sorted(self._maneuver_observed_event_indices),
+            }
+        raw_revision = cast(Mapping[str, object], self.current_maneuver or {}).get(
+            "plan_revision", 0
+        )
+        retained_revision = (
+            raw_revision
+            if isinstance(raw_revision, int) and not isinstance(raw_revision, bool)
+            else 0
+        )
+        graph: dict[str, object] = {
             "mission_id": self.mission_id,
-            "plan_revision": plan_revision,
+            "plan_revision": (
+                self._active_command.plan_revision
+                if self._active_command is not None
+                else retained_revision
+            ),
             "mission_time_seconds": self.mission_time_seconds,
             "current_maneuver": maneuver,
-            "navigation_status": self.navigation_status,
             "maneuvers": [maneuver] if maneuver is not None else [],
-            "entities": entities,
-            "environment_file": str(environment_file),
+            "navigation_status": self.navigation_status,
+            "drone": {
+                "entity_id": "drone-1",
+                "position": {
+                    "x": self.drone_position[0],
+                    "y": self.drone_position[1],
+                    "z": self.drone_position[2],
+                },
+                "max_velocity": self.max_velocity,
+                "fov_radius": self.fov_radius,
+            },
         }
-
-    def _environment_data(self, graph: dict[str, object]) -> dict[str, object]:
-        event_report = _truncate_event_report_floats(
-            json.loads(self.event_report_path.read_text(encoding="utf-8"))
-        )
         return {
             "scene_graph": graph,
-            "static_info": event_report,
+            "perceptions": [_plain(item.payload) for item in self._current_perceptions],
         }
 
+    def _initial_entity_positions(self) -> dict[str, tuple[float, float, float]]:
+        positions: dict[str, tuple[float, float, float]] = {}
+        for record in self._report:
+            entity_id = str(record["entity_id"])
+            raw = cast(list[int | float], record["position"])
+            positions.setdefault(
+                entity_id,
+                (float(raw[0]), float(raw[1]), float(raw[2])),
+            )
+        return positions
+
+    def _planning_entities(self) -> list[dict[str, object]]:
+        entities = [
+            {
+                "id": entity_id,
+                "type": "report-entity",
+                "location": {"x": position[0], "y": position[1], "z": position[2]},
+            }
+            for entity_id, position in sorted(
+                self._entity_positions.items(), key=lambda item: int(item[0])
+            )
+        ]
+        entities.append(
+            {
+                "id": "drone-1",
+                "type": "drone",
+                "location": {
+                    "x": self.drone_position[0],
+                    "y": self.drone_position[1],
+                    "z": self.drone_position[2],
+                },
+                "max_velocity": self.max_velocity,
+                "fov_radius": self.fov_radius,
+            }
+        )
+        return entities
+
+    def _set_current_maneuver(self, command: ManeuverCommand, lifecycle: str) -> None:
+        prior_start = self.mission_time_seconds
+        if (
+            self.current_maneuver is not None
+            and self.current_maneuver.get("command_id") == command.command_id
+        ):
+            prior_start = _finite_number(
+                self.current_maneuver.get("start_time", prior_start),
+                "maneuver start time",
+            )
+        self.current_maneuver = {
+            "maneuver_id": command.maneuver_id,
+            "action": command.action,
+            "parameters": {item.name: item.value for item in command.parameters},
+            "command_id": command.command_id,
+            "correlation_id": command.correlation_id,
+            "plan_revision": command.plan_revision,
+            "start_time": prior_start,
+            "lifecycle": lifecycle,
+        }
+
+    def _advance_active_action(self) -> None:
+        command = self._active_command
+        if command is None or command.action != "navigate":
+            return
+        parameters = {item.name: item.value for item in command.parameters}
+        target = self._navigation_target(parameters)
+        delta = tuple(target[index] - self.drone_position[index] for index in range(3))
+        distance = math.sqrt(sum(item * item for item in delta))
+        speed = self._navigation_speed(parameters, distance)
+        if self.current_maneuver is not None:
+            self.current_maneuver["effective_speed"] = speed
+        travel = speed * self.tick_seconds
+        if distance <= travel:
+            self.drone_position = target
+            return
+        scale = travel / distance
+        self.drone_position = tuple(
+            self.drone_position[index] + delta[index] * scale for index in range(3)
+        )
+
+    def _navigation_speed(
+        self, parameters: Mapping[str, object], distance: float
+    ) -> float:
+        deadline = parameters.get("deadline_time")
+        if deadline is None:
+            return min(
+                _positive_number(
+                    parameters.get("speed", self.max_velocity), "navigation speed"
+                ),
+                self.max_velocity,
+            )
+        deadline_time = _finite_number(deadline, "navigation deadline time")
+        if deadline_time < 0:
+            raise ValueError("navigation deadline time must be non-negative")
+        interval_start = self.mission_time_seconds - self.tick_seconds
+        remaining_time = deadline_time - interval_start
+        if distance <= 1e-9:
+            return 0.0
+        required_speed = (
+            distance / remaining_time if remaining_time > 0 else self.max_velocity
+        )
+        return min(required_speed, self.max_velocity)
+
+    def _navigation_target(
+        self, parameters: Mapping[str, object]
+    ) -> tuple[float, float, float]:
+        return (
+            _finite_number(
+                parameters.get("x", parameters.get("target_x", self.drone_position[0])),
+                "navigation target x",
+            ),
+            _finite_number(
+                parameters.get("y", parameters.get("target_y", self.drone_position[1])),
+                "navigation target y",
+            ),
+            _finite_number(
+                parameters.get("z", parameters.get("target_z", self.drone_position[2])),
+                "navigation target z",
+            ),
+        )
+
+    def _action_complete(self, command: ManeuverCommand) -> bool:
+        parameters = {item.name: item.value for item in command.parameters}
+        if command.action == "navigate":
+            arrived = (
+                math.dist(self.drone_position, self._navigation_target(parameters))
+                <= 1e-9
+            )
+            window = self._window(parameters)
+            return arrived and (
+                window is None or self.mission_time_seconds >= window[1]
+            )
+        duration = parameters.get(
+            "duration_seconds", parameters.get("duration", self.tick_seconds)
+        )
+        start = _finite_number(
+            cast(Mapping[str, object], self.current_maneuver or {}).get(
+                "start_time", 0.0
+            ),
+            "maneuver start time",
+        )
+        return self.mission_time_seconds >= start + float(cast(int | float, duration))
+
+    def _navigation_arrival_ready(self, command: ManeuverCommand) -> bool:
+        parameters = {item.name: item.value for item in command.parameters}
+        arrived = (
+            math.dist(self.drone_position, self._navigation_target(parameters)) <= 1e-9
+        )
+        deadline = parameters.get("deadline_time")
+        return arrived and (
+            deadline is None
+            or self.mission_time_seconds
+            >= _finite_number(deadline, "navigation deadline time")
+        )
+
+    def _sense_report_events(
+        self, previous_time: float, current_time: float
+    ) -> tuple[TransportEvent, ...]:
+        command = self._active_command
+        if command is None:
+            return ()
+        parameters = {item.name: item.value for item in command.parameters}
+        window = self._window(parameters)
+        if window is None:
+            return ()
+        result: list[TransportEvent] = []
+        for source_index, record in enumerate(self._report, start=1):
+            event_time = float(record["time"])
+            if not (previous_time < event_time <= current_time):
+                continue
+            entity_id = str(record["entity_id"])
+            raw_position = cast(list[int | float], record["position"])
+            position = (
+                float(raw_position[0]),
+                float(raw_position[1]),
+                float(raw_position[2]),
+            )
+            if source_index in self._observed_event_indices:
+                continue
+            if not (window[0] <= event_time < window[1]):
+                continue
+            if math.dist(self.drone_position, position) > self.fov_radius:
+                continue
+            uncertainty = self._uncertainty(source_index, entity_id)
+            entity = EntityObservation(
+                observation_id=f"entity-observed:{self.mission_id}:{source_index}",
+                entity_id=entity_id,
+                position=position,
+                observed_time=current_time,
+                uncertainty_score=uncertainty,
+            )
+            event = EventObservation(
+                observation_id=f"event-observed:{self.mission_id}:{source_index}",
+                entity_id=entity_id,
+                position=position,
+                observed_time=current_time,
+                uncertainty_score=uncertainty,
+                source_event_index=source_index,
+                event_type=str(record["event type"]),
+                event_information=cast(
+                    Mapping[str, object], record["event information"]
+                ),
+                event_time=event_time,
+                maneuver_id=command.maneuver_id,
+                observation_window_outcome="observed",
+            )
+            for perception in (entity, event):
+                sequence = self.transport.next_event_sequence(
+                    self.perception_topic, self.mission_id
+                )
+                result.append(
+                    self.transport.publish_event(
+                        self.perception_topic,
+                        perception_to_transport_event(
+                            self.mission_id, perception, sequence=sequence
+                        ),
+                    )
+                )
+            self._observed_event_indices.add(source_index)
+            self._maneuver_observed_event_indices.add(source_index)
+        return tuple(result)
+
+    def _advance_report_entities(
+        self, previous_time: float, current_time: float
+    ) -> None:
+        for record in self._report:
+            event_time = float(record["time"])
+            if not (previous_time < event_time <= current_time):
+                continue
+            raw_position = cast(list[int | float], record["position"])
+            self._entity_positions[str(record["entity_id"])] = (
+                float(raw_position[0]),
+                float(raw_position[1]),
+                float(raw_position[2]),
+            )
+
+    @staticmethod
+    def _window(parameters: Mapping[str, object]) -> tuple[float, float] | None:
+        raw_start = parameters.get(
+            "observation_start_seconds", parameters.get("observation_start")
+        )
+        raw_duration = parameters.get(
+            "observation_duration_seconds", parameters.get("observation_duration")
+        )
+        if raw_start is None or raw_duration is None:
+            return None
+        start = float(cast(int | float, raw_start))
+        duration = float(cast(int | float, raw_duration))
+        if (
+            not math.isfinite(start)
+            or start < 0
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            raise ValueError("observation window must contain finite positive timing")
+        return start, start + duration
+
+    @staticmethod
+    def _uncertainty(source_index: int, entity_id: str) -> float:
+        digest = hashlib.sha256(f"{source_index}:{entity_id}".encode()).digest()
+        return round(0.05 + digest[0] / 255 * 0.4, 6)
+
+    def _environment_file(self) -> Path:
+        return (
+            self.output_root / quote(self.mission_id, safe="._-") / "environment.json"
+        )
+
+    def _publish_current_view(
+        self,
+    ) -> tuple[TransportEvent, TransportEvent, Path]:
+        path = self._environment_file()
+        data = self.current_environment_data()
+        _atomic_write_json(path, data)
+        self.last_output_path = path
+        environment_event, source_fact = self._publish_environment_data(data)
+        return environment_event, source_fact, path
+
     def _publish_environment_data(
-        self, environment_data: dict[str, object], revision: int
+        self, environment_data: Mapping[str, object]
     ) -> tuple[TransportEvent, TransportEvent]:
-        environment_json = json.dumps(
+        document = json.dumps(
             environment_data,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
+            allow_nan=False,
         )
-        reference = hashlib.sha256(environment_json.encode("utf-8")).hexdigest()
+        reference = hashlib.sha256(document.encode()).hexdigest()
         cached = self._environment_facts.get(reference)
         if cached is not None:
+            self.latest_environment_event = cached[0]
             return cached
-
         environment_event_id = f"environment-data:{self.mission_id}:{reference}"
-        source_fact_id = f"source-fact:{self.mission_id}:environment_data:{reference}"
         environment_event = self.transport.get_event(environment_event_id)
-        source_fact = self.transport.get_event(source_fact_id)
         if environment_event is None:
             environment_event = self.transport.publish_event(
                 self.environment_topic,
@@ -371,16 +704,18 @@ class FakeEnvironment:
                         self.environment_topic, self.mission_id
                     ),
                     event_kind="environment_data",
-                    payload=json.loads(environment_json),
+                    payload=json.loads(document),
                 ),
             )
+        source_fact_id = f"source-fact:{self.mission_id}:environment_data:{reference}"
+        source_fact = self.transport.get_event(source_fact_id)
         if source_fact is None:
             source_fact = self.transport.publish_event(
                 self.context_topic,
                 create_source_fact_event(
                     self.mission_id,
                     "environment_data",
-                    revision,
+                    self._environment_revision,
                     event_id=source_fact_id,
                     sequence=self.transport.next_event_sequence(
                         self.context_topic, self.mission_id
@@ -388,86 +723,22 @@ class FakeEnvironment:
                     reference=environment_event_id,
                 ),
             )
+            self._environment_revision += 1
         self._environment_facts[reference] = (environment_event, source_fact)
         self.latest_environment_event = environment_event
         return environment_event, source_fact
-
-    def _entities(self, command: ManeuverCommand) -> list[dict[str, object]]:
-        return self._entities_for_seed(
-            f"{command.mission_id}:{command.command_id}:"
-            f"{command.plan_revision}:{command.maneuver_id}"
-        )
-
-    @staticmethod
-    def _entities_for_seed(seed_value: str) -> list[dict[str, object]]:
-        seed = hashlib.sha256(seed_value.encode("utf-8")).digest()
-        generator = random.Random(int.from_bytes(seed, "big"))
-
-        def location() -> dict[str, float]:
-            return {
-                axis: round(generator.uniform(-100.0, 100.0), 2)
-                for axis in ("x", "y", "z")
-            }
-
-        entities: list[dict[str, object]] = [
-            {
-                "id": f"ship-{index}",
-                "type": "ship",
-                "area": "windmill area" if index <= 3 else "dock",
-                "location": location(),
-                "risk": round(generator.uniform(0.0, 1.0), 2),
-            }
-            for index in range(1, 6)
-        ]
-        entities.append(
-            {
-                "id": "drone-1",
-                "type": "drone",
-                "area": "windmill area",
-                "location": location(),
-                "max_velocity": 20,
-                "fov_radius": 30,
-            }
-        )
-        return entities
-
-    def _risk_observation(self, command: ManeuverCommand) -> TransportEvent:
-        event_id = f"risk.observed:{command.command_id}:collision"
-        existing = self.transport.get_event(event_id)
-        if existing is not None:
-            return existing
-        sequence = self.transport.next_event_sequence(
-            "belief-observations", command.mission_id
-        )
-        observation = RiskObservation(
-            event_id=event_id,
-            input_revision=sequence + 1,
-            risk_type="collision",
-            associations=(
-                EntityAssociation("ship-1", 0.7),
-                EntityAssociation("ship-2", 0.2),
-                EntityAssociation("ship-3", 0.1),
-            ),
-            likelihood_given_risk=0.85,
-            likelihood_given_safe=0.15,
-        )
-        return self.transport.publish_event(
-            "belief-observations",
-            create_risk_observation_event(
-                command.mission_id,
-                observation,
-                sequence=sequence,
-            ),
-        )
 
     def _feedback(
         self,
         command: ManeuverCommand,
         lifecycle: str,
         *,
-        extra_payload: dict[str, object] | None = None,
+        extra_payload: Mapping[str, object] | None = None,
+        identity_suffix: str | None = None,
     ) -> TransportEvent:
         feedback_id = f"maneuver-feedback:{command.command_id}:{lifecycle}"
+        if identity_suffix is not None:
+            feedback_id = f"{feedback_id}:{identity_suffix}"
         existing = self.transport.get_event(feedback_id)
         if existing is not None:
             return existing
@@ -479,20 +750,22 @@ class FakeEnvironment:
             payload={
                 "command_id": command.command_id,
                 "correlation_id": command.correlation_id,
-                **(extra_payload or {}),
+                **dict(extra_payload or {}),
             },
         )
-        event = TransportEvent(
-            schema_version=feedback.schema_version,
-            event_id=feedback.feedback_id,
-            mission_id=feedback.mission_id,
-            sequence=self.transport.next_event_sequence(
-                self.feedback_topic, command.mission_id
+        return self.transport.publish_event(
+            self.feedback_topic,
+            TransportEvent(
+                schema_version=1,
+                event_id=feedback_id,
+                mission_id=self.mission_id,
+                sequence=self.transport.next_event_sequence(
+                    self.feedback_topic, self.mission_id
+                ),
+                event_kind="maneuver-feedback",
+                payload=feedback.to_dict(),
             ),
-            event_kind=feedback.event_kind,
-            payload=feedback.to_dict(),
         )
-        return self.transport.publish_event(self.feedback_topic, event)
 
 
 __all__ = [

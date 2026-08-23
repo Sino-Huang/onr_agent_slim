@@ -229,7 +229,6 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
     human_decisions = runtime.create_human_decision_coordinator()
     fsm_runner = runtime.create_fsm_runner(
         mission_id=mission_input.mission_id,
-        clock=lambda: 0,
     )
     maneuver_control = runtime.create_maneuver_control(
         RecordingAdapter(),
@@ -677,7 +676,6 @@ def test_direct_authority_plan_completes_physical_mission_run(tmp_path: Path) ->
     )
     fsm = runtime.create_fsm_runner(
         mission_id=mission_input.mission_id,
-        clock=lambda: 0,
     )
     adapter = RecordingAdapter()
     decision_provider = FixedDecisionProvider(intent)

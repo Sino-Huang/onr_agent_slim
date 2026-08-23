@@ -310,7 +310,9 @@ def _seed_live_artifacts(storage: Path, transport_root: Path, repo_root: Path) -
         mission_snapshot_id="snapshot-live",
         planning_profile="temporal",
         entry_state="state-0",
+        terminal_states=("state-0",),
         states=("state-0",),
+        state_context={"state-0": {}},
         transitions=(),
     )
     execution = FSMExecutionRecord(

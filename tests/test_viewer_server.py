@@ -508,7 +508,9 @@ def test_colon_mission_loads_raw_storage_and_encoded_transport_paths(
             mission_snapshot_id="snapshot-colon",
             planning_profile="temporal",
             entry_state="state-0",
+            terminal_states=("state-0",),
             states=("state-0",),
+            state_context={"state-0": {}},
             transitions=(),
         )
         execution = FSMExecutionRecord(
@@ -733,7 +735,9 @@ def test_all_documented_public_artifact_categories_are_projected(
             mission_snapshot_id="snapshot-1",
             planning_profile="temporal",
             entry_state="state-0",
+            terminal_states=("state-0",),
             states=("state-0",),
+            state_context={"state-0": {}},
             transitions=(),
         )
         execution = FSMExecutionRecord(
@@ -846,7 +850,7 @@ def test_current_belief_snapshot_is_hash_bound_public_evidence(tmp_path: Path) -
     [belief] = [
         item for item in payload["items"] if item["event_kind"] == "bayesian-belief"
     ]
-    assert belief["component"] == "environment"
+    assert belief["component"] == "bayesian-belief"
     assert belief["authority"] == "bayesian-belief-source"
     assert belief["payload"] == {
         "content_sha256": snapshot.content_sha256,

@@ -23,15 +23,10 @@ from onr.agents.hyper_agent import (
     _parse_planning_intent_response,
 )
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
-from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
-from onr.contracts.maneuver_control import (
-    ManeuverHeartbeatCompletion,
-    ManeuverInvocation,
-)
 from onr.contracts.planner_translation import validate_environment_data
 from onr.contracts.planning import (
     PlannerExecutionEvidence,
@@ -89,8 +84,16 @@ def _planner_asset_locations(
     return {name: f"{workspace}/001/{name}" for name in filenames}
 
 
+def _statechart_asset_locations(context: HyperWorkflowContext) -> dict[str, str]:
+    workspace = cast(str, context.planner_workspace_location).rstrip("/")
+    return {
+        "generate_statechart.py": f"{workspace}/001/generate_statechart.py",
+        "statechart.json": f"{workspace}/001/statechart.json",
+    }
+
+
 def _host_path(context: HyperWorkflowContext, location: str) -> Path:
-    if context.backend_root is not None and location.startswith("/"):
+    if context.backend_root is not None:
         path = context.backend_root / location.removeprefix("/")
     else:
         path = Path(location)
@@ -119,15 +122,16 @@ def _resolve_planner_files(
     expected = _planner_asset_locations(context, planner_choice)
     if len(locations) != 2 or len(set(locations)) != 2:
         raise ValueError("planner submission requires exactly two distinct file paths")
-    if set(locations) != set(expected.values()):
+    expected_host_by_name = {
+        name: _host_path(context, location) for name, location in expected.items()
+    }
+    submitted_hosts = {_host_path(context, location) for location in locations}
+    if submitted_hosts != set(expected_host_by_name.values()):
         raise ValueError(
             "planner file paths do not match the recorded planner workspace"
         )
-    sandbox_by_name = {Path(location).name: location for location in locations}
-    host_by_name = {
-        name: _host_path(context, location)
-        for name, location in sandbox_by_name.items()
-    }
+    sandbox_by_name = dict(expected)
+    host_by_name = expected_host_by_name
     if set(host_by_name) != set(expected) or any(
         not path.is_file() for path in host_by_name.values()
     ):
@@ -269,6 +273,8 @@ class HyperWorkflowContext:
     handoff_attempt: int = field(default=0, init=False)
     handoff_correlation_id: str | None = field(default=None, init=False)
     current_statechart_attempt: int = field(default=0, init=False)
+    statechart_generator_location: str | None = field(default=None, init=False)
+    statechart_file_location: str | None = field(default=None, init=False)
     fsm_runner: Any = None
     environment_authority: Any = None
     belief_service: Any = None
@@ -368,7 +374,7 @@ class HyperWorkflowContext:
 
     @property
     def handoff_required(self) -> bool:
-        return self.fsm_runner is not None or self.communication_port is not None
+        return False
 
 
 _PHASE_CONTROLLED_TOOLS = frozenset(
@@ -420,7 +426,7 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
     if context.statechart is not None:
         return frozenset({"HyperWorkflowResultCandidate"})
     if context.current_statechart_attempt < context.max_statechart_attempts:
-        return frozenset({"submit_statechart_draft"})
+        return frozenset({"write_file", "edit_file", "submit_statechart_draft"})
     return frozenset({"HyperWorkflowResultCandidate"})
 
 
@@ -443,17 +449,35 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
         raise TypeError("Hyper workflow model call requires HyperWorkflowContext")
     allowed = _allowed_workflow_tools(context)
     terminal = "HyperWorkflowResultCandidate" in allowed
-    tools = (
-        []
-        if terminal
-        else [
+    state = request.state if isinstance(request.state, Mapping) else {}
+    todos = state.get("todos", ())
+    success_todos_complete = (
+        isinstance(todos, (list, tuple))
+        and len(todos) == 8
+        and all(
+            isinstance(item, Mapping) and item.get("status") == "completed"
+            for item in todos
+        )
+    )
+    needs_final_todo_update = (
+        terminal and context.statechart is not None and not success_todos_complete
+    )
+    if needs_final_todo_update:
+        tools = [
+            item for item in request.tools if _request_tool_name(item) == "write_todos"
+        ]
+    elif terminal:
+        tools = []
+    else:
+        tools = [
             item
             for item in request.tools
             if (name := _request_tool_name(item)) not in _PHASE_CONTROLLED_TOOLS
             or name in allowed
         ]
+    response_format = (
+        request.response_format if terminal and not needs_final_todo_update else None
     )
-    response_format = request.response_format if terminal else None
     return handler(request.override(tools=tools, response_format=response_format))
 
 
@@ -963,8 +987,7 @@ def materialize_event_information_data(
         rejected = _event_materialization_progress(state)
         rejected["status"] = "rejected"
         rejected["error"] = (
-            "event numbers must be contiguous and begin at "
-            f"{state.next_event_number}"
+            f"event numbers must be contiguous and begin at {state.next_event_number}"
         )
         return _canonical_json(rejected)
 
@@ -985,7 +1008,8 @@ def materialize_event_information_data(
             else:
                 if isinstance(raw_value, bool) or not isinstance(raw_value, (str, int)):
                     raise TypeError(
-                        f"event field {event_field.target} requires a string or integer categorical key"
+                        f"event field {event_field.target} requires a string or "
+                        "integer categorical key"
                     )
                 indices = next_indices[event_field.target]
                 if raw_value not in indices:
@@ -1012,19 +1036,6 @@ def materialize_event_information_data(
         else _event_materialization_progress(state)
     )
     return _canonical_json(result)
-
-
-def _normalize_provider_tool_value(value: object) -> object:
-    if isinstance(value, str):
-        return value.replace('<|"|>', "")
-    if isinstance(value, Mapping):
-        return {
-            _normalize_provider_tool_value(key): _normalize_provider_tool_value(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_normalize_provider_tool_value(item) for item in value]
-    return value
 
 
 @tool(parse_docstring=True)
@@ -1063,7 +1074,8 @@ def submit_planner_attempt(
         and not materialization.complete
     ):
         raise ValueError(
-            "cannot submit MiniZinc files while event data materialization is incomplete"
+            "cannot submit MiniZinc files while event data materialization is "
+            "incomplete"
         )
     attempt_number = context.current_attempt_number + 1
     if attempt_number > context.max_planner_attempts:
@@ -1285,6 +1297,11 @@ def planner_executor(
     )
     if plan_path is not None and plan_text is not None:
         reference = _sandbox_path(context, plan_path)
+        statechart_locations = _statechart_asset_locations(context)
+        context.statechart_generator_location = statechart_locations[
+            "generate_statechart.py"
+        ]
+        context.statechart_file_location = statechart_locations["statechart.json"]
         context.planner_plan = PlannerPlan(
             mission_id=context.mission_input.mission_id,
             source_authority=context.mission_input.source_authority,
@@ -1301,8 +1318,13 @@ def planner_executor(
             "status: success\n"
             f"plan:\n{plan_text}\n"
             f"planner_native_plan_artifact_reference: {reference}\n"
-            "instruction: Proceed to Statechart generation from this "
-            "planner-native plan."
+            "statechart_generator_file_location: "
+            f"{context.statechart_generator_location}\n"
+            "statechart_file_location: "
+            f"{context.statechart_file_location}\n"
+            "instruction: Inspect the planner artifact, author the generator at the "
+            "exact returned location, run and inspect it, then submit the exact "
+            "statechart_file_location."
         )
     context.planner_plan = None
     return _tool_result(
@@ -1313,15 +1335,29 @@ def planner_executor(
     )
 
 
+def _statechart_graph_counts(value: object) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {"states": 0, "transitions": 0}
+    states = value.get("states")
+    transitions = value.get("transitions")
+    return {
+        "states": len(states) if isinstance(states, list) else 0,
+        "transitions": len(transitions) if isinstance(transitions, list) else 0,
+    }
+
+
 def _statechart_rejection(
     context: HyperWorkflowContext,
     *,
     attempt_number: int,
     stage: str,
     diagnostic: str,
+    draft_path: str,
+    draft: object = None,
 ) -> str:
     retries_remaining = context.max_statechart_attempts - attempt_number
     directory = context.artifact_root / "statechart-attempts" / f"{attempt_number:03d}"
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "statechart-error.txt").write_text(diagnostic, encoding="utf-8")
     _emit(
         context,
@@ -1329,27 +1365,38 @@ def _statechart_rejection(
         "rejected",
         details={"attempt_number": attempt_number, "stage": stage},
     )
-    return (
-        f"Statechart validation failed:\n{diagnostic}\n"
-        f"{retries_remaining} Statechart attempts remain."
+    return _canonical_json(
+        {
+            "status": "rejected",
+            "attempt_number": attempt_number,
+            "stage": stage,
+            "diagnostic": diagnostic,
+            "draft_path": draft_path,
+            "graph_counts": _statechart_graph_counts(draft),
+            "remaining_attempts": retries_remaining,
+            "required_next_action": (
+                "Edit generate_statechart.py and statechart.json at the same returned "
+                "workspace paths, rerun and inspect them, then resubmit the same "
+                "statechart_file_location."
+            ),
+        }
     )
 
 
 @tool(parse_docstring=True)
 def submit_statechart_draft(
-    statechart: dict[str, Any],
+    statechart_file_location: str,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Persist and validate one semantic Statechart topology draft.
+    """Snapshot and validate the exact authored Statechart file.
 
-    The tool binds model-authored topology to the accepted PlannerPlan revision, builds
-    a live python-statemachine instance, and returns exact bounded repair feedback.
+    The tool binds the authored topology to authoritative Mission identity, builds a
+    live python-statemachine instance, and returns structured repair feedback.
 
     Args:
-        statechart: Topology containing exactly entry_state, terminal_states,
-            states, state_context, and transitions. Each transition contains
-            event, source, target, and conditions. Physical actions are omitted.
+        statechart_file_location: Exact statechart.json workspace location returned
+            by planner_executor.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
@@ -1369,17 +1416,46 @@ def submit_statechart_draft(
     attempt_number = context.current_statechart_attempt + 1
     if attempt_number > context.max_statechart_attempts:
         raise ValueError("Statechart attempt is outside the workflow retry sequence")
-
-    statechart = cast(dict[str, Any], _normalize_provider_tool_value(statechart))
-
+    context.current_statechart_attempt = attempt_number
     directory = context.artifact_root / "statechart-attempts" / f"{attempt_number:03d}"
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "statechart.json"
-    topology_document = _canonical_json(statechart)
-    path.write_text(topology_document, encoding="utf-8")
-    context.current_statechart_attempt = attempt_number
+
+    expected_location = context.statechart_file_location
+    if statechart_file_location != expected_location:
+        return _statechart_rejection(
+            context,
+            attempt_number=attempt_number,
+            stage="workspace_path",
+            diagnostic=(
+                "ValueError: submitted Statechart path must exactly match the "
+                "statechart_file_location returned by planner_executor"
+            ),
+            draft_path=statechart_file_location,
+        )
+    workspace_path = _host_path(context, statechart_file_location)
+    if not workspace_path.is_file():
+        return _statechart_rejection(
+            context,
+            attempt_number=attempt_number,
+            stage="workspace_path",
+            diagnostic="ValueError: submitted Statechart file does not exist",
+            draft_path=statechart_file_location,
+        )
+
+    submitted_bytes = workspace_path.read_bytes()
+    snapshot_path = directory / "statechart.json"
+    snapshot_path.write_bytes(submitted_bytes)
+    draft: object = None
 
     try:
+        document = submitted_bytes.decode("utf-8")
+
+        def reject_non_finite(value: str) -> None:
+            raise ValueError(f"non-finite JSON number {value}")
+
+        draft = json.loads(document, parse_constant=reject_non_finite)
+        if not isinstance(draft, Mapping):
+            raise TypeError("Statechart draft JSON must be an object")
         expected = {
             "entry_state",
             "terminal_states",
@@ -1387,52 +1463,40 @@ def submit_statechart_draft(
             "state_context",
             "transitions",
         }
-        if set(statechart) != expected:
+        if set(draft) != expected:
             raise ValueError("Statechart topology contains unknown or missing fields")
-        raw_transitions = statechart["transitions"]
+        raw_transitions = draft["transitions"]
         if not isinstance(raw_transitions, list):
             raise TypeError("Statechart transitions must be an array")
-        transitions = []
         for raw in raw_transitions:
             if not isinstance(raw, Mapping) or set(raw) != {
                 "event",
                 "source",
                 "target",
-                "conditions",
+                "context",
             }:
                 raise ValueError("Statechart transition topology is invalid")
-            transitions.append(
-                {
-                    "event": raw["event"],
-                    "source": raw["source"],
-                    "target": raw["target"],
-                    "maneuver_id": None,
-                    "requires_lifecycle_fact": False,
-                    "requires_decision": True,
-                    "conditions": raw["conditions"],
-                }
-            )
         bound = {
-            "schema_version": 1,
+            "schema_version": 2,
             "mission_id": plan.mission_id,
             "plan_revision": plan.plan_revision,
             "mission_snapshot_id": plan.mission_snapshot_id,
             "planning_profile": str(plan.planner_choice.planning_profile),
-            "entry_state": statechart["entry_state"],
-            "terminal_states": statechart["terminal_states"],
-            "states": statechart["states"],
-            "state_context": statechart["state_context"],
-            "transitions": transitions,
-            "timers": {},
-            "trusted": False,
+            "entry_state": draft["entry_state"],
+            "terminal_states": draft["terminal_states"],
+            "states": draft["states"],
+            "state_context": draft["state_context"],
+            "transitions": raw_transitions,
         }
         chart = Statechart.from_dict(bound)
-    except (TypeError, ValueError, KeyError) as exc:
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
         return _statechart_rejection(
             context,
             attempt_number=attempt_number,
             stage="schema",
             diagnostic=f"{type(exc).__name__}: {exc}",
+            draft_path=statechart_file_location,
+            draft=draft,
         )
 
     try:
@@ -1445,6 +1509,8 @@ def submit_statechart_draft(
             attempt_number=attempt_number,
             stage="machine_build",
             diagnostic=f"{type(exc).__name__}: {exc}",
+            draft_path=statechart_file_location,
+            draft=draft,
         )
 
     candidates = tuple(
@@ -1452,8 +1518,7 @@ def submit_statechart_draft(
             event=item.event,
             source=item.source,
             target=item.target,
-            requires_decision=True,
-            conditions=item.conditions,
+            transition_context=item.context,
             source_state_context=chart.context_for(item.source),
             target_state_context=chart.context_for(item.target),
         )
@@ -1488,7 +1553,23 @@ def submit_statechart_draft(
             "transition_count": len(chart.transitions),
         },
     )
-    return "Statechart validation passed. Hand off execution next."
+    return _canonical_json(
+        {
+            "status": "accepted",
+            "attempt_number": attempt_number,
+            "stage": "machine_build",
+            "diagnostic": (
+                "Statechart schema and python-statemachine construction passed"
+            ),
+            "accepted_artifact_reference": context.statechart_reference,
+            "graph_counts": {
+                "states": len(chart.states),
+                "transitions": len(chart.transitions),
+            },
+            "remaining_attempts": context.max_statechart_attempts - attempt_number,
+            "required_next_action": "Call handoff_execution.",
+        }
+    )
 
 
 def _run_sync(awaitable: Any) -> Any:
@@ -1534,13 +1615,13 @@ def handoff_execution(
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Activate the verified Statechart and synchronously invoke Maneuver Control.
+    """Report that verified execution is handed to Context Coordination.
 
     Args:
         reflection: Concise public summary of verified execution evidence and handoff.
 
     Returns:
-        Canonical JSON containing the correlated Maneuver completion or retry evidence.
+        Guidance to return the accepted revision for Context Coordination.
     """
 
     context = _context(runtime)
@@ -1554,93 +1635,10 @@ def handoff_execution(
             required_tool="submit_statechart_draft",
             retry_tool="handoff_execution",
         )
-    if context.fsm_runner is None or context.communication_port is None:
-        raise RuntimeError(
-            "Hyper execution handoff requires FSM Runner and communication port"
-        )
-    context.handoff_attempt += 1
-    live_status = _run_sync(context.fsm_runner.activate(context.statechart))
-    if not isinstance(live_status, FSMStatus):
-        raise TypeError("FSM Runner activation did not return FSMStatus")
-    refreshed = _run_sync(context.fsm_runner.status())
-    if not isinstance(refreshed, FSMStatus):
-        raise TypeError("FSM Runner status did not return FSMStatus")
-    belief = cast(BayesianBeliefSnapshot | None, context.belief_snapshot)
-    if context.belief_service is not None:
-        loader = getattr(context.belief_service, "load_current_snapshot", None)
-        if callable(loader):
-            current_belief = loader()
-            if current_belief is not None and not isinstance(
-                current_belief, BayesianBeliefSnapshot
-            ):
-                raise TypeError("belief service returned invalid current snapshot")
-            if current_belief is not None:
-                belief = current_belief
-    available = getattr(context.communication_port, "available_recipients", None)
-    recipients = (
-        cast(tuple[str, ...], tuple(cast(Any, available("maneuver-control"))))
-        if callable(available)
-        else ("hyper-agent",)
+    return (
+        "Execution handoff is owned by Context Coordination. Mark every todo "
+        "completed and return execution_ready."
     )
-    correlation_id = context.handoff_correlation_id or (
-        f"execution-handoff:{plan.mission_id}:{plan.plan_revision}"
-    )
-    request_id = (
-        f"hyper-handoff:{plan.mission_id}:{plan.plan_revision}:"
-        f"{context.handoff_attempt}"
-    )
-    invocation = ManeuverInvocation(
-        request_id=request_id,
-        correlation_id=correlation_id,
-        mission_id=plan.mission_id,
-        plan_revision=plan.plan_revision,
-        statechart_reference=context.statechart_reference,
-        fsm_status=refreshed,
-        environment_data=_live_environment(context),
-        belief_snapshot=belief,
-        available_recipients=recipients,
-        planning_snapshot=context.mission_snapshot,
-    )
-    message = AgentMessage(
-        message_id=request_id,
-        correlation_id=correlation_id,
-        mission_id=plan.mission_id,
-        plan_revision=plan.plan_revision,
-        sender="hyper-agent",
-        recipient="maneuver-control",
-        kind="invoke",
-        payload=invocation.to_dict(),
-    )
-    outcome = context.communication_port.request(message)
-    if (
-        not isinstance(outcome, CommandOutcome)
-        or outcome.command_id != request_id
-        or outcome.correlation_id != correlation_id
-        or outcome.mission_id != plan.mission_id
-        or str(outcome.status) != "completed"
-    ):
-        reason = "Maneuver Control handoff did not complete successfully"
-        if isinstance(outcome, CommandOutcome):
-            error = outcome.payload.get("error")
-            if isinstance(error, str) and error.strip():
-                reason = error
-        return f"Execution handoff failed: {reason}."
-    completion = ManeuverHeartbeatCompletion.from_dict(outcome.payload)
-    if completion.mission_id != plan.mission_id or completion.request_id != request_id:
-        raise ValueError("Maneuver handoff completion identity does not match")
-    context.initial_fsm_status = refreshed
-    context.handoff_outcome = outcome
-    _emit(
-        context,
-        "maneuver-handoff",
-        "completed",
-        details={
-            "correlation_id": correlation_id,
-            "plan_revision": plan.plan_revision,
-            "request_id": request_id,
-        },
-    )
-    return "Execution handoff completed."
 
 
 def create_hyper_workflow_agent(
@@ -1798,7 +1796,10 @@ class DeepAgentsHyperWorkflow:
                     content=_canonical_json(
                         {
                             "workflow_control": "continue",
-                            "reason": "previous model response contained neither a tool call nor the final workflow result",
+                            "reason": (
+                                "previous model response contained neither a tool call "
+                                "nor the final workflow result"
+                            ),
                         }
                     )
                 )

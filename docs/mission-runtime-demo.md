@@ -56,8 +56,9 @@ python -m onr.runtime.maneuver_cli --mission-file examples/mission.json --repo-r
 This command injects a code-owned accepted four-stop Normalized Plan and
 ten-state Statechart, activates the real FSM Runner, and drives ten live
 Maneuver heartbeats through controlled fake Mission times. It exercises
-navigation, explicit environment completion ticks, one durable belief update,
-communication to a Hyper recipient stub, and an emergency landing override.
+navigation, explicit environment completion ticks, communication to a Hyper
+recipient stub, and an emergency landing override. It does not exercise the
+closed-loop pending-perception belief path.
 It does not invoke Hyper, write planner source files, or run MiniZinc.
 
 The Maneuver-only command uses the same demo rollover behavior and persistent
@@ -67,23 +68,43 @@ directories, normally:
 - `var/debug/agent/maneuver-control/mission%3Ademo/`
 - `var/debug/llm/maneuver-control/mission%3Ademo/`
 
-The CLI always verifies the configured LLM endpoint, composes the configured
-real planners, creates model-backed Hyper Agent and Maneuver Control services,
-and runs Context Coordination and FSM Runner. It first publishes a demo
-environment heartbeat, turns that environment data into a Mission Snapshot, and
-invokes the Hyper workflow. Hyper owns the live todo list, creates the MiniZinc
-files under `--planner-artifacts`, invokes the configured solver, and returns the
-verified Normalized Plan consumed by mission execution. There is no operator
-supplied plan file.
+The CLI verifies the configured LLM endpoint, composes the real planners and
+agents, seeds 20 `event-risk` beliefs through the durable Bayesian service, and
+hands the accepted first revision to Context Coordination. Initial Hyper planning receives the
+complete 253-event planning view and produces a planner-native `PlannerPlan`
+plus an accepted Statechart. No Normalized Plan is introduced.
 
-The Hyper episode uses a recursion limit of 100 by default. For bounded
+Context Coordination owns execution after initial planning: it resolves each
+Mission Snapshot, builds every Maneuver and supervisory Hyper invocation,
+coordinates replanning, and advances 0.5-second simulation ticks without sleeping. Maneuver is
+invoked at time zero, every 5 simulated seconds, and immediately when the
+environment publishes authoritative maneuver lifecycle feedback such as
+navigation completion. MiniZinc timing remains continuous and is not rounded to
+the agent heartbeat cadence. Hyper runs a fresh supervisory episode every 10
+seconds and immediately after a queued Maneuver replan request; coincident
+triggers are coalesced. Maneuver receives the pending raw perception batch and
+never receives accumulated Bayesian belief. One successful `ingest_perceptions`
+call commits each pending event separately and clears the process-local batch;
+skipped or failed ingestion retains it. Hyper receives only the latest resolved
+environment, belief, FSM, request, and Mission Snapshot context. File transport
+retains the full audit history.
+
+A `replan` decision launches a fresh checkpointed Hyper workflow under a
+revision-specific artifact directory. Only a verified replacement Statechart
+supersedes the FSM. Failed replacement planning leaves the prior revision and
+any active physical action authoritative. The loop stops at a terminal FSM
+state or `--simulation-limit-seconds`.
+
+Each full Hyper planning episode uses a recursion limit of 120 by default. For bounded
 debugging, add a smaller value such as `--recursion-limit 5`; reaching the limit
 stops the episode with a nonzero CLI result instead of continuing an agent loop.
 
 During the active mission session,
 the runtime owns the lease and writes normal transport, operational-log, FSM,
-planner, and summary artifacts. It prints only mission/result identifiers and
-final public status; it does not print mission text or configuration secrets.
+planner, and summary artifacts. Final JSON includes simulated duration, tick and
+heartbeat counts, physical actions, feedback and perception counts, belief
+revisions without gaps, Hyper outcomes, plan revisions, and the final FSM state. It does not
+print mission text or configuration secrets.
 Mission-summary calls send the per-request
 `chat_template_kwargs.enable_thinking: false` override, disabling Gemma thinking
 for summaries even when the vLLM server default enables it. Other model calls

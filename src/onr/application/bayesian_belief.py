@@ -77,7 +77,9 @@ class BayesianBeliefCheckpoint:
         ):
             raise ValueError("checkpoint belief revision must be non-negative")
         if (self.last_input_event_id is None) != (self.last_input_revision is None):
-            raise ValueError("checkpoint input provenance must be wholly present or absent")
+            raise ValueError(
+                "checkpoint input provenance must be wholly present or absent"
+            )
         if self.last_input_event_id is not None and (
             not isinstance(self.last_input_event_id, str)
             or not self.last_input_event_id.strip()
@@ -98,17 +100,22 @@ class BayesianBeliefCheckpoint:
         if len(keys) != len(set(keys)):
             raise ValueError("checkpoint belief keys must be unique")
         constraints = tuple(self.constraints)
-        if not all(isinstance(item, ForbiddenBeliefCombination) for item in constraints):
+        if not all(
+            isinstance(item, ForbiddenBeliefCombination) for item in constraints
+        ):
             raise ValueError("checkpoint constraints must be typed")
         constraint_ids = [item.constraint_id for item in constraints]
         if len(constraint_ids) != len(set(constraint_ids)):
             raise ValueError("checkpoint constraint IDs must be unique")
         particles = tuple(tuple(particle) for particle in self.particles)
         if not particles or any(
-            len(particle) != len(keys) or not all(isinstance(value, bool) for value in particle)
+            len(particle) != len(keys)
+            or not all(isinstance(value, bool) for value in particle)
             for particle in particles
         ):
-            raise ValueError("checkpoint particles must be non-empty Boolean assignments")
+            raise ValueError(
+                "checkpoint particles must be non-empty Boolean assignments"
+            )
         random_state = _freeze_json(self.random_state)
         try:
             validator = random.Random()
@@ -118,18 +125,25 @@ class BayesianBeliefCheckpoint:
         object.__setattr__(self, "transition_probability", transition_probability)
         object.__setattr__(self, "keys", tuple(sorted(keys)))
         object.__setattr__(
-            self, "constraints", tuple(sorted(constraints, key=lambda item: item.constraint_id))
+            self,
+            "constraints",
+            tuple(sorted(constraints, key=lambda item: item.constraint_id)),
         )
         object.__setattr__(self, "particles", particles)
         object.__setattr__(self, "random_state", random_state)
         key_indexes = {key: index for index, key in enumerate(self.keys)}
         try:
             indexed_constraints = tuple(
-                tuple((key_indexes[item.key], item.is_risk) for item in constraint.assignments)
+                tuple(
+                    (key_indexes[item.key], item.is_risk)
+                    for item in constraint.assignments
+                )
                 for constraint in self.constraints
             )
         except KeyError as exc:
-            raise ValueError("checkpoint constraint references an undeclared belief key") from exc
+            raise ValueError(
+                "checkpoint constraint references an undeclared belief key"
+            ) from exc
         if any(
             any(
                 all(particle[index] is required for index, required in assignments)
@@ -141,11 +155,17 @@ class BayesianBeliefCheckpoint:
         if (
             not isinstance(self.content_sha256, str)
             or len(self.content_sha256) != 64
-            or any(character not in "0123456789abcdef" for character in self.content_sha256)
+            or any(
+                character not in "0123456789abcdef" for character in self.content_sha256
+            )
         ):
-            raise ValueError("checkpoint content hash must be a lowercase SHA-256 digest")
+            raise ValueError(
+                "checkpoint content hash must be a lowercase SHA-256 digest"
+            )
         if self.content_sha256 != canonical_sha256(self.content_dict()):
-            raise ValueError("checkpoint content hash does not match its canonical content")
+            raise ValueError(
+                "checkpoint content hash does not match its canonical content"
+            )
 
     def content_dict(self) -> dict[str, object]:
         return {
@@ -182,7 +202,9 @@ class BayesianBeliefCheckpoint:
         random_state: object,
     ) -> "BayesianBeliefCheckpoint":
         selected_keys = tuple(sorted(keys))
-        selected_constraints = tuple(sorted(constraints, key=lambda item: item.constraint_id))
+        selected_constraints = tuple(
+            sorted(constraints, key=lambda item: item.constraint_id)
+        )
         selected_particles = tuple(tuple(particle) for particle in particles)
         frozen_state = _freeze_json(random_state)
         content = {
@@ -193,7 +215,9 @@ class BayesianBeliefCheckpoint:
             "last_input_revision": last_input_revision,
             "transition_probability": float(transition_probability),
             "keys": [key.to_dict() for key in selected_keys],
-            "constraints": [constraint.to_dict() for constraint in selected_constraints],
+            "constraints": [
+                constraint.to_dict() for constraint in selected_constraints
+            ],
             "particles": [list(particle) for particle in selected_particles],
             "random_state": _json_value(frozen_state),
         }
@@ -227,8 +251,12 @@ class BayesianBeliefCheckpoint:
             "content_sha256",
         }
         if not isinstance(value, Mapping) or set(value) != fields:
-            raise ValueError("Bayesian belief checkpoint contains unknown or missing fields")
-        if not isinstance(value["keys"], list) or not isinstance(value["constraints"], list):
+            raise ValueError(
+                "Bayesian belief checkpoint contains unknown or missing fields"
+            )
+        if not isinstance(value["keys"], list) or not isinstance(
+            value["constraints"], list
+        ):
             raise ValueError("checkpoint keys and constraints must be arrays")
         raw_particles = value["particles"]
         if not isinstance(raw_particles, list) or not all(
@@ -244,7 +272,8 @@ class BayesianBeliefCheckpoint:
             transition_probability=value["transition_probability"],
             keys=tuple(BeliefKey.from_dict(item) for item in value["keys"]),
             constraints=tuple(
-                ForbiddenBeliefCombination.from_dict(item) for item in value["constraints"]
+                ForbiddenBeliefCombination.from_dict(item)
+                for item in value["constraints"]
             ),
             particles=tuple(tuple(particle) for particle in raw_particles),
             random_state=value["random_state"],
@@ -276,7 +305,11 @@ class BayesianBeliefManager:
     ) -> None:
         if not isinstance(mission_id, str) or not mission_id.strip():
             raise ValueError("mission ID must be a non-empty string")
-        if isinstance(particle_count, bool) or not isinstance(particle_count, int) or particle_count < 1:
+        if (
+            isinstance(particle_count, bool)
+            or not isinstance(particle_count, int)
+            or particle_count < 1
+        ):
             raise ValueError("particle count must be a positive integer")
         if rng is not None and seed is not None:
             raise ValueError("provide either an RNG or a seed, not both")
@@ -284,12 +317,17 @@ class BayesianBeliefManager:
             raise TypeError("RNG must be an instance of random.Random")
 
         selected_keys = tuple(keys)
-        if not selected_keys or not all(isinstance(key, BeliefKey) for key in selected_keys):
+        if not selected_keys or not all(
+            isinstance(key, BeliefKey) for key in selected_keys
+        ):
             raise ValueError("belief keys must contain typed BeliefKey values")
         if len(selected_keys) != len(set(selected_keys)):
             raise ValueError("belief keys must be unique")
         selected_constraints = tuple(constraints)
-        if not all(isinstance(item, ForbiddenBeliefCombination) for item in selected_constraints):
+        if not all(
+            isinstance(item, ForbiddenBeliefCombination)
+            for item in selected_constraints
+        ):
             raise ValueError("constraints must be typed forbidden combinations")
         constraint_ids = [item.constraint_id for item in selected_constraints]
         if len(constraint_ids) != len(set(constraint_ids)):
@@ -297,7 +335,9 @@ class BayesianBeliefManager:
 
         self.mission_id = mission_id
         self.keys = tuple(sorted(selected_keys))
-        self.constraints = tuple(sorted(selected_constraints, key=lambda item: item.constraint_id))
+        self.constraints = tuple(
+            sorted(selected_constraints, key=lambda item: item.constraint_id)
+        )
         self.transition_probability = _probability(
             transition_probability, "transition probability"
         )
@@ -312,13 +352,20 @@ class BayesianBeliefManager:
         if unknown_keys:
             raise ValueError("logical constraints reference undeclared belief keys")
         self._indexed_constraints = tuple(
-            tuple((self._key_indexes[item.key], item.is_risk) for item in constraint.assignments)
+            tuple(
+                (self._key_indexes[item.key], item.is_risk)
+                for item in constraint.assignments
+            )
             for constraint in self.constraints
         )
         self._completion_cache: dict[tuple[bool | None, ...], bool] = {}
         if not self._has_completion((None,) * len(self.keys)):
-            raise ValueError("logical constraints forbid every possible belief assignment")
-        self._particles = tuple(self._sample_valid_particle() for _ in range(particle_count))
+            raise ValueError(
+                "logical constraints forbid every possible belief assignment"
+            )
+        self._particles = tuple(
+            self._sample_valid_particle() for _ in range(particle_count)
+        )
         self.belief_revision = 0
         self.last_input_event_id: str | None = None
         self.last_input_revision: int | None = None
@@ -380,7 +427,10 @@ class BayesianBeliefManager:
 
         if not isinstance(observation, RiskObservation):
             raise TypeError("observation must be a RiskObservation")
-        if self.last_input_revision is not None and observation.input_revision <= self.last_input_revision:
+        if (
+            self.last_input_revision is not None
+            and observation.input_revision <= self.last_input_revision
+        ):
             raise ValueError("input revision must increase monotonically")
         observation_indexes: list[tuple[int, float]] = []
         for association in observation.associations:
@@ -388,7 +438,9 @@ class BayesianBeliefManager:
             try:
                 index = self._key_indexes[key]
             except KeyError as exc:
-                raise ValueError("observation references an undeclared entity/risk key") from exc
+                raise ValueError(
+                    "observation references an undeclared entity/risk key"
+                ) from exc
             observation_indexes.append((index, association.weight))
 
         prior_random_state = self.rng.getstate()
@@ -411,7 +463,10 @@ class BayesianBeliefManager:
                 raise ValueError("observation has zero likelihood under every particle")
             normalized = tuple(weight / total for weight in likelihoods)
             start = self.rng.random() / self.particle_count
-            positions = tuple(start + index / self.particle_count for index in range(self.particle_count))
+            positions = tuple(
+                start + index / self.particle_count
+                for index in range(self.particle_count)
+            )
             selected_particles: list[tuple[bool, ...]] = []
             cumulative = normalized[0]
             source_index = 0
@@ -514,13 +569,18 @@ class BayesianBeliefManager:
             or input_revision < 0
         ):
             raise ValueError("input revision must be non-negative")
-        if self.last_input_revision is not None and input_revision <= self.last_input_revision:
+        if (
+            self.last_input_revision is not None
+            and input_revision <= self.last_input_revision
+        ):
             raise ValueError("input revision must increase monotonically")
         self.last_input_event_id = event_id
         self.last_input_revision = input_revision
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: BayesianBeliefCheckpoint) -> "BayesianBeliefManager":
+    def from_checkpoint(
+        cls, checkpoint: BayesianBeliefCheckpoint
+    ) -> "BayesianBeliefManager":
         if not isinstance(checkpoint, BayesianBeliefCheckpoint):
             raise TypeError("checkpoint must be a BayesianBeliefCheckpoint")
         manager = cls(
@@ -601,7 +661,11 @@ def create_belief_constraint_event(
     event_id: str,
     sequence: int,
 ) -> TransportEvent:
-    if isinstance(input_revision, bool) or not isinstance(input_revision, int) or input_revision < 0:
+    if (
+        isinstance(input_revision, bool)
+        or not isinstance(input_revision, int)
+        or input_revision < 0
+    ):
         raise ValueError("constraint input revision must be non-negative")
     selected = tuple(constraints)
     if not all(isinstance(item, ForbiddenBeliefCombination) for item in selected):
@@ -644,8 +708,12 @@ class BayesianBeliefService:
             "clear_pending_output",
             "load_reference",
         )
-        if any(not callable(getattr(store, name, None)) for name in required_store_methods):
-            raise TypeError("belief service store does not expose its durable operations")
+        if any(
+            not callable(getattr(store, name, None)) for name in required_store_methods
+        ):
+            raise TypeError(
+                "belief service store does not expose its durable operations"
+            )
         self.manager = manager
         self.store = store
         self.transport = transport
@@ -677,7 +745,9 @@ class BayesianBeliefService:
             raise ValueError("belief input event belongs to another mission")
         if event.event_kind == "belief.constraints":
             if set(event.payload) != {"input_revision", "constraints"}:
-                raise ValueError("belief constraint event contains unknown or missing fields")
+                raise ValueError(
+                    "belief constraint event contains unknown or missing fields"
+                )
             input_revision = event.payload.get("input_revision")
             raw_constraints = event.payload.get("constraints")
             if (
@@ -707,7 +777,9 @@ class BayesianBeliefService:
             raise ValueError("belief service received an unsupported event kind")
         observation = RiskObservation.from_dict(event.payload)
         if observation.event_id != event.event_id:
-            raise ValueError("risk observation event identity does not match its payload")
+            raise ValueError(
+                "risk observation event identity does not match its payload"
+            )
         if self._is_committed_input(event.event_id, observation.input_revision):
             return self.load_current_snapshot()
         self._require_next_input_revision(observation.input_revision)
@@ -778,7 +850,10 @@ class BayesianBeliefService:
             self.manager = BayesianBeliefManager.from_checkpoint(prior)
 
     def _require_next_input_revision(self, revision: int) -> None:
-        if self._last_input_revision is not None and revision <= self._last_input_revision:
+        if (
+            self._last_input_revision is not None
+            and revision <= self._last_input_revision
+        ):
             raise ValueError("belief input revision must increase monotonically")
 
     def run_once(self, consumer: Any) -> BayesianBeliefSnapshot | None:
@@ -797,11 +872,34 @@ class BayesianBeliefService:
         delivery.ack()
         return result
 
+    def drain_to_latest(self, consumer: Any) -> BayesianBeliefSnapshot | None:
+        """Acknowledge the entire pending batch and return only its latest commit."""
+
+        latest: BayesianBeliefSnapshot | None = None
+        while True:
+            self.flush_pending_output()
+            delivery = consumer.receive()
+            if delivery is None:
+                return latest
+            if not isinstance(delivery.message, TransportEvent):
+                delivery.nack()
+                raise TypeError("belief delivery is not a TransportEvent")
+            try:
+                snapshot = self.handle(delivery.message)
+            except Exception:
+                delivery.nack()
+                raise
+            delivery.ack()
+            if snapshot is not None:
+                latest = snapshot
+
     def flush_pending_output(self) -> TransportEvent | None:
         loader = getattr(self.store, "load_pending_output", None)
         clearer = getattr(self.store, "clear_pending_output", None)
         if not callable(loader) or not callable(clearer):
-            raise TypeError("belief service store must expose pending-output operations")
+            raise TypeError(
+                "belief service store must expose pending-output operations"
+            )
         pending = loader(self.manager.mission_id)
         if pending is None:
             return None
@@ -893,7 +991,9 @@ class BayesianBeliefService:
         content_sha256 = reference.rsplit(marker, 1)[1]
         snapshot = loader(self.manager.mission_id, reference, content_sha256)
         if not isinstance(snapshot, BayesianBeliefSnapshot):
-            raise TypeError("belief service store returned an invalid referenced snapshot")
+            raise TypeError(
+                "belief service store returned an invalid referenced snapshot"
+            )
         return snapshot
 
 

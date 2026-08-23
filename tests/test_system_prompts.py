@@ -57,7 +57,7 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
         "Execute the planner.",
         "Generate the Statechart.",
         "Validate and repair the Statechart.",
-        "Hand off execution.",
+        "Return accepted execution artifacts.",
     )
     assert [prompt.index(stage) for stage in stages] == sorted(
         prompt.index(stage) for stage in stages
@@ -110,6 +110,6 @@ def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -
 
     assert "ManeuverInvocation" in prompt
     assert "current environment data" in prompt
-    assert "semantic state context" in prompt
-    assert "environment_time_at_or_after" in prompt
+    assert "transition/source/target contexts" in prompt
+    assert "semantic judgment remains yours" in prompt
     assert "ManeuverHeartbeatCompletion" in prompt

@@ -73,7 +73,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "2.3.0",
         "2.0.0",
         "1.1.0",
-        "2.0.0",
+        "3.0.0",
         "1.1.1",
         "1.1.0",
         "1.1.0",

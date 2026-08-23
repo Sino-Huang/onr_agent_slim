@@ -57,12 +57,16 @@ The decision-making authority that uses Mission Snapshot and FSM status to selec
 _Avoid_: Subagent, flight controller
 
 **Context Coordination**:
-The service that assembles and publishes versioned Mission Snapshots from authoritative mission updates.
-_Avoid_: Context injector, state cache
+The service that assembles and publishes versioned Mission Snapshots and coordinates the active closed loop from accepted planning authority through terminal Mission state.
+_Avoid_: Context injector, state cache, scheduler wrapper
 
 **Mission Snapshot**:
-An immutable versioned manifest of the current authoritative world, belief, plan/FSM, and active-maneuver references supplied to a Maneuver Control Agent invocation.
+An immutable versioned manifest of the current authoritative world, belief, plan/FSM, and active-maneuver references resolved by Context Coordination for agent invocations.
 _Avoid_: Agent memory, ground truth
+
+**Pending Perception Batch**:
+The ordered raw entity and event perceptions accumulated since Maneuver Control last completed belief ingestion. It is transient delivery context, not accumulated belief or an independent heartbeat trigger.
+_Avoid_: Bayesian Belief Snapshot, agent memory, perception trigger
 
 **Transport Event**:
 An immutable published fact or outcome that may be consumed by more than one service.

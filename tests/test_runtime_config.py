@@ -36,12 +36,20 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.llm.base_url == "http://127.0.0.1:11411/v1"
     assert config.llm.model == "Qwen/Qwen3.8-27B-FP8"
     assert config.llm.api_key == "EMPTY"
-    assert config.planners.temporal.entrypoint == root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
-    assert config.planners.symbolic.entrypoint == root / "modules/downward/fast-downward.py"
+    assert (
+        config.planners.temporal.entrypoint
+        == root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
+    )
+    assert (
+        config.planners.symbolic.entrypoint
+        == root / "modules/downward/fast-downward.py"
+    )
     assert config.planners.symbolic.validator_entrypoint == (
         root / "modules/VAL/build/linux64/Release/bin/Validate"
     )
     assert config.transport.root == (root / "var/transport").resolve()
+    assert config.heartbeats.hyper_seconds == 10
+    assert config.heartbeats.maneuver_seconds == 5
     assert config.heartbeats.summary_seconds == 30
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
@@ -51,20 +59,27 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
             ValueError, match="heartbeats.summary_seconds must be a positive number"
         ):
             HeartbeatsConfig(1, 2, invalid)
+    for field in (0, -1, True):
+        with pytest.raises(ValueError, match="heartbeats.hyper_seconds"):
+            HeartbeatsConfig(field, 2)
+        with pytest.raises(ValueError, match="heartbeats.maneuver_seconds"):
+            HeartbeatsConfig(1, field)
 
 
-def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Path) -> None:
+def test_runtime_config_rejects_unknown_keys_and_boolean_durations(
+    tmp_path: Path,
+) -> None:
     executable = tmp_path / "planner"
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
     executable.chmod(0o755)
     config = tmp_path / "config.yaml"
     config.write_text(
-        """agent_name: test-agent\ndebug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",
+        """agent_name: test-agent\ndebug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",  # noqa: E501
         encoding="utf-8",
     )
     config.write_text(
         config.read_text(encoding="utf-8")
-        + "agents:\n  hyper_agent:\n    output_structure_retry:\n      max_retries: 2\n  maneuver_control:\n    output_structure_retry:\n      max_retries: 1\n",
+        + "agents:\n  hyper_agent:\n    output_structure_retry:\n      max_retries: 2\n  maneuver_control:\n    output_structure_retry:\n      max_retries: 1\n",  # noqa: E501
         encoding="utf-8",
     )
     with pytest.raises(ValueError):
@@ -72,7 +87,12 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
     with pytest.raises(ValueError):
         create_runtime(repo_root=tmp_path, config_path=config)
 
-    config.write_text(config.read_text(encoding="utf-8").replace("hyper_seconds: true", "hyper_seconds: 1"), encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "hyper_seconds: true", "hyper_seconds: 1"
+        ),
+        encoding="utf-8",
+    )
     runtime = create_runtime(repo_root=tmp_path, config_path=config)
     assert isinstance(runtime.transport, InProcessTransport)
 
@@ -113,12 +133,18 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
         load_runtime_config(config, repo_root=tmp_path)
 
     config.write_text(valid_config, encoding="utf-8")
-    config.write_text(valid_config.replace("base_url: http://127.0.0.1:14398/v1", "base_url: not-a-url"), encoding="utf-8")
+    config.write_text(
+        valid_config.replace(
+            "base_url: http://127.0.0.1:14398/v1", "base_url: not-a-url"
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError):
         load_runtime_config(config, repo_root=tmp_path)
     config.write_text(
         valid_config.replace("provider: test", "provider: vllm").replace(
-            "base_url: http://127.0.0.1:14398/v1", "base_url: http://127.0.0.1:14398/api"
+            "base_url: http://127.0.0.1:14398/v1",
+            "base_url: http://127.0.0.1:14398/api",
         ),
         encoding="utf-8",
     )
@@ -126,10 +152,14 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(tmp_path: Pat
         load_runtime_config(config, repo_root=tmp_path)
     config.write_text(valid_config, encoding="utf-8")
 
-    config.write_text(config.read_text(encoding="utf-8").replace("backend: inprocess", "backend: file"), encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "backend: inprocess", "backend: file"
+        ),
+        encoding="utf-8",
+    )
     file_runtime = create_runtime(repo_root=tmp_path, config_path=config)
     assert isinstance(file_runtime.transport, FileTransport)
-
 
 
 def test_runtime_config_direct_construction_uses_shipped_agent_defaults() -> None:
@@ -203,13 +233,13 @@ def test_runtime_config_requires_agents_and_every_nested_key(tmp_path: Path) -> 
         load_runtime_config(config, repo_root=root)
 
     values = _shipped_runtime_values()
-    values["agents"]["maneuver_control"]["output_structure_retry"].pop(
-        "max_retries"
-    )
+    values["agents"]["maneuver_control"]["output_structure_retry"].pop("max_retries")
     _write_runtime_values(config, values)
     with pytest.raises(
         ValueError,
-        match="agents.maneuver_control.output_structure_retry has unknown or missing keys",
+        match=(
+            "agents.maneuver_control.output_structure_retry has unknown or missing keys"
+        ),
     ):
         load_runtime_config(config, repo_root=root)
 
@@ -241,7 +271,10 @@ def test_runtime_config_rejects_invalid_output_structure_retry_counts(
     _write_runtime_values(config, values)
     with pytest.raises(
         ValueError,
-        match=rf"agents.{agent_name}.output_structure_retry.max_retries must be a non-negative integer",
+        match=(
+            rf"agents.{agent_name}.output_structure_retry.max_retries must be a "
+            "non-negative integer"
+        ),
     ):
         load_runtime_config(config, repo_root=root)
 

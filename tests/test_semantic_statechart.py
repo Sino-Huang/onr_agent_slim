@@ -10,7 +10,6 @@ from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.contracts.fsm import (
     ManeuverDecision,
     Statechart,
-    StatechartCondition,
     StatechartTransition,
 )
 
@@ -46,15 +45,13 @@ def _chart() -> Statechart:
                 event="start-moving-to-patrol-stop-1",
                 source="at-initial-location",
                 target="moving-to-patrol-stop-1",
-                conditions=(StatechartCondition(65, 2),),
-                requires_decision=True,
+                context={"not_before": {"tick": 65, "scale": 2}},
             ),
             StatechartTransition(
                 event="complete-patrol",
                 source="moving-to-patrol-stop-1",
                 target="patrol-complete",
-                conditions=(StatechartCondition(211, 2),),
-                requires_decision=True,
+                context={"not_before": {"tick": 211, "scale": 2}},
             ),
         ),
     )
@@ -90,7 +87,7 @@ def test_python_statemachine_factory_builds_and_advances_semantic_chart() -> Non
     assert machine.allowed_events == ("complete-patrol",)
 
 
-def test_runner_exposes_conditions_before_they_are_satisfied_and_requires_decision() -> None:
+def test_runner_exposes_flexible_context_and_requires_decision() -> None:
     chart = _chart()
     runner = FSMRunner(
         InProcessTransport(),
@@ -103,21 +100,19 @@ def test_runner_exposes_conditions_before_they_are_satisfied_and_requires_decisi
     assert status.active_state == chart.entry_state
     assert status.active_state_context["phase"] == "stationary"
     assert status.enabled_events == ("start-moving-to-patrol-stop-1",)
-    assert status.transition_candidates[0].conditions == (
-        StatechartCondition(65, 2),
-    )
+    assert status.transition_candidates[0].transition_context == {
+        "not_before": {"tick": 65, "scale": 2}
+    }
     assert status.transition_candidates[0].target_state_context["phase"] == "moving"
-
-    unchanged = asyncio.run(runner.apply(status.transition_candidates[0]))
-    assert unchanged.active_state == chart.entry_state
 
     advanced = asyncio.run(
         runner.apply(
             status.transition_candidates[0],
-            maneuver_decision=ManeuverDecision(
+            ManeuverDecision(
                 decision_id="decision-1",
                 mission_id=chart.mission_id,
                 transition_event="start-moving-to-patrol-stop-1",
+                payload={"plan_revision": chart.plan_revision},
             ),
         )
     )
@@ -160,15 +155,13 @@ def test_event_patrol_semantic_topology_instantiates_all_four_stops() -> None:
                     event=f"start-moving-to-patrol-stop-{number}",
                     source=source,
                     target=moving,
-                    conditions=(StatechartCondition(move_start, 2),),
-                    requires_decision=True,
+                    context={"time": {"tick": move_start, "scale": 2}},
                 ),
                 StatechartTransition(
                     event=f"arrive-at-patrol-stop-{number}",
                     source=moving,
                     target=at_stop,
-                    conditions=(StatechartCondition(arrive, 2),),
-                    requires_decision=True,
+                    context={"time": {"tick": arrive, "scale": 2}},
                 ),
             )
         )
@@ -180,8 +173,7 @@ def test_event_patrol_semantic_topology_instantiates_all_four_stops() -> None:
             event="complete-patrol",
             source=source,
             target="patrol-complete",
-            conditions=(StatechartCondition(600, 2),),
-            requires_decision=True,
+            context={"time": {"tick": 600, "scale": 2}},
         )
     )
     chart = Statechart(

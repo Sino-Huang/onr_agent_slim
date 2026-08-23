@@ -7,14 +7,14 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from threading import Thread
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from langchain.tools import ToolRuntime, tool
-from pydantic import BaseModel, ConfigDict, Field
 
 from onr.application.bayesian_belief import create_risk_observation_event
 from onr.contracts.bayesian_belief import EntityAssociation, RiskObservation
 from onr.contracts.communication import AgentMessage, AgentMessageKind
+from onr.contracts.environment import EventObservation
 from onr.contracts.fsm import FSMStatus, ManeuverDecision
 from onr.contracts.hyper_agent import ReplanRequest
 from onr.contracts.maneuver_control import (
@@ -23,7 +23,7 @@ from onr.contracts.maneuver_control import (
     NonPhysicalChoice,
 )
 from onr.contracts.planning import ManeuverIntent, ManeuverParameter
-from onr.contracts.transport import CommandOutcome
+from onr.contracts.transport import CommandOutcome, TransportEvent
 
 JsonScalar = str | int | float | bool | None
 
@@ -108,9 +108,8 @@ class ManeuverToolContext:
     # ToolRuntime asks Pydantic to serialize its context between graph steps.
     # Keep the audit record opaque like the service dependencies so immutable
     # MappingProxy payloads are never treated as model-visible dictionaries.
-    execution_record: Any = field(
-        default_factory=ManeuverHeartbeatExecutionRecord
-    )
+    execution_record: Any = field(default_factory=ManeuverHeartbeatExecutionRecord)
+    perception_batch_ingested: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.invocation, ManeuverInvocation):
@@ -139,20 +138,9 @@ def _context(runtime: ToolRuntime[ManeuverToolContext]) -> ManeuverToolContext:
     return context
 
 
-def _mission_time(environment: Mapping[str, object]) -> float:
-    value = environment.get("mission_time_seconds")
-    if value is None:
-        graph = environment.get("scene_graph")
-        value = graph.get("mission_time_seconds") if isinstance(graph, Mapping) else None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError("current environment lacks numeric mission_time_seconds")
-    return float(value)
-
-
-def _candidate_result(status: FSMStatus, mission_time: float) -> dict[str, object]:
+def _candidate_result(status: FSMStatus) -> dict[str, object]:
     return {
         "current_state": status.active_state,
-        "mission_time_seconds": mission_time,
         "candidates": [item.to_dict() for item in status.transition_candidates],
     }
 
@@ -163,7 +151,7 @@ def transition_fsm(
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
 ) -> str:
-    """Apply an exact live FSM candidate after checking all time conditions.
+    """Apply an exact live FSM candidate with a current Maneuver decision.
 
     Args:
         event: Exact event name from the current live transition candidates.
@@ -177,9 +165,19 @@ def transition_fsm(
     status = _run(context.fsm_runner.status())
     if not isinstance(status, FSMStatus):
         raise TypeError("live FSM Runner did not return FSMStatus")
-    mission_time = _mission_time(context.invocation.environment_data)
+    if (
+        status.mission_id != context.invocation.mission_id
+        or status.plan_revision != context.invocation.plan_revision
+    ):
+        result = {
+            "status": "rejected",
+            "reason": "live FSM status does not match the current Maneuver invocation",
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
     candidates = [item for item in status.transition_candidates if item.event == event]
-    base = _candidate_result(status, mission_time)
+    base = _candidate_result(status)
     if len(candidates) != 1:
         result = {
             "status": "rejected",
@@ -189,37 +187,20 @@ def transition_fsm(
         context.execution_record.append("transition_fsm", result, successful=False)
         return _canonical_json(result)
     candidate = candidates[0]
-    unsatisfied = [
-        condition
-        for condition in candidate.conditions
-        if mission_time < condition.time_tick / condition.time_scale
-    ]
-    if unsatisfied:
-        result = {
-            "status": "rejected",
-            "reason": "environment_time_at_or_after condition is not yet satisfied",
-            "unsatisfied_conditions": [item.to_dict() for item in unsatisfied],
-            **base,
-        }
-        context.execution_record.append("transition_fsm", result, successful=False)
-        return _canonical_json(result)
     sequence = len(context.execution_record.executions) + 1
     decision_id = f"maneuver-transition:{context.invocation.request_id}:{sequence}"
     authorization = ManeuverDecision(
         decision_id=decision_id,
         mission_id=context.invocation.mission_id,
         transition_event=candidate.event,
+        payload={"plan_revision": context.invocation.plan_revision},
     )
-    updated = _run(
-        context.fsm_runner.apply(candidate, maneuver_decision=authorization)
-    )
+    updated = _run(context.fsm_runner.apply(candidate, authorization))
     if not isinstance(updated, FSMStatus) or updated.active_state != candidate.target:
         result = {
             "status": "rejected",
             "reason": "live FSM Runner did not apply the candidate",
-            **_candidate_result(
-                updated if isinstance(updated, FSMStatus) else status, mission_time
-            ),
+            **_candidate_result(updated if isinstance(updated, FSMStatus) else status),
         }
         context.execution_record.append("transition_fsm", result, successful=False)
         return _canonical_json(result)
@@ -281,7 +262,9 @@ def _physical(
         "maneuver_id": command.maneuver_id,
         "action": command.action,
     }
-    context.execution_record.append(tool_name, result, successful=True, decision=decision)
+    context.execution_record.append(
+        tool_name, result, successful=True, decision=decision
+    )
     return _canonical_json(result)
 
 
@@ -294,9 +277,14 @@ def navigate(
     runtime: ToolRuntime[ManeuverToolContext],
     z: float | None = None,
     speed: float | None = None,
+    deadline_time: float | None = None,
+    observation_start: float | None = None,
+    observation_duration: float | None = None,
+    source_event_index: int | None = None,
+    expected_observation_count: int | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
-    """Submit planar navigation, optionally with altitude and speed.
+    """Submit deadline-aware navigation and its correlated observation window.
 
     Args:
         maneuver_id: Action identity selected for this navigation.
@@ -305,6 +293,11 @@ def navigate(
         reflection: Concise public evidence summary for this action.
         z: Optional target altitude or depth.
         speed: Optional requested speed.
+        deadline_time: Continuous Mission time by which the target must be reached.
+        observation_start: Continuous Mission time at which sensing begins.
+        observation_duration: Duration in seconds of the sensing window.
+        source_event_index: Planner-correlated source event identity.
+        expected_observation_count: Expected event observations in the window.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
@@ -313,6 +306,16 @@ def navigate(
         required["z"] = z
     if speed is not None:
         required["speed"] = speed
+    if deadline_time is not None:
+        required["deadline_time"] = deadline_time
+    if observation_start is not None:
+        required["observation_start"] = observation_start
+    if observation_duration is not None:
+        required["observation_duration"] = observation_duration
+    if source_event_index is not None:
+        required["source_event_index"] = source_event_index
+    if expected_observation_count is not None:
+        required["expected_observation_count"] = expected_observation_count
     context = _context(runtime)
     return _physical(
         context,
@@ -494,61 +497,82 @@ def investigate(
     )
 
 
-class EntityAssociationInput(BaseModel):
-    """Model-facing weighted entity association for a risk observation."""
-
-    model_config = ConfigDict(extra="forbid")
-    entity_id: str
-    weight: float = Field(ge=0.0, le=1.0)
-
-
 @tool(parse_docstring=True)
-def update_belief(
-    risk_type: str,
-    associations: list[EntityAssociationInput],
-    likelihood_given_risk: float,
-    likelihood_given_safe: float,
+def ingest_perceptions(
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
 ) -> str:
-    """Synchronously apply one durable Bayesian risk observation.
+    """Ingest every pending event perception as an ordered Bayesian update.
 
     Args:
-        risk_type: Risk category observed in current evidence.
-        associations: Weighted candidate entities whose weights sum to one.
-        likelihood_given_risk: Observation likelihood if risk is present.
-        likelihood_given_safe: Observation likelihood if risk is absent.
-        reflection: Concise public evidence summary for this update.
+        reflection: Concise public evidence summary for this perception batch.
 
     Returns:
-        Only a completed update status; new belief content enters next heartbeat.
+        Completed batch status; new belief content enters later Hyper invocations.
     """
 
     context = _context(runtime)
+    if context.perception_batch_ingested:
+        raise RuntimeError("perception batch tool is unavailable after success")
     if context.belief_service is None:
         raise RuntimeError("Maneuver heartbeat has no Bayesian belief service")
-    sequence = len(context.execution_record.executions) + 1
-    last_revision = context.belief_service.manager.last_input_revision
-    input_revision = 0 if last_revision is None else last_revision + 1
-    event_id = f"risk.observed:{context.invocation.request_id}:{sequence}"
-    observation = RiskObservation(
-        event_id=event_id,
-        input_revision=input_revision,
-        risk_type=risk_type,
-        associations=tuple(
-            EntityAssociation(item.entity_id, item.weight) for item in associations
-        ),
-        likelihood_given_risk=likelihood_given_risk,
-        likelihood_given_safe=likelihood_given_safe,
+    perceptions = tuple(
+        item
+        for item in context.invocation.pending_perceptions
+        if isinstance(item, EventObservation)
     )
-    event = create_risk_observation_event(
-        context.invocation.mission_id,
-        observation,
-        sequence=input_revision,
-    )
-    context.belief_service.handle(event)
-    result = {"status": "updated_complete"}
-    context.execution_record.append("update_belief", result, successful=True)
+    if not perceptions:
+        raise RuntimeError("Maneuver heartbeat has no pending event perceptions")
+    revisions: list[int] = []
+    for perception in perceptions:
+        event_id = f"risk.observed:{perception.observation_id}"
+        get_event = getattr(context.belief_service.transport, "get_event", None)
+        existing = (
+            cast(TransportEvent | None, get_event(event_id))
+            if callable(get_event)
+            else None
+        )
+        if existing is None:
+            sequence = context.belief_service.transport.next_event_sequence(
+                context.belief_service.observation_topic,
+                context.invocation.mission_id,
+            )
+            observation = RiskObservation(
+                event_id=event_id,
+                input_revision=sequence + 1,
+                risk_type="event-risk",
+                associations=(EntityAssociation(perception.entity_id, 1.0),),
+                likelihood_given_risk=1.0 - perception.uncertainty_score,
+                likelihood_given_safe=perception.uncertainty_score,
+            )
+            existing = context.belief_service.transport.publish_event(
+                context.belief_service.observation_topic,
+                create_risk_observation_event(
+                    context.invocation.mission_id,
+                    observation,
+                    sequence=sequence,
+                ),
+            )
+        input_revision = existing.payload.get("input_revision")
+        last_revision = context.belief_service.manager.last_input_revision
+        if (
+            isinstance(input_revision, int)
+            and not isinstance(input_revision, bool)
+            and last_revision is not None
+            and input_revision <= last_revision
+        ):
+            continue
+        snapshot = context.belief_service.handle(existing)
+        if snapshot is not None:
+            revisions.append(snapshot.belief_revision)
+    context.perception_batch_ingested = True
+    result = {
+        "status": "updated_complete",
+        "event_count": len(perceptions),
+        "belief_revisions": revisions,
+        "reflection": reflection,
+    }
+    context.execution_record.append("ingest_perceptions", result, successful=True)
     return _canonical_json(result)
 
 
@@ -623,7 +647,9 @@ def communicate(
         or outcome.mission_id != invocation.mission_id
         or str(outcome.status) != "completed"
     ):
-        raise RuntimeError("agent communication did not return a successful correlation")
+        raise RuntimeError(
+            "agent communication did not return a successful correlation"
+        )
     audit = ManeuverControlDecision(
         decision_id=message_id,
         mission_id=invocation.mission_id,
@@ -646,18 +672,18 @@ MANEUVER_OPERATIONAL_TOOLS = (
     search_area,
     pursue,
     investigate,
-    update_belief,
+    ingest_perceptions,
     communicate,
 )
 
 
 __all__ = [
     "MANEUVER_OPERATIONAL_TOOLS",
-    "EntityAssociationInput",
     "ManeuverHeartbeatExecutionRecord",
     "ManeuverToolContext",
     "ManeuverToolExecution",
     "communicate",
+    "ingest_perceptions",
     "investigate",
     "land",
     "navigate",
@@ -665,5 +691,4 @@ __all__ = [
     "search_area",
     "takeoff",
     "transition_fsm",
-    "update_belief",
 ]

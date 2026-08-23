@@ -1,40 +1,53 @@
 ---
 name: creating-statechart-files
-description: Apply after planner execution returns an accepted planner-native plan to generate and repair Statechart/FSM execution semantics.
-version: '2.0.0'
+description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
+version: '3.0.0'
 ---
 
 # Creating Statechart Files
 
 ## Procedure
 
-1. Interpret the exact planner-native plan text returned by `planner_executor`; retain its PlannerPlan artifact reference as planning evidence.
-2. Describe behavioral states and legal transitions. State context carries plan-derived location, destination, observation, and timing facts; the Statechart/FSM becomes the execution semantics.
-3. Submit topology with exactly `entry_state`, `terminal_states`, `states`, `state_context`, and `transitions`. Every state has one `state_context` object.
-4. Each transition has exactly `event`, `source`, `target`, and `conditions`. A temporal condition has `kind: environment_time_at_or_after`, non-negative `time_tick`, and positive `time_scale`.
-5. Call `submit_statechart_draft` with the topology and concise reflection; the workflow assigns the next attempt. On rejection, use its exact validation error to produce a fresh attempt within the returned bound.
-6. Completion requires acceptance and successful `python-statemachine` instantiation.
+1. Inspect and decode the exact `planner_native_plan_artifact_reference` with `jq` or standard-library Python. Treat the artifact, not the tool-call transcript, as the input.
+2. Read `examples/event-information-patrol/generate_statechart.py` as a few-shot. Author a mission-specific `generate_statechart.py` at the exact location returned by `planner_executor`.
+3. Keep two sections obvious in the generator: planner-output extraction and semantic-topology construction. Adapt extraction to the observed artifact schema; do not introduce a production-owned planner schema.
+4. Preserve every planner-selected item’s order, dependencies, parameters, timing, units, and identifiers in self-explanatory state or transition contexts. Describe desired operational outcomes and evidence; Maneuver Control chooses physical tools.
+   Initial travel may be authorized at Mission time zero. Later travel becomes
+   eligible when the prior observation window ends; authoritative maneuver
+   lifecycle feedback triggers Maneuver Control immediately, without rounding
+   planner timing to the periodic heartbeat cadence. Keep observation start and
+   duration distinct from travel timing.
+   Document the navigation adapter scalars `x`, `y`, `deadline_time`,
+   `observation_start`, `observation_duration`, `source_event_index`, and
+   `expected_observation_count` in the moving state's context.
+   `deadline_time` is the continuous planner time at which the target must be
+   reached (normally the observation-window start), not a heartbeat boundary.
+5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
+6. Run the generator. Inspect both authored files and the printed manifest. Repair the same files until their contents and manifest agree with the planner artifact.
+7. Call `submit_statechart_draft` with the exact returned `statechart_file_location`. On rejection, use the structured diagnostic to edit, rerun, inspect, and resubmit those same files.
+8. Completion requires verifier acceptance and successful `python-statemachine` construction.
 
-## MiniZinc event-information patrol
+## Draft contract
 
-Build this linear semantic topology from the solver-selected native output:
+The draft contains exactly `entry_state`, `terminal_states`, `states`, `state_context`, and `transitions`.
 
-- Entry state `at-initial-location` may have empty context; the accepted action list owns the destinations.
-- For each selected assignment in output order, create `moving-to-<maneuver_id>` with its target coordinates, then `at-<maneuver_id>` with `x`, `y`, `source_event_index`, captured-event count, and dwell timing.
-- Connect the preceding location state to the moving state immediately after the preceding stop, or from entry for the first assignment.
-- Connect the moving state to the stop state at the assignment `start`.
-- After the final stop, connect to `patrol-complete` at `start + duration`.
-- Use each assignment's `time_scale` unchanged on every time condition.
+- `states` is a non-empty array of unique state-ID strings.
+- `entry_state` and every explicit terminal state are declared.
+- `state_context` maps every declared state to one arbitrary finite JSON object.
+- Every transition contains exactly `event`, `source`, `target`, and `context`.
+- Transition events are globally unique. Every transition context is an arbitrary finite JSON object.
+- Every state is reachable from entry and can reach a terminal state.
 
-State IDs and event names are stable semantic identifiers. Conditions remain visible to Maneuver Control; the FSM Runner applies an edge only after an explicit transition decision.
+Context vocabulary belongs to this generator. Use nested objects and names that explain meaning, units, planner provenance, desired outcomes, and readiness evidence without relying on state or event names.
 
-## Must Not Do
-
-- Do not add `additionalProperties` or any other top-level field. Submit exactly `entry_state`, `terminal_states`, `states`, `state_context`, and `transitions`.
-- Do not put context objects inside `states`. `states` is an array of state-ID strings; `state_context` is a top-level object mapping every state ID to its context object.
-- Do not submit one condition object directly. Every transition's `conditions` value is an array, such as `[{"kind":"environment_time_at_or_after","time_tick":65,"time_scale":2}]`.
-- Do not repeat an identical rejected draft. Read the exact validation error, then change the cited shape before resubmission.
+Observation confirmation requires both the end of the planner window and the
+bounded sensed-evidence summary for that maneuver. Reaching the window start is
+not observation completion.
 
 ## Repair boundary
 
-`schema` rejection means the topology, state coverage, terminal reachability, or condition shape is invalid. `machine_build` rejection means the validated topology could not instantiate the FSM engine. Repair the Statechart draft; `submit_statechart_draft` validates structure and FSM construction without reinterpreting or comparing planner-native actions.
+- `workspace_path`: submit the exact path returned by `planner_executor`; keep the generator and draft there.
+- `schema`: repair JSON shape, context coverage, references, event uniqueness, reachability, or terminal paths.
+- `machine_build`: repair topology that the dynamic `python-statemachine` engine cannot construct.
+
+Every submission is snapshotted. A rejection’s `required_next_action` identifies the same live files to repair; repeating an unchanged rejected draft spends another attempt.

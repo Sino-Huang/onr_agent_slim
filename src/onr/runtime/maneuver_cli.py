@@ -96,7 +96,7 @@ def run_maneuver_demo(
         plan.mission_id,
         output_root=repo_root / "var/environment",
     )
-    environment.heartbeat(mission_time_seconds=0)
+    environment.heartbeat()
     authority = DemoEnvironmentAuthority(environment)
     runner = runtime.create_fsm_runner(mission_id=plan.mission_id)
     status = asyncio.run(runner.activate(chart))
@@ -134,9 +134,14 @@ def run_maneuver_demo(
     completions: list[ManeuverHeartbeatCompletion] = []
     physical_actions: list[str] = []
 
+    def advance_to(mission_time: float) -> None:
+        while environment.mission_time_seconds < mission_time:
+            environment.tick()
+
     def heartbeat(mission_time: float, label: str) -> FSMStatus:
         nonlocal status
-        environment.heartbeat(mission_time_seconds=mission_time)
+        advance_to(mission_time)
+        environment.heartbeat()
         invocation = ManeuverInvocation(
             request_id=f"maneuver-demo:{plan.mission_id}:{label}",
             correlation_id=f"maneuver-demo:{plan.mission_id}",
@@ -145,7 +150,7 @@ def run_maneuver_demo(
             statechart_reference=str(statechart_reference),
             fsm_status=status,
             environment_data=authority.current_environment_data(),
-            belief_snapshot=belief_service.load_current_snapshot(),
+            trigger_identities=(f"manual:{label}",),
             available_recipients=("hyper-agent",),
         )
         completion = control.heartbeat(invocation)
@@ -168,19 +173,17 @@ def run_maneuver_demo(
     heartbeat(0, "depart-1")
     _require_state(status, "moving-to-patrol-stop-1")
     _require_navigation(environment, "active")
-    environment.tick(mission_time_seconds=5)
+    advance_to(5)
     _require_navigation(environment, "completed")
     heartbeat(5, "arrive-1")
 
     heartbeat(6, "depart-2")
     _require_navigation(environment, "active")
-    environment.tick(mission_time_seconds=10)
+    advance_to(10)
     heartbeat(10, "arrive-2")
-    if belief_service.load_current_snapshot() is None:
-        raise RuntimeError("Maneuver demo did not complete its belief update")
 
     heartbeat(11, "depart-3")
-    environment.tick(mission_time_seconds=15)
+    advance_to(15)
     heartbeat(15, "arrive-3")
     if not hyper_messages:
         raise RuntimeError("Maneuver demo did not communicate with Hyper")
@@ -193,7 +196,7 @@ def run_maneuver_demo(
     if not override_confirmed:
         raise RuntimeError("Maneuver demo did not override active navigation")
     authority.emergency_override = False
-    environment.tick(mission_time_seconds=20)
+    advance_to(20)
 
     heartbeat(20, "arrive-4")
     final = heartbeat(21, "complete")
@@ -209,8 +212,6 @@ def run_maneuver_demo(
         raise RuntimeError("Maneuver demo heartbeat completions are inconsistent")
 
     belief = belief_service.load_current_snapshot()
-    if belief is None:
-        raise RuntimeError("Maneuver demo belief artifact is unavailable")
     mission_component = quote(plan.mission_id, safe="._-")
     debug_root = runtime.config.storage.root.parent / "debug"
     return ManeuverDemoRunResult(
@@ -220,7 +221,7 @@ def run_maneuver_demo(
         heartbeat_count=len(completions),
         transition_count=len(chart.transitions),
         physical_actions=tuple(physical_actions),
-        belief_revision=belief.belief_revision,
+        belief_revision=belief.belief_revision if belief is not None else 0,
         hyper_message_count=len(hyper_messages),
         override_confirmed=override_confirmed,
         statechart_reference=statechart_reference,

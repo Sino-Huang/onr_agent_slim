@@ -454,7 +454,7 @@ def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
         "search_area",
         "pursue",
         "investigate",
-        "update_belief",
+        "ingest_perceptions",
         "communicate",
     ]
 
@@ -804,7 +804,7 @@ def test_submission_intent_prevents_resubmit_after_crash_window() -> None:
     )
 
 
-def test_adapter_submission_does_not_advance_fsm_without_feedback() -> None:
+def test_adapter_submission_is_independent_from_explicit_fsm_decision() -> None:
     mission_id = "mission-symbolic"
     revision = 7
     chart = Statechart(
@@ -816,7 +816,10 @@ def test_adapter_submission_does_not_advance_fsm_without_feedback() -> None:
         states=("ready", "complete"),
         transitions=(
             StatechartTransition(
-                "advance:survey", "ready", "complete", "survey", True, True
+                "advance:survey",
+                "ready",
+                "complete",
+                {"desired_outcome": "survey evidence has been judged complete"},
             ),
         ),
         terminal_states=("complete",),
@@ -845,29 +848,21 @@ def test_adapter_submission_does_not_advance_fsm_without_feedback() -> None:
     result = control.heartbeat(snapshot, initial)
     assert result.command is not None
     control.handle_command(result.command.to_command("maneuver-adapter"))
-    unchanged = asyncio.run(
-        runner.apply(
-            candidate,
-            ManeuverDecision(
-                "transition-decision", mission_id, transition_event=candidate.event
-            ),
-        )
-    )
-    assert unchanged.active_state == initial.active_state
-    assert unchanged.lifecycle_facts == {}
+    assert asyncio.run(runner.status()).active_state == initial.active_state  # type: ignore[union-attr]
     assert transport.latest_event("maneuver-feedback", mission_id) is None
 
     moved = asyncio.run(
         runner.apply(
             candidate,
-            ManeuverFeedback("feedback-1", mission_id, "survey", "completed"),
             ManeuverDecision(
-                "transition-decision", mission_id, transition_event=candidate.event
+                "transition-decision",
+                mission_id,
+                transition_event=candidate.event,
+                payload={"plan_revision": revision},
             ),
         )
     )
     assert moved.active_state == candidate.target
-    assert moved.lifecycle_facts["survey"] == "completed"
     assert len(adapter.commands) == 1
 
 

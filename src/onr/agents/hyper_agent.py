@@ -16,7 +16,11 @@ from onr.agents.structured_output import (
     StructuredOutputFailure,
     invoke_with_structured_output_recovery,
 )
-from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.hyper_agent import (
+    HyperHeartbeatDecision,
+    HyperHeartbeatInvocation,
+    MissionInput,
+)
 from onr.contracts.planning_intent import PlanningIntent
 
 PLANNING_INTENT_SCHEMA: dict[str, Any] = {
@@ -53,7 +57,8 @@ PLANNING_INTENT_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": True,
             "description": (
-                "Flexible mission context only; exclude planner assets, generated assets, "
+                "Flexible mission context only; exclude planner assets, "
+                "generated assets, "
                 "solver input/output, verification evidence, normalized plans, and "
                 "pre-planner specification envelopes."
             ),
@@ -66,6 +71,24 @@ PLANNING_INTENT_SCHEMA: dict[str, Any] = {
         "planner_choice",
         "rationale",
         "details",
+    ],
+    "additionalProperties": False,
+}
+
+HYPER_HEARTBEAT_SCHEMA: dict[str, Any] = {
+    "title": "HyperHeartbeatDecisionCandidate",
+    "type": "object",
+    "properties": {
+        "mission_id": {"type": "string"},
+        "plan_revision": {"type": "integer", "minimum": 0},
+        "disposition": {"enum": ["no_change", "replan", "decline"]},
+        "evidence_summary": {"type": "string"},
+    },
+    "required": [
+        "mission_id",
+        "plan_revision",
+        "disposition",
+        "evidence_summary",
     ],
     "additionalProperties": False,
 }
@@ -95,6 +118,32 @@ def create_planning_intent_agent(
         backend_root=backend_root,
         backend_kind="filesystem",
         middleware=[TodoListMiddleware()],
+    )
+
+
+def create_hyper_heartbeat_agent(
+    *,
+    model: Any,
+    system_prompt: str,
+    mission_id: str,
+    memory_store: object | None = None,
+    skill_catalog: object | None = None,
+    skill_version: str | None = None,
+    backend_root: Path | None = None,
+) -> object:
+    """Create an uncheckpointed agent used for one fresh supervisory episode."""
+
+    return _create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        response_format=HYPER_HEARTBEAT_SCHEMA,
+        mission_id=mission_id,
+        role="hyper-agent",
+        memory_store=memory_store,
+        skill_catalog=skill_catalog,
+        skill_version=skill_version,
+        backend_root=backend_root,
+        backend_kind="filesystem",
     )
 
 
@@ -157,7 +206,9 @@ def _create_deep_agent(
         try:
             relative_root = root.resolve().relative_to(Path(backend_root).resolve())
         except ValueError as exc:
-            raise ValueError("Mission Memory root is outside the agent backend root") from exc
+            raise ValueError(
+                "Mission Memory root is outside the agent backend root"
+            ) from exc
         if relative_root.parts:
             memory_agent_path = "/" + relative_root.as_posix() + "/memory/AGENTS.md"
         kwargs["memory"] = [memory_agent_path]
@@ -183,7 +234,9 @@ def _create_deep_agent(
             selected_skills.append(_skill_agent_path(selected_path, backend_root))
             selected_role = getattr(selected, "role", None)
             selected_version = getattr(selected, "version", None)
-            if not isinstance(selected_role, str) or not isinstance(selected_version, str):
+            if not isinstance(selected_role, str) or not isinstance(
+                selected_version, str
+            ):
                 raise TypeError("Role Skill catalog returned invalid metadata")
             selected_skill_profiles.append(
                 {
@@ -237,7 +290,9 @@ def _create_deep_agent(
                 )
             )
         if context is not None:
-            hard_permissions.append(FilesystemPermission(["write"], [memory_scope], mode="allow"))
+            hard_permissions.append(
+                FilesystemPermission(["write"], [memory_scope], mode="allow")
+            )
         for writable_path in writable_paths or []:
             if not writable_path.startswith("/") or ".." in Path(writable_path).parts:
                 raise ValueError("agent writable path must be an absolute virtual path")
@@ -270,7 +325,9 @@ def _skill_agent_path(path: Path, backend_root: Path | None) -> str:
     try:
         return "/" + selected.relative_to(root).as_posix()
     except ValueError as exc:
-        raise ValueError("selected Role Skill is outside the agent backend root") from exc
+        raise ValueError(
+            "selected Role Skill is outside the agent backend root"
+        ) from exc
 
 
 T = TypeVar("T")
@@ -315,6 +372,36 @@ class DeepAgentsPlanningIntentInterpreter:
             mission_input,
             self.max_retries,
             lambda response: _parse_planning_intent_response(response, mission_input),
+        )
+
+
+class DeepAgentsHyperHeartbeatProvider:
+    """Adapt one fresh Deep Agent episode to a supervisory decision."""
+
+    def __init__(self, agent: object, max_retries: int = 2) -> None:
+        if not callable(getattr(agent, "invoke", None)):
+            raise TypeError("Hyper heartbeat agent must expose invoke")
+        self.agent = agent
+        self.max_retries = max_retries
+
+    def decide(self, invocation: HyperHeartbeatInvocation) -> HyperHeartbeatDecision:
+        if not isinstance(invocation, HyperHeartbeatInvocation):
+            raise TypeError("Hyper heartbeat provider requires its invocation")
+        callback = getattr(self.agent, "_onr_debug_callback", None)
+
+        def invoke(state: Mapping[str, object]) -> object:
+            method = cast(Callable[..., object], cast(Any, self.agent).invoke)
+            return (
+                method(state)
+                if callback is None
+                else method(state, config={"callbacks": [callback]})
+            )
+
+        return invoke_with_structured_output_recovery(
+            invoke,
+            invocation.to_dict(),
+            self.max_retries,
+            lambda response: _parse_hyper_heartbeat_response(response, invocation),
         )
 
 
@@ -405,14 +492,18 @@ def _parse_planning_intent_response(
     )
     for name in ("mission_id", "source_authority", "objective", "rationale"):
         _text(candidate[name], f"{path}.{name}")
-    _validate_planning_intent_choice(candidate["planner_choice"], f"{path}.planner_choice")
+    _validate_planning_intent_choice(
+        candidate["planner_choice"], f"{path}.planner_choice"
+    )
     details_path = f"{path}.details"
     details = _object(candidate["details"], details_path)
     mission_text = mission_input.mission_text.casefold()
     details_text = json.dumps(details, ensure_ascii=False).casefold()
     if (
-        "fov" in mission_text or "field of view" in mission_text
-    ) and "fov" not in details_text and "field of view" not in details_text:
+        ("fov" in mission_text or "field of view" in mission_text)
+        and "fov" not in details_text
+        and "field of view" not in details_text
+    ):
         _fail(
             StructuralIssue(
                 "invalid_value",
@@ -424,13 +515,55 @@ def _parse_planning_intent_response(
     if candidate["mission_id"] != mission_input.mission_id:
         raise ValueError("planning intent mission ID does not match mission input")
     if candidate["source_authority"] != mission_input.source_authority:
-        raise ValueError("planning intent source authority does not match mission input")
+        raise ValueError(
+            "planning intent source authority does not match mission input"
+        )
 
     return PlanningIntent.from_dict(
         {
             **candidate,
             "schema_version": 1,
         }
+    )
+
+
+def _parse_hyper_heartbeat_response(
+    response: object,
+    invocation: HyperHeartbeatInvocation,
+) -> HyperHeartbeatDecision:
+    path = "$.structured_response"
+    candidate = _fields(
+        _structured_response(response),
+        {"mission_id", "plan_revision", "disposition", "evidence_summary"},
+        path,
+    )
+    _text(candidate["mission_id"], f"{path}.mission_id")
+    _integer(candidate["plan_revision"], f"{path}.plan_revision")
+    _text(candidate["disposition"], f"{path}.disposition")
+    _text(candidate["evidence_summary"], f"{path}.evidence_summary")
+    if candidate["disposition"] not in {"no_change", "replan", "decline"}:
+        _fail(
+            StructuralIssue(
+                "invalid_value",
+                f"{path}.disposition",
+                '"no_change", "replan", or "decline"',
+            )
+        )
+    if candidate["mission_id"] != invocation.mission_id:
+        raise ValueError("Hyper decision Mission ID does not match its invocation")
+    if candidate["plan_revision"] != invocation.plan_revision:
+        raise ValueError("Hyper decision plan revision does not match its invocation")
+    return HyperHeartbeatDecision(
+        mission_id=invocation.mission_id,
+        plan_revision=invocation.plan_revision,
+        disposition=candidate["disposition"],
+        evidence_summary=candidate["evidence_summary"],
+        trigger_identities=invocation.trigger_identities,
+        request_identities=tuple(
+            identity
+            for request in invocation.maneuver_requests
+            for identity in (request.coalesced_request_ids or (request.request_id,))
+        ),
     )
 
 
@@ -464,7 +597,10 @@ def _validate_planning_intent_choice(value: object, path: str) -> None:
 
 
 __all__ = [
-    "PLANNING_INTENT_SCHEMA",
-    "create_planning_intent_agent",
+    "DeepAgentsHyperHeartbeatProvider",
     "DeepAgentsPlanningIntentInterpreter",
+    "HYPER_HEARTBEAT_SCHEMA",
+    "PLANNING_INTENT_SCHEMA",
+    "create_hyper_heartbeat_agent",
+    "create_planning_intent_agent",
 ]

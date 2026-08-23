@@ -40,7 +40,9 @@ _ERROR_MESSAGES = {
     "unknown_fields": "The public observation fields are not part of the v1 contract.",
     "invalid_record": "The public observation failed v1 contract validation.",
     "unsupported_shape": "The public observation shape is not a documented v1 record.",
-    "envelope_required": "Heterogeneous public observations require a v1 observation envelope.",
+    "envelope_required": (
+        "Heterogeneous public observations require a v1 observation envelope."
+    ),
 }
 _ERROR_CATEGORIES = set(_ERROR_MESSAGES)
 _SENSITIVE_KEY = re.compile(
@@ -134,12 +136,11 @@ _STATECHART_FIELDS = {
     "mission_snapshot_id",
     "planning_profile",
     "entry_state",
+    "terminal_states",
     "states",
+    "state_context",
     "transitions",
-    "timers",
-    "trusted",
 }
-_STATECHART_SEMANTIC_FIELDS = {"terminal_states", "state_context"}
 _FSM_STATUS_FIELDS = {
     "schema_version",
     "mission_id",
@@ -147,14 +148,10 @@ _FSM_STATUS_FIELDS = {
     "statechart_revision",
     "active_state",
     "transition_candidates",
-    "timer_due",
     "status",
     "superseded_plan_revision",
-    "superseded_maneuver_ids",
     "last_applied_event",
-    "timer_due_markers",
-    "lifecycle_facts",
-    "retained_maneuver_ids",
+    "active_state_context",
 }
 _FSM_EXECUTION_FIELDS = {
     "schema_version",
@@ -166,13 +163,9 @@ _FSM_EXECUTION_FIELDS = {
     "last_applied_event",
     "transition_history",
     "superseded_plan_revision",
-    "superseded_maneuver_ids",
-    "retained_maneuver_ids",
     "record_revision",
     "last_applied_event_identity",
     "applied_event_identities",
-    "timer_due_markers",
-    "lifecycle_facts",
 }
 _MANEUVER_FEEDBACK_FIELDS = {
     "schema_version",
@@ -221,6 +214,7 @@ _IDENTITY = {
 _LOG_COMPONENTS = {
     "hyper-agent": "hyper-agent",
     "context-coordination": "context-coordination",
+    "bayesian-belief": "bayesian-belief",
     "fsm-runner": "fsm-runner",
     "maneuver-control": "maneuver-control",
     "maneuver-adapter": "maneuver-adapter",
@@ -238,10 +232,14 @@ _LOG_DETAIL_FIELDS = {
     "environment",
     "error_type",
     "event_id",
+    "event_information",
     "event_kind",
+    "event_time",
+    "evidence_summary",
     "generated_assets",
     "lifecycle",
     "maneuver_id",
+    "maneuver_requests",
     "mission_input_sha256",
     "mission_snapshot_id",
     "operation",
@@ -272,6 +270,7 @@ _LOG_DETAIL_FIELDS = {
     "translator_version",
 }
 _COMMON_EVENT_PAYLOAD_FIELDS = {
+    "accepted_statechart_reference",
     "action",
     "active_maneuver",
     "active_state",
@@ -287,10 +286,15 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "correlation_id",
     "constraints",
     "content_sha256",
+    "disposition",
     "edges",
+    "entity_id",
     "event",
     "event_id",
+    "event_information",
     "event_kind",
+    "event_time",
+    "evidence_summary",
     "feedback_loop",
     "fresh",
     "from",
@@ -303,12 +307,18 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "likelihood_given_risk",
     "likelihood_given_safe",
     "maneuver_id",
+    "maneuver_requests",
     "mission_memory_isolated",
+    "mission_snapshot_id",
     "missing",
     "missing_fields",
     "nodes",
     "marginals",
     "non_physical_choice",
+    "observation_id",
+    "observation_kind",
+    "observation_window_outcome",
+    "observed_time",
     "normalized_plan",
     "objective",
     "operation",
@@ -316,6 +326,9 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "parameters",
     "physical_actions",
     "plan_revision",
+    "planner_plan",
+    "planner_plan_reference",
+    "position",
     "planner",
     "planner_choice",
     "probability",
@@ -324,18 +337,21 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "question_id",
     "redacted_fields",
     "reference",
+    "request_identities",
     "resume_sequence",
     "revision",
     "role_skills",
     "risk_type",
     "scene_graph",
     "snapshot_id",
+    "source_event_index",
     "source_freshness",
     "source_hashes",
     "source_health",
     "source_references",
     "source_revisions",
     "state",
+    "statechart_reference",
     "status",
     "summary",
     "target_service",
@@ -345,8 +361,10 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "to",
     "topic",
     "transition",
+    "trigger_identities",
     "translation",
     "trusted",
+    "uncertainty_score",
     "version",
 }
 _TRANSPORT_IDENTITIES = {
@@ -355,12 +373,15 @@ _TRANSPORT_IDENTITIES = {
     "planner-selection": ("planner", "planner"),
     "planner-execution": ("planner", "planner"),
     "normalized-plan": ("planner", "planner"),
+    "planner-revision": ("planner", "planner"),
     "context-coordination": ("context-coordination", "context-coordination"),
     "mission-snapshot": ("context-coordination", "derived-snapshot"),
-    "bayesian-belief": ("environment", "bayesian-belief-source"),
-    "risk.observed": ("environment", "bayesian-belief-source"),
+    "bayesian-belief": ("bayesian-belief", "bayesian-belief-source"),
+    "risk.observed": ("maneuver-control", "bayesian-belief-source"),
+    "entity.observed": ("environment", "environment"),
+    "event.observed": ("environment", "environment"),
     "belief.constraints": ("environment", "bayesian-belief-source"),
-    "belief.updated": ("environment", "bayesian-belief-source"),
+    "belief.updated": ("bayesian-belief", "bayesian-belief-source"),
     "statechart": ("fsm-runner", "declarative-statechart"),
     "fsm-status": ("fsm-runner", "fsm-status"),
     "fsm-execution-record": ("fsm-runner", "durable-fsm-state"),
@@ -370,6 +391,7 @@ _TRANSPORT_IDENTITIES = {
     "environment-data": ("environment", "environment"),
     "environment-to-fsm-feedback": ("environment", "environment"),
     "control-to-hyper-replan": ("hyper-agent", "hyper-agent"),
+    "hyper-heartbeat-decision": ("hyper-agent", "hyper-agent"),
     "role-skills-advisory": ("advisory-context", "advisory-context"),
     "mission-memory-isolation": ("advisory-context", "mission-memory-isolation"),
     "human-question": ("advisory-context", "human-question"),
@@ -1019,9 +1041,13 @@ class TraceProjection:
         )
 
     def _adapt(self, raw: Mapping[str, object]) -> _CanonicalRecord:
+        keys = set(raw)
+        if "entry_state" in keys or "transitions" in keys and "states" in keys:
+            if raw.get("schema_version") != 2:
+                raise _RecordError("unsupported_schema")
+            return self._statechart(raw)
         if raw.get("schema_version") != 1:
             raise _RecordError("unsupported_schema")
-        keys = set(raw)
         if "record_id" in keys:
             return self._operational_log(raw)
         if "summary_id" in keys:
@@ -1040,8 +1066,6 @@ class TraceProjection:
             return self._transport_event(raw)
         if "version" in keys or "source_references" in keys:
             return self._snapshot(raw)
-        if "entry_state" in keys or "transitions" in keys and "states" in keys:
-            return self._statechart(raw)
         if "record_revision" in keys or "active_configuration" in keys:
             return self._fsm_execution(raw)
         if "transition_candidates" in keys:
@@ -1556,13 +1580,7 @@ class TraceProjection:
         return _CanonicalRecord(item, "mission_snapshot")
 
     def _statechart(self, raw: Mapping[str, object]) -> _CanonicalRecord:
-        expected = (
-            _STATECHART_FIELDS
-            if "timers" in raw
-            else (_STATECHART_FIELDS - {"timers"}) | {"deadlines"}
-        )
-        if _STATECHART_SEMANTIC_FIELDS.intersection(raw):
-            expected = expected | _STATECHART_SEMANTIC_FIELDS
+        expected = _STATECHART_FIELDS
         _exact(raw, expected, "Statechart")
         from onr.contracts.fsm import Statechart
 
@@ -1572,8 +1590,6 @@ class TraceProjection:
             raise _RecordError("invalid_record") from exc
         mission_id = _text(raw, "mission_id")
         revision = _integer(raw, "plan_revision")
-        if raw.get("trusted") is not False:
-            raise _RecordError("invalid_record")
         fields = expected - {"schema_version", "mission_id", "plan_revision"}
         payload, redactions = _safe_payload(raw, fields)
         item = self._base(

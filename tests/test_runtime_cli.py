@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,18 +12,8 @@ import pytest
 
 import onr.runtime.cli as runtime_cli
 from onr.adapters.file_transport import FileTransport
-from onr.application.bayesian_belief import belief_artifact_reference
-from onr.contracts.context_coordination import (
-    MissionSnapshot,
-    create_source_fact_event,
-)
-from onr.contracts.fsm import FSMStatus, Statechart, StatechartTransition
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planning import PlannerChoice, PlannerPlan, PlanningOutcome
-from onr.contracts.transport import CommandOutcome, TransportEvent
-from onr.demo.fake_belief import create_fake_entity_risk_snapshot
-from onr.ports.transport import Subscription
 from onr.runtime.lease import RuntimeLeaseStore
 
 
@@ -87,7 +78,8 @@ def test_example_mission_requests_event_accounting_patrol() -> None:
     mission = runtime_cli.load_mission_file(Path("examples/mission.json"))
 
     assert mission.mission_text == (
-        "Please patrol the environment and confirm that all the events mentioned in the event report are accounted for."
+        "Please patrol the environment and confirm that all the events mentioned "
+        "in the event report are accounted for."
     )
 
 
@@ -196,268 +188,50 @@ def test_demo_artifact_rollover_refuses_an_active_lease_without_moving_var(
     assert not (tmp_path / "data").exists()
 
 
-def test_cli_composes_and_runs_offline_through_injected_seams(
+def test_cli_composes_and_runs_closed_loop_through_injected_seam(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from onr.application.context_coordination import ClosedLoopRunResult
+    from onr.contracts.hyper_agent import HyperHeartbeatDecision
+
     calls: list[object] = []
-    models: dict[str, object] = {}
-    plan = _planner_plan()
-    scene = TransportEvent(
-        schema_version=1,
-        event_id="environment-data:mission:demo:1",
-        mission_id="mission:demo",
-        sequence=0,
-        event_kind="environment_data",
-        payload={"graph": {"mission_id": "mission:demo", "entities": []}},
-    )
-    environment_snapshot = MissionSnapshot(
-        mission_id="mission:demo",
-        version=1,
-        created_at="2026-08-20T00:00:00+00:00",
-        environment_data=scene.event_id,
-        source_revisions={"environment_data": 0},
-        source_health={"environment_data": "healthy"},
-        source_freshness={"environment_data": True},
-    )
-    belief = create_fake_entity_risk_snapshot("mission:demo")
-    belief_reference = belief_artifact_reference(
-        belief.mission_id, belief.content_sha256
-    )
-    snapshot = MissionSnapshot(
-        mission_id="mission:demo",
-        version=2,
-        created_at="2026-08-20T00:00:01+00:00",
-        environment_data=scene.event_id,
-        bayesian_belief_snapshot=belief_reference,
-        source_revisions={
-            "environment_data": 0,
-            "bayesian_belief_snapshot": belief.belief_revision,
-        },
-        source_health={
-            "environment_data": "healthy",
-            "bayesian_belief_snapshot": "healthy",
-        },
-        source_freshness={
-            "environment_data": True,
-            "bayesian_belief_snapshot": True,
-        },
-    )
-    plan_snapshot = MissionSnapshot(
-        mission_id="mission:demo",
-        version=3,
-        created_at="2026-08-20T00:00:02+00:00",
-        plan_revision=plan.plan_revision,
-        plan_reference="normalized-plan:mission:demo:3",
-        environment_data=scene.event_id,
-        bayesian_belief_snapshot=belief_reference,
-        source_revisions={
-            "environment_data": 0,
-            "bayesian_belief_snapshot": belief.belief_revision,
-            "plan": plan.plan_revision,
-        },
-        source_health={
-            "environment_data": "healthy",
-            "bayesian_belief_snapshot": "healthy",
-            "plan": "healthy",
-        },
-        source_freshness={
-            "environment_data": True,
-            "bayesian_belief_snapshot": True,
-            "plan": True,
-        },
-    )
-    statechart = Statechart(
-        mission_id=plan.mission_id,
-        plan_revision=plan.plan_revision,
-        mission_snapshot_id=plan.mission_snapshot_id,
-        planning_profile="temporal",
-        entry_state="state-0",
-        states=("state-0", "state-1"),
-        transitions=(StatechartTransition("survey-complete", "state-0", "state-1"),),
-        terminal_states=("state-1",),
-        state_context={"state-0": {}, "state-1": {}},
-    )
-    initial_status = FSMStatus(
-        mission_id=plan.mission_id,
-        plan_revision=plan.plan_revision,
-        statechart_revision=plan.plan_revision,
-        active_state=statechart.entry_state,
-        active_state_context=statechart.context_for(statechart.entry_state),
-    )
-
-    class FakeHyperWorkflow:
-        def run(self, context: object, **kwargs: object) -> object:
-            calls.append(("hyper-run", context, kwargs))
-            handoff = CommandOutcome(
-                1,
-                "hyper-handoff:mission:demo:3:1",
-                "planning-run:mission:demo:1",
-                "mission:demo",
-                "completed",
-                {
-                    "mission_id": "mission:demo",
-                    "request_id": "hyper-handoff:mission:demo:3:1",
-                    "outcome": "no_change",
-                    "summary": "No immediate effect is required.",
-                },
-            )
-            return SimpleNamespace(
-                outcome=HyperWorkflowOutcome.EXECUTION_READY,
-                planner_plan=plan,
-                statechart=statechart,
-                statechart_reference="/tmp/accepted-statechart.json",
-                initial_fsm_status=initial_status,
-                handoff_outcome=handoff,
-                todos=({"content": "Run MiniZinc", "status": "completed"},),
-            )
-
-    class FakeContextCoordination:
-        def __init__(self, transport: FileTransport) -> None:
-            self.transport = transport
-            self.subscription = Subscription(
-                "context-coordination", "mission:demo", "normalized-plans"
-            )
-            self.input_topic = "normalized-plans"
-            transport.subscriptions += (self.subscription,)
-            self.snapshots = iter((environment_snapshot, snapshot, plan_snapshot))
-
-        def publish_source_fact(
-            self,
-            source: str,
-            revision: int,
-            *,
-            reference: str,
-        ) -> object:
-            event = create_source_fact_event(
-                "mission:demo",
-                source,
-                revision,
-                event_id="source-fact:mission:demo:belief:1",
-                sequence=self.transport.next_event_sequence(
-                    "normalized-plans", "mission:demo"
-                ),
-                reference=reference,
-            )
-            return self.transport.publish_event("normalized-plans", event)
-
-        def run_once(self, consumer: object) -> MissionSnapshot:
-            delivery = consumer.receive()  # type: ignore[attr-defined]
-            assert delivery is not None
-            delivery.ack()
-            calls.append("heartbeat-snapshot")
-            return next(self.snapshots)
 
     class FakeRuntime:
         def __init__(self) -> None:
             self.transport = FileTransport(tmp_path / "transport")
-            self.config = SimpleNamespace(agent_name="drone-1")
 
         def verify_llm_reachability(self) -> None:
             calls.append("verify")
 
-        def create_chat_model(
-            self,
-            *,
-            mission_id: str | None = None,
-            debug_scope: str = "runtime",
-        ) -> object:
-            model = object()
-            models[debug_scope] = model
-            calls.append(("model", debug_scope, mission_id, model))
-            return model
-
-        def create_maneuver_control(self, adapter: object, **kwargs: object) -> object:
-            calls.append(("maneuver", adapter, kwargs))
-
-            class HeartbeatControl:
-                def handle_agent_message(self, message: object) -> object:
-                    calls.append(("maneuver-heartbeat", message))
-                    return None
-
-            return HeartbeatControl()
-
-        def create_communication_port(self) -> object:
-            calls.append("communication-port")
-
-            class Port:
-                def register(self, recipient: str, handler: object) -> None:
-                    calls.append(("communication-register", recipient, handler))
-
-            return Port()
-
-        def create_bayesian_belief_service(self, **kwargs: object) -> object:
-            calls.append(("belief-service", kwargs))
-            return "belief-service"
-
-        def create_context_coordination(self, **kwargs: object) -> object:
-            calls.append(("context", kwargs))
-            return FakeContextCoordination(self.transport)
-
-        def create_fsm_runner(self, **kwargs: object) -> object:
-            calls.append(("fsm", kwargs))
-            return "fsm-runner"
-
-        def create_hyper_workflow(self, **kwargs: object) -> object:
-            calls.append(("hyper-workflow", kwargs))
-            return FakeHyperWorkflow()
-
-        def create_hyper_workflow_context(
-            self,
-            mission: MissionInput,
-            selected_snapshot: MissionSnapshot,
-            selected_scene: TransportEvent,
-            selected_environment_file: Path,
-            **kwargs: object,
-        ) -> object:
-            calls.append(
-                (
-                    "hyper-context",
-                    mission,
-                    selected_snapshot,
-                    selected_scene,
-                    selected_environment_file,
-                    kwargs,
-                )
-            )
-            return "hyper-workflow-context"
-
-        def run_mission(self, mission: MissionInput, **kwargs: object) -> object:
-            calls.append(("run", mission, kwargs))
-            assert kwargs["environment_step"]() == "demo-evidence"  # type: ignore[operator]
-            return SimpleNamespace(
-                plan=kwargs["plan"],
-                command=SimpleNamespace(
-                    command_id="command-demo", maneuver_id="maneuver-demo"
-                ),
-                final_status=SimpleNamespace(active_state="state-1", status="active"),
-            )
-
-    class FakeEnvironment:
-        last_output_path = None
-
-        def heartbeat(self) -> object:
-            calls.append("environment-heartbeat")
-            source_fact = create_source_fact_event(
-                "mission:demo",
-                "environment_data",
-                0,
-                event_id="source-fact:mission:demo:scene:1",
-                sequence=0,
-                reference=scene.event_id,
-            )
-            runtime.transport.publish_event("normalized-plans", source_fact)
-            return SimpleNamespace(
-                environment_event=scene,
-                source_fact=source_fact,
-                environment_file=tmp_path / "environment.json",
-            )
-
-        def run_once(self) -> str:
-            calls.append("environment")
-            return "demo-evidence"
+        def runtime_session(self):  # type: ignore[no-untyped-def]
+            return nullcontext()
 
     runtime = FakeRuntime()
-    maneuver_prompt = _role_prompt_files(tmp_path)
+    _role_prompt_files(tmp_path)
+    expected = ClosedLoopRunResult(
+        mission_id="mission:demo",
+        simulated_duration_seconds=15.0,
+        tick_count=30,
+        maneuver_heartbeat_count=4,
+        hyper_heartbeat_count=1,
+        physical_actions=("navigate",),
+        feedback_count=2,
+        perception_count=2,
+        belief_revisions=(20, 21),
+        hyper_outcomes=(
+            HyperHeartbeatDecision(
+                "mission:demo",
+                1,
+                "no_change",
+                "The active plan remains executable.",
+                ("periodic:10",),
+                (),
+            ),
+        ),
+        plan_revisions=(1,),
+        final_fsm_state="complete",
+        terminal=True,
+    )
     monkeypatch.setattr(
         runtime_cli,
         "_create_runtime",
@@ -465,12 +239,12 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
     )
     monkeypatch.setattr(
         runtime_cli,
-        "_create_demo_environment",
-        lambda selected, mission_id, **kwargs: (
-            calls.append(("demo-environment", selected, mission_id, kwargs))
-            or FakeEnvironment()
+        "run_closed_loop_demo",
+        lambda selected_runtime, mission, **kwargs: (
+            calls.append(("closed-loop", selected_runtime, mission, kwargs)) or expected
         ),
     )
+
     result = runtime_cli.main(
         [
             "--mission-file",
@@ -481,84 +255,34 @@ def test_cli_composes_and_runs_offline_through_injected_seams(
             "runtime.yaml",
             "--planner-artifacts",
             "var/planner-artifacts",
+            "--simulation-limit-seconds",
+            "30",
             "--demo-environment",
         ]
     )
 
     captured = capsys.readouterr()
     assert result == 0 and captured.err == ""
-    assert json.loads(captured.out) == {
-        "mission_id": "mission:demo",
-        "plan_revision": 3,
-        "outcome": "execution_ready",
-        "statechart_reference": "/tmp/accepted-statechart.json",
-        "entry_state": statechart.entry_state,
-        "state_count": len(statechart.states),
-        "transition_count": len(statechart.transitions),
-        "maneuver_completion": {
-            "mission_id": "mission:demo",
-            "request_id": "hyper-handoff:mission:demo:3:1",
-            "outcome": "no_change",
-            "summary": "No immediate effect is required.",
-        },
-        "environment_file": None,
-    }
+    assert json.loads(captured.out) == expected.to_dict()
     assert calls[0] == (
         "runtime",
         {"repo_root": tmp_path, "config_path": Path("runtime.yaml")},
     )
-    model_calls = [
-        item for item in calls if isinstance(item, tuple) and item[0] == "model"
-    ]
-    assert [(item[1], item[2]) for item in model_calls] == [
-        ("hyper-agent", "mission:demo"),
-        ("maneuver-control", "mission:demo"),
-    ]
-    assert len({id(item[3]) for item in model_calls}) == 2
-    hyper_call = next(
-        item
-        for item in calls
-        if isinstance(item, tuple) and item[0] == "hyper-workflow"
+    assert calls[1] == "verify"
+    closed_loop = calls[2]
+    assert closed_loop[0] == "closed-loop"
+    assert closed_loop[1] is runtime
+    assert closed_loop[2] == MissionInput(
+        "mission:demo",
+        "Survey the demo area without exposing this input.",
+        "demo-operator",
     )
-    assert hyper_call[1]["model"] is models["hyper-agent"]
-    assert hyper_call[1]["system_prompt"] == "Temporary Hyper role prompt."
-    hyper_context_call = next(
-        item for item in calls if isinstance(item, tuple) and item[0] == "hyper-context"
+    assert (
+        closed_loop[3]["planner_artifacts"]
+        == (tmp_path / "var/planner-artifacts").resolve()
     )
-    assert hyper_context_call[2] is snapshot
-    assert hyper_context_call[3] is scene
-    assert hyper_context_call[4] == tmp_path / "environment.json"
-    assert hyper_context_call[5]["artifact_root"] == (
-        tmp_path / "var/planner-artifacts"
-    )
-    assert hyper_context_call[5]["belief_snapshot"] == belief
-    assert hyper_context_call[5]["fsm_runner"] == "fsm-runner"
-    assert hyper_context_call[5]["belief_service"] == "belief-service"
-    hyper_run = next(
-        item for item in calls if isinstance(item, tuple) and item[0] == "hyper-run"
-    )
-    assert hyper_run[2] == {
-        "thread_id": "planning-run:mission:demo:1",
-        "recursion_limit": 120,
-    }
-    maneuver_call = next(
-        item for item in calls if isinstance(item, tuple) and item[0] == "maneuver"
-    )
-    skill_catalog = maneuver_call[2]["skill_catalog"]
-    assert skill_catalog.root == tmp_path / "conf/skills"
-    assert maneuver_call[2]["backend_root"] == tmp_path
-    assert maneuver_call[2]["model"] is models["maneuver-control"]
-    assert maneuver_call[2]["system_prompt"] == (
-        f"You are agent drone-1. {maneuver_prompt}"
-    )
-    registration = next(
-        item
-        for item in calls
-        if isinstance(item, tuple) and item[0] == "communication-register"
-    )
-    assert registration[1] == "maneuver-control"
-    assert "environment" not in calls
-    assert calls.index("environment-heartbeat") < calls.index("heartbeat-snapshot")
+    assert closed_loop[3]["recursion_limit"] == 120
+    assert closed_loop[3]["simulation_limit_seconds"] == 30.0
 
 
 def test_cli_failure_is_nonzero_actionable_and_safe(

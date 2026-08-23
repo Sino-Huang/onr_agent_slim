@@ -44,7 +44,7 @@ def test_live_maneuver_agent_drives_verified_ten_state_patrol() -> None:
         "navigate",
         "land",
     )
-    assert result.belief_revision == 1
+    assert result.belief_revision == 0
     assert result.hyper_message_count == 1
     assert result.override_confirmed is True
     assert result.agent_log_directory.is_dir()

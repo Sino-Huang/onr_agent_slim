@@ -15,7 +15,7 @@ planners:
     validator_entrypoint: modules/VAL/build/linux64/Release/bin/Validate
     timeout_seconds: 30
 heartbeats:
-  hyper_seconds: 30
+  hyper_seconds: 10
   maneuver_seconds: 5
   summary_seconds: 30
 transport:

@@ -387,26 +387,13 @@ def test_live_hyper_workflow_authors_event_dag_generator(
         checkpointer=InMemorySaver(),
     )
 
-    try:
-        result = DeepAgentsHyperWorkflow(graph).run(
-            context,
-            thread_id=f"planning-run:{mission_id}:1",
-            recursion_limit=180,
-        )
-    except ValueError as exc:
-        # This test owns planner generation/execution. The generic wrapper may
-        # reject later Statechart/todo bookkeeping after that evidence exists.
-        assert str(exc) in {
-            "Hyper workflow rejection lacks Statechart evidence",
-            "Hyper workflow success requires completed todos",
-        }
-        result = None
+    result = DeepAgentsHyperWorkflow(graph).run(
+        context,
+        thread_id=f"planning-run:{mission_id}:1",
+        recursion_limit=180,
+    )
 
-    if result is not None:
-        assert result.outcome in {
-            HyperWorkflowOutcome.EXECUTION_READY,
-            HyperWorkflowOutcome.STATECHART_REJECTED,
-        }
+    assert result.outcome is HyperWorkflowOutcome.EXECUTION_READY
     assert planner.checked_assets
     assert planner.executed_assets
     assert planner.solvers == ["coin-bc"]
@@ -466,3 +453,42 @@ def test_live_hyper_workflow_authors_event_dag_generator(
         item for item in tool_records if item.get("name") == "planner_executor"
     )
     assert execution_call["input"]["minizinc_solver"] == "coin-bc"
+
+    statechart_generator = workspace / "generate_statechart.py"
+    statechart_path = workspace / "statechart.json"
+    assert statechart_generator.is_file() and statechart_path.is_file()
+    statechart_script = statechart_generator.read_text(encoding="utf-8")
+    assert all(
+        term in statechart_script
+        for term in (
+            "extract_assignments",
+            "build_statechart",
+            "represented_once",
+            "planner_order_preserved",
+        )
+    )
+    chart = json.loads(statechart_path.read_text(encoding="utf-8"))
+    assert len(chart["states"]) == 32
+    assert len(chart["transitions"]) == 31
+    assert len(chart["terminal_states"]) == 1
+    planner_identities = {
+        value["planner_identity"]
+        for value in chart["state_context"].values()
+        if "planner_identity" in value
+    }
+    assert len(planner_identities) == 15
+    manifest_record = next(
+        item
+        for item in execute_records
+        if '"planner_order_preserved":true'
+        in json.dumps(item.get("output")).replace(" ", "")
+    )
+    manifest_text = json.dumps(manifest_record["output"]).replace(" ", "")
+    assert '"planner_items":15' in manifest_text
+    assert "15221" in manifest_text
+    assert chart["terminal_states"][0] in manifest_text
+    assert context.statechart is not None
+    accepted = context.statechart.to_dict()
+    assert accepted["schema_version"] == 2
+    assert "planner_native_plan_artifact_reference" not in accepted
+    assert all(set(edge) == {"event", "source", "target", "context"} for edge in accepted["transitions"])
