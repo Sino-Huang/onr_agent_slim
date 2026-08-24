@@ -3,9 +3,8 @@
 // identically with or without a mission selected.
 //
 //   L0 (default) — three big nodes: Mission → Hyper Agent → Maneuver Control
-//       Agent (a closed loop), with the Data & Memory Plane spanning below.
-//       Results are terminal artifacts of the loop and live on the plane
-//       (verification + mission report) — there is no "result" pipeline stage.
+//       Agent, with the Data & Memory Plane spanning below. Context Coordination
+//       receives the verified Hyper revision and owns the live control loop.
 //   L1 — a node expands in place to its sub-graph; siblings stay visible,
 //       dimmed. Expansion state lives in the hash (#view=workflow&node=hyper).
 //   L2 — "View in run" chips deep-link into the Trajectory view
@@ -204,8 +203,8 @@ function terminal(b, text) {
 
 const L0_NODES = [
   { id: "mission",  title: "Mission",                caption: "the tasking that starts a run",             badge: "input",           kind: "io",       x: 40,  w: 240 },
-  { id: "hyper",    title: "Hyper Agent",            caption: "solver-verified plan + state machine",      badge: "self-repairing",  kind: "llm",      x: 380, w: 340 },
-  { id: "maneuver", title: "Maneuver Control Agent", caption: "closed-loop control: reason → act → adapt", badge: "feedback-driven", kind: "feedback", x: 820, w: 380 },
+  { id: "hyper",    title: "Hyper Agent",            caption: "verified planner revision + statechart",   badge: "self-repairing",  kind: "llm",      x: 380, w: 340 },
+  { id: "maneuver", title: "Maneuver Control Agent", caption: "live, tool-driven heartbeats",               badge: "feedback-driven", kind: "feedback", x: 820, w: 380 },
 ];
 const L0_DATA = { id: "data", title: "Data & Memory Plane", caption: "durable artifacts · verification + report", badge: "auditable", kind: "data", x: 380, w: 820 };
 const L0_IDS = [...L0_NODES.map((n) => n.id), L0_DATA.id];
@@ -244,7 +243,7 @@ function buildL0(expanded) {
   const readsX = 380 + 820 * 0.79, writesX = 820 + 380 * 0.75;
   const edges =
     edge(port(b.mission, "E"), port(b.hyper, "W"), { label: "mission brief" }) +
-    edge(port(b.hyper, "E"), port(b.maneuver, "W"), { label: "verified plan" }) +
+    edge(port(b.hyper, "E"), port(b.maneuver, "W"), { label: "verified revision" }) +
     edge(port(b.hyper, "S", 0.3), port(b.data, "N", 0.124), { label: "publish / subscribe", kind: "data" }) +
     // closed-loop affordance: the control agent cycles in place
     edge(port(b.maneuver, "N", 0.32), port(b.maneuver, "N", 0.68),
@@ -297,25 +296,24 @@ function runStrip(x, y, chips) {
 /* ------------------------------ L1 regions ------------------------------ */
 
 const PHASES = [
-  { num: "1", kind: "decision", title: "record_planning_intent", caption: ["PlanningIntent +", "PlannerChoice"], run: "planning-intent", chip: "1 · intent" },
-  { num: "2", kind: "tool",     title: "load_planning_context",  caption: ["mission + environment", "context"],  run: "planning-context", chip: "2 · context" },
-  { num: "3", kind: "tool",     title: ["write model.mzn", "/ data.dzn"], caption: "filesystem tools",           run: "planner-assets",  chip: "3–4 · assets" },
-  { num: "4", kind: "tool",     title: "persist_planner_assets", caption: "freeze the planner draft",            run: "planner-assets" },
-  { num: "5", kind: "tool",     title: "planner_executor",       caption: ["runs the solver —", "verified plan ∨ rejection"], run: "planner-execution", chip: "5 · solver" },
+  { num: "1", kind: "decision", title: "record_planning_intent", caption: ["records PlanningIntent", "+ PlannerChoice"], run: "planning-intent", chip: "1 · intent" },
+  { num: "2", kind: "tool",     title: "author planner inputs",  caption: ["write_file / edit_file", "MiniZinc or PDDL"], run: "planner-assets", chip: "2 · inputs" },
+  { num: "3", kind: "tool",     title: ["materialize event data", "(MiniZinc only)"], caption: ["initialize + materialize", "bounded event batches"], run: "planner-assets", chip: "3 · event data" },
+  { num: "4", kind: "decision", title: "submit_planner_attempt", caption: ["snapshot exact files", "+ static verification"], run: "planner-assets", chip: "4 · submit" },
+  { num: "5", kind: "tool",     title: "planner_executor",       caption: ["MiniZinc or Fast Downward", "verified plan ∨ repair"], run: "planner-execution", chip: "5 · planner" },
   { num: "6", kind: "decision", title: "submit_statechart_draft", caption: ["schema + machine-build", "validation"], run: "statechart-generation", chip: "6 · statechart" },
-  { num: "7", kind: "feedback", title: "handoff_execution",      caption: ["activates FSM, invokes", "maneuver control agent"], run: "maneuver-handoff", chip: "7 · handoff" },
 ];
 
 function regionHyper(oy) {
   const h = 452;
   const shell = regionShell(oy, h, "hyper",
     "Hyper Agent — phase pipeline",
-    "DeepAgents · phase-gated tools · solver-verified plan + statechart");
+    "DeepAgents · phase-gated tools · verified planner revision + statechart");
   const chainY = oy + 180;
-  const boxes = PHASES.map((_, i) => box(26 + i * 172, chainY, 156, 84));
+  const boxes = PHASES.map((_, i) => box(26 + i * 198, chainY, 170, 84));
   const llmBox = box(40, oy + 72, 230, 56);
-  const solverBox = box(714, oy + 320, 156, 56);
-  const termBox = box(1058, oy + 66, 156, 46);
+  const solverBox = box(760, oy + 320, 218, 56);
+  const termBox = box(980, oy + 66, 216, 46);
 
   let svg = shell.open;
   // edges first (under nodes)
@@ -326,28 +324,28 @@ function regionHyper(oy) {
   svg += edge(port(boxes[4], "S", 0.25), port(solverBox, "N", 0.25), { label: "invoke" });
   svg += edge(port(solverBox, "N", 0.75), port(boxes[4], "S", 0.75), { label: "plan ∨ rejection", kind: "retry" });
   // retry loops route around the outside of the chain
-  svg += edge(port(boxes[4], "N"), port(boxes[2], "N"),
+  svg += edge(port(boxes[4], "N"), port(boxes[1], "N"),
     { label: "rejection + repair ↺ ≤ max_planner_attempts", kind: "retry", clear: oy + 124 });
   svg += edge(port(boxes[5], "N", 0.3), port(boxes[5], "N", 0.7),
     { label: "schema + machine-build validation ↺ ≤ max_statechart_attempts", kind: "retry", clear: oy + 141 });
-  svg += edge(port(boxes[6], "N", 0.8), port(termBox, "S", 0.8), {});
+  svg += edge(port(boxes[5], "N", 0.8), port(termBox, "S", 0.8), {});
   // nodes
   svg += node(llmBox, { kind: "llm", title: "DeepAgents LLM", caption: "reasons + calls phase-gated tools" });
   PHASES.forEach((phase, i) => {
     svg += node(boxes[i], { kind: phase.kind, num: phase.num, title: phase.title, caption: phase.caption, mono: true });
   });
-  svg += node(solverBox, { kind: "tool", title: "MiniZinc solver", caption: "model.mzn + data.dzn" });
-  svg += terminal(termBox, "→ execution agent");
+  svg += node(solverBox, { kind: "tool", title: "planner engines", caption: "MiniZinc / Fast Downward + VAL" });
+  svg += terminal(termBox, "execution_ready → Context Coordination");
   // L2 strip
   svg += runStrip(28, oy + 410, PHASES.filter((p) => p.chip).map((p) => ({ label: p.chip, phase: p.run })));
   return { h, svg: svg + shell.close };
 }
 
 const LOOP_STAGES = [
-  { num: "1", kind: "feedback", title: "observe", caption: "environment snapshot + belief store" },
-  { num: "2", kind: "llm",      title: "reason",  caption: "maneuver control LLM over FSM state" },
-  { num: "3", kind: "tool",     title: "act",     caption: "dispatch command via transport" },
-  { num: "4", kind: "feedback", title: "adapt",   caption: "result → belief store → next FSM state" },
+  { num: "1", kind: "io",       title: "Maneuver invocation", caption: ["heartbeat / environment trigger", "live FSM + perceptions + recipients"] },
+  { num: "2", kind: "llm",      title: "Maneuver Deep Agent",  caption: ["reasons over the invocation", "and selects an operational tool"] },
+  { num: "3", kind: "tool",     title: "operational tools",    caption: ["FSM transition · physical command", "perceptions · communication"] },
+  { num: "4", kind: "feedback", title: "audited completion",   caption: ["execution record + command outcome", "completed requires a successful tool"] },
 ];
 
 function regionManeuver(oy) {
@@ -359,29 +357,29 @@ function regionManeuver(oy) {
   const h = (stripY - oy) + 22 + 16;
   const shell = regionShell(oy, h, "maneuver",
     "Maneuver Control Agent — closed control loop",
-    "heartbeat-driven · observe → reason → act → adapt");
+    "Context Coordination invokes live, tool-driven heartbeats");
   const stages = LOOP_STAGES.map((_, i) => box(40 + i * 310, rowY, 230, stageH));
   const hub = box(480, hubY, 280, hubH);
 
   let svg = shell.open;
-  // edges first (under nodes): forward chain observe → reason → act → adapt
+  // edges first (under nodes): invocation → agent → tools → audited completion
   for (let i = 0; i < stages.length - 1; i++) {
     svg += edge(port(stages[i], "E"), port(stages[i + 1], "W"), {});
   }
-  // the gold edge visibly closes the loop: adapt feeds the next observe
+  // the gold edge visibly closes the loop: outcomes feed the next invocation
   svg += `<g data-testid="wf-maneuver-loop">` +
     edge(port(stages[3], "N", 0.5), port(stages[0], "N", 0.5),
-      { label: "closed loop ↺ every heartbeat", kind: "loop", clear: oy + 62 }) +
+      { label: "next heartbeat + feedback ↺", kind: "loop", clear: oy + 62 }) +
   `</g>`;
-  // the mission lifecycle FSM is the hub the cycle revolves around
+  // The live FSM exposes only exact transition candidates to the agent.
   svg += edge(port(hub, "N", 0.25), port(stages[1], "S", 0.5), { label: "current state" });
-  svg += edge(port(stages[3], "S", 0.5), port(hub, "N", 0.75), { label: "next state" });
+  svg += edge(port(stages[2], "S", 0.5), port(hub, "N", 0.75), { label: "exact transition" });
   // nodes
   LOOP_STAGES.forEach((stage, i) => {
     svg += node(stages[i], { kind: stage.kind, num: stage.num, title: stage.title, caption: stage.caption });
   });
-  svg += node(hub, { kind: "decision", title: "mission lifecycle FSM", caption: "drives stage transitions" });
-  // L2 strip — real trajectory phases/components of the loop
+  svg += node(hub, { kind: "decision", title: "live FSM Runner", caption: "status + exact transition candidates" });
+  // L2 strip — real trajectory phases/components of the live loop
   svg += runStrip(28, stripY, [
     { label: "maneuver-handoff", phase: "maneuver-handoff" },
     { label: "heartbeat", phase: "heartbeat" },
