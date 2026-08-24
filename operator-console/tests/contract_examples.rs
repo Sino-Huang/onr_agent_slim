@@ -9,8 +9,9 @@
 //! fixture reflects the precise #27-#29 contract, not a divergent schema.
 
 use operator_console::host::{
-    ActivationAccepted, ActivationRequest, ActivitiesPage, CancellationAccepted,
-    CancellationRequest, CurrentRun, ErrorBody, Health, MissionIntent, ObservationsPage,
+    ActivationAccepted, ActivationRequest, ActivitiesPage, ArtifactContentPage, ArtifactsPage,
+    CancellationAccepted, CancellationRequest, ConversationEntriesPage, CurrentRun, ErrorBody,
+    Health, MissionIntent, ObservationsPage,
 };
 use serde_json::Value;
 
@@ -181,4 +182,45 @@ fn activity_page_examples_round_trip_exactly() {
     let empty: ActivitiesPage = exact_roundtrip("mission-run-activities.empty.response.json");
     assert!(empty.activities.is_empty());
     assert_eq!(empty.next_cursor, None);
+}
+
+#[test]
+fn artifact_examples_round_trip_exactly() {
+    let page: ArtifactsPage = exact_roundtrip("mission-run-artifacts.page.response.json");
+    assert_eq!(page.artifacts.len(), 3);
+    assert_eq!(page.artifacts[0].artifact_id, "detection-frame");
+    let empty: ArtifactsPage = exact_roundtrip("mission-run-artifacts.empty.response.json");
+    assert!(empty.artifacts.is_empty());
+    assert_eq!(empty.next_cursor, None);
+
+    let first: ArtifactContentPage =
+        exact_roundtrip("mission-run-artifact-content.text-page.response.json");
+    assert_eq!(first.next_offset, Some(4096));
+    assert!(!first.eof);
+    let final_page: ArtifactContentPage =
+        exact_roundtrip("mission-run-artifact-content.text-final.response.json");
+    assert!(final_page.eof);
+    assert_eq!(final_page.next_offset, None);
+    let binary: ArtifactContentPage =
+        exact_roundtrip("mission-run-artifact-content.binary.response.json");
+    assert_eq!(binary.classification, "binary");
+    assert_eq!(binary.content, None);
+
+    let entries: ConversationEntriesPage =
+        exact_roundtrip("mission-run-artifact-entries.page.response.json");
+    assert_eq!(entries.entries.len(), 3);
+    assert_eq!(entries.entries[2].sequence, 4);
+    assert!(entries.entries[2].content_ref.is_some());
+    let empty: ConversationEntriesPage =
+        exact_roundtrip("mission-run-artifact-entries.empty.response.json");
+    assert!(empty.entries.is_empty());
+    assert_eq!(empty.next_cursor, None);
+}
+
+#[test]
+fn artifact_error_examples_round_trip_exactly() {
+    let missing: ErrorBody = exact_roundtrip("mission-run-artifact.not-found.response.json");
+    assert_eq!(missing.error.code, "artifact_not_found");
+    let unavailable: ErrorBody = exact_roundtrip("mission-run-artifact.unavailable.response.json");
+    assert_eq!(unavailable.error.code, "artifact_unavailable");
 }

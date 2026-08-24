@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "artifact_id": "planner-log",
+  "classification": "text",
+  "media_type": "text/plain",
+  "byte_size": 8192,
+  "offset": 0,
+  "next_offset": 4096,
+  "eof": false,
+  "truncated": false,
+  "content": "[2026-08-24T12:00:01Z] planner: deterministic search started\n[2026-08-24T12:00:02Z] planner: expanded 42 states\n[2026-08-24T12:00:03Z] planner: expanded 128 states\n[2026-08-24T12:00:04Z] planner: candidate plan cost 17\n"
+}

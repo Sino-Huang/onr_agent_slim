@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::app::{App, AppState, CancellationState, Liveness, MIN_HEIGHT, MIN_WIDTH};
+use crate::app::{App, AppState, CancellationState, Liveness, MIN_HEIGHT, MIN_WIDTH, PaneFocus};
 
 const HEADER_ROWS: u16 = 3;
 const FOOTER_ROWS: u16 = 3;
@@ -64,6 +64,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         "ReviewActivation" => draw_review(frame, rows[1], app),
         "Submitting" => draw_submitting(frame, rows[1], app),
         "Run" => match &app.cancellation {
+            CancellationState::Idle if app.inspector.is_some() => {
+                draw_artifact_inspector(frame, rows[1], app)
+            }
             CancellationState::Idle => draw_run_dashboard(frame, rows[1], app),
             CancellationState::Confirming => draw_cancellation_confirmation(frame, rows[1], app),
             CancellationState::Requested { .. } => draw_cancellation_requested(frame, rows[1], app),
@@ -98,8 +101,11 @@ fn footer_lines(app: &App) -> (String, Option<String>) {
         "ReviewActivation" => "Enter: confirm and submit once · Esc: return to editing",
         "Submitting" => "waiting for host acknowledgement · Ctrl+C: quit",
         "Run" => match app.cancellation {
+            CancellationState::Idle if app.inspector.is_some() => {
+                "Left/p Right/n: page preview · Esc: close"
+            }
             CancellationState::Idle => {
-                "Up/k Down/j: select activity · c: request cancellation · Ctrl+C: quit"
+                "Tab: focus pane · Up/k Down/j: select · Enter: inspect Artifact · c: request cancellation ·\n Ctrl+C: quit"
             }
             CancellationState::Confirming => "Enter: confirm cancellation · Esc: keep running",
             CancellationState::Requested { .. } => {
@@ -120,7 +126,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled(format!(" {extra}"), hint())));
     }
     let block = Block::default().borders(Borders::ALL);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_connecting(frame: &mut Frame, area: Rect, app: &App) {
@@ -229,22 +240,29 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     draw_run_panel(frame, top[0], app);
     draw_activities(frame, top[1], app);
 
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
+    let conversation_selected = app
+        .selected_artifact()
+        .is_some_and(|(_, artifact)| artifact.classification == "conversation");
+    let middle_constraints = if conversation_selected {
+        [
+            Constraint::Length(22),
+            Constraint::Length(26),
+            Constraint::Min(0),
+        ]
+    } else {
+        [
             Constraint::Length(33),
             Constraint::Length(33),
             Constraint::Min(0),
-        ])
+        ]
+    };
+    let middle = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(middle_constraints)
         .split(rows[1]);
     draw_observations(frame, middle[0], app);
-    draw_reserved(frame, middle[1], " Artifacts ", "No Artifacts published.");
-    draw_reserved(
-        frame,
-        middle[2],
-        " Conversation ",
-        "No Conversation recorded.",
-    );
+    draw_artifacts(frame, middle[1], app);
+    draw_conversation(frame, middle[2], app);
 
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
@@ -326,9 +344,12 @@ fn truncate(value: &str, width: usize) -> String {
 }
 
 fn draw_activities(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Run Activities ");
+    let title = if app.pane_focus == PaneFocus::Activities && !app.artifacts.is_empty() {
+        " * Run Activities "
+    } else {
+        " Run Activities "
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let width = block.inner(area).width.saturating_sub(1) as usize;
     let selected = app.selected_activity().map(|(index, _)| index);
     let lines = if app.activities.is_empty() {
@@ -345,7 +366,7 @@ fn draw_activities(frame: &mut Frame, area: Rect, app: &App) {
                     " #{} {} [{}] {}",
                     activity.activity_sequence, activity.kind, activity.status, activity.summary
                 );
-                let style = if selected == Some(index) {
+                let style = if app.pane_focus == PaneFocus::Activities && selected == Some(index) {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
                     Style::default()
@@ -355,6 +376,192 @@ fn draw_activities(frame: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+fn draw_artifacts(frame: &mut Frame, area: Rect, app: &App) {
+    let title = if app.pane_focus == PaneFocus::Artifacts {
+        " * Artifacts "
+    } else {
+        " Artifacts "
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let width = block.inner(area).width.saturating_sub(1) as usize;
+    let selected = app.selected_artifact().map(|(index, _)| index);
+    let lines = if app.artifacts.is_empty() {
+        vec![
+            Line::from(Span::styled(" No Artifacts published.", dim())),
+            Line::from(Span::styled(" (reserved for a later view)", dim())),
+        ]
+    } else {
+        app.artifacts
+            .iter()
+            .enumerate()
+            .map(|(index, artifact)| {
+                let size = artifact
+                    .byte_size
+                    .map_or_else(|| artifact.classification.clone(), human_bytes);
+                let text = format!(" {} {} ({size})", artifact.kind, artifact.display.title);
+                let style = if app.pane_focus == PaneFocus::Artifacts && selected == Some(index) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                Line::from(Span::styled(truncate(&text, width), style))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_conversation(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Conversation ");
+    let width = block.inner(area).width as usize;
+    let selected_conversation = app
+        .selected_artifact()
+        .is_some_and(|(_, artifact)| artifact.classification == "conversation");
+    let lines = if app.artifacts.is_empty() {
+        vec![
+            Line::from(Span::styled(" No Conversation recorded.", dim())),
+            Line::from(Span::styled(" (reserved for a later view)", dim())),
+        ]
+    } else if !selected_conversation {
+        vec![Line::from(Span::styled(
+            " No Conversation selected.",
+            dim(),
+        ))]
+    } else if app.conversation_entries.is_empty() {
+        vec![Line::from(Span::styled(
+            " No Conversation entries recorded.",
+            dim(),
+        ))]
+    } else {
+        app.conversation_entries
+            .iter()
+            .map(|entry| {
+                let text = if let Some(reference) = entry.content_ref.as_ref() {
+                    format!(
+                        " #{} {} [{}] [ref] {} ({})",
+                        entry.sequence,
+                        entry.author,
+                        entry.kind,
+                        reference.path,
+                        human_bytes(reference.byte_size)
+                    )
+                } else {
+                    let first_line = entry
+                        .content
+                        .as_deref()
+                        .unwrap_or("")
+                        .lines()
+                        .next()
+                        .unwrap_or("");
+                    format!(
+                        " #{} {} [{}] {first_line}",
+                        entry.sequence, entry.author, entry.kind
+                    )
+                };
+                Line::from(truncate(&text, width))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_artifact_inspector(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(inspector) = app.inspector.as_ref() else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Artifact: {} ", inspector.artifact_id));
+    let Some(page) = inspector.page.as_ref() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Loading Artifact preview…",
+                dim(),
+            )))
+            .block(block),
+            area,
+        );
+        return;
+    };
+    if inspector.classification == "binary" {
+        let descriptor = app
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_id == inspector.artifact_id);
+        let mut lines = Vec::new();
+        if let Some(artifact) = descriptor {
+            lines.extend([
+                field("Kind:", &artifact.kind),
+                field("Media:", &artifact.media_type),
+                field(
+                    "Size:",
+                    &artifact
+                        .byte_size
+                        .map(human_bytes)
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                field("Digest:", artifact.content_digest.as_deref().unwrap_or("-")),
+                Line::from(vec![
+                    Span::styled(" Published: ", dim()),
+                    Span::raw(artifact.published_at.clone()),
+                ]),
+                field("Title:", &artifact.display.title),
+                field(
+                    "Summary:",
+                    artifact.display.summary.as_deref().unwrap_or("-"),
+                ),
+                Line::from(""),
+            ]);
+        }
+        lines.push(Line::from(Span::styled(
+            " Binary Artifact: metadata only (no content bytes).",
+            dim(),
+        )));
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+
+    let content = page.content.as_deref().unwrap_or("");
+    let end = page
+        .next_offset
+        .or(page.byte_size.filter(|_| page.eof))
+        .unwrap_or_else(|| page.offset.saturating_add(content.len() as u64));
+    let total = page
+        .byte_size
+        .map_or_else(|| "?".to_string(), |size| size.to_string());
+    let mut status = format!(" bytes {}-{end} of {total}", page.offset);
+    if page.eof {
+        status.push_str(" · end of content");
+    }
+    if page.truncated {
+        status.push_str(" · page truncated at UTF-8 boundary");
+    }
+    let mut lines = vec![Line::from(Span::styled(status, dim())), Line::from("")];
+    lines.extend(content.split('\n').map(|line| Line::from(line.to_string())));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_observations(frame: &mut Frame, area: Rect, app: &App) {

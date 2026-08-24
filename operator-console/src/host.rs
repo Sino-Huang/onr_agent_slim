@@ -183,6 +183,79 @@ pub struct ActivitiesPage {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDisplay {
+    pub title: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDescriptor {
+    pub schema_version: u32,
+    pub artifact_id: String,
+    pub kind: String,
+    pub media_type: String,
+    pub byte_size: Option<u64>,
+    pub content_digest: Option<String>,
+    pub display: ArtifactDisplay,
+    pub published_at: String,
+    pub classification: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactsPage {
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub mission_run_id: String,
+    pub artifacts: Vec<ArtifactDescriptor>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactContentPage {
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub mission_run_id: String,
+    pub artifact_id: String,
+    pub classification: String,
+    pub media_type: String,
+    pub byte_size: Option<u64>,
+    pub offset: u64,
+    pub next_offset: Option<u64>,
+    pub eof: bool,
+    pub truncated: bool,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentRef {
+    pub path: String,
+    pub media_type: String,
+    pub byte_size: u64,
+    pub content_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationEntry {
+    pub sequence: u64,
+    pub author: String,
+    pub time: String,
+    pub audience: String,
+    pub kind: String,
+    pub content: Option<String>,
+    pub content_ref: Option<ContentRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationEntriesPage {
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub mission_run_id: String,
+    pub artifact_id: String,
+    pub entries: Vec<ConversationEntry>,
+    pub next_cursor: Option<String>,
+}
+
 /// Collected evidence items plus a visible pagination-cap disposition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidencePage<T> {
@@ -219,6 +292,11 @@ pub enum HostError {
         code: String,
         message: String,
     },
+    /// The supplied offset or limit is outside the content endpoint contract.
+    InvalidRequest {
+        code: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for HostError {
@@ -238,6 +316,9 @@ impl fmt::Display for HostError {
             HostError::InvalidCursor { code, message } => {
                 write!(f, "invalid cursor ({code}): {message}")
             }
+            HostError::InvalidRequest { code, message } => {
+                write!(f, "invalid request ({code}): {message}")
+            }
         }
     }
 }
@@ -253,6 +334,7 @@ impl HostError {
                 | HostError::AuthorizationFailed { .. }
                 | HostError::NotFound { .. }
                 | HostError::InvalidCursor { .. }
+                | HostError::InvalidRequest { .. }
         )
     }
 }
@@ -276,6 +358,22 @@ impl EvidenceResponse for ActivitiesPage {
 
     fn into_items_and_cursor(self) -> (Vec<Self::Item>, Option<String>) {
         (self.activities, self.next_cursor)
+    }
+}
+
+impl EvidenceResponse for ArtifactsPage {
+    type Item = ArtifactDescriptor;
+
+    fn into_items_and_cursor(self) -> (Vec<Self::Item>, Option<String>) {
+        (self.artifacts, self.next_cursor)
+    }
+}
+
+impl EvidenceResponse for ConversationEntriesPage {
+    type Item = ConversationEntry;
+
+    fn into_items_and_cursor(self) -> (Vec<Self::Item>, Option<String>) {
+        (self.entries, self.next_cursor)
     }
 }
 
@@ -341,6 +439,30 @@ pub fn spawn_worker(
                 HostCommand::FetchObservations { mission_run_id } => {
                     HostMessage::Observations(client.all_observations(&mission_run_id))
                 }
+                HostCommand::FetchArtifacts { mission_run_id } => {
+                    HostMessage::Artifacts(client.all_artifacts(&mission_run_id))
+                }
+                HostCommand::FetchArtifactContent {
+                    mission_run_id,
+                    artifact_id,
+                    offset,
+                } => HostMessage::ArtifactContent(client.artifact_content(
+                    &mission_run_id,
+                    &artifact_id,
+                    Some(offset),
+                    Some(4096),
+                )),
+                HostCommand::FetchConversationEntries {
+                    mission_run_id,
+                    artifact_id,
+                } => {
+                    let result = client.all_conversation_entries(&mission_run_id, &artifact_id);
+                    HostMessage::ConversationEntries {
+                        mission_run_id,
+                        artifact_id,
+                        result,
+                    }
+                }
                 HostCommand::Cancel {
                     mission_run_id,
                     request,
@@ -389,6 +511,27 @@ pub trait HostClient: Send {
         mission_run_id: &str,
         cursor: Option<&str>,
     ) -> Result<ActivitiesPage, HostError>;
+    /// `GET /api/v1/mission-runs/{id}/artifacts`.
+    fn artifacts(
+        &self,
+        mission_run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<ArtifactsPage, HostError>;
+    /// `GET /api/v1/mission-runs/{id}/artifacts/{artifact_id}/content`.
+    fn artifact_content(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+        offset: Option<u64>,
+        limit: Option<u64>,
+    ) -> Result<ArtifactContentPage, HostError>;
+    /// `GET /api/v1/mission-runs/{id}/artifacts/{artifact_id}/entries`.
+    fn conversation_entries(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<ConversationEntriesPage, HostError>;
     /// Collect at most 100 observation pages for one Mission Run.
     fn all_observations(
         &self,
@@ -399,6 +542,23 @@ pub trait HostClient: Send {
     /// Collect at most 100 activity pages for one Mission Run.
     fn all_activities(&self, mission_run_id: &str) -> Result<EvidencePage<RunActivity>, HostError> {
         collect_evidence_pages(|cursor| self.activities(mission_run_id, cursor))
+    }
+    /// Collect at most 100 artifact descriptor pages for one Mission Run.
+    fn all_artifacts(
+        &self,
+        mission_run_id: &str,
+    ) -> Result<EvidencePage<ArtifactDescriptor>, HostError> {
+        collect_evidence_pages(|cursor| self.artifacts(mission_run_id, cursor))
+    }
+    /// Collect at most 100 conversation entry pages for one Artifact.
+    fn all_conversation_entries(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+    ) -> Result<EvidencePage<ConversationEntry>, HostError> {
+        collect_evidence_pages(|cursor| {
+            self.conversation_entries(mission_run_id, artifact_id, cursor)
+        })
     }
 }
 
@@ -470,6 +630,54 @@ impl UreqHostClient {
                     code: detail.code,
                     message: detail.message,
                 })
+            }
+            status => Err(HostError::UnexpectedStatus(
+                status,
+                format!("{resource} expect 200, 404, or 422"),
+            )),
+        }
+    }
+
+    fn artifact_id_path(artifact_id: &str) -> String {
+        let mut encoded = String::with_capacity(artifact_id.len());
+        for byte in artifact_id.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+                encoded.push(char::from(byte));
+            } else {
+                use std::fmt::Write as _;
+                write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
+            }
+        }
+        encoded
+    }
+
+    fn artifact_response<T: serde::de::DeserializeOwned>(
+        response: ureq::http::Response<ureq::Body>,
+        resource: &str,
+        invalid_request: bool,
+    ) -> Result<T, HostError> {
+        match response.status().as_u16() {
+            200 => Self::read_json(response),
+            404 => {
+                let detail = Self::error_detail(response)?;
+                Err(HostError::NotFound {
+                    code: detail.code,
+                    message: detail.message,
+                })
+            }
+            422 => {
+                let detail = Self::error_detail(response)?;
+                if invalid_request {
+                    Err(HostError::InvalidRequest {
+                        code: detail.code,
+                        message: detail.message,
+                    })
+                } else {
+                    Err(HostError::InvalidCursor {
+                        code: detail.code,
+                        message: detail.message,
+                    })
+                }
             }
             status => Err(HostError::UnexpectedStatus(
                 status,
@@ -632,5 +840,59 @@ impl HostClient for UreqHostClient {
         cursor: Option<&str>,
     ) -> Result<ActivitiesPage, HostError> {
         self.evidence_get(mission_run_id, "activities", cursor)
+    }
+
+    fn artifacts(
+        &self,
+        mission_run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<ArtifactsPage, HostError> {
+        self.evidence_get(mission_run_id, "artifacts", cursor)
+    }
+
+    fn artifact_content(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+        offset: Option<u64>,
+        limit: Option<u64>,
+    ) -> Result<ArtifactContentPage, HostError> {
+        let artifact_id = Self::artifact_id_path(artifact_id);
+        let url = format!(
+            "{}/api/v1/mission-runs/{mission_run_id}/artifacts/{artifact_id}/content",
+            self.base_url
+        );
+        let mut request = self.agent.get(&url);
+        if let Some(offset) = offset {
+            request = request.query("offset", offset.to_string());
+        }
+        if let Some(limit) = limit {
+            request = request.query("limit", limit.to_string());
+        }
+        let response = request
+            .call()
+            .map_err(|e| HostError::Transport(e.to_string()))?;
+        Self::artifact_response(response, "artifact content", true)
+    }
+
+    fn conversation_entries(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<ConversationEntriesPage, HostError> {
+        let artifact_id = Self::artifact_id_path(artifact_id);
+        let url = format!(
+            "{}/api/v1/mission-runs/{mission_run_id}/artifacts/{artifact_id}/entries",
+            self.base_url
+        );
+        let mut request = self.agent.get(&url);
+        if let Some(cursor) = cursor {
+            request = request.query("cursor", cursor);
+        }
+        let response = request
+            .call()
+            .map_err(|e| HostError::Transport(e.to_string()))?;
+        Self::artifact_response(response, "conversation entries", false)
     }
 }

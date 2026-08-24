@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 
 use operator_console::app::{
     App, AppState, CancellationState, Clock, HostCommand, HostMessage, LivenessThresholds,
-    MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, SessionStateFile,
+    MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, PaneFocus, SessionStateFile,
 };
 use operator_console::host::{
-    ActivationAccepted, ActivitiesPage, CancellationAccepted, CancellationOutcome, CurrentRun,
-    EvidencePage, ObservationsPage, RunRecord,
+    ActivationAccepted, ActivitiesPage, ArtifactContentPage, ArtifactsPage, CancellationAccepted,
+    CancellationOutcome, ConversationEntriesPage, CurrentRun, EvidencePage, ObservationsPage,
+    RunRecord,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -171,6 +172,33 @@ fn evidence_app() -> App {
         crossterm::event::KeyModifiers::NONE,
     ));
     app
+}
+
+fn artifact_app() -> App {
+    let mut app = evidence_app();
+    let artifacts: ArtifactsPage = serde_json::from_str(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-artifacts.page.response.json"
+    ))
+    .unwrap();
+    app.handle_host_message(HostMessage::Artifacts(Ok(EvidencePage {
+        items: artifacts.artifacts,
+        truncated: false,
+    })));
+    app.pane_focus = PaneFocus::Artifacts;
+    app
+}
+
+fn content_page(name: &str) -> ArtifactContentPage {
+    serde_json::from_str(match name {
+        "text" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-page.response.json"
+        ),
+        "binary" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.binary.response.json"
+        ),
+        _ => panic!("unknown content fixture"),
+    })
+    .unwrap()
 }
 
 fn liveness_app(elapsed: Duration) -> App {
@@ -417,4 +445,58 @@ fn below_minimum_renders_only_resize_required() {
     assert!(frame.contains("Terminal too small"));
     assert!(!frame.contains("Run Activities"));
     assert!(!frame.contains("Mission Intent"));
+}
+
+#[test]
+fn artifact_text_page_frame_matches_committed_capture() {
+    let mut app = artifact_app();
+    app.selected_artifact = Some("planner-log".to_string());
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.take_commands();
+    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("text"))));
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("planner: expanded 42 states"));
+    assert!(frame.contains("bytes 0-"));
+    assert_frame("artifact-text-page-100x30.txt", frame);
+}
+
+#[test]
+fn artifact_binary_metadata_frame_matches_committed_capture() {
+    let mut app = artifact_app();
+    app.selected_artifact = Some("detection-frame".to_string());
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.take_commands();
+    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("binary"))));
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("application/octet-stream"));
+    assert!(frame.contains("metadata only"));
+    assert_frame("artifact-binary-metadata-100x30.txt", frame);
+}
+
+#[test]
+fn conversation_entries_frame_matches_committed_capture() {
+    let mut app = artifact_app();
+    app.selected_artifact = Some("operator-conversation".to_string());
+    let entries: ConversationEntriesPage = serde_json::from_str(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-artifact-entries.page.response.json"
+    ))
+    .unwrap();
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-fixture-001".to_string(),
+        artifact_id: "operator-conversation".to_string(),
+        result: Ok(EvidencePage {
+            items: entries.entries,
+            truncated: false,
+        }),
+    });
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("#4 perception-agent"));
+    assert!(frame.contains("[perception_rationale] [ref]"));
+    assert_frame("conversation-entries-100x30.txt", frame);
 }

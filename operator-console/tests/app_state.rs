@@ -3,11 +3,12 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use operator_console::app::{
     App, AppState, CancellationState, CleanExitAction, Clock, HostCommand, HostMessage, Liveness,
-    LivenessThresholds, MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, SessionStateFile,
+    LivenessThresholds, MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, PaneFocus, SessionStateFile,
 };
 use operator_console::host::{
-    ActivationAccepted, ActivationOutcome, ActivitiesPage, CancellationAccepted,
-    CancellationOutcome, CurrentRun, EvidencePage, Health, HostError, MissionIntent,
+    ActivationAccepted, ActivationOutcome, ActivitiesPage, ArtifactContentPage, ArtifactDescriptor,
+    ArtifactsPage, CancellationAccepted, CancellationOutcome, ConversationEntriesPage,
+    ConversationEntry, CurrentRun, EvidencePage, Health, HostError, MissionIntent,
     ObservationEnvelope, ObservationsPage, RunActivity, RunRecord,
 };
 use std::fs;
@@ -71,6 +72,9 @@ fn poll_commands(app: &App) -> Vec<HostCommand> {
             mission_run_id: run_id.clone(),
         },
         HostCommand::FetchObservations {
+            mission_run_id: run_id.clone(),
+        },
+        HostCommand::FetchArtifacts {
             mission_run_id: run_id,
         },
     ]
@@ -114,6 +118,38 @@ fn observations() -> Vec<ObservationEnvelope> {
     ))
     .unwrap()
     .observations
+}
+
+fn artifacts() -> Vec<ArtifactDescriptor> {
+    serde_json::from_str::<ArtifactsPage>(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-artifacts.page.response.json"
+    ))
+    .unwrap()
+    .artifacts
+}
+
+fn conversation_entries() -> Vec<ConversationEntry> {
+    serde_json::from_str::<ConversationEntriesPage>(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-artifact-entries.page.response.json"
+    ))
+    .unwrap()
+    .entries
+}
+
+fn content_page(name: &str) -> ArtifactContentPage {
+    let raw = match name {
+        "first" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-page.response.json"
+        ),
+        "final" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-final.response.json"
+        ),
+        "binary" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.binary.response.json"
+        ),
+        _ => panic!("unknown content fixture"),
+    };
+    serde_json::from_str(raw).unwrap()
 }
 
 fn evidence<T>(items: Vec<T>) -> EvidencePage<T> {
@@ -1058,7 +1094,184 @@ fn run_poll_fans_out_to_current_activities_and_observations() {
             HostCommand::FetchObservations {
                 mission_run_id: "run-1".to_string(),
             },
+            HostCommand::FetchArtifacts {
+                mission_run_id: "run-1".to_string(),
+            },
         ]
+    );
+}
+
+#[test]
+fn pane_focus_cycles_and_artifact_selection_is_stable() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
+    assert_eq!(app.pane_focus, PaneFocus::Activities);
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.pane_focus, PaneFocus::Artifacts);
+    assert_eq!(app.selected_artifact().unwrap().0, 0);
+    app.handle_key(key(KeyCode::Down));
+    let selected = app.selected_artifact().unwrap().1.artifact_id.clone();
+    assert_eq!(selected, "operator-conversation");
+    assert_eq!(
+        app.take_commands(),
+        vec![HostCommand::FetchConversationEntries {
+            mission_run_id: "run-1".to_string(),
+            artifact_id: "operator-conversation".to_string(),
+        }]
+    );
+    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
+    assert_eq!(app.selected_artifact().unwrap().1.artifact_id, selected);
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(app.pane_focus, PaneFocus::Activities);
+}
+
+#[test]
+fn artifact_inspector_opens_pages_and_closes_at_defined_bounds() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
+    app.handle_key(key(KeyCode::Tab));
+
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.inspector.as_ref().unwrap().artifact_id,
+        "detection-frame"
+    );
+    assert_eq!(
+        app.take_commands(),
+        vec![HostCommand::FetchArtifactContent {
+            mission_run_id: "run-1".to_string(),
+            artifact_id: "detection-frame".to_string(),
+            offset: 0
+        }]
+    );
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.inspector.is_none());
+
+    app.handle_key(key(KeyCode::Down));
+    app.take_commands();
+    app.handle_key(key(KeyCode::Enter));
+    assert!(
+        app.inspector.is_none(),
+        "conversation artifacts are not inspected"
+    );
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.inspector.as_ref().unwrap().artifact_id, "planner-log");
+    app.take_commands();
+    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("first"))));
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.inspector.as_ref().unwrap().offset, 4096);
+    assert_eq!(app.inspector.as_ref().unwrap().previous_offsets, vec![0]);
+    assert_eq!(
+        app.take_commands(),
+        vec![HostCommand::FetchArtifactContent {
+            mission_run_id: "run-1".to_string(),
+            artifact_id: "planner-log".to_string(),
+            offset: 4096
+        }]
+    );
+    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("final"))));
+    app.handle_key(key(KeyCode::Char('n')));
+    assert!(app.take_commands().is_empty());
+    app.handle_key(key(KeyCode::Left));
+    assert_eq!(app.inspector.as_ref().unwrap().offset, 0);
+    app.take_commands();
+    app.handle_key(key(KeyCode::Char('p')));
+    assert!(app.take_commands().is_empty());
+}
+
+#[test]
+fn artifact_responses_retain_state_ignore_stale_content_and_poll_open_views() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock.clone());
+    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
+    app.handle_key(key(KeyCode::Tab));
+    app.handle_key(key(KeyCode::Down));
+    app.take_commands();
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-1".to_string(),
+        artifact_id: "operator-conversation".to_string(),
+        result: Ok(evidence(conversation_entries())),
+    });
+    assert_eq!(
+        app.conversation_entries
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+    clock.advance(Duration::from_secs(5));
+    app.handle_host_message(HostMessage::Artifacts(Err(HostError::Transport(
+        "timeout".to_string(),
+    ))));
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-1".to_string(),
+        artifact_id: "operator-conversation".to_string(),
+        result: Err(HostError::Transport("timeout".to_string())),
+    });
+    assert_eq!(app.artifacts.len(), 3);
+    assert_eq!(app.conversation_entries.len(), 3);
+
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    app.take_commands();
+    let mut mismatched = content_page("first");
+    mismatched.artifact_id = "other-artifact".to_string();
+    app.handle_host_message(HostMessage::ArtifactContent(Ok(mismatched)));
+    assert!(app.inspector.as_ref().unwrap().page.is_none());
+    app.request_poll();
+    assert!(
+        app.take_commands()
+            .contains(&HostCommand::FetchArtifactContent {
+                mission_run_id: "run-1".to_string(),
+                artifact_id: "planner-log".to_string(),
+                offset: 0,
+            })
+    );
+}
+
+#[test]
+fn conversation_entries_apply_only_to_the_requested_run_and_selected_artifact() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
+    app.selected_artifact = Some("operator-conversation".to_string());
+    app.conversation_entries = vec![conversation_entries()[0].clone()];
+    app.notice = Some("existing notice".to_string());
+
+    let replacement = conversation_entries();
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-1".to_string(),
+        artifact_id: "other-conversation".to_string(),
+        result: Ok(evidence(replacement.clone())),
+    });
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-other".to_string(),
+        artifact_id: "operator-conversation".to_string(),
+        result: Ok(evidence(replacement.clone())),
+    });
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-1".to_string(),
+        artifact_id: "other-conversation".to_string(),
+        result: Err(HostError::Transport("stale timeout".to_string())),
+    });
+    assert_eq!(app.conversation_entries.len(), 1);
+    assert_eq!(app.conversation_entries[0].sequence, 1);
+    assert_eq!(app.notice.as_deref(), Some("existing notice"));
+
+    app.handle_host_message(HostMessage::ConversationEntries {
+        mission_run_id: "run-1".to_string(),
+        artifact_id: "operator-conversation".to_string(),
+        result: Ok(evidence(replacement)),
+    });
+    assert_eq!(
+        app.conversation_entries
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
     );
 }
 

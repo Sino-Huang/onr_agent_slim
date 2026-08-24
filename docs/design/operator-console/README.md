@@ -1,11 +1,11 @@
-# Operator Console Design (issues #27-#29 contract slices)
+# Operator Console Design (issues #27-#30 contract slices)
 
 Rust 2024 Ratatui 0.30 Operator Console: a peer client of the loopback Python
 Runtime Host (ADR 0001). The committed contract covers Mission Intent editing,
 reviewed Mission Activation, observation of one current Mission Run, owner-only
-Mission Intent readback, idempotent Mission Run Cancellation, and redacted Run
-Activities/Observations. Artifacts, Narratives, and HITL behavior remain
-reserved for later issues (#30-#32).
+Mission Intent readback, idempotent Mission Run Cancellation, redacted Run
+Activities/Observations, and public Artifact/Conversation browsing. Narratives
+and HITL behavior remain reserved for later issues (#31-#32).
 
 ## States
 
@@ -33,10 +33,17 @@ Header (3 rows: console, host, API version, short session id), footer (3 rows:
 key hints plus transient hint/notice), and per-state body. The Run dashboard
 presents Mission Run identity/status/timestamps/terminal classification next to
 selectable Run Activities and the selected activity's linked Observations.
-Artifacts, Conversation, Narrative, and Human Decisions remain stable reserved
-regions. A recovered owner's Mission Intent occupies the bottom-left slot in
-place of Narrative. Below 100x30 only the resize-required state is drawn (also
-enforced as a draw-time guard, not only via resize events).
+Artifacts and Conversation are live evidence panes; Narrative and Human
+Decisions remain stable reserved regions. A recovered owner's Mission Intent
+occupies the bottom-left slot in place of Narrative. Below 100x30 only the
+resize-required state is drawn (also enforced as a draw-time guard, not only via
+resize events).
+
+In Run state, Tab and Shift+Tab switch focus between Activities and Artifacts;
+Up/k and Down/j move the focused selection. Enter on a text or binary Artifact
+opens its inspector; conversation Artifacts stay in the dashboard and load the
+Conversation pane. In the inspector, Right/n fetches the next 4096-byte page,
+Left/p returns to the previous offset, and Esc closes the inspector.
 
 ## HTTP boundary
 
@@ -65,6 +72,30 @@ server in `operator-console/tests/support/`, no Python process):
 - `GET /api/v1/mission-runs/{mission_run_id}/activities?cursor=&limit=` -> a
   public `200` page with `schema_version`, Mission/Mission Run IDs,
   `mapping_version: 1`, activity projections, and an opaque `next_cursor`.
+- `GET /api/v1/mission-runs/{mission_run_id}/artifacts?cursor=&limit=` -> a
+  public `200` page with `schema_version`, Mission/Mission Run IDs, Artifact
+  descriptors sorted by `artifact_id`, and opaque `next_cursor`. A descriptor
+  contains `schema_version`, `artifact_id`, `kind`, `media_type`, nullable
+  `byte_size` and `content_digest`, `display {title, summary}`, `published_at`,
+  and `classification`. Limits are 1..500, default 100; an empty page has
+  `next_cursor: null`. Errors are `404 mission_run_not_found` and `422
+  invalid_cursor`.
+- `GET /api/v1/mission-runs/{mission_run_id}/artifacts/{artifact_id}/content?offset=&limit=`
+  -> public `200` content metadata with `schema_version`, Mission/Mission Run
+  IDs, `artifact_id`, `classification`, `media_type`, nullable `byte_size`,
+  `offset`, nullable `next_offset`, `eof`, `truncated`, and nullable `content`.
+  Text content uses byte offsets and limits 1..16384 (default 4096); the console
+  always requests 4096. Binary content is metadata-only with `content: null`.
+  Errors are `404 mission_run_not_found`, `404 artifact_not_found`, `404
+  artifact_unavailable`, and `422 invalid_request` for invalid offset/limit.
+- `GET /api/v1/mission-runs/{mission_run_id}/artifacts/{artifact_id}/entries?cursor=&limit=`
+  -> public conversation page with `schema_version`, Mission/Mission Run IDs,
+  `artifact_id`, ordered entries, and opaque `next_cursor`. Each entry contains
+  `sequence`, `author`, `time`, `audience`, `kind`, nullable `content`, and
+  nullable `content_ref {path, media_type, byte_size, content_digest}`. Sequence
+  gaps and content-reference entries are valid. Limits are 1..500, default 100;
+  an empty page has `next_cursor: null`. Errors are `404 mission_run_not_found`,
+  `404 artifact_not_found`, and `422 invalid_cursor`.
 - `GET /api/v1/mission-runs/{mission_run_id}/mission-intent`
   (`Authorization: Bearer <credential>`) -> owner-only `200` with Mission Run
   ID, Mission Intent, and source authority.
@@ -89,6 +120,10 @@ for as long as it retains the Mission Run itself; there is no time-based
 expiry in v1, and issued observation sequences never change, so cursors stay
 valid across retries and Host restarts.
 
+Artifact IDs are defensively percent-encoded when placed in URL paths. Artifact
+and Conversation collectors use the same 100-page client cap as Activities and
+Observations and expose truncation in the dashboard notice.
+
 Activity mapping version 1 defines the kinds `maneuver_command`, `correlated`,
 `operational`, `observation`, and `evidence_marker`. Activities and
 Observations are redacted projections for operator evidence display. They are
@@ -100,10 +135,11 @@ not on whether new observations arrived. Successful responses and modeled HTTP
 errors refresh liveness; transport failures and malformed response bodies do
 not. The default inclusive thresholds are stale at 5 seconds and offline at 30
 seconds. Successful empty polls keep the console live. During a response gap,
-the console retains the last Run, Activities, and Observations; stale/offline
-status is displayed and mutation controls are disabled until both connectivity
-and Console Session ownership are available. A later definitive response
-restores connectivity without clearing retained evidence.
+the console retains the last Run, Activities, Observations, Artifacts, and
+Conversation entries; stale/offline status is displayed and mutation controls
+are disabled until both connectivity and Console Session ownership are
+available. A later definitive response restores connectivity without clearing
+retained evidence.
 
 The console generates the Activation Request ID, Console Session ID, and a
 high-entropy Bearer credential before activation; it sends `source_authority:
@@ -124,6 +160,18 @@ source of truth on the Rust side. The #28 additions are:
 
 The #29 additions are the observation page, empty page, invalid-cursor error,
 Mission Run not-found error, activity page, and activity empty-page examples.
+
+The #30 additions are:
+
+- `mission-run-artifacts.page.response.json`
+- `mission-run-artifacts.empty.response.json`
+- `mission-run-artifact-content.text-page.response.json`
+- `mission-run-artifact-content.text-final.response.json`
+- `mission-run-artifact-content.binary.response.json`
+- `mission-run-artifact-entries.page.response.json`
+- `mission-run-artifact-entries.empty.response.json`
+- `mission-run-artifact.not-found.response.json`
+- `mission-run-artifact.unavailable.response.json`
 
 Existing #27 fixture consumers:
 
@@ -163,6 +211,9 @@ spawn a Python process. The exact v1 schema both sides implement:
 - `GET /api/v1/mission-runs/{mission_run_id}/observations` and `/activities`
   are public, cursor-paginated, redacted evidence projections with the status
   and cursor behavior described above.
+- `GET /api/v1/mission-runs/{mission_run_id}/artifacts`, Artifact `/content`,
+  and conversation `/entries` are public and implement the #30 shapes, bounds,
+  paging, and stable errors described above.
 
 ## Committed terminal-frame fixtures
 
@@ -179,6 +230,9 @@ spawn a Python process. The exact v1 schema both sides implement:
 - `cancellation-requested-100x30.txt` - cancellation-requested run state
 - `recovered-owner-100x30.txt` - recovered owner session and active run
 - `resize-required-80x24.txt` - below-minimum terminal
+- `artifact-text-page-100x30.txt` - text Artifact inspector page
+- `artifact-binary-metadata-100x30.txt` - binary Artifact metadata inspector
+- `conversation-entries-100x30.txt` - Artifact selection and Conversation entries
 
 Regenerate after an intentional layout change:
 

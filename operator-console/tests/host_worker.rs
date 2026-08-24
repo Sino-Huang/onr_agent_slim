@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use operator_console::app::{HostCommand, HostMessage};
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, ActivitiesPage, ApiVersion, CancellationAccepted,
-    CancellationOutcome, CancellationRequest, CurrentRun, Health, HostClient, HostError,
-    MissionIntent, ObservationsPage, RunRecord, spawn_worker,
+    ActivationOutcome, ActivationRequest, ActivitiesPage, ApiVersion, ArtifactContentPage,
+    ArtifactsPage, CancellationAccepted, CancellationOutcome, CancellationRequest,
+    ConversationEntriesPage, CurrentRun, Health, HostClient, HostError, MissionIntent,
+    ObservationsPage, RunRecord, spawn_worker,
 };
 
 #[derive(Default)]
@@ -117,6 +118,62 @@ impl HostClient for ScriptedClient {
             next_cursor: None,
         })
     }
+
+    fn artifacts(
+        &self,
+        mission_run_id: &str,
+        _cursor: Option<&str>,
+    ) -> Result<ArtifactsPage, HostError> {
+        self.calls.lock().unwrap().push("artifacts".to_string());
+        Ok(ArtifactsPage {
+            schema_version: 1,
+            mission_id: "mission-1".to_string(),
+            mission_run_id: mission_run_id.to_string(),
+            artifacts: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
+    fn artifact_content(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+        offset: Option<u64>,
+        _limit: Option<u64>,
+    ) -> Result<ArtifactContentPage, HostError> {
+        self.calls.lock().unwrap().push("content".to_string());
+        Ok(ArtifactContentPage {
+            schema_version: 1,
+            mission_id: "mission-1".to_string(),
+            mission_run_id: mission_run_id.to_string(),
+            artifact_id: artifact_id.to_string(),
+            classification: "text".to_string(),
+            media_type: "text/plain".to_string(),
+            byte_size: Some(0),
+            offset: offset.unwrap_or(0),
+            next_offset: None,
+            eof: true,
+            truncated: false,
+            content: Some(String::new()),
+        })
+    }
+
+    fn conversation_entries(
+        &self,
+        mission_run_id: &str,
+        artifact_id: &str,
+        _cursor: Option<&str>,
+    ) -> Result<ConversationEntriesPage, HostError> {
+        self.calls.lock().unwrap().push("entries".to_string());
+        Ok(ConversationEntriesPage {
+            schema_version: 1,
+            mission_id: "mission-1".to_string(),
+            mission_run_id: mission_run_id.to_string(),
+            artifact_id: artifact_id.to_string(),
+            entries: Vec::new(),
+            next_cursor: None,
+        })
+    }
 }
 
 fn recv_timeout(rx: &std::sync::mpsc::Receiver<HostMessage>) -> HostMessage {
@@ -192,6 +249,25 @@ fn worker_executes_commands_and_reports_in_order() {
             assert_eq!(current.mission_run.unwrap().status, "running");
         }
         other => panic!("expected Current, got {other:?}"),
+    }
+
+    command_tx
+        .send(HostCommand::FetchConversationEntries {
+            mission_run_id: "run-1".to_string(),
+            artifact_id: "conversation-1".to_string(),
+        })
+        .unwrap();
+    match recv_timeout(&message_rx) {
+        HostMessage::ConversationEntries {
+            mission_run_id,
+            artifact_id,
+            result: Ok(page),
+        } => {
+            assert_eq!(mission_run_id, "run-1");
+            assert_eq!(artifact_id, "conversation-1");
+            assert!(page.items.is_empty());
+        }
+        other => panic!("expected ConversationEntries, got {other:?}"),
     }
 
     drop(command_tx);

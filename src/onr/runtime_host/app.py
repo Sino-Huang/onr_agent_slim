@@ -13,6 +13,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from onr.runtime.config import RuntimeConfig, load_runtime_config
+from onr.runtime_host.artifacts import (
+    MAX_PAGE_SIZE,
+    MAX_PREVIEW_BYTES,
+    ArtifactNotFoundError,
+    ArtifactUnavailableError,
+)
 from onr.runtime_host.host import (
     HostAuthorizationError,
     HostConflictError,
@@ -136,6 +142,60 @@ def create_app(
         except (HostNotFoundError, InvalidCursorError) as exc:
             return _evidence_error(exc)
 
+    @app.get("/api/v1/mission-runs/{mission_run_id}/artifacts")
+    def artifacts(
+        mission_run_id: str,
+        cursor: str | None = None,
+        limit: Annotated[int | None, Query(gt=0, le=MAX_PAGE_SIZE)] = None,
+    ) -> Any:
+        try:
+            return selected.artifacts(mission_run_id, cursor=cursor, limit=limit)
+        except (HostNotFoundError, InvalidCursorError) as exc:
+            return _evidence_error(exc)
+
+    @app.get(
+        "/api/v1/mission-runs/{mission_run_id}/artifacts/{artifact_id}/content"
+    )
+    def artifact_content(
+        mission_run_id: str,
+        artifact_id: str,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(gt=0, le=MAX_PREVIEW_BYTES)] = 4096,
+    ) -> Any:
+        try:
+            return selected.artifact_content(
+                mission_run_id, artifact_id, offset=offset, limit=limit
+            )
+        except HostNotFoundError as exc:
+            return _evidence_error(exc)
+        except ArtifactNotFoundError:
+            return _artifact_not_found()
+        except ArtifactUnavailableError:
+            return _artifact_unavailable()
+        except ValueError:
+            return _invalid_request()
+
+    @app.get(
+        "/api/v1/mission-runs/{mission_run_id}/artifacts/{artifact_id}/entries"
+    )
+    def conversation_entries(
+        mission_run_id: str,
+        artifact_id: str,
+        cursor: str | None = None,
+        limit: Annotated[int | None, Query(gt=0, le=MAX_PAGE_SIZE)] = None,
+    ) -> Any:
+        try:
+            return selected.conversation_entries(
+                mission_run_id,
+                artifact_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except (HostNotFoundError, InvalidCursorError) as exc:
+            return _evidence_error(exc)
+        except ArtifactNotFoundError:
+            return _artifact_not_found()
+
     @app.get("/api/v1/mission-runs/{mission_run_id}/mission-intent")
     def mission_intent(
         mission_run_id: str,
@@ -207,3 +267,15 @@ def _evidence_error(exc: HostNotFoundError | InvalidCursorError) -> JSONResponse
 
 def _authorization_failed() -> JSONResponse:
     return _error(403, "authorization_failed", "request is not authorized")
+
+
+def _artifact_not_found() -> JSONResponse:
+    return _error(404, "artifact_not_found", "Artifact is unknown to this Mission Run")
+
+
+def _artifact_unavailable() -> JSONResponse:
+    return _error(
+        404,
+        "artifact_unavailable",
+        "Artifact content failed validation or is unavailable",
+    )

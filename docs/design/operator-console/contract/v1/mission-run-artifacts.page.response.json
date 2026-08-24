@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "artifacts": [
+    {
+      "schema_version": 1,
+      "artifact_id": "detection-frame",
+      "kind": "perception_frame",
+      "media_type": "application/octet-stream",
+      "byte_size": 204800,
+      "content_digest": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+      "display": {
+        "title": "Detection frame",
+        "summary": "Perception evidence frame"
+      },
+      "published_at": "2026-08-24T12:00:05Z",
+      "classification": "binary"
+    },
+    {
+      "schema_version": 1,
+      "artifact_id": "operator-conversation",
+      "kind": "conversation",
+      "media_type": "application/x-onr-conversation",
+      "byte_size": null,
+      "content_digest": null,
+      "display": {
+        "title": "Operator conversation",
+        "summary": "Mission conversation entries"
+      },
+      "published_at": "2026-08-24T12:00:06Z",
+      "classification": "conversation"
+    },
+    {
+      "schema_version": 1,
+      "artifact_id": "planner-log",
+      "kind": "log",
+      "media_type": "text/plain",
+      "byte_size": 8192,
+      "content_digest": "sha256:3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb05adc8b7",
+      "display": {
+        "title": "Planner log",
+        "summary": "Deterministic planner output"
+      },
+      "published_at": "2026-08-24T12:00:04Z",
+      "classification": "text"
+    }
+  ],
+  "next_cursor": "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjN9"
+}

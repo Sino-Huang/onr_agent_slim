@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::host::{
-    ActivationOutcome, ActivationRequest, CancellationOutcome, CancellationRequest, CurrentRun,
-    EvidencePage, Health, HostError, MissionIntent, ObservationEnvelope, RunActivity, RunRecord,
+    ActivationOutcome, ActivationRequest, ArtifactContentPage, ArtifactDescriptor,
+    CancellationOutcome, CancellationRequest, ConversationEntry, CurrentRun, EvidencePage, Health,
+    HostError, MissionIntent, ObservationEnvelope, RunActivity, RunRecord,
 };
 
 const CANCELLATION_POLL_LIMIT: Duration = Duration::from_secs(10);
@@ -239,6 +240,17 @@ pub enum HostCommand {
     FetchActivities { mission_run_id: String },
     /// Fetch all public observation evidence pages for the current Mission Run.
     FetchObservations { mission_run_id: String },
+    /// Fetch all public Artifact descriptors for the current Mission Run.
+    FetchArtifacts { mission_run_id: String },
+    FetchArtifactContent {
+        mission_run_id: String,
+        artifact_id: String,
+        offset: u64,
+    },
+    FetchConversationEntries {
+        mission_run_id: String,
+        artifact_id: String,
+    },
     Cancel {
         mission_run_id: String,
         request: CancellationRequest,
@@ -255,7 +267,30 @@ pub enum HostMessage {
     Intent(Result<MissionIntent, HostError>),
     Activities(Result<EvidencePage<RunActivity>, HostError>),
     Observations(Result<EvidencePage<ObservationEnvelope>, HostError>),
+    Artifacts(Result<EvidencePage<ArtifactDescriptor>, HostError>),
+    ArtifactContent(Result<ArtifactContentPage, HostError>),
+    ConversationEntries {
+        mission_run_id: String,
+        artifact_id: String,
+        result: Result<EvidencePage<ConversationEntry>, HostError>,
+    },
     Cancelled(Result<CancellationOutcome, HostError>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaneFocus {
+    #[default]
+    Activities,
+    Artifacts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactInspector {
+    pub artifact_id: String,
+    pub classification: String,
+    pub offset: u64,
+    pub previous_offsets: Vec<u64>,
+    pub page: Option<ArtifactContentPage>,
 }
 
 /// Console Session identity generated before activation.
@@ -311,6 +346,16 @@ pub struct App {
     pub observations_truncated: bool,
     /// Stable activity selection keyed by activity id.
     pub selected_activity: Option<String>,
+    /// Latest public Artifact descriptors for the current Mission Run.
+    pub artifacts: Vec<ArtifactDescriptor>,
+    pub artifacts_truncated: bool,
+    /// Stable Artifact selection keyed by Artifact ID.
+    pub selected_artifact: Option<String>,
+    /// Entries for the selected conversation Artifact.
+    pub conversation_entries: Vec<ConversationEntry>,
+    pub conversation_entries_truncated: bool,
+    pub pane_focus: PaneFocus,
+    pub inspector: Option<ArtifactInspector>,
     /// Last definitive Runtime Host HTTP response receipt.
     pub last_host_response: Option<Instant>,
     /// Thresholds used to derive Runtime Host liveness.
@@ -375,6 +420,13 @@ impl App {
             activities_truncated: false,
             observations_truncated: false,
             selected_activity: None,
+            artifacts: Vec::new(),
+            artifacts_truncated: false,
+            selected_artifact: None,
+            conversation_entries: Vec::new(),
+            conversation_entries_truncated: false,
+            pane_focus: PaneFocus::default(),
+            inspector: None,
             last_host_response: None,
             liveness_thresholds: LivenessThresholds::default(),
             cancellation: CancellationState::Idle,
@@ -446,6 +498,15 @@ impl App {
             .iter()
             .enumerate()
             .find(|(_, activity)| activity.activity_id == selected)
+    }
+
+    /// Resolve the stable Artifact ID selection to its current index and item.
+    pub fn selected_artifact(&self) -> Option<(usize, &ArtifactDescriptor)> {
+        let selected = self.selected_artifact.as_deref()?;
+        self.artifacts
+            .iter()
+            .enumerate()
+            .find(|(_, artifact)| artifact.artifact_id == selected)
     }
 
     /// Return observations linked by the selected activity projection.
@@ -573,12 +634,36 @@ impl App {
     }
 
     fn handle_run_key(&mut self, key: KeyEvent) {
-        match (&self.cancellation, key.code) {
-            (CancellationState::Idle, KeyCode::Up | KeyCode::Char('k')) => {
-                self.move_activity_selection(-1);
+        if self.cancellation == CancellationState::Idle && self.inspector.is_some() {
+            match key.code {
+                KeyCode::Right | KeyCode::Char('n') => self.next_artifact_page(),
+                KeyCode::Left | KeyCode::Char('p') => self.previous_artifact_page(),
+                KeyCode::Esc => self.inspector = None,
+                _ => {}
             }
+            return;
+        }
+        match (&self.cancellation, key.code) {
+            (CancellationState::Idle, KeyCode::Tab | KeyCode::BackTab) => {
+                self.pane_focus = match self.pane_focus {
+                    PaneFocus::Activities => PaneFocus::Artifacts,
+                    PaneFocus::Artifacts => PaneFocus::Activities,
+                };
+            }
+            (CancellationState::Idle, KeyCode::Up | KeyCode::Char('k')) => match self.pane_focus {
+                PaneFocus::Activities => self.move_activity_selection(-1),
+                PaneFocus::Artifacts => self.move_artifact_selection(-1),
+            },
             (CancellationState::Idle, KeyCode::Down | KeyCode::Char('j')) => {
-                self.move_activity_selection(1);
+                match self.pane_focus {
+                    PaneFocus::Activities => self.move_activity_selection(1),
+                    PaneFocus::Artifacts => self.move_artifact_selection(1),
+                }
+            }
+            (CancellationState::Idle, KeyCode::Enter)
+                if self.pane_focus == PaneFocus::Artifacts =>
+            {
+                self.open_artifact_inspector();
             }
             (CancellationState::Idle, KeyCode::Char('c')) => {
                 if !self.require_mutations_enabled() {
@@ -658,6 +743,117 @@ impl App {
                 .min(self.activities.len() - 1)
         };
         self.selected_activity = Some(self.activities[next].activity_id.clone());
+    }
+
+    fn move_artifact_selection(&mut self, delta: isize) {
+        if self.artifacts.is_empty() {
+            return;
+        }
+        let current = self.selected_artifact().map_or(0, |(index, _)| index);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current
+                .saturating_add(delta as usize)
+                .min(self.artifacts.len() - 1)
+        };
+        let next_id = self.artifacts[next].artifact_id.clone();
+        if self.selected_artifact.as_deref() != Some(next_id.as_str()) {
+            self.selected_artifact = Some(next_id);
+            self.sync_selected_conversation();
+        }
+    }
+
+    fn sync_selected_conversation(&mut self) {
+        let selected = self.selected_artifact().map(|(_, artifact)| {
+            (
+                artifact.artifact_id.clone(),
+                artifact.classification.clone(),
+            )
+        });
+        if let Some((artifact_id, classification)) = selected
+            && classification == "conversation"
+            && let Some(run) = self.run.as_ref()
+        {
+            self.outbox.push(HostCommand::FetchConversationEntries {
+                mission_run_id: run.mission_run_id.clone(),
+                artifact_id,
+            });
+        } else {
+            self.conversation_entries.clear();
+            self.conversation_entries_truncated = false;
+        }
+    }
+
+    fn open_artifact_inspector(&mut self) {
+        let Some((_, artifact)) = self.selected_artifact() else {
+            return;
+        };
+        if !matches!(artifact.classification.as_str(), "text" | "binary") {
+            return;
+        }
+        let artifact_id = artifact.artifact_id.clone();
+        let classification = artifact.classification.clone();
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        self.inspector = Some(ArtifactInspector {
+            artifact_id: artifact_id.clone(),
+            classification,
+            offset: 0,
+            previous_offsets: Vec::new(),
+            page: None,
+        });
+        self.outbox.push(HostCommand::FetchArtifactContent {
+            mission_run_id: run.mission_run_id.clone(),
+            artifact_id,
+            offset: 0,
+        });
+    }
+
+    fn next_artifact_page(&mut self) {
+        let Some(inspector) = self.inspector.as_mut() else {
+            return;
+        };
+        let Some(next_offset) = inspector
+            .page
+            .as_ref()
+            .filter(|page| !page.eof)
+            .and_then(|page| page.next_offset)
+        else {
+            return;
+        };
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        inspector.previous_offsets.push(inspector.offset);
+        inspector.offset = next_offset;
+        inspector.page = None;
+        self.outbox.push(HostCommand::FetchArtifactContent {
+            mission_run_id: run.mission_run_id.clone(),
+            artifact_id: inspector.artifact_id.clone(),
+            offset: next_offset,
+        });
+    }
+
+    fn previous_artifact_page(&mut self) {
+        let Some(inspector) = self.inspector.as_mut() else {
+            return;
+        };
+        let Some(previous_offset) = inspector.previous_offsets.pop() else {
+            return;
+        };
+        let Some(run) = self.run.as_ref() else {
+            inspector.previous_offsets.push(previous_offset);
+            return;
+        };
+        inspector.offset = previous_offset;
+        inspector.page = None;
+        self.outbox.push(HostCommand::FetchArtifactContent {
+            mission_run_id: run.mission_run_id.clone(),
+            artifact_id: inspector.artifact_id.clone(),
+            offset: previous_offset,
+        });
     }
 
     fn handle_editing_key(&mut self, key: KeyEvent) {
@@ -826,6 +1022,24 @@ impl App {
                 self.outbox.push(HostCommand::FetchObservations {
                     mission_run_id: run.mission_run_id.clone(),
                 });
+                self.outbox.push(HostCommand::FetchArtifacts {
+                    mission_run_id: run.mission_run_id.clone(),
+                });
+                if let Some((_, artifact)) = self.selected_artifact()
+                    && artifact.classification == "conversation"
+                {
+                    self.outbox.push(HostCommand::FetchConversationEntries {
+                        mission_run_id: run.mission_run_id.clone(),
+                        artifact_id: artifact.artifact_id.clone(),
+                    });
+                }
+                if let Some(inspector) = self.inspector.as_ref() {
+                    self.outbox.push(HostCommand::FetchArtifactContent {
+                        mission_run_id: run.mission_run_id.clone(),
+                        artifact_id: inspector.artifact_id.clone(),
+                        offset: inspector.offset,
+                    });
+                }
             }
         }
     }
@@ -998,6 +1212,71 @@ impl App {
                     "Host evidence poll failed ({error}); showing last known state"
                 ));
             }
+            HostMessage::Artifacts(Ok(page)) => {
+                let selected = self.selected_artifact.clone();
+                self.artifacts = page.items;
+                self.artifacts_truncated = page.truncated;
+                self.selected_artifact = selected
+                    .clone()
+                    .filter(|id| {
+                        self.artifacts
+                            .iter()
+                            .any(|artifact| &artifact.artifact_id == id)
+                    })
+                    .or_else(|| {
+                        self.artifacts
+                            .first()
+                            .map(|artifact| artifact.artifact_id.clone())
+                    });
+                if self.selected_artifact != selected {
+                    self.sync_selected_conversation();
+                }
+                self.update_evidence_notice();
+            }
+            HostMessage::Artifacts(Err(error)) => {
+                self.notice = Some(format!(
+                    "Host evidence poll failed ({error}); showing last known state"
+                ));
+            }
+            HostMessage::ArtifactContent(Ok(page)) => {
+                if let Some(inspector) = self.inspector.as_mut()
+                    && inspector.artifact_id == page.artifact_id
+                    && inspector.offset == page.offset
+                {
+                    inspector.page = Some(page);
+                }
+            }
+            HostMessage::ArtifactContent(Err(HostError::NotFound { .. })) => {
+                self.inspector = None;
+                self.notice = Some("Artifact became unavailable".to_string());
+            }
+            HostMessage::ArtifactContent(Err(error)) => {
+                self.notice = Some(format!(
+                    "Host Artifact preview failed ({error}); showing last known state"
+                ));
+            }
+            HostMessage::ConversationEntries {
+                mission_run_id,
+                artifact_id,
+                result: Ok(page),
+            } => {
+                if self.conversation_response_matches(&mission_run_id, &artifact_id) {
+                    self.conversation_entries = page.items;
+                    self.conversation_entries_truncated = page.truncated;
+                    self.update_evidence_notice();
+                }
+            }
+            HostMessage::ConversationEntries {
+                mission_run_id,
+                artifact_id,
+                result: Err(error),
+            } => {
+                if self.conversation_response_matches(&mission_run_id, &artifact_id) {
+                    self.notice = Some(format!(
+                        "Host evidence poll failed ({error}); showing last known state"
+                    ));
+                }
+            }
             HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(accepted))) => {
                 let Some(pending_request_id) = self.cancellation_request_id.as_deref() else {
                     return;
@@ -1055,6 +1334,10 @@ impl App {
             Some(self.observations.len())
         } else if self.activities_truncated {
             Some(self.activities.len())
+        } else if self.artifacts_truncated {
+            Some(self.artifacts.len())
+        } else if self.conversation_entries_truncated {
+            Some(self.conversation_entries.len())
         } else {
             None
         };
@@ -1063,6 +1346,15 @@ impl App {
                 "Showing the first {count} evidence entries; the Host retains the full timeline"
             )
         });
+    }
+
+    fn conversation_response_matches(&self, mission_run_id: &str, artifact_id: &str) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.mission_run_id == mission_run_id)
+            && self.selected_artifact().is_some_and(|(_, artifact)| {
+                artifact.classification == "conversation" && artifact.artifact_id == artifact_id
+            })
     }
 }
 
@@ -1080,6 +1372,9 @@ fn host_message_proves_response(message: &HostMessage) -> bool {
         HostMessage::Intent(result) => result_proves_response(result),
         HostMessage::Activities(result) => result_proves_response(result),
         HostMessage::Observations(result) => result_proves_response(result),
+        HostMessage::Artifacts(result) => result_proves_response(result),
+        HostMessage::ArtifactContent(result) => result_proves_response(result),
+        HostMessage::ConversationEntries { result, .. } => result_proves_response(result),
         HostMessage::Cancelled(result) => result_proves_response(result),
     }
 }

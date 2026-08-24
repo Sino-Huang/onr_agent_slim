@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "artifact_not_found",
+    "message": "Artifact is unknown to this Mission Run"
+  }
+}

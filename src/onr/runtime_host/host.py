@@ -24,6 +24,7 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.runtime.cli import run_closed_loop_demo
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.config import RuntimeConfig
+from onr.runtime_host.artifacts import PublicArtifactInbox
 from onr.runtime_host.observations import (
     ACTIVITY_MAPPING_VERSION,
     DEFAULT_PAGE_SIZE,
@@ -291,6 +292,7 @@ class RuntimeHost:
         launch_worker: WorkerLauncher | None = None,
         worker_options: RuntimeWorkerOptions | None = None,
         evidence_source: EvidenceSource | None = None,
+        artifact_inbox_root: Path | None = None,
     ) -> None:
         self.config = config
         self.root = config.storage.root / "runtime-host"
@@ -305,6 +307,9 @@ class RuntimeHost:
             storage_root=config.storage.root,
             transport_backend=config.transport.backend,
             transport_root=config.transport.root,
+        )
+        self._artifact_inbox = PublicArtifactInbox(
+            artifact_inbox_root or config.storage.root / "artifact-inbox"
         )
         self._lock = RLock()
         self._workers: dict[str, WorkerHandle] = {}
@@ -576,6 +581,73 @@ class RuntimeHost:
                     else encode_cursor(mission_run_id, last_sequence)
                 ),
             }
+
+    def artifacts(
+        self,
+        mission_run_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        """Return one page from the Mission Run's Public Artifact Inbox."""
+
+        with self._state_guard():
+            state = self._load_state()
+            run = state["runs"].get(mission_run_id)
+            if not isinstance(run, dict):
+                raise HostNotFoundError
+            return self._artifact_inbox.artifacts(
+                str(run["mission_id"]),
+                mission_run_id,
+                cursor=cursor,
+                limit=limit,
+            )
+
+    def artifact_content(
+        self,
+        mission_run_id: str,
+        artifact_id: str,
+        *,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        """Read one public Artifact content preview."""
+
+        with self._state_guard():
+            state = self._load_state()
+            run = state["runs"].get(mission_run_id)
+            if not isinstance(run, dict):
+                raise HostNotFoundError
+            return self._artifact_inbox.artifact_content(
+                str(run["mission_id"]),
+                mission_run_id,
+                artifact_id,
+                offset=offset,
+                limit=limit,
+            )
+
+    def conversation_entries(
+        self,
+        mission_run_id: str,
+        artifact_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        """Return one public Conversation Artifact entry page."""
+
+        with self._state_guard():
+            state = self._load_state()
+            run = state["runs"].get(mission_run_id)
+            if not isinstance(run, dict):
+                raise HostNotFoundError
+            return self._artifact_inbox.conversation_entries(
+                str(run["mission_id"]),
+                mission_run_id,
+                artifact_id,
+                cursor=cursor,
+                limit=limit,
+            )
 
     def mission_intent(self, mission_run_id: str, credential: str) -> dict[str, object]:
         with self._state_guard():

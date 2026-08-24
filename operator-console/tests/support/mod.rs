@@ -69,6 +69,30 @@ const INVALID_CURSOR_RESPONSE: &str = include_str!(
 const RUN_NOT_FOUND_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-run.not-found.response.json"
 );
+const ARTIFACTS_PAGE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifacts.page.response.json"
+);
+const ARTIFACTS_EMPTY_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifacts.empty.response.json"
+);
+const ARTIFACT_CONTENT_TEXT_PAGE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-page.response.json"
+);
+const ARTIFACT_CONTENT_TEXT_FINAL_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-final.response.json"
+);
+const ARTIFACT_CONTENT_BINARY_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifact-content.binary.response.json"
+);
+const ARTIFACT_ENTRIES_PAGE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifact-entries.page.response.json"
+);
+const ARTIFACT_ENTRIES_EMPTY_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifact-entries.empty.response.json"
+);
+const ARTIFACT_NOT_FOUND_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-artifact.not-found.response.json"
+);
 
 /// Build a dynamic body by substituting fixture values into a committed
 /// contract example; panics if a substituted key is missing from the example.
@@ -281,6 +305,20 @@ fn route(
             ACTIVITIES_EMPTY_RESPONSE,
             state,
         ),
+        ("GET", path) if path.ends_with("/artifacts") => evidence_page(
+            path,
+            query,
+            "artifacts",
+            ARTIFACTS_PAGE_RESPONSE,
+            ARTIFACTS_EMPTY_RESPONSE,
+            state,
+        ),
+        ("GET", path) if path.ends_with("/content") && path.contains("/artifacts/") => {
+            artifact_content(path, query, state)
+        }
+        ("GET", path) if path.ends_with("/entries") && path.contains("/artifacts/") => {
+            artifact_entries(path, query, state)
+        }
         ("POST", path) if path.ends_with("/cancellations") => {
             cancel(path, authorization, body, state)
         }
@@ -303,10 +341,10 @@ fn evidence_page(
         .trim_start_matches("/api/v1/mission-runs/")
         .trim_end_matches(&format!("/{suffix}"));
     let state = state.lock().unwrap();
-    if !state
+    if state
         .run
         .as_ref()
-        .is_some_and(|run| run.mission_run_id == mission_run_id)
+        .is_none_or(|run| run.mission_run_id != mission_run_id)
     {
         return (
             "404 Not Found",
@@ -325,11 +363,144 @@ fn evidence_page(
     let expected_cursor = match suffix {
         "observations" => "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjN9",
         "activities" => "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjJ9",
+        "artifacts" => "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjN9",
         _ => unreachable!("known evidence route"),
     };
     match cursor {
         None => ("200 OK", page.trim_end().to_string()),
         Some(cursor) if cursor == expected_cursor => ("200 OK", empty.trim_end().to_string()),
+        Some(_) => (
+            "422 Unprocessable Entity",
+            INVALID_CURSOR_RESPONSE.trim_end().to_string(),
+        ),
+    }
+}
+
+fn query_value<'a>(query: Option<&'a str>, name: &str) -> Option<&'a str> {
+    query.and_then(|query| {
+        query.split('&').find_map(|part| {
+            let (candidate, value) = part.split_once('=')?;
+            (candidate == name).then_some(value)
+        })
+    })
+}
+
+fn artifact_route_ids<'a>(path: &'a str, suffix: &str) -> Option<(&'a str, &'a str)> {
+    let rest = path.strip_prefix("/api/v1/mission-runs/")?;
+    let (mission_run_id, rest) = rest.split_once("/artifacts/")?;
+    let artifact_id = rest.strip_suffix(suffix)?;
+    Some((mission_run_id, artifact_id))
+}
+
+fn artifact_content(
+    path: &str,
+    query: Option<&str>,
+    state: &Arc<Mutex<State>>,
+) -> (&'static str, String) {
+    let Some((mission_run_id, artifact_id)) = artifact_route_ids(path, "/content") else {
+        return (
+            "404 Not Found",
+            ARTIFACT_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    };
+    let state = state.lock().unwrap();
+    if state
+        .run
+        .as_ref()
+        .is_none_or(|run| run.mission_run_id != mission_run_id)
+    {
+        return (
+            "404 Not Found",
+            RUN_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    }
+    let offset = query_value(query, "offset")
+        .map(str::parse::<u64>)
+        .transpose();
+    let limit = query_value(query, "limit")
+        .map(str::parse::<u64>)
+        .transpose();
+    if offset.is_err()
+        || limit.is_err()
+        || limit.is_ok_and(|limit| limit.is_some_and(|limit| !(1..=16384).contains(&limit)))
+    {
+        return (
+            "422 Unprocessable Entity",
+            INVALID_RESPONSE.trim_end().to_string(),
+        );
+    }
+    let offset = offset.ok().flatten().unwrap_or(0);
+    match (artifact_id, offset) {
+        ("planner-log", 0) => (
+            "200 OK",
+            ARTIFACT_CONTENT_TEXT_PAGE_RESPONSE.trim_end().to_string(),
+        ),
+        ("planner-log", 4096) => (
+            "200 OK",
+            ARTIFACT_CONTENT_TEXT_FINAL_RESPONSE.trim_end().to_string(),
+        ),
+        ("planner-log", _) => (
+            "422 Unprocessable Entity",
+            INVALID_RESPONSE.trim_end().to_string(),
+        ),
+        ("detection-frame", 0) => (
+            "200 OK",
+            ARTIFACT_CONTENT_BINARY_RESPONSE.trim_end().to_string(),
+        ),
+        ("detection-frame", _) => (
+            "422 Unprocessable Entity",
+            INVALID_RESPONSE.trim_end().to_string(),
+        ),
+        _ => (
+            "404 Not Found",
+            ARTIFACT_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        ),
+    }
+}
+
+fn artifact_entries(
+    path: &str,
+    query: Option<&str>,
+    state: &Arc<Mutex<State>>,
+) -> (&'static str, String) {
+    let Some((mission_run_id, artifact_id)) = artifact_route_ids(path, "/entries") else {
+        return (
+            "404 Not Found",
+            ARTIFACT_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    };
+    let state = state.lock().unwrap();
+    if state
+        .run
+        .as_ref()
+        .is_none_or(|run| run.mission_run_id != mission_run_id)
+    {
+        return (
+            "404 Not Found",
+            RUN_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    }
+    if artifact_id != "operator-conversation" {
+        return (
+            "404 Not Found",
+            ARTIFACT_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    }
+    if state.endless_evidence {
+        return (
+            "200 OK",
+            ARTIFACT_ENTRIES_PAGE_RESPONSE.trim_end().to_string(),
+        );
+    }
+    match query_value(query, "cursor") {
+        None => (
+            "200 OK",
+            ARTIFACT_ENTRIES_PAGE_RESPONSE.trim_end().to_string(),
+        ),
+        Some("eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjR9") => (
+            "200 OK",
+            ARTIFACT_ENTRIES_EMPTY_RESPONSE.trim_end().to_string(),
+        ),
         Some(_) => (
             "422 Unprocessable Entity",
             INVALID_CURSOR_RESPONSE.trim_end().to_string(),

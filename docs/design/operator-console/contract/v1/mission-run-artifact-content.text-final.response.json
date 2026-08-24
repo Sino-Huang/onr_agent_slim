@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "artifact_id": "planner-log",
+  "classification": "text",
+  "media_type": "text/plain",
+  "byte_size": 8192,
+  "offset": 4096,
+  "next_offset": null,
+  "eof": true,
+  "truncated": false,
+  "content": "[2026-08-24T12:00:05Z] planner: plan accepted\n"
+}

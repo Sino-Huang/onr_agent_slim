@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "artifact_id": "detection-frame",
+  "classification": "binary",
+  "media_type": "application/octet-stream",
+  "byte_size": 204800,
+  "offset": 0,
+  "next_offset": null,
+  "eof": true,
+  "truncated": false,
+  "content": null
+}

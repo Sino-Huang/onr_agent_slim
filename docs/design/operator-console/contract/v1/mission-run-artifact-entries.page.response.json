@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "artifact_id": "operator-conversation",
+  "entries": [
+    {
+      "sequence": 1,
+      "author": "operator",
+      "time": "2026-08-24T12:00:10Z",
+      "audience": "public",
+      "kind": "message",
+      "content": "Survey sector seven and report obstacles.",
+      "content_ref": null
+    },
+    {
+      "sequence": 2,
+      "author": "hyper-agent",
+      "time": "2026-08-24T12:00:12Z",
+      "audience": "public",
+      "kind": "status",
+      "content": "Route planning started.",
+      "content_ref": null
+    },
+    {
+      "sequence": 4,
+      "author": "perception-agent",
+      "time": "2026-08-24T12:00:15Z",
+      "audience": "public",
+      "kind": "perception_rationale",
+      "content": null,
+      "content_ref": {
+        "path": "evidence/rationale-4.txt",
+        "media_type": "text/plain",
+        "byte_size": 512,
+        "content_digest": "sha256:9b74c9897bac770ffc029518a47c4a64824ba790d3c3c99d1d4c0b69e0b1e3f3"
+      }
+    }
+  ],
+  "next_cursor": "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjR9"
+}

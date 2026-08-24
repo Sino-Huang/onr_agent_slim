@@ -376,3 +376,105 @@ fn endless_evidence_is_retained_and_reported_as_truncated() {
         Some("Showing the first 300 evidence entries; the Host retains the full timeline")
     );
 }
+
+#[test]
+fn artifacts_support_paging_collection_and_stable_errors() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let first = client.artifacts(&run_id, None).unwrap();
+    assert_eq!(first.artifacts.len(), 3);
+    assert_eq!(first.artifacts[0].artifact_id, "detection-frame");
+    let next = first.next_cursor.expect("artifact page cursor");
+    let empty = client.artifacts(&run_id, Some(&next)).unwrap();
+    assert!(empty.artifacts.is_empty());
+    assert_eq!(empty.next_cursor, None);
+    let all = client.all_artifacts(&run_id).unwrap();
+    assert!(!all.truncated);
+    assert_eq!(all.items.len(), 3);
+    assert!(matches!(
+        client.artifacts(&run_id, Some("bogus")),
+        Err(HostError::InvalidCursor { ref code, .. }) if code == "invalid_cursor"
+    ));
+    assert!(matches!(
+        client.artifacts("run-unknown", None),
+        Err(HostError::NotFound { ref code, .. }) if code == "mission_run_not_found"
+    ));
+}
+
+#[test]
+fn artifact_content_supports_text_paging_binary_metadata_and_stable_errors() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let first = client
+        .artifact_content(&run_id, "planner-log", None, Some(4096))
+        .unwrap();
+    assert_eq!(first.offset, 0);
+    assert_eq!(first.next_offset, Some(4096));
+    assert!(!first.eof);
+    assert!(
+        first
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("expanded 42 states")
+    );
+    let final_page = client
+        .artifact_content(&run_id, "planner-log", Some(4096), Some(4096))
+        .unwrap();
+    assert_eq!(final_page.offset, 4096);
+    assert!(final_page.eof);
+    assert_eq!(final_page.next_offset, None);
+    let binary = client
+        .artifact_content(&run_id, "detection-frame", None, Some(4096))
+        .unwrap();
+    assert_eq!(binary.classification, "binary");
+    assert_eq!(binary.byte_size, Some(204800));
+    assert_eq!(binary.content, None);
+    assert!(matches!(
+        client.artifact_content(&run_id, "unknown", None, Some(4096)),
+        Err(HostError::NotFound { ref code, .. }) if code == "artifact_not_found"
+    ));
+    assert!(matches!(
+        client.artifact_content(&run_id, "planner-log", Some(999999), Some(4096)),
+        Err(HostError::InvalidRequest { ref code, .. }) if code == "invalid_request"
+    ));
+}
+
+#[test]
+fn conversation_entries_support_paging_gaps_refs_and_stable_errors() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let first = client
+        .conversation_entries(&run_id, "operator-conversation", None)
+        .unwrap();
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+    let reference = first.entries[2].content_ref.as_ref().unwrap();
+    assert_eq!(reference.path, "evidence/rationale-4.txt");
+    let next = first.next_cursor.expect("entries page cursor");
+    let empty = client
+        .conversation_entries(&run_id, "operator-conversation", Some(&next))
+        .unwrap();
+    assert!(empty.entries.is_empty());
+    assert_eq!(empty.next_cursor, None);
+    let all = client
+        .all_conversation_entries(&run_id, "operator-conversation")
+        .unwrap();
+    assert_eq!(all.items.len(), 3);
+    assert!(matches!(
+        client.conversation_entries(&run_id, "operator-conversation", Some("bogus")),
+        Err(HostError::InvalidCursor { ref code, .. }) if code == "invalid_cursor"
+    ));
+}
