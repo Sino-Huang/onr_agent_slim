@@ -1,0 +1,30 @@
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Mission Run ──────────────────────────────────┐┌ Run Activities ─────────────────────────────────┐
+│ Status:   running                             ││ No Run Activities recorded.                     │
+│ Mission:  mission-7c1f9a2e                    ││ (reserved for a later view)                     │
+│ Run:      run-51d3b84c                        ││                                                 │
+│ Created:  2026-08-24T12:00:00Z                ││                                                 │
+│ Started:  2026-08-24T12:00:03Z                ││                                                 │
+│ Finished: -                                   ││                                                 │
+│ Terminal: -                                   ││                                                 │
+└───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Observations ─────────────────┐┌ Artifacts ────────────────────┐┌ Conversation ──────────────────┐
+│ No Run Observations recorded. ││ No Artifacts published.       ││ No Conversation recorded.      │
+│ (reserved for a later view)   ││ (reserved for a later view)   ││ (reserved for a later view)    │
+│                               ││                               ││                                │
+│                               ││                               ││                                │
+│                               ││                               ││                                │
+│                               ││                               ││                                │
+└───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
+┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
+│ No Run Narrative generated.                   ││ No Human Decision Requests require action.      │
+│ (reserved for a later view)                   ││ (reserved for a later view)                     │
+│                                               ││                                                 │
+│                                               ││                                                 │
+│                                               ││                                                 │
+└───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ polling current Mission Run · Ctrl+C: quit                                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+              ┌ Resize Required ─────────────────────────────────┐
+              │                Terminal too small                │
+              │                                                  │
+              │  The operator console requires at least 100x30.  │
+              │                  Current: 80x24                  │
+              └──────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
