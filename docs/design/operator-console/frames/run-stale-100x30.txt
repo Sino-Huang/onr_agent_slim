@@ -20,7 +20,7 @@
 └───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
 ┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
 │ No Run Narrative generated.                   ││ No Human Decision Requests require action.      │
-│                                               ││ (reserved for a later view)                     │
+│                                               ││ Status-only view: no decision controls.         │
 │                                               ││                                                 │
 │                                               ││                                                 │
 │                                               ││                                                 │

@@ -20,7 +20,7 @@
 └───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
 ┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
 │ (non-authoritative)                           ││ No Human Decision Requests require action.      │
-│ The recon patrol held the ridge line and      ││ (reserved for a later view)                     │
+│ The recon patrol held the ridge line and      ││ Status-only view: no decision controls.         │
 │ reported an obstacle near grid square 18T WL  ││                                                 │
 │ 432 876.                                      ││                                                 │
 │                                               ││                                                 │

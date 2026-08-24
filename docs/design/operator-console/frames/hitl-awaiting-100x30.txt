@@ -2,7 +2,7 @@
 │ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0                   │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Mission Run ──────────────────────────────────┐┌ Run Activities ─────────────────────────────────┐
-│ Status:   running                             ││ No Run Activities recorded.                     │
+│ Status:   awaiting_human_decision             ││ No Run Activities recorded.                     │
 │ Mission:  mission-7c1f9a2e                    ││                                                 │
 │ Run:      run-51d3b84c                        ││                                                 │
 │ Created:  2026-08-24T12:00:00Z                ││                                                 │
@@ -18,12 +18,12 @@
 │                               ││                               ││                                │
 │                               ││                               ││                                │
 └───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
-┌ Recovered Owner ──────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
-│ Recovered owner session                       ││ No Human Decision Requests require action.      │
+┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
+│ No Run Narrative generated.                   ││ AWAITING HUMAN DECISION                         │
+│                                               ││ Status: awaiting_human_decision                 │
+│                                               ││ The Mission Run is paused, awaiting a Human     │
+│                                               ││ Decision.                                       │
 │                                               ││ Status-only view: no decision controls.         │
-│ Mission Intent:                               ││                                                 │
-│ Hold the ridge line.                          ││                                                 │
-│ Report obstacles by grid square.              ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Tab: focus pane · Up/k Down/j: select · Enter: inspect Artifact · c: request cancellation ·      │

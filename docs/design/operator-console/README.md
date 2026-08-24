@@ -1,11 +1,14 @@
-# Operator Console Design (issues #27-#31 contract slices)
+# Operator Console Design (issues #27-#32 contract slices)
 
 Rust 2024 Ratatui 0.30 Operator Console: a peer client of the loopback Python
 Runtime Host (ADR 0001). The committed contract covers Mission Intent editing,
 reviewed Mission Activation, observation of one current Mission Run, owner-only
 Mission Intent readback, idempotent Mission Run Cancellation, redacted Run
 Activities/Observations, public Artifact/Conversation browsing, and optional
-non-authoritative Run Narratives. HITL behavior remains reserved for issue #32.
+non-authoritative Run Narratives. Issue #32 delivers the status-only HITL view:
+the permanent Human Decisions pane truthfully represents the empty and
+awaiting-human-decision Mission Run states without decision-submission
+controls.
 
 ## States
 
@@ -34,9 +37,10 @@ key hints plus transient hint/notice), and per-state body. The Run dashboard
 presents Mission Run identity/status/timestamps/terminal classification next to
 selectable Run Activities and the selected activity's linked Observations.
 Artifacts and Conversation are live evidence panes. Narrative presents available
-and unavailable Run Narrative states as non-authoritative; Human Decisions stays
-reserved for HITL issue #32. A recovered owner's Mission Intent occupies the
-bottom-left slot in place of Narrative. Below 100x30 only the
+and unavailable Run Narrative states as non-authoritative. A recovered owner's
+Mission Intent occupies the bottom-left slot in place of Narrative. The
+bottom-right Human Decisions pane is the permanent HITL tab (issue #32),
+specified below. Below 100x30 only the
 resize-required state is drawn (also enforced as a draw-time guard, not only via
 resize events).
 
@@ -45,6 +49,41 @@ Up/k and Down/j move the focused selection. Enter on a text or binary Artifact
 opens its inspector; conversation Artifacts stay in the dashboard and load the
 Conversation pane. In the inspector, Right/n fetches the next 4096-byte page,
 Left/p returns to the previous offset, and Esc closes the inspector.
+
+### HITL status view (issue #32)
+
+The Human Decisions pane is the permanent HITL tab: it is always present in the
+Run dashboard, in both empty and awaiting states. Its only input is the Host's
+public, versioned Mission Run Status from `GET /api/v1/mission-runs/current`.
+The view is status-only: it binds no keys, renders no control affordances,
+emits no `HostCommand`, and presents identically to owner and observer
+consoles. This delivery adds no Human Decision Request endpoint,
+permitted-action payload, checkpoint identity, submission command, or resume
+operation, and it does not wire the planner's Python `HumanDecision*`
+implementation into the Host or Console.
+
+Empty (no current run, or any status other than `awaiting_human_decision`):
+
+```text
+ No Human Decision Requests require action.
+ Status-only view: no decision controls.
+```
+
+Awaiting (the Host reports Mission Run Status `awaiting_human_decision`):
+
+```text
+ AWAITING HUMAN DECISION
+ Status: awaiting_human_decision
+ The Mission Run is paused, awaiting a Human
+ Decision.
+ Status-only view: no decision controls.
+```
+
+The awaiting headline uses the same Magenta status accent as the Mission Run
+pane; explanatory lines are dimmed. When the Host later reports a non-awaiting
+status, the placeholder clears back to the empty state. Acceptance tests live
+in `operator-console/tests/hitl.rs`; the 100x30 captures below are their
+fixtures.
 
 ## HTTP boundary
 
@@ -179,6 +218,12 @@ The #30 additions are:
 - `mission-run-artifact.not-found.response.json`
 - `mission-run-artifact.unavailable.response.json`
 
+The #32 addition is
+`mission-runs.current.awaiting-human-decision.response.json` - the public
+current-Mission-Run example carrying the `awaiting_human_decision` status. No
+runtime transition into that status is implemented; the example exists so the
+console client and reducer are tested against the versioned status.
+
 Existing #27 fixture consumers:
 
 - `operator-console/tests/support/` serves these bytes (static bodies:
@@ -239,6 +284,8 @@ spawn a Python process. The exact v1 schema both sides implement:
 - `artifact-text-page-100x30.txt` - text Artifact inspector page
 - `artifact-binary-metadata-100x30.txt` - binary Artifact metadata inspector
 - `conversation-entries-100x30.txt` - Artifact selection and Conversation entries
+- `hitl-empty-100x30.txt` - HITL pane empty state: no Human Decision Requests require action
+- `hitl-awaiting-100x30.txt` - HITL pane awaiting-human-decision status placeholder
 
 Regenerate after an intentional layout change:
 

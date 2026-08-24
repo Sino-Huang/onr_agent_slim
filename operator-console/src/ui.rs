@@ -273,12 +273,7 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         draw_narrative(frame, bottom[0], app);
     }
-    draw_reserved(
-        frame,
-        bottom[1],
-        " Human Decisions ",
-        "No Human Decision Requests require action.",
-    );
+    draw_human_decisions(frame, bottom[1], app);
 }
 
 fn draw_narrative(frame: &mut Frame, area: Rect, app: &App) {
@@ -777,12 +772,48 @@ fn draw_cancellation_requested(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_reserved(frame: &mut Frame, area: Rect, title: &str, empty: &str) {
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let lines = vec![
-        Line::from(Span::styled(format!(" {empty}"), dim())),
-        Line::from(Span::styled(" (reserved for a later view)", dim())),
-    ];
+/// The permanent HITL surface (issue #32): a status-only Human Decisions
+/// placeholder driven solely by the Host's public, versioned Mission Run
+/// Status. It binds no keys, offers no controls, and renders identically for
+/// owner and observer consoles; decision submission is a later delivery.
+fn draw_human_decisions(frame: &mut Frame, area: Rect, app: &App) {
+    const AWAITING_HUMAN_DECISION: &str = "awaiting_human_decision";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Human Decisions ");
+    let awaiting = app
+        .run
+        .as_ref()
+        .is_some_and(|run| run.status == AWAITING_HUMAN_DECISION);
+    let lines = if awaiting {
+        vec![
+            Line::from(Span::styled(
+                " AWAITING HUMAN DECISION",
+                status_style(AWAITING_HUMAN_DECISION),
+            )),
+            Line::from(Span::styled(" Status: awaiting_human_decision", dim())),
+            Line::from(Span::styled(
+                " The Mission Run is paused, awaiting a Human",
+                dim(),
+            )),
+            Line::from(Span::styled(" Decision.", dim())),
+            Line::from(Span::styled(
+                " Status-only view: no decision controls.",
+                dim(),
+            )),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled(
+                " No Human Decision Requests require action.",
+                dim(),
+            )),
+            Line::from(Span::styled(
+                " Status-only view: no decision controls.",
+                dim(),
+            )),
+        ]
+    };
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 

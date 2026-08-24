@@ -20,7 +20,7 @@
 └───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
 ┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
 │ Run Narrative unavailable.                    ││ No Human Decision Requests require action.      │
-│ Run Narrative generation failed; Mission Run  ││ (reserved for a later view)                     │
+│ Run Narrative generation failed; Mission Run  ││ Status-only view: no decision controls.         │
 │ state is unaffected.                          ││                                                 │
 │                                               ││                                                 │
 │                                               ││                                                 │
