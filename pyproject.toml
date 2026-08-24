@@ -9,14 +9,16 @@ description = "Autonomous mission-control agents and runtime composition."
 requires-python = ">=3.11"
 dependencies = [
     "deepagents",
+    "fastapi",
     "langchain",
     "langchain-openai",
     "python-statemachine",
     "PyYAML>=6.0.2",
+    "uvicorn",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "playwright", "pyright", "ruff"]
+dev = ["httpx", "pytest", "playwright", "pyright", "ruff"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/onr"]

@@ -77,11 +77,19 @@ truth on the Rust side:
   byte.
 
 Real interoperability against the Python Runtime Host process is validated at
-parent level by the Python Host tests (subprocess fixture). This lane does not
-spawn a Python process; note the Python working tree currently implements a
-divergent schema (`request_id`/`mission_text`, `run_id`, `failure_code`,
-health without `api_version`) that must converge on the committed contract
-before end-to-end validation can pass.
+parent level by the Python Host tests (subprocess fixture); this lane does not
+spawn a Python process. The exact v1 schema both sides implement:
+
+- `GET /api/v1/health` -> `200 {"status":"ok","api_version":{"major":1,"minor":0}}`.
+- `POST /api/v1/mission-activations` with `Authorization: Bearer ...` and body
+  `activation_request_id`, `console_session_id`, `mission_intent`,
+  `source_authority` -> `202` with `activation_request_id`, `mission_id`,
+  `mission_run_id`, `status` (`queued`), `created_at`; conflicts ->
+  `409 {"error":{"code":"activation_request_conflict"|"mission_run_active",...}}`;
+  invalid strict JSON -> `422 {"error":{"code":"invalid_request",...}}`.
+- `GET /api/v1/mission-runs/current` -> `{"mission_run":null}` or
+  `mission_id`, `mission_run_id`, `status`, `created_at`, `started_at`,
+  `finished_at`, and nullable `terminal_classification`.
 
 ## Committed terminal-frame fixtures
 
