@@ -154,6 +154,7 @@ transport:
   root: transport
 storage:
   root: storage
+  planner_artifacts: planner-artifacts
 services:
   hyper_agent: hyper-agent
   maneuver_control: maneuver-control

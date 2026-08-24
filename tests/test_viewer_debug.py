@@ -56,6 +56,7 @@ def _config(tmp_path: Path, *, debug: bool = True) -> tuple[Path, Path]:
                 f"  root: {tmp_path / 'transport'}",
                 "storage:",
                 f"  root: {storage}",
+                f"  planner_artifacts: {tmp_path / 'planner-artifacts'}",
                 "services:",
                 "  hyper_agent: hyper-agent",
                 "  maneuver_control: maneuver-control",

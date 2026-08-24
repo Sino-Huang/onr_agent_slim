@@ -1024,7 +1024,7 @@ class ViewerApplication:
                 invocations = []
                 conversations = []
         planner_artifacts = _load_planner_artifact_index(
-            self.repo_root / "var" / "planner-artifacts"
+            runtime.config.storage.planner_artifacts
         )
         view = self._steps_projection.project(
             mission_id,
@@ -1205,7 +1205,10 @@ class ViewerApplication:
             return None
         if relative.name not in _PLANNER_ARTIFACT_LABELS:
             return None
-        root = self.repo_root / "var" / "planner-artifacts"
+        runtime = self._runtime()
+        if runtime is None:
+            return None
+        root = runtime.config.storage.planner_artifacts
         descriptor: int | None = None
         try:
             descriptor = _open_confined(root.joinpath(*relative.parts), root)

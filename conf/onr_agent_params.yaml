@@ -23,6 +23,7 @@ transport:
   root: var/transport
 storage:
   root: var/storage
+  planner_artifacts: var/planner-artifacts
 services:
   hyper_agent: hyper-agent
   maneuver_control: maneuver-control

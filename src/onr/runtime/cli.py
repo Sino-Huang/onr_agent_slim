@@ -126,8 +126,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--planner-artifacts",
         type=Path,
-        default=Path("var/planner-artifacts"),
-        help="directory for generated planner drafts and solver evidence",
+        help=(
+            "override storage.planner_artifacts for generated planner drafts "
+            "and solver evidence"
+        ),
     )
     parser.add_argument(
         "--recursion-limit",
@@ -378,14 +380,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         mission_input = load_mission_file(args.mission_file)
         repo_root = Path(args.repo_root).resolve()
         config_path = Path(args.config_path) if args.config_path is not None else None
-        planner_artifacts = Path(args.planner_artifacts)
-        if not planner_artifacts.is_absolute():
-            planner_artifacts = repo_root / planner_artifacts
-        planner_artifacts = planner_artifacts.resolve()
         prior_var_exists = (repo_root / "var").exists()
 
         stage = "runtime configuration"
         runtime = _create_runtime(repo_root=repo_root, config_path=config_path)
+        planner_artifacts = (
+            Path(args.planner_artifacts)
+            if args.planner_artifacts is not None
+            else runtime.config.storage.planner_artifacts
+        )
+        if not planner_artifacts.is_absolute():
+            planner_artifacts = repo_root / planner_artifacts
+        planner_artifacts = planner_artifacts.resolve()
         if not isinstance(runtime.transport, FileTransport):
             raise RuntimeError("demo mission requires transport.backend=file")
 

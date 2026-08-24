@@ -273,8 +273,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--planner-artifacts",
         type=Path,
-        default=Path("var/planner-artifacts"),
-        help="directory receiving the accepted post-Hyper Statechart fixture",
+        help=(
+            "override storage.planner_artifacts for the accepted post-Hyper "
+            "Statechart fixture"
+        ),
     )
     parser.add_argument(
         "--demo-environment",
@@ -292,15 +294,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         mission_input = load_mission_file(args.mission_file)
         repo_root = Path(args.repo_root).resolve()
         config_path = Path(args.config_path) if args.config_path else None
-        artifact_root = Path(args.planner_artifacts)
-        if not artifact_root.is_absolute():
-            artifact_root = repo_root / artifact_root
         prior_var_exists = (repo_root / "var").exists()
         stage = "runtime configuration"
         runtime = RuntimeComposition.create(
             repo_root=repo_root,
             config_path=config_path,
         )
+        artifact_root = (
+            Path(args.planner_artifacts)
+            if args.planner_artifacts is not None
+            else runtime.config.storage.planner_artifacts
+        )
+        if not artifact_root.is_absolute():
+            artifact_root = repo_root / artifact_root
+        artifact_root = artifact_root.resolve()
         if prior_var_exists:
             stage = "demo artifact rollover"
             lease = runtime.lease

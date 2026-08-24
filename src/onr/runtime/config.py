@@ -111,6 +111,7 @@ class TransportConfig:
 @dataclass(frozen=True, slots=True)
 class StorageConfig:
     root: Path
+    planner_artifacts: Path = Path("var/planner-artifacts")
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,8 +287,15 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     transport = TransportConfig(
         backend, _config_path(transport_values["root"], "transport.root", root)
     )
-    storage_values = _exact(top["storage"], {"root"}, "storage")
-    storage = StorageConfig(_config_path(storage_values["root"], "storage.root", root))
+    storage_values = _exact(top["storage"], {"root", "planner_artifacts"}, "storage")
+    storage = StorageConfig(
+        _config_path(storage_values["root"], "storage.root", root),
+        _config_path(
+            storage_values["planner_artifacts"],
+            "storage.planner_artifacts",
+            root,
+        ),
+    )
     service_values = _exact(
         top["services"],
         {

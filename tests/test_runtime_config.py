@@ -48,6 +48,9 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
         root / "modules/VAL/build/linux64/Release/bin/Validate"
     )
     assert config.transport.root == (root / "var/transport").resolve()
+    assert (
+        config.storage.planner_artifacts == (root / "var/planner-artifacts").resolve()
+    )
     assert config.heartbeats.hyper_seconds == 10
     assert config.heartbeats.maneuver_seconds == 5
     assert config.heartbeats.summary_seconds == 30
@@ -74,7 +77,7 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(
     executable.chmod(0o755)
     config = tmp_path / "config.yaml"
     config.write_text(
-        """agent_name: test-agent\ndebug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",  # noqa: E501
+        """agent_name: test-agent\ndebug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\n  planner_artifacts: planner-artifacts\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",  # noqa: E501
         encoding="utf-8",
     )
     config.write_text(

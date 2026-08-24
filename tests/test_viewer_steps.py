@@ -606,6 +606,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
                 f"  root: {transport}",
                 "storage:",
                 f"  root: {storage}",
+                f"  planner_artifacts: {tmp_path / 'configured-planner-artifacts'}",
                 "services:",
                 "  hyper_agent: hyper-agent",
                 "  maneuver_control: maneuver-control",
@@ -737,14 +738,17 @@ def test_steps_run_and_artifact_endpoints(tmp_path: Path) -> None:
             ),
         )
         model = (
-            tmp_path / "var" / "planner-artifacts" / "workspace" / "002" / "model.mzn"
+            tmp_path
+            / "configured-planner-artifacts"
+            / "workspace"
+            / "002"
+            / "model.mzn"
         )
         model.parent.mkdir(parents=True)
         model.write_text("solve satisfy;\n", encoding="utf-8")
         statechart = (
             tmp_path
-            / "var"
-            / "planner-artifacts"
+            / "configured-planner-artifacts"
             / "statechart-attempts"
             / "001"
             / "accepted-statechart.json"

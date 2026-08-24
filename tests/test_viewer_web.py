@@ -104,6 +104,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
                 f"  root: {transport}",
                 "storage:",
                 f"  root: {storage}",
+                f"  planner_artifacts: {tmp_path / 'configured-planner-artifacts'}",
                 "services:",
                 "  hyper_agent: hyper-agent",
                 "  maneuver_control: maneuver-control",
@@ -330,13 +331,14 @@ def _seed_live_artifacts(storage: Path, transport_root: Path, repo_root: Path) -
         execution.to_canonical_json(), encoding="utf-8"
     )
 
-    model = repo_root / "var" / "planner-artifacts" / "workspace" / "002" / "model.mzn"
+    model = (
+        repo_root / "configured-planner-artifacts" / "workspace" / "002" / "model.mzn"
+    )
     model.parent.mkdir(parents=True, exist_ok=True)
     model.write_text("solve satisfy;\n", encoding="utf-8")
     accepted_chart = (
         repo_root
-        / "var"
-        / "planner-artifacts"
+        / "configured-planner-artifacts"
         / "statechart-attempts"
         / "001"
         / "accepted-statechart.json"

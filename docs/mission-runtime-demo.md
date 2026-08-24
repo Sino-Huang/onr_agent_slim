@@ -42,15 +42,19 @@ Open `http://127.0.0.1:14398`, then run the mission in terminal 2:
 
 ```bash
 conda activate onr
-python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --planner-artifacts var/planner-artifacts --demo-environment
+python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --demo-environment
 ```
+
+The runtime reads the planner artifact directory from
+`storage.planner_artifacts` in the YAML configuration. Pass
+`--planner-artifacts PATH` to override it for one run.
 
 To exercise the real Maneuver Control agent while bypassing the currently
 independent Hyper/planner workflow, run the post-Hyper demo instead:
 
 ```bash
 conda activate onr
-python -m onr.runtime.maneuver_cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --planner-artifacts var/planner-artifacts --demo-environment
+python -m onr.runtime.maneuver_cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --demo-environment
 ```
 
 This command injects a code-owned accepted four-stop Normalized Plan and

@@ -324,8 +324,12 @@ def test_demo_artifact_rollover_refuses_an_active_lease_without_moving_var(
     assert not (tmp_path / "data").exists()
 
 
+@pytest.mark.parametrize("planner_override", [None, "var/override-artifacts"])
 def test_cli_composes_and_runs_closed_loop_through_injected_seam(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    planner_override: str | None,
 ) -> None:
     from onr.application.context_coordination import ClosedLoopRunResult
     from onr.contracts.hyper_agent import HyperHeartbeatDecision
@@ -335,6 +339,11 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
     class FakeRuntime:
         def __init__(self) -> None:
             self.transport = FileTransport(tmp_path / "transport")
+            self.config = SimpleNamespace(
+                storage=SimpleNamespace(
+                    planner_artifacts=tmp_path / "configured-planner-artifacts"
+                )
+            )
 
         def verify_llm_reachability(self) -> None:
             calls.append("verify")
@@ -381,21 +390,21 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         ),
     )
 
-    result = runtime_cli.main(
-        [
-            "--mission-file",
-            str(_mission_file(tmp_path)),
-            "--repo-root",
-            str(tmp_path),
-            "--config-path",
-            "runtime.yaml",
-            "--planner-artifacts",
-            "var/planner-artifacts",
-            "--simulation-limit-seconds",
-            "30",
-            "--demo-environment",
-        ]
-    )
+    arguments = [
+        "--mission-file",
+        str(_mission_file(tmp_path)),
+        "--repo-root",
+        str(tmp_path),
+        "--config-path",
+        "runtime.yaml",
+        "--simulation-limit-seconds",
+        "30",
+        "--demo-environment",
+    ]
+    if planner_override is not None:
+        arguments.extend(("--planner-artifacts", planner_override))
+
+    result = runtime_cli.main(arguments)
 
     captured = capsys.readouterr()
     assert result == 0 and captured.err == ""
@@ -413,10 +422,12 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         "Survey the demo area without exposing this input.",
         "demo-operator",
     )
-    assert (
-        closed_loop[3]["planner_artifacts"]
-        == (tmp_path / "var/planner-artifacts").resolve()
+    expected_artifacts = (
+        tmp_path / planner_override
+        if planner_override is not None
+        else tmp_path / "configured-planner-artifacts"
     )
+    assert closed_loop[3]["planner_artifacts"] == expected_artifacts.resolve()
     assert closed_loop[3]["recursion_limit"] == 120
     assert closed_loop[3]["simulation_limit_seconds"] == 30.0
 
@@ -454,6 +465,11 @@ def test_cli_reports_system_prompt_loading_failure(
 ) -> None:
     runtime = SimpleNamespace(
         transport=FileTransport(tmp_path / "transport"),
+        config=SimpleNamespace(
+            storage=SimpleNamespace(
+                planner_artifacts=tmp_path / "configured-planner-artifacts"
+            )
+        ),
         verify_llm_reachability=lambda: None,
     )
     monkeypatch.setattr(runtime_cli, "_create_runtime", lambda **kwargs: runtime)
