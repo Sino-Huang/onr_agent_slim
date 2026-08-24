@@ -21,7 +21,7 @@ docker run --gpus '"device=0,1,2,3"' \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   vllm/vllm-openai:qwen38 Qwen/Qwen3.8-27B-FP8 \
   --tensor-parallel-size 4 \
-  --gpu-memory-utilization 0.95 \
+  --gpu-memory-utilization 0.85 \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder \
   --reasoning-parser qwen3 \
