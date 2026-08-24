@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from deepagents.backends import LocalShellBackend
+
 import onr.runtime.composition as composition_module
 from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.inprocess_transport import InProcessTransport
@@ -271,7 +273,7 @@ def test_runtime_composes_one_workflow_level_hyper_deep_agent(monkeypatch) -> No
         "skill_version": "1.0.0",
         "backend_root": Path("backend"),
         "checkpointer": checkpointer,
-        "planner_workspace_location": "/planner-artifacts/workspace",
+        "planner_workspace_location": "planner-artifacts/workspace",
     }
 
 
@@ -317,8 +319,20 @@ def test_runtime_builds_direct_external_planner_context(
     assert isinstance(context.val_validator, VALPlanValidator)
     assert context.max_planner_attempts == 8
     assert context.artifact_root == (tmp_path / "planner-artifacts").resolve()
-    assert context.planner_workspace_location == "/planner-artifacts/workspace"
+    assert context.planner_workspace_location == "planner-artifacts/workspace"
     assert context.environment_file_location == "environment.json"
+
+    backend = LocalShellBackend(
+        root_dir=context.backend_root,
+        virtual_mode=True,
+        inherit_env=False,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    generator_location = (
+        f"{context.planner_workspace_location}/001/generate_statechart.py"
+    )
+    assert backend.write(generator_location, "print('statechart')\n").error is None
+    assert backend.execute(f"test -f {generator_location}").exit_code == 0
 
 
 def test_default_maneuver_control_uses_configured_provider_retry_limit(

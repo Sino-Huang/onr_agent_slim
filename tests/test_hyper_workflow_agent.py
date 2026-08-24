@@ -240,7 +240,7 @@ def _context(
         environment_file=environment_file,
         artifact_root=artifacts,
         backend_root=backend,
-        planner_workspace_location="/artifacts/workspace",
+        planner_workspace_location="artifacts/workspace",
         minizinc_planner=minizinc or _MiniZinc(),
         fast_downward_planner=downward or _FastDownward(artifacts / "fd"),
         val_validator=val or _VAL(),
@@ -271,7 +271,7 @@ def _paths(context: HyperWorkflowContext, planner: str) -> list[str]:
         if planner == "minizinc"
         else ("domain.pddl", "problem.pddl")
     )
-    return [f"/artifacts/workspace/001/{name}" for name in names]
+    return [f"artifacts/workspace/001/{name}" for name in names]
 
 
 def _write(context: HyperWorkflowContext, planner: str) -> list[str]:
@@ -585,7 +585,7 @@ def test_event_materialization_tracks_progress_changes_mapping_and_writes_aligne
         },
     )
     assert completed["status"] == "complete"
-    assert completed["data_file_path"] == "/artifacts/workspace/001/data.dzn"
+    assert completed["data_file_path"] == "artifacts/workspace/001/data.dzn"
     assert completed["entity_index_maps"] == {
         "event_entity": {"ship-a": 1, "ship-b": 2}
     }
@@ -781,7 +781,7 @@ def test_recorded_choice_returns_matching_native_paths_and_reaches_verifier(
 ) -> None:
     context = _context(tmp_path)
     result = _record(context, planner)
-    assert all(f"/artifacts/workspace/001/{name}" in result for name in expected_names)
+    assert all(f"artifacts/workspace/001/{name}" in result for name in expected_names)
     assert "Environment file: var/environment/mission-1/environment.json" in result
     assert "jq '.static_info | length'" in result
     assert '"static_info":' not in result
@@ -864,12 +864,12 @@ def test_environment_file_validation_rejects_missing_outside_stale_and_mismatch(
     "locations",
     [
         [],
-        ["/artifacts/workspace/001/model.mzn"],
-        ["/artifacts/workspace/001/model.mzn"] * 2,
+        ["artifacts/workspace/001/model.mzn"],
+        ["artifacts/workspace/001/model.mzn"] * 2,
         ["/foreign/model.mzn", "/foreign/data.dzn"],
         [
-            "/artifacts/workspace/001/domain.pddl",
-            "/artifacts/workspace/001/problem.pddl",
+            "artifacts/workspace/001/domain.pddl",
+            "artifacts/workspace/001/problem.pddl",
         ],
     ],
 )
@@ -930,19 +930,16 @@ def test_minizinc_success_persists_and_returns_exact_native_output(
     assert f"plan:\n{native}" in result
     assert context.planner_plan is not None
     reference = context.planner_plan.planner_native_plan_artifact_reference
-    assert reference.startswith("/artifacts/planner-plans/")
+    assert reference.startswith("artifacts/planner-plans/")
     assert (
         cast(Path, context.backend_root) / reference.removeprefix("/")
     ).read_text() == native
     assert cast(_MiniZinc, context.minizinc_planner).executed[-1][1] == "coin-bc"
     assert (
         "statechart_generator_file_location: "
-        "/artifacts/workspace/001/generate_statechart.py"
-        in result
+        "artifacts/workspace/001/generate_statechart.py" in result
     )
-    assert (
-        "statechart_file_location: /artifacts/workspace/001/statechart.json" in result
-    )
+    assert "statechart_file_location: artifacts/workspace/001/statechart.json" in result
 
 
 def test_planner_executor_requires_solver_only_for_minizinc(tmp_path: Path) -> None:

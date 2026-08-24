@@ -108,7 +108,7 @@ def _sandbox_path(context: HyperWorkflowContext, path: Path) -> str:
         relative = resolved.relative_to(context.backend_root)
     except ValueError:
         return str(resolved)
-    return "/" + relative.as_posix()
+    return relative.as_posix()
 
 
 def _resolve_planner_files(
@@ -147,11 +147,11 @@ def _remap_planner_paths(
 ) -> str:
     remapped = text
     for name, sandbox in sandbox_by_name.items():
-        remapped = remapped.replace(str(host_by_name[name]), sandbox)
         pattern = re.compile(
             rf"(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?(?:[/\\][^\s:'\"()<>]+)*[/\\]?{re.escape(name)}"
         )
         remapped = pattern.sub(sandbox, remapped)
+        remapped = remapped.replace(str(host_by_name[name]), sandbox)
     return remapped
 
 
@@ -368,9 +368,15 @@ class HyperWorkflowContext:
         self.environment_file = environment_file
         self.environment_file_location = relative_environment_file.as_posix()
         if self.planner_workspace_location is None:
-            self.planner_workspace_location = str(
-                (self.artifact_root / "workspace").resolve()
-            )
+            try:
+                relative_workspace = (self.artifact_root / "workspace").relative_to(
+                    self.backend_root
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "Hyper workflow planner workspace is outside the backend root"
+                ) from exc
+            self.planner_workspace_location = relative_workspace.as_posix()
 
     @property
     def handoff_required(self) -> bool:

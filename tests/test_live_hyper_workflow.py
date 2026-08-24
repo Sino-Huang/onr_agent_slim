@@ -441,7 +441,10 @@ def test_live_hyper_workflow_authors_event_dag_generator(
         )
     native_plan = context.planner_plan
     assert native_plan is not None
-    plan_path = Path(native_plan.planner_native_plan_artifact_reference)
+    assert context.backend_root is not None
+    plan_path = (
+        context.backend_root / native_plan.planner_native_plan_artifact_reference
+    )
     stream = [
         json.loads(line) for line in plan_path.read_text(encoding="utf-8").splitlines()
     ]

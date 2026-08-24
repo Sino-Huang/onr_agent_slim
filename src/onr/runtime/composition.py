@@ -755,7 +755,7 @@ class RuntimeComposition:
                 raise ValueError(
                     "Hyper workflow planner workspace is outside the backend root"
                 ) from exc
-            planner_workspace_location = "/" + relative_workspace.as_posix()
+            planner_workspace_location = relative_workspace.as_posix()
         graph = create_hyper_workflow_agent(
             model=model,
             system_prompt=system_prompt,
@@ -802,7 +802,7 @@ class RuntimeComposition:
                 raise ValueError(
                     "Hyper workflow planner workspace is outside the backend root"
                 ) from exc
-            planner_workspace_location = "/" + relative_workspace.as_posix()
+            planner_workspace_location = relative_workspace.as_posix()
         return HyperWorkflowContext(
             mission_input=mission_input,
             mission_snapshot=mission_snapshot,

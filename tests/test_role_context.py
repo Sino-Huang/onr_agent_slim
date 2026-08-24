@@ -454,7 +454,7 @@ def test_hyper_workflow_local_shell_does_not_claim_scoped_permissions(
         memory_store=FileMissionMemoryStore(tmp_path / "memory"),
         skill_catalog=_install_skills(tmp_path / "skills"),
         backend_root=tmp_path,
-        planner_workspace_location="/planner-artifacts/workspace",
+        planner_workspace_location="planner-artifacts/workspace",
     )
 
     assert "permissions" not in captured
