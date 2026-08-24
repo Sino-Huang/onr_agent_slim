@@ -18,6 +18,52 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+/// Committed #27 v1 contract examples; the fixture serves these bytes (static
+/// bodies) or shapes (dynamic bodies) so it cannot drift from the contract.
+const HEALTH_RESPONSE: &str =
+    include_str!("../../../docs/design/operator-console/contract/v1/health.response.json");
+const ACCEPTED_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-activation.accepted.response.json"
+);
+const CONFLICT_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-activation.conflict.response.json"
+);
+const RUN_ACTIVE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-activation.run-active.response.json"
+);
+const INVALID_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-activation.invalid.response.json"
+);
+const CURRENT_NONE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-runs.current.none.response.json"
+);
+const CURRENT_ACTIVE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-runs.current.active.response.json"
+);
+
+/// Build a dynamic body by substituting fixture values into a committed
+/// contract example; panics if a substituted key is missing from the example.
+fn from_example(example: &str, substitutions: &[(&str, Value)]) -> String {
+    let mut value: Value =
+        serde_json::from_str(example).expect("committed contract example parses");
+    let target = if let Some(run) = value.get_mut("mission_run") {
+        if run.is_null() {
+            *run = json!({});
+        }
+        run
+    } else {
+        &mut value
+    };
+    for (key, replacement) in substitutions {
+        let object = target
+            .as_object_mut()
+            .expect("contract example is an object");
+        assert!(object.contains_key(*key), "contract example has key {key}");
+        object.insert((*key).to_string(), replacement.clone());
+    }
+    value.to_string()
+}
+
 const TERMINAL_STATUSES: [&str; 3] = ["succeeded", "failed", "cancelled"];
 
 #[derive(Debug, Clone)]
@@ -153,33 +199,35 @@ fn route(
     state: &Arc<Mutex<State>>,
 ) -> (&'static str, String) {
     match (method, path) {
-        ("GET", "/api/v1/health") => (
-            "200 OK",
-            r#"{"status":"ok","api_version":{"major":1,"minor":0}}"#.to_string(),
-        ),
+        ("GET", "/api/v1/health") => ("200 OK", HEALTH_RESPONSE.trim_end().to_string()),
         ("POST", "/api/v1/mission-activations") => activate(authorization, body, state),
         ("GET", "/api/v1/mission-runs/current") => {
             let state = state.lock().unwrap();
-            let run = state.run.as_ref().map(run_json);
-            ("200 OK", json!({ "mission_run": run }).to_string())
+            let payload = match state.run.as_ref() {
+                None => CURRENT_NONE_RESPONSE.trim_end().to_string(),
+                Some(run) => from_example(
+                    CURRENT_ACTIVE_RESPONSE,
+                    &[
+                        ("mission_id", json!(run.mission_id)),
+                        ("mission_run_id", json!(run.mission_run_id)),
+                        ("status", json!(run.status)),
+                        ("created_at", json!(run.created_at)),
+                        ("started_at", json!(run.started_at)),
+                        ("finished_at", json!(run.finished_at)),
+                        (
+                            "terminal_classification",
+                            json!(run.terminal_classification),
+                        ),
+                    ],
+                ),
+            };
+            ("200 OK", payload)
         }
         _ => (
             "404 Not Found",
             json!({"error": {"code": "not_found", "message": "unknown route"}}).to_string(),
         ),
     }
-}
-
-fn run_json(run: &FixtureRun) -> Value {
-    json!({
-        "mission_id": run.mission_id,
-        "mission_run_id": run.mission_run_id,
-        "status": run.status,
-        "created_at": run.created_at,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "terminal_classification": run.terminal_classification,
-    })
 }
 
 fn activate(
@@ -191,8 +239,7 @@ fn activate(
     let Ok(value) = parsed else {
         return (
             "422 Unprocessable Entity",
-            json!({"error": {"code": "invalid_request", "message": "request body must be strict JSON"}})
-                .to_string(),
+            INVALID_RESPONSE.trim_end().to_string(),
         );
     };
     let fields = [
@@ -207,8 +254,7 @@ fn activate(
     {
         return (
             "422 Unprocessable Entity",
-            json!({"error": {"code": "invalid_request", "message": "missing or non-string activation fields"}})
-                .to_string(),
+            INVALID_RESPONSE.trim_end().to_string(),
         );
     }
     let credential = authorization.unwrap_or_default();
@@ -225,11 +271,7 @@ fn activate(
         if same {
             return ("202 Accepted", stored.response_body.clone());
         }
-        return (
-            "409 Conflict",
-            json!({"error": {"code": "activation_request_conflict", "message": "activation_request_id was reused with a different body or credential"}})
-                .to_string(),
-        );
+        return ("409 Conflict", CONFLICT_RESPONSE.trim_end().to_string());
     }
 
     if state
@@ -237,11 +279,7 @@ fn activate(
         .as_ref()
         .is_some_and(|run| !TERMINAL_STATUSES.contains(&run.status.as_str()))
     {
-        return (
-            "409 Conflict",
-            json!({"error": {"code": "mission_run_active", "message": "a non-terminal Mission Run already exists"}})
-                .to_string(),
-        );
+        return ("409 Conflict", RUN_ACTIVE_RESPONSE.trim_end().to_string());
     }
 
     state.counter += 1;
@@ -255,14 +293,16 @@ fn activate(
         finished_at: None,
         terminal_classification: None,
     };
-    let response_body = json!({
-        "activation_request_id": request_id,
-        "mission_id": run.mission_id,
-        "mission_run_id": run.mission_run_id,
-        "status": run.status,
-        "created_at": run.created_at,
-    })
-    .to_string();
+    let response_body = from_example(
+        ACCEPTED_RESPONSE,
+        &[
+            ("activation_request_id", json!(request_id)),
+            ("mission_id", json!(run.mission_id)),
+            ("mission_run_id", json!(run.mission_run_id)),
+            ("status", json!(run.status)),
+            ("created_at", json!(run.created_at)),
+        ],
+    );
     state.activations.insert(
         request_id,
         StoredActivation {

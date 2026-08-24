@@ -10,21 +10,21 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// `GET /api/v1/health` response body.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Health {
     pub status: String,
     pub api_version: ApiVersion,
 }
 
 /// Host API version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiVersion {
     pub major: u32,
     pub minor: u32,
 }
 
 /// `POST /api/v1/mission-activations` request body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivationRequest {
     pub activation_request_id: String,
     pub console_session_id: String,
@@ -33,7 +33,7 @@ pub struct ActivationRequest {
 }
 
 /// `202 Accepted` activation response body.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivationAccepted {
     pub activation_request_id: String,
     pub mission_id: String,
@@ -43,13 +43,13 @@ pub struct ActivationAccepted {
 }
 
 /// Machine-readable host error body (`409`/`422`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: ErrorDetail,
 }
 
 /// Inner error detail with a stable machine-readable code.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorDetail {
     pub code: String,
     pub message: String,
@@ -65,7 +65,7 @@ pub enum ActivationOutcome {
 }
 
 /// One Mission Run snapshot from `GET /api/v1/mission-runs/current`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRecord {
     pub mission_id: String,
     pub mission_run_id: String,
@@ -81,7 +81,7 @@ pub struct RunRecord {
 }
 
 /// `GET /api/v1/mission-runs/current` response body.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentRun {
     pub mission_run: Option<RunRecord>,
 }

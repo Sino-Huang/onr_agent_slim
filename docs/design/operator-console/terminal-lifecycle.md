@@ -13,6 +13,20 @@ Because the run loop owns the guard, every `Ok`/`Err` return path from `main`
 drops it. Restoration errors are swallowed (`let _ =`): a half-broken terminal
 must not mask the real exit status.
 
+## Normal errors during initialization: staged setup with unwind
+
+Initialization itself can fail partway, before any guard exists. Setup is
+therefore staged (`terminal::staged_setup`) so a normal error after raw mode
+still restores:
+
+- raw-mode failure - nothing was taken over; the error propagates.
+- alternate-screen failure - raw mode is disabled before the error returns.
+- terminal-construction failure - raw mode is disabled and the alternate
+  screen is left (same order as `restore_terminal`) before the error returns.
+
+The steps are injectable closures, so each failure path is unit-tested without
+a TTY; once the guard exists, its `Drop` covers all later errors.
+
 ## Panic: chained hook
 
 `terminal::install_panic_hook()` runs before the guard is created. It captures

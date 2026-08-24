@@ -61,6 +61,28 @@ The console generates the Activation Request ID, Console Session ID, and a
 high-entropy Bearer credential before activation; it sends `source_authority:
 "operator_console"`.
 
+### Contract provenance and interoperability
+
+`contract/v1/*.json` are the committed machine-readable wire examples for the
+bounded v1 surface, transcribed from issue #27. They are the single source of
+truth on the Rust side:
+
+- `operator-console/tests/support/` serves these bytes (static bodies:
+  health, conflicts, invalid request, empty current run) or these shapes with
+  fixture values substituted (accepted activation, active current run), so the
+  fixture cannot drift from the committed contract.
+- `operator-console/tests/contract_examples.rs` asserts every example
+  round-trips through the client DTOs with exact value equality - no missing
+  or extra fields - and that the health body matches the issue text byte for
+  byte.
+
+Real interoperability against the Python Runtime Host process is validated at
+parent level by the Python Host tests (subprocess fixture). This lane does not
+spawn a Python process; note the Python working tree currently implements a
+divergent schema (`request_id`/`mission_text`, `run_id`, `failure_code`,
+health without `api_version`) that must converge on the committed contract
+before end-to-end validation can pass.
+
 ## Committed terminal-frame fixtures
 
 `frames/` holds readable plain-text captures rendered by Ratatui
