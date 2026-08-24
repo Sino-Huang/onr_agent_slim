@@ -1,12 +1,12 @@
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0                   │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌ Mission Run ──────────────────────────────────┐┌ Run Activities ─────────────────────────────────┐
-│ Status:   running                             ││ No Run Activities recorded.                     │
-│ Mission:  mission-7c1f9a2e                    ││ (reserved for a later view)                     │
-│ Run:      run-51d3b84c                        ││                                                 │
-│ Created:  2026-08-24T12:00:00Z                ││                                                 │
-│ Started:  2026-08-24T12:00:03Z                ││                                                 │
+┌ Mission Run ──────────────────────────────────┐┌ Recovered Owner ────────────────────────────────┐
+│ Status:   running                             ││ Recovered owner session                         │
+│ Mission:  mission-7c1f9a2e                    ││                                                 │
+│ Run:      run-51d3b84c                        ││ Mission Intent:                                 │
+│ Created:  2026-08-24T12:00:00Z                ││ Hold the ridge line.                            │
+│ Started:  2026-08-24T12:00:03Z                ││ Report obstacles by grid square.                │
 │ Finished: -                                   ││                                                 │
 │ Terminal: -                                   ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘

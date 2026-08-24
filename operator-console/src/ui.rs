@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::app::{App, AppState, MIN_HEIGHT, MIN_WIDTH};
+use crate::app::{App, AppState, CancellationState, MIN_HEIGHT, MIN_WIDTH};
 
 const HEADER_ROWS: u16 = 3;
 const FOOTER_ROWS: u16 = 3;
@@ -63,7 +63,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         "Editing" => draw_editing(frame, rows[1], app),
         "ReviewActivation" => draw_review(frame, rows[1], app),
         "Submitting" => draw_submitting(frame, rows[1], app),
-        "Run" => draw_run_dashboard(frame, rows[1], app),
+        "Run" => match &app.cancellation {
+            CancellationState::Idle => draw_run_dashboard(frame, rows[1], app),
+            CancellationState::Confirming => draw_cancellation_confirmation(frame, rows[1], app),
+            CancellationState::Requested { .. } => draw_cancellation_requested(frame, rows[1], app),
+        },
         _ => draw_error(frame, rows[1], app),
     }
     draw_footer(frame, rows[2], app);
@@ -93,7 +97,13 @@ fn footer_lines(app: &App) -> (String, Option<String>) {
         "Editing" => "Enter: newline · Alt+Enter: review activation · Ctrl+C: quit",
         "ReviewActivation" => "Enter: confirm and submit once · Esc: return to editing",
         "Submitting" => "waiting for host acknowledgement · Ctrl+C: quit",
-        "Run" => "polling current Mission Run · Ctrl+C: quit",
+        "Run" => match app.cancellation {
+            CancellationState::Idle => "c: request cancellation · Ctrl+C: quit",
+            CancellationState::Confirming => "Enter: confirm cancellation · Esc: keep running",
+            CancellationState::Requested { .. } => {
+                "cancellation requested · polling current Mission Run · Ctrl+C: quit"
+            }
+        },
         "Error" => "Esc: return to editing · r: retry connection · Ctrl+C: quit",
         _ => "Ctrl+C: quit",
     };
@@ -215,12 +225,16 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(49), Constraint::Min(0)])
         .split(rows[0]);
     draw_run_panel(frame, top[0], app);
-    draw_reserved(
-        frame,
-        top[1],
-        " Run Activities ",
-        "No Run Activities recorded.",
-    );
+    if app.recovered_owner() {
+        draw_recovered_owner_intent(frame, top[1], app);
+    } else {
+        draw_reserved(
+            frame,
+            top[1],
+            " Run Activities ",
+            "No Run Activities recorded.",
+        );
+    }
 
     let middle = Layout::default()
         .direction(Direction::Horizontal)
@@ -267,24 +281,136 @@ fn draw_run_panel(frame: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .title(" Mission Run ");
     let lines = match app.run.as_ref() {
-        Some(run) => vec![
-            Line::from(vec![
+        Some(run) => {
+            let mut status = vec![
                 Span::styled(format!(" {:<10}", "Status:"), dim()),
                 Span::styled(run.status.clone(), status_style(&run.status)),
-            ]),
-            field("Mission:", &run.mission_id),
-            field("Run:", &run.mission_run_id),
-            field("Created:", run.created_at.as_deref().unwrap_or("-")),
-            field("Started:", run.started_at.as_deref().unwrap_or("-")),
-            field("Finished:", run.finished_at.as_deref().unwrap_or("-")),
-            field(
-                "Terminal:",
-                run.terminal_classification.as_deref().unwrap_or("-"),
-            ),
-        ],
+            ];
+            if matches!(app.cancellation, CancellationState::Requested { .. }) {
+                status.push(Span::styled(" · cancellation requested", hint()));
+            }
+            vec![
+                Line::from(status),
+                field("Mission:", &run.mission_id),
+                field("Run:", &run.mission_run_id),
+                field("Created:", run.created_at.as_deref().unwrap_or("-")),
+                field("Started:", run.started_at.as_deref().unwrap_or("-")),
+                field("Finished:", run.finished_at.as_deref().unwrap_or("-")),
+                field(
+                    "Terminal:",
+                    run.terminal_classification.as_deref().unwrap_or("-"),
+                ),
+            ]
+        }
         None => vec![Line::from(Span::styled(" No current Mission Run.", dim()))],
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_recovered_owner_intent(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Recovered Owner ");
+    let mut lines = vec![
+        Line::from(Span::styled(" Recovered owner session", hint())),
+        Line::from(""),
+        Line::from(Span::styled(" Mission Intent:", dim())),
+    ];
+    if app.intent.is_empty() {
+        lines.push(Line::from(Span::styled(" Intent has not loaded.", dim())));
+    } else {
+        lines.extend(
+            app.intent
+                .lines()
+                .map(|line| Line::from(format!(" {line}"))),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_cancellation_confirmation(frame: &mut Frame, area: Rect, app: &App) {
+    let run_id = app
+        .run
+        .as_ref()
+        .map(|run| run.mission_run_id.as_str())
+        .unwrap_or("current run");
+    let lines = vec![
+        Line::from(""),
+        Line::from(""),
+        Line::from(format!(" Request cancellation of Mission Run {run_id}?")),
+        Line::from(""),
+        Line::from(Span::styled(
+            " The Runtime Host records cancellation-requested and stops the",
+            dim(),
+        )),
+        Line::from(Span::styled(
+            " local Run Worker tree before reporting terminal cancelled.",
+            dim(),
+        )),
+        Line::from(Span::styled(
+            " The environment and submitted Maneuver Commands are untouched.",
+            dim(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            " Enter: confirm cancellation · Esc: keep running",
+            hint(),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Cancel Mission Run "),
+        ),
+        area,
+    );
+}
+
+fn draw_cancellation_requested(frame: &mut Frame, area: Rect, app: &App) {
+    let CancellationState::Requested {
+        cancellation_request_id,
+    } = &app.cancellation
+    else {
+        return;
+    };
+    let run_id = app
+        .run
+        .as_ref()
+        .map(|run| run.mission_run_id.as_str())
+        .unwrap_or("current run");
+    let lines = vec![
+        Line::from(""),
+        Line::from(""),
+        Line::from(format!(" Cancellation requested for Mission Run {run_id}.")),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(" Request: {cancellation_request_id}"),
+            dim(),
+        )),
+        Line::from(Span::styled(
+            " Run status remains current until the Host reports terminal cancelled.",
+            dim(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            " Polling current Mission Run for Host confirmation.",
+            hint(),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Cancellation Requested "),
+        ),
+        area,
+    );
 }
 
 fn draw_reserved(frame: &mut Frame, area: Rect, title: &str, empty: &str) {

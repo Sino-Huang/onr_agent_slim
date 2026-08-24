@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use operator_console::app::{HostCommand, HostMessage};
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, ApiVersion, CurrentRun, Health, HostClient, HostError,
-    RunRecord, spawn_worker,
+    ActivationOutcome, ActivationRequest, ApiVersion, CancellationAccepted, CancellationOutcome,
+    CancellationRequest, CurrentRun, Health, HostClient, HostError, MissionIntent, RunRecord,
+    spawn_worker,
 };
 
 #[derive(Default)]
@@ -56,6 +57,35 @@ impl HostClient for ScriptedClient {
             }),
         })
     }
+
+    fn mission_intent(
+        &self,
+        mission_run_id: &str,
+        _credential: &str,
+    ) -> Result<MissionIntent, HostError> {
+        self.calls.lock().unwrap().push("intent".to_string());
+        Ok(MissionIntent {
+            mission_run_id: mission_run_id.to_string(),
+            mission_intent: "survey the ridge".to_string(),
+            source_authority: "operator_console".to_string(),
+        })
+    }
+
+    fn cancel(
+        &self,
+        mission_run_id: &str,
+        request: &CancellationRequest,
+        _credential: &str,
+    ) -> Result<CancellationOutcome, HostError> {
+        self.calls.lock().unwrap().push("cancel".to_string());
+        Ok(CancellationOutcome::Accepted(CancellationAccepted {
+            mission_run_id: mission_run_id.to_string(),
+            cancellation_request_id: request.cancellation_request_id.clone(),
+            disposition: "cancellation_requested".to_string(),
+            status: "running".to_string(),
+            requested_at: "2026-08-24T12:05:00Z".to_string(),
+        }))
+    }
 }
 
 fn recv_timeout(rx: &std::sync::mpsc::Receiver<HostMessage>) -> HostMessage {
@@ -77,6 +107,31 @@ fn worker_executes_commands_and_reports_in_order() {
         }
         other => panic!("expected Connected, got {other:?}"),
     }
+
+    command_tx
+        .send(HostCommand::FetchIntent {
+            mission_run_id: "run-1".to_string(),
+            credential: "cred".to_string(),
+        })
+        .unwrap();
+    assert!(matches!(
+        recv_timeout(&message_rx),
+        HostMessage::Intent(Ok(_))
+    ));
+
+    command_tx
+        .send(HostCommand::Cancel {
+            mission_run_id: "run-1".to_string(),
+            request: CancellationRequest {
+                cancellation_request_id: "cancel-1".to_string(),
+            },
+            credential: "cred".to_string(),
+        })
+        .unwrap();
+    assert!(matches!(
+        recv_timeout(&message_rx),
+        HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(_)))
+    ));
 
     command_tx
         .send(HostCommand::Submit {

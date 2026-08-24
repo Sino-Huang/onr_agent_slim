@@ -86,6 +86,33 @@ pub struct CurrentRun {
     pub mission_run: Option<RunRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionIntent {
+    pub mission_run_id: String,
+    pub mission_intent: String,
+    pub source_authority: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancellationRequest {
+    pub cancellation_request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancellationAccepted {
+    pub mission_run_id: String,
+    pub cancellation_request_id: String,
+    pub disposition: String,
+    pub status: String,
+    pub requested_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancellationOutcome {
+    Accepted(CancellationAccepted),
+    Rejected { code: String, message: String },
+}
+
 /// Client-visible host failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostError {
@@ -95,6 +122,10 @@ pub enum HostError {
     UnexpectedStatus(u16, String),
     /// The response body did not match the contract.
     Malformed(String),
+    AuthorizationFailed {
+        code: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for HostError {
@@ -105,6 +136,9 @@ impl fmt::Display for HostError {
                 write!(f, "unexpected status {status}: {detail}")
             }
             HostError::Malformed(detail) => write!(f, "malformed response: {detail}"),
+            HostError::AuthorizationFailed { code, message } => {
+                write!(f, "authorization failed ({code}): {message}")
+            }
         }
     }
 }
@@ -132,6 +166,15 @@ pub fn spawn_worker(
                 HostCommand::PollCurrent { credential } => {
                     HostMessage::Current(client.current_run(&credential))
                 }
+                HostCommand::FetchIntent {
+                    mission_run_id,
+                    credential,
+                } => HostMessage::Intent(client.mission_intent(&mission_run_id, &credential)),
+                HostCommand::Cancel {
+                    mission_run_id,
+                    request,
+                    credential,
+                } => HostMessage::Cancelled(client.cancel(&mission_run_id, &request, &credential)),
             };
             if tx.send(message).is_err() {
                 break;
@@ -152,6 +195,17 @@ pub trait HostClient: Send {
     ) -> Result<ActivationOutcome, HostError>;
     /// `GET /api/v1/mission-runs/current` with a Bearer credential.
     fn current_run(&self, credential: &str) -> Result<CurrentRun, HostError>;
+    fn mission_intent(
+        &self,
+        mission_run_id: &str,
+        credential: &str,
+    ) -> Result<MissionIntent, HostError>;
+    fn cancel(
+        &self,
+        mission_run_id: &str,
+        request: &CancellationRequest,
+        credential: &str,
+    ) -> Result<CancellationOutcome, HostError>;
 }
 
 /// ureq-backed blocking client for the loopback Runtime Host.
@@ -258,5 +312,75 @@ impl HostClient for UreqHostClient {
             ));
         }
         Self::read_json(response)
+    }
+
+    fn mission_intent(
+        &self,
+        mission_run_id: &str,
+        credential: &str,
+    ) -> Result<MissionIntent, HostError> {
+        let url = format!(
+            "{}/api/v1/mission-runs/{mission_run_id}/mission-intent",
+            self.base_url
+        );
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &Self::authorization(credential))
+            .call()
+            .map_err(|e| HostError::Transport(e.to_string()))?;
+        match response.status().as_u16() {
+            200 => Self::read_json(response),
+            403 => {
+                let detail = Self::error_detail(response)?;
+                Err(HostError::AuthorizationFailed {
+                    code: detail.code,
+                    message: detail.message,
+                })
+            }
+            status => Err(HostError::UnexpectedStatus(
+                status,
+                "mission intent expects 200 or 403".to_string(),
+            )),
+        }
+    }
+
+    fn cancel(
+        &self,
+        mission_run_id: &str,
+        request: &CancellationRequest,
+        credential: &str,
+    ) -> Result<CancellationOutcome, HostError> {
+        let url = format!(
+            "{}/api/v1/mission-runs/{mission_run_id}/cancellations",
+            self.base_url
+        );
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &Self::authorization(credential))
+            .send_json(request)
+            .map_err(|e| HostError::Transport(e.to_string()))?;
+        match response.status().as_u16() {
+            202 => Ok(CancellationOutcome::Accepted(Self::read_json(response)?)),
+            403 => {
+                let detail = Self::error_detail(response)?;
+                Err(HostError::AuthorizationFailed {
+                    code: detail.code,
+                    message: detail.message,
+                })
+            }
+            409 => {
+                let detail = Self::error_detail(response)?;
+                Ok(CancellationOutcome::Rejected {
+                    code: detail.code,
+                    message: detail.message,
+                })
+            }
+            status => Err(HostError::UnexpectedStatus(
+                status,
+                "cancellation expects 202, 403, or 409".to_string(),
+            )),
+        }
     }
 }

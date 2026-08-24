@@ -1,4 +1,4 @@
-//! The committed #27 v1 wire-contract examples under
+//! The committed #27-#28 v1 wire-contract examples under
 //! `docs/design/operator-console/contract/v1/` are the single source of truth
 //! for the console's HTTP client shapes. Each example must round-trip through
 //! the client DTOs with exact value equality, and the fixture HTTP server
@@ -6,10 +6,11 @@
 //!
 //! Real interoperability against the Python Runtime Host process is validated
 //! at parent level by the Python Host tests; this lane guarantees the Rust
-//! fixture reflects the precise #27 contract, not a divergent schema.
+//! fixture reflects the precise #27-#28 contract, not a divergent schema.
 
 use operator_console::host::{
-    ActivationAccepted, ActivationRequest, CurrentRun, ErrorBody, Health,
+    ActivationAccepted, ActivationRequest, CancellationAccepted, CancellationRequest, CurrentRun,
+    ErrorBody, Health, MissionIntent,
 };
 use serde_json::Value;
 
@@ -119,4 +120,36 @@ fn current_run_active_example_has_identifiers_status_and_nullable_classification
     assert!(run.started_at.is_some());
     assert_eq!(run.finished_at, None);
     assert_eq!(run.terminal_classification, None);
+}
+
+#[test]
+fn mission_intent_example_preserves_owner_readback_fields() {
+    let intent: MissionIntent = exact_roundtrip("mission-intent.response.json");
+    assert!(!intent.mission_run_id.is_empty());
+    assert!(intent.mission_intent.contains('\n'));
+    assert_eq!(intent.source_authority, "operator_console");
+}
+
+#[test]
+fn cancellation_request_and_acceptance_examples_preserve_idempotency_key() {
+    let request: CancellationRequest = exact_roundtrip("mission-run-cancellation.request.json");
+    let accepted: CancellationAccepted =
+        exact_roundtrip("mission-run-cancellation.accepted.response.json");
+    assert_eq!(
+        accepted.cancellation_request_id,
+        request.cancellation_request_id
+    );
+    assert!(!accepted.mission_run_id.is_empty());
+    assert_eq!(accepted.disposition, "cancellation_requested");
+    assert_eq!(accepted.status, "running");
+    assert!(!accepted.requested_at.is_empty());
+}
+
+#[test]
+fn cancellation_conflict_and_owner_authorization_examples_have_stable_codes() {
+    let conflict: ErrorBody = exact_roundtrip("mission-run-cancellation.conflict.response.json");
+    assert_eq!(conflict.error.code, "cancellation_request_conflict");
+    let authorization: ErrorBody =
+        exact_roundtrip("mission-run-owner.authorization-failed.response.json");
+    assert_eq!(authorization.error.code, "authorization_failed");
 }

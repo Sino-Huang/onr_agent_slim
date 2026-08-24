@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
@@ -13,7 +13,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from onr.runtime.config import RuntimeConfig, load_runtime_config
-from onr.runtime_host.host import HostConflictError, RuntimeHost, RuntimeWorkerOptions
+from onr.runtime_host.host import (
+    HostAuthorizationError,
+    HostConflictError,
+    RuntimeHost,
+    RuntimeWorkerOptions,
+)
 
 
 class ActivationRequest(BaseModel):
@@ -37,6 +42,19 @@ class ActivationRequest(BaseModel):
         return value
 
 
+class CancellationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cancellation_request_id: str = Field(min_length=1)
+
+    @field_validator("cancellation_request_id")
+    @classmethod
+    def reject_blank_value(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("cancellation request ID must not be blank")
+        return value
+
+
 def create_app(
     *,
     host: RuntimeHost | None = None,
@@ -53,7 +71,7 @@ def create_app(
             config = load_runtime_config(config_path, repo_root=root)
         selected = RuntimeHost(
             config,
-            clock=lambda: datetime.now(timezone.utc).isoformat(),
+            clock=lambda: datetime.now(UTC).isoformat(),
             generate_id=lambda kind: f"{kind}-{uuid4()}",
             worker_options=RuntimeWorkerOptions(repo_root=root.resolve()),
         )
@@ -94,6 +112,39 @@ def create_app(
     def current_run() -> dict[str, object]:
         return {"mission_run": selected.current_run()}
 
+    @app.get("/api/v1/mission-runs/{mission_run_id}/mission-intent")
+    def mission_intent(
+        mission_run_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Any:
+        credential = _bearer_credential(authorization)
+        if credential is None:
+            return _authorization_failed()
+        try:
+            return selected.mission_intent(mission_run_id, credential)
+        except HostAuthorizationError:
+            return _authorization_failed()
+
+    @app.post("/api/v1/mission-runs/{mission_run_id}/cancellations", status_code=202)
+    def cancel(
+        mission_run_id: str,
+        cancellation: CancellationRequest,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Any:
+        credential = _bearer_credential(authorization)
+        if credential is None:
+            return _authorization_failed()
+        try:
+            return selected.cancel(
+                mission_run_id=mission_run_id,
+                cancellation_request_id=cancellation.cancellation_request_id,
+                credential=credential,
+            )
+        except HostAuthorizationError:
+            return _authorization_failed()
+        except HostConflictError as exc:
+            return _error(409, exc.code, exc.message)
+
     return app
 
 
@@ -114,3 +165,7 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 def _invalid_request() -> JSONResponse:
     return _error(422, "invalid_request", "request body or authorization is invalid")
+
+
+def _authorization_failed() -> JSONResponse:
+    return _error(403, "authorization_failed", "request is not authorized")

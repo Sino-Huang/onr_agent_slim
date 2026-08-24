@@ -10,7 +10,8 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, HostClient, HostError, UreqHostClient,
+    ActivationOutcome, ActivationRequest, CancellationOutcome, CancellationRequest, HostClient,
+    HostError, UreqHostClient,
 };
 use support::FixtureHost;
 
@@ -211,4 +212,59 @@ fn unreachable_host_is_a_transport_error() {
         Err(HostError::Transport(_)) => {}
         other => panic!("expected transport error, got {other:?}"),
     }
+}
+
+#[test]
+fn owner_can_read_mission_intent_and_request_idempotent_cancellation() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let accepted = match client
+        .activate(&request("req-owner", "hold the ridge"), "cred-owner")
+        .unwrap()
+    {
+        ActivationOutcome::Accepted(accepted) => accepted,
+        other => panic!("expected acceptance, got {other:?}"),
+    };
+    let intent = client
+        .mission_intent(&accepted.mission_run_id, "cred-owner")
+        .unwrap();
+    assert_eq!(intent.mission_intent, "hold the ridge");
+    assert_eq!(intent.source_authority, "operator_console");
+
+    let cancellation = CancellationRequest {
+        cancellation_request_id: "cancel-1".to_string(),
+    };
+    let first = client
+        .cancel(&accepted.mission_run_id, &cancellation, "cred-owner")
+        .unwrap();
+    let second = client
+        .cancel(&accepted.mission_run_id, &cancellation, "cred-owner")
+        .unwrap();
+    assert_eq!(first, second);
+    assert!(matches!(first, CancellationOutcome::Accepted(_)));
+}
+
+#[test]
+fn owner_endpoints_return_fixed_authorization_failure() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let accepted = match client
+        .activate(&request("req-owner", "hold the ridge"), "cred-owner")
+        .unwrap()
+    {
+        ActivationOutcome::Accepted(accepted) => accepted,
+        other => panic!("expected acceptance, got {other:?}"),
+    };
+    assert!(matches!(
+        client.mission_intent(&accepted.mission_run_id, "wrong"),
+        Err(HostError::AuthorizationFailed { ref code, .. }) if code == "authorization_failed"
+    ));
+    assert!(matches!(
+        client.cancel(
+            &accepted.mission_run_id,
+            &CancellationRequest { cancellation_request_id: "cancel-1".to_string() },
+            "wrong",
+        ),
+        Err(HostError::AuthorizationFailed { ref code, .. }) if code == "authorization_failed"
+    ));
 }

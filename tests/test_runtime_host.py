@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
+import signal
 import socket
+import subprocess
+import sys
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any
 
@@ -52,7 +57,7 @@ def _config(tmp_path: Path) -> RuntimeConfig:
 
 
 def _clock() -> str:
-    return datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc).isoformat()
+    return datetime(2026, 8, 24, 12, 0, tzinfo=UTC).isoformat()
 
 
 def _ids() -> Callable[[str], str]:
@@ -100,6 +105,53 @@ def _activate(
             "source_authority": source_authority,
         },
     )
+
+
+def _owner_headers(credential: str = "console-secret") -> dict[str, str]:
+    return {"Authorization": f"Bearer {credential}"}
+
+
+def _cancel(
+    client: TestClient,
+    *,
+    mission_run_id: str = "run-1",
+    cancellation_request_id: str = "cancel-1",
+    credential: str = "console-secret",
+) -> Any:
+    return client.post(
+        f"/api/v1/mission-runs/{mission_run_id}/cancellations",
+        headers=_owner_headers(credential),
+        json={"cancellation_request_id": cancellation_request_id},
+    )
+
+
+def _wait_for(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        if predicate():
+            return
+        sleep(0.02)
+    raise AssertionError("condition was not reached before timeout")
+
+
+def _process_tree_worker(context: WorkerContext) -> None:
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os,signal,time;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                f"open({str(context.options.planner_artifacts)!r},'w').write(str(os.getpid()));"
+                "time.sleep(60)"
+            ),
+        ]
+    )
+    child.wait()
+
+
+def _mark_process_execution(path: str) -> None:
+    Path(path).write_text("executed", encoding="utf-8")
 
 
 def test_health_and_empty_current_run_contract(tmp_path: Path) -> None:
@@ -153,6 +205,686 @@ def test_activation_is_queued_and_credential_is_only_a_persisted_verifier(
     run = persisted["runs"]["run-1"]
     assert run["console_session_id"] == "session-1"
     assert run["worker_identity"] == "runtime_host.closed_loop_demo"
+
+
+def test_owner_can_read_exact_mission_intent_and_authorization_failure_is_safe(
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _client(tmp_path)
+    assert _activate(client, mission_intent="Hold the ridge.\nReport obstacles.").status_code == 202
+
+    response = client.get(
+        "/api/v1/mission-runs/run-1/mission-intent",
+        headers=_owner_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "mission_run_id": "run-1",
+        "mission_intent": "Hold the ridge.\nReport obstacles.",
+        "source_authority": "operator_console",
+    }
+    expected = {
+        "error": {
+            "code": "authorization_failed",
+            "message": "request is not authorized",
+        }
+    }
+    for run_id, headers in (
+        ("run-1", {}),
+        ("run-1", _owner_headers("wrong-secret")),
+        ("stale-run", _owner_headers()),
+    ):
+        denied = client.get(
+            f"/api/v1/mission-runs/{run_id}/mission-intent", headers=headers
+        )
+        assert denied.status_code == 403
+        assert denied.json() == expected
+        assert "Hold the ridge" not in denied.text
+
+
+def test_queued_cancellation_is_durable_idempotent_and_prevents_worker_launch(
+    tmp_path: Path,
+) -> None:
+    observed: list[str] = []
+    client, _, pending = _client(
+        tmp_path, worker=lambda _context: observed.append("launched")
+    )
+    assert _activate(client).status_code == 202
+
+    accepted = _cancel(client)
+    replay = _cancel(client)
+
+    assert accepted.status_code == replay.status_code == 202
+    assert replay.json() == accepted.json()
+    assert accepted.json() == {
+        "mission_run_id": "run-1",
+        "cancellation_request_id": "cancel-1",
+        "disposition": "cancellation_requested",
+        "status": "queued",
+        "requested_at": "2026-08-24T12:00:00+00:00",
+    }
+    pending.pop()()
+    assert observed == []
+    run = client.get("/api/v1/mission-runs/current").json()["mission_run"]
+    assert run["status"] == "cancelled"
+    assert run["terminal_classification"] == "cancelled_by_owner"
+    persisted = json.loads(
+        (tmp_path / "storage/runtime-host/state.json").read_text(encoding="utf-8")
+    )
+    assert persisted["cancellations"]["cancel-1"]["response"] == accepted.json()
+    assert persisted["runs"]["run-1"]["cancellation_requested"] is True
+    assert "console-secret" not in json.dumps(persisted)
+
+    second = _activate(
+        client,
+        activation_request_id="request-2",
+        mission_intent="Hold position",
+    )
+    assert second.status_code == 202
+    conflict = _cancel(client, mission_run_id="run-2")
+    assert conflict.status_code == 409
+    assert conflict.json() == {
+        "error": {
+            "code": "cancellation_request_conflict",
+            "message": "cancellation_request_id was reused for a different cancellation request",
+        }
+    }
+
+
+def test_cancellation_authorization_failure_does_not_reveal_run_or_request(
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _client(tmp_path)
+    assert _activate(client).status_code == 202
+    expected = {
+        "error": {
+            "code": "authorization_failed",
+            "message": "request is not authorized",
+        }
+    }
+
+    for run_id, credential in (("run-1", "wrong-secret"), ("stale-run", "console-secret")):
+        denied = _cancel(client, mission_run_id=run_id, credential=credential)
+        assert denied.status_code == 403
+        assert denied.json() == expected
+
+
+def test_running_cancellation_terminates_owned_tree_but_not_environment_process(
+    tmp_path: Path,
+) -> None:
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    environment_ready_path = tmp_path / "environment-command.ready"
+    environment_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os,time;"
+                f"open({str(environment_ready_path)!r},'w').write(str(os.getpid()));"
+                "time.sleep(60)"
+            ),
+        ],
+        start_new_session=True,
+    )
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=_process_tree_worker,
+        worker_options=RuntimeWorkerOptions(
+            repo_root=tmp_path, planner_artifacts=grandchild_pid_path
+        ),
+    )
+    client = TestClient(create_app(host=host))
+
+    try:
+        _wait_for(environment_ready_path.is_file)
+        environment_pid = int(environment_ready_path.read_text(encoding="utf-8"))
+        assert environment_pid == environment_process.pid
+        assert _activate(client).status_code == 202
+        _wait_for(
+            lambda: client.get("/api/v1/mission-runs/current").json()["mission_run"][
+                "status"
+            ]
+            == "running"
+            and grandchild_pid_path.is_file()
+        )
+        state = json.loads(
+            (tmp_path / "storage/runtime-host/state.json").read_text(encoding="utf-8")
+        )
+        worker_pid = int(state["runs"]["run-1"]["worker_pid"])
+        grandchild_pid = int(grandchild_pid_path.read_text(encoding="utf-8"))
+        assert state["runs"]["run-1"]["worker_launch_state"] == "group_ready"
+        assert state["runs"]["run-1"]["worker_process_group_id"] == worker_pid
+        assert state["runs"]["run-1"]["worker_start_time"]
+
+        response = _cancel(client)
+
+        assert response.status_code == 202
+        run = client.get("/api/v1/mission-runs/current").json()["mission_run"]
+        assert run["status"] == "cancelled"
+        assert run["terminal_classification"] == "cancelled_by_owner"
+        for pid in (worker_pid, grandchild_pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError(f"owned process {pid} survived cancellation")
+        assert environment_process.poll() is None
+        os.kill(environment_pid, 0)
+    finally:
+        environment_process.terminate()
+        environment_process.wait(timeout=5)
+
+
+def test_awaiting_human_decision_cancellation_terminates_live_owned_tree(
+    tmp_path: Path,
+) -> None:
+    grandchild_pid_path = tmp_path / "awaiting-grandchild.pid"
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=_process_tree_worker,
+        worker_options=RuntimeWorkerOptions(
+            repo_root=tmp_path, planner_artifacts=grandchild_pid_path
+        ),
+    )
+    client = TestClient(create_app(host=host))
+
+    assert _activate(client).status_code == 202
+    _wait_for(
+        lambda: client.get("/api/v1/mission-runs/current").json()["mission_run"]["status"]
+        == "running"
+        and grandchild_pid_path.is_file()
+    )
+    with host._state_guard():
+        state = host._load_state()
+        run = state["runs"]["run-1"]
+        worker_pid = int(run["worker_pid"])
+        run["status"] = "awaiting_human_decision"
+        host._save_state(state)
+    grandchild_pid = int(grandchild_pid_path.read_text(encoding="utf-8"))
+
+    response = _cancel(client)
+
+    assert response.status_code == 202
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "cancelled"
+    assert run["terminal_classification"] == "cancelled_by_owner"
+    for pid in (worker_pid, grandchild_pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError(f"owned awaiting process {pid} survived cancellation")
+
+
+def test_cancellation_during_launcher_registration_prevents_worker_execution(
+    tmp_path: Path,
+) -> None:
+    launcher_entered = Event()
+    release_launcher = Event()
+    worker_executed = Event()
+    callback_finished = Event()
+
+    def launch(callback: Callable[[], None]) -> None:
+        def invoke() -> None:
+            callback()
+            callback_finished.set()
+
+        Thread(target=invoke, daemon=True).start()
+        launcher_entered.set()
+        assert release_launcher.wait(timeout=5)
+
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=lambda _context: worker_executed.set(),
+        launch_worker=launch,
+    )
+    client = TestClient(create_app(host=host))
+    activation_thread = Thread(target=lambda: _activate(client), daemon=True)
+    activation_thread.start()
+    assert launcher_entered.wait(timeout=5)
+
+    cancellation_thread = Thread(target=lambda: _cancel(client), daemon=True)
+    cancellation_thread.start()
+    _wait_for(
+        lambda: json.loads(
+            (tmp_path / "storage/runtime-host/state.json").read_text(encoding="utf-8")
+        )["runs"]["run-1"]["cancellation_requested"]
+        is True
+    )
+    release_launcher.set()
+    activation_thread.join(timeout=5)
+    cancellation_thread.join(timeout=5)
+    assert callback_finished.wait(timeout=5)
+
+    assert worker_executed.is_set() is False
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "cancelled"
+
+
+def test_unreleased_process_worker_self_exits_after_startup_timeout(
+    tmp_path: Path,
+) -> None:
+    executed_path = tmp_path / "executed"
+    ready = multiprocessing.Event()
+    release = multiprocessing.Event()
+    process = multiprocessing.Process(
+        target=runtime_host_module._process_group_entrypoint,
+        args=(
+            lambda: _mark_process_execution(str(executed_path)),
+            ready,
+            release,
+            "orphan-token",
+            0.2,
+        ),
+    )
+    process.start()
+    assert ready.wait(timeout=2)
+
+    process.join(timeout=3)
+
+    assert process.is_alive() is False
+    assert process.exitcode == 0
+    assert executed_path.exists() is False
+
+
+def test_awaiting_human_decision_cancellation_prevents_worker_continuation(
+    tmp_path: Path,
+) -> None:
+    worker_executed = Event()
+    client, host, pending = _client(
+        tmp_path, worker=lambda _context: worker_executed.set()
+    )
+    assert _activate(client).status_code == 202
+    with host._state_guard():
+        state = host._load_state()
+        state["runs"]["run-1"]["status"] = "awaiting_human_decision"
+        host._save_state(state)
+
+    assert _cancel(client).status_code == 202
+    pending.pop()()
+
+    assert worker_executed.is_set() is False
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "cancelled"
+
+
+def test_terminal_worker_result_wins_cancellation_race(tmp_path: Path) -> None:
+    worker_started = Event()
+    release_worker = Event()
+
+    def worker(_context: WorkerContext) -> None:
+        worker_started.set()
+        assert release_worker.wait(timeout=5)
+
+    client, host, pending = _client(tmp_path, worker=worker)
+    assert _activate(client).status_code == 202
+    worker_thread = Thread(target=pending.pop(), daemon=True)
+    worker_thread.start()
+    assert worker_started.wait(timeout=5)
+    release_worker.set()
+    worker_thread.join(timeout=5)
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "succeeded"
+
+    accepted = _cancel(client)
+
+    assert accepted.status_code == 202
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "succeeded"
+    assert run["terminal_classification"] is None
+
+
+def test_cancellation_persisted_before_worker_exit_wins_terminal_race(
+    tmp_path: Path,
+) -> None:
+    worker_started = Event()
+    release_worker = Event()
+
+    def worker(_context: WorkerContext) -> None:
+        worker_started.set()
+        assert release_worker.wait(timeout=5)
+
+    client, host, pending = _client(tmp_path, worker=worker)
+    assert _activate(client).status_code == 202
+    worker_thread = Thread(target=pending.pop(), daemon=True)
+    worker_thread.start()
+    assert worker_started.wait(timeout=5)
+
+    assert _cancel(client).status_code == 202
+    release_worker.set()
+    worker_thread.join(timeout=5)
+
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "cancelled"
+    assert run["terminal_classification"] == "cancelled_by_owner"
+
+
+def test_cancellation_timeout_reconciles_after_tree_exit_and_replay_rechecks(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    tree_exists = Event()
+    tree_exists.set()
+
+    class FakeWorker:
+        @property
+        def identity(self) -> runtime_host_module.WorkerIdentity:
+            return runtime_host_module.WorkerIdentity(
+                99123, 99123, "fake-start", 99123, "fake-token"
+            )
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def release(self) -> None:
+            pass
+
+    pending: list[Callable[[], None]] = []
+
+    def launch(callback: Callable[[], None]) -> FakeWorker:
+        pending.append(callback)
+        return FakeWorker()
+
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=lambda _context: None,
+        launch_worker=launch,
+    )
+    client = TestClient(create_app(host=host))
+    monkeypatch.setattr(
+        runtime_host_module.WorkerIdentity,
+        "is_owned",
+        lambda _identity: True,
+    )
+    monkeypatch.setattr(host, "_signal_process_group", lambda *_args: None)
+    monkeypatch.setattr(
+        host, "_process_group_exists", lambda _process_group_id: tree_exists.is_set()
+    )
+    monkeypatch.setattr(host, "_wait_for_process_group_exit", lambda *_args, **_kwargs: None)
+    assert _activate(client).status_code == 202
+    host._transition("run-1", "running")
+
+    accepted = _cancel(client)
+    replay = _cancel(client)
+    second_replay = _cancel(client)
+
+    assert accepted.status_code == replay.status_code == second_replay.status_code == 202
+    assert replay.json() == accepted.json()
+    assert second_replay.json() == accepted.json()
+    assert len(host._reconcilers) == 1
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "running"
+    tree_exists.clear()
+    _wait_for(lambda: host.current_run()["status"] == "cancelled")  # type: ignore[index]
+    _wait_for(lambda: host._reconcilers == {})
+
+
+def test_cancellation_does_not_escalate_after_worker_identity_is_lost(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    ownership_checks = iter((True, False))
+    signals: list[int] = []
+
+    class FakeWorker:
+        @property
+        def identity(self) -> runtime_host_module.WorkerIdentity:
+            return runtime_host_module.WorkerIdentity(
+                99124, 99124, "reused-start", 99124, "reused-token"
+            )
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def release(self) -> None:
+            pass
+
+    pending: list[Callable[[], None]] = []
+
+    def launch(callback: Callable[[], None]) -> FakeWorker:
+        pending.append(callback)
+        return FakeWorker()
+
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=lambda _context: None,
+        launch_worker=launch,
+    )
+    client = TestClient(create_app(host=host))
+    monkeypatch.setattr(
+        runtime_host_module.WorkerIdentity,
+        "is_owned",
+        lambda _identity: next(ownership_checks),
+    )
+    monkeypatch.setattr(host, "_process_group_exists", lambda _pgid: True)
+    monkeypatch.setattr(
+        host,
+        "_signal_process_group",
+        lambda _pgid, selected_signal: signals.append(selected_signal),
+    )
+    monkeypatch.setattr(host, "_wait_for_process_group_exit", lambda *_args, **_kwargs: None)
+    assert _activate(client).status_code == 202
+    host._transition("run-1", "running")
+
+    response = _cancel(client)
+
+    assert response.status_code == 202
+    assert signals == [signal.SIGTERM]
+    assert host._reconcilers == {}
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "failed"
+    assert run["terminal_classification"] == "host_interrupted"
+
+
+def test_cancellation_does_not_signal_when_worker_identity_is_already_lost(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    signals: list[int] = []
+
+    class FakeWorker:
+        @property
+        def identity(self) -> runtime_host_module.WorkerIdentity:
+            return runtime_host_module.WorkerIdentity(
+                99125, 99125, "lost-start", 99125, "lost-token"
+            )
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def release(self) -> None:
+            pass
+
+    def launch(_callback: Callable[[], None]) -> FakeWorker:
+        return FakeWorker()
+
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=lambda _context: None,
+        launch_worker=launch,
+    )
+    client = TestClient(create_app(host=host))
+    monkeypatch.setattr(
+        runtime_host_module.WorkerIdentity,
+        "is_owned",
+        lambda _identity: False,
+    )
+    monkeypatch.setattr(host, "_process_group_exists", lambda _pgid: True)
+    monkeypatch.setattr(
+        host,
+        "_signal_process_group",
+        lambda _pgid, selected_signal: signals.append(selected_signal),
+    )
+    assert _activate(client).status_code == 202
+    host._transition("run-1", "running")
+
+    assert _cancel(client).status_code == 202
+
+    assert signals == []
+    run = host.current_run()
+    assert run is not None
+    assert run["status"] == "failed"
+    assert run["terminal_classification"] == "host_interrupted"
+
+
+def test_recovery_terminates_owned_group_after_leader_exits(
+    tmp_path: Path,
+) -> None:
+    token = "recovery-owned-token"
+    child_pid_path = tmp_path / "surviving-child.pid"
+    child_script = (
+        "import os,signal,time;"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        f"open({str(child_pid_path)!r},'w').write(str(os.getpid()));"
+        "time.sleep(60)"
+    )
+    script = f"import subprocess,sys;subprocess.Popen([sys.executable,'-c',{child_script!r}])"
+    environment = dict(os.environ)
+    environment[runtime_host_module._WORKER_OWNERSHIP_ENV] = token
+    leader = subprocess.Popen(
+        [sys.executable, "-c", script],
+        start_new_session=True,
+        env=environment,
+    )
+    leader_pid = leader.pid
+    leader.wait(timeout=5)
+    _wait_for(child_pid_path.is_file)
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    try:
+        client, host, pending = _client(tmp_path)
+        assert _activate(client).status_code == 202
+        pending.clear()
+        with host._state_guard():
+            state = host._load_state()
+            run = state["runs"]["run-1"]
+            run["status"] = "running"
+            run["worker_launch_state"] = "group_ready"
+            run["worker_pid"] = leader_pid
+            run["worker_process_group_id"] = leader_pid
+            run["worker_session_id"] = leader_pid
+            run["worker_start_time"] = "leader-exited"
+            run["worker_ownership_token"] = token
+            host._save_state(state)
+
+        reconstructed = RuntimeHost(
+            _config(tmp_path), clock=_clock, generate_id=_ids(), launch_worker=pending.append
+        )
+        _wait_for(lambda: reconstructed.current_run()["status"] == "failed")  # type: ignore[index]
+
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError("owned surviving descendant was not terminated")
+        run = reconstructed.current_run()
+        assert run is not None
+        assert run["terminal_classification"] == "host_interrupted"
+    finally:
+        try:
+            os.killpg(leader_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_reconstruction_does_not_claim_cancelled_without_registered_tree_exit(
+    tmp_path: Path,
+) -> None:
+    client, _, pending = _client(tmp_path, worker=lambda _context: None)
+    assert _activate(client).status_code == 202
+    assert _cancel(client).status_code == 202
+
+    reconstructed, _, reconstructed_pending = _client(tmp_path)
+
+    run = reconstructed.get("/api/v1/mission-runs/current").json()["mission_run"]
+    assert run["status"] == "failed"
+    assert run["terminal_classification"] == "host_interrupted"
+    assert reconstructed_pending == []
+    pending.pop()()
+    assert reconstructed.get("/api/v1/mission-runs/current").json()["mission_run"] == run
+
+
+def test_reconstruction_recovers_cancelled_after_owned_group_already_exited(
+    tmp_path: Path,
+) -> None:
+    client, host, pending = _client(tmp_path)
+    assert _activate(client).status_code == 202
+    assert _cancel(client).status_code == 202
+    pending.clear()
+    absent_pid = 2_000_000_000
+    with host._state_guard():
+        state = host._load_state()
+        runtime_host_module.WorkerIdentity(
+            absent_pid,
+            absent_pid,
+            "exited-worker-start",
+            absent_pid,
+            "exited-worker-token",
+        ).persist(state["runs"]["run-1"])
+        host._save_state(state)
+
+    reconstructed = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        launch_worker=pending.append,
+    )
+
+    run = reconstructed.current_run()
+    assert run is not None
+    assert run["status"] == "cancelled"
+    assert run["terminal_classification"] == "cancelled_by_owner"
+
+
+def test_reconstruction_keeps_unverifiable_cancelled_identity_interrupted(
+    tmp_path: Path,
+) -> None:
+    client, host, pending = _client(tmp_path)
+    assert _activate(client).status_code == 202
+    assert _cancel(client).status_code == 202
+    pending.clear()
+    with host._state_guard():
+        state = host._load_state()
+        run = state["runs"]["run-1"]
+        run["worker_launch_state"] = "group_ready"
+        run["worker_pid"] = 2_000_000_000
+        run["worker_process_group_id"] = 2_000_000_000
+        run["worker_session_id"] = 2_000_000_000
+        run["worker_start_time"] = "missing-token"
+        run.pop("worker_ownership_token", None)
+        host._save_state(state)
+
+    reconstructed = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        launch_worker=pending.append,
+    )
+
+    run = reconstructed.current_run()
+    assert run is not None
+    assert run["status"] == "failed"
+    assert run["terminal_classification"] == "host_interrupted"
 
 
 def test_rust_documented_wire_schema_is_directly_compatible(tmp_path: Path) -> None:

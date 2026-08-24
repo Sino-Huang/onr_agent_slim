@@ -1,10 +1,11 @@
-# Operator Console Design (issue #27 slice)
+# Operator Console Design (issues #27-#28 contract slices)
 
 Rust 2024 Ratatui 0.30 Operator Console: a peer client of the loopback Python
-Runtime Host (ADR 0001). This slice covers Mission Intent editing, reviewed
-Mission Activation, and observation of one current Mission Run. Cancellation,
-recovery, Run Activities/Observations, Artifacts, Narratives, and HITL behavior
-remain reserved for later issues (#28-#32).
+Runtime Host (ADR 0001). The committed contract covers Mission Intent editing,
+reviewed Mission Activation, observation of one current Mission Run, owner-only
+Mission Intent readback, and idempotent Mission Run Cancellation. Run
+Activities/Observations, Artifacts, Narratives, and HITL behavior remain
+reserved for later issues (#29-#32).
 
 ## States
 
@@ -56,6 +57,17 @@ server in `operator-console/tests/support/`, no Python process):
   machine-readable code.
 - `GET /api/v1/mission-runs/current` -> `{"mission_run":null}` or identifiers,
   status, timestamps, and nullable terminal classification.
+- `GET /api/v1/mission-runs/{mission_run_id}/mission-intent`
+  (`Authorization: Bearer <credential>`) -> owner-only `200` with Mission Run
+  ID, Mission Intent, and source authority.
+- `POST /api/v1/mission-runs/{mission_run_id}/cancellations`
+  (`Authorization: Bearer <credential>`) with `cancellation_request_id` ->
+  owner-only `202` with `disposition: "cancellation_requested"`, current Run
+  status, and request time. Replaying the same request ID returns the original
+  result; conflicting reuse -> `409 cancellation_request_conflict`.
+- Missing, stale, or non-owner credentials on either owner endpoint -> the same
+  fixed `403 authorization_failed` response, without Mission Intent or
+  credential/verifier data.
 
 The console generates the Activation Request ID, Console Session ID, and a
 high-entropy Bearer credential before activation; it sends `source_authority:
@@ -64,8 +76,17 @@ high-entropy Bearer credential before activation; it sends `source_authority:
 ### Contract provenance and interoperability
 
 `contract/v1/*.json` are the committed machine-readable wire examples for the
-bounded v1 surface, transcribed from issue #27. They are the single source of
-truth on the Rust side:
+bounded v1 surface, transcribed from issues #27 and #28. They are the single
+source of truth on the Rust side. The #28 additions are:
+
+- `mission-intent.response.json` - owner Mission Intent readback.
+- `mission-run-cancellation.request.json` - idempotency key request body.
+- `mission-run-cancellation.accepted.response.json` - original/replayed `202`.
+- `mission-run-cancellation.conflict.response.json` - conflicting-ID `409`.
+- `mission-run-owner.authorization-failed.response.json` - fixed `403` shared
+  by missing, stale, and non-owner bearer credentials.
+
+Existing #27 fixture consumers:
 
 - `operator-console/tests/support/` serves these bytes (static bodies:
   health, conflicts, invalid request, empty current run) or these shapes with
@@ -90,6 +111,16 @@ spawn a Python process. The exact v1 schema both sides implement:
 - `GET /api/v1/mission-runs/current` -> `{"mission_run":null}` or
   `mission_id`, `mission_run_id`, `status`, `created_at`, `started_at`,
   `finished_at`, and nullable `terminal_classification`.
+- `GET /api/v1/mission-runs/{mission_run_id}/mission-intent` with the owning
+  bearer credential -> `200` with `mission_run_id`, `mission_intent`, and
+  `source_authority`.
+- `POST /api/v1/mission-runs/{mission_run_id}/cancellations` with the owning
+  bearer credential and `cancellation_request_id` -> `202` with
+  `mission_run_id`, `cancellation_request_id`, `disposition`, current `status`,
+  and `requested_at`; conflicting reuse -> `409
+  cancellation_request_conflict`.
+- Owner recovery is client-side through the local session file specified by
+  issue #28. It does not add an HTTP recovery endpoint.
 
 ## Committed terminal-frame fixtures
 
@@ -99,6 +130,9 @@ spawn a Python process. The exact v1 schema both sides implement:
 - `editing-100x30.txt` - Mission Intent editor
 - `review-activation-100x30.txt` - activation review
 - `run-dashboard-100x30.txt` - active-run dashboard with reserved regions
+- `cancellation-confirmation-100x30.txt` - cancellation confirmation
+- `cancellation-requested-100x30.txt` - cancellation-requested run state
+- `recovered-owner-100x30.txt` - recovered owner session and active run
 - `resize-required-80x24.txt` - below-minimum terminal
 
 Regenerate after an intentional layout change:

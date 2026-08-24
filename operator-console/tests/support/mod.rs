@@ -40,6 +40,17 @@ const CURRENT_NONE_RESPONSE: &str = include_str!(
 const CURRENT_ACTIVE_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-runs.current.active.response.json"
 );
+const INTENT_RESPONSE: &str =
+    include_str!("../../../docs/design/operator-console/contract/v1/mission-intent.response.json");
+const CANCELLATION_ACCEPTED_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-cancellation.accepted.response.json"
+);
+const CANCELLATION_CONFLICT_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-cancellation.conflict.response.json"
+);
+const AUTHORIZATION_FAILED_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-owner.authorization-failed.response.json"
+);
 
 /// Build a dynamic body by substituting fixture values into a committed
 /// contract example; panics if a substituted key is missing from the example.
@@ -92,6 +103,7 @@ struct State {
     run: Option<FixtureRun>,
     counter: u32,
     last_authorization: Option<String>,
+    cancellation: Option<(String, String, String)>,
 }
 
 /// A running fixture host bound to an ephemeral loopback port.
@@ -223,11 +235,118 @@ fn route(
             };
             ("200 OK", payload)
         }
+        ("GET", path) if path.ends_with("/mission-intent") => {
+            owner_intent(path, authorization, state)
+        }
+        ("POST", path) if path.ends_with("/cancellations") => {
+            cancel(path, authorization, body, state)
+        }
         _ => (
             "404 Not Found",
             json!({"error": {"code": "not_found", "message": "unknown route"}}).to_string(),
         ),
     }
+}
+
+fn owner_intent(
+    path: &str,
+    authorization: Option<String>,
+    state: &Arc<Mutex<State>>,
+) -> (&'static str, String) {
+    let mission_run_id = path
+        .trim_start_matches("/api/v1/mission-runs/")
+        .trim_end_matches("/mission-intent");
+    let state = state.lock().unwrap();
+    let owner = state.activations.values().find(|activation| {
+        state
+            .run
+            .as_ref()
+            .is_some_and(|run| run.mission_run_id == mission_run_id)
+            && authorization.as_deref() == Some(activation.credential.as_str())
+    });
+    let Some(owner) = owner else {
+        return (
+            "403 Forbidden",
+            AUTHORIZATION_FAILED_RESPONSE.trim_end().to_string(),
+        );
+    };
+    (
+        "200 OK",
+        from_example(
+            INTENT_RESPONSE,
+            &[
+                ("mission_run_id", json!(mission_run_id)),
+                ("mission_intent", json!(owner.mission_intent)),
+                ("source_authority", json!(owner.source_authority)),
+            ],
+        ),
+    )
+}
+
+fn cancel(
+    path: &str,
+    authorization: Option<String>,
+    body: &[u8],
+    state: &Arc<Mutex<State>>,
+) -> (&'static str, String) {
+    let mission_run_id = path
+        .trim_start_matches("/api/v1/mission-runs/")
+        .trim_end_matches("/cancellations");
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return (
+            "422 Unprocessable Entity",
+            INVALID_RESPONSE.trim_end().to_string(),
+        );
+    };
+    let Some(request_id) = value.get("cancellation_request_id").and_then(Value::as_str) else {
+        return (
+            "422 Unprocessable Entity",
+            INVALID_RESPONSE.trim_end().to_string(),
+        );
+    };
+    let mut state = state.lock().unwrap();
+    let authorized = state.activations.values().any(|activation| {
+        state
+            .run
+            .as_ref()
+            .is_some_and(|run| run.mission_run_id == mission_run_id)
+            && authorization.as_deref() == Some(activation.credential.as_str())
+    });
+    if !authorized {
+        return (
+            "403 Forbidden",
+            AUTHORIZATION_FAILED_RESPONSE.trim_end().to_string(),
+        );
+    }
+    if let Some((stored_id, stored_run_id, response)) = state.cancellation.as_ref() {
+        if stored_id == request_id && stored_run_id == mission_run_id {
+            return ("202 Accepted", response.clone());
+        }
+        if stored_id == request_id {
+            return (
+                "409 Conflict",
+                CANCELLATION_CONFLICT_RESPONSE.trim_end().to_string(),
+            );
+        }
+    }
+    let status = state
+        .run
+        .as_ref()
+        .map_or("cancelled", |run| run.status.as_str());
+    let response = from_example(
+        CANCELLATION_ACCEPTED_RESPONSE,
+        &[
+            ("mission_run_id", json!(mission_run_id)),
+            ("cancellation_request_id", json!(request_id)),
+            ("status", json!(status)),
+        ],
+    );
+    state.cancellation = Some((
+        request_id.to_string(),
+        mission_run_id.to_string(),
+        response.clone(),
+    ));
+    ("202 Accepted", response)
 }
 
 fn activate(

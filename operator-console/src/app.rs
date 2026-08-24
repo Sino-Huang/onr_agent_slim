@@ -4,9 +4,152 @@
 //! and resize events go in, host effects come out through an outbox drained by
 //! the run loop, and host responses arrive back as [`HostMessage`] values.
 
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::host::{ActivationOutcome, ActivationRequest, CurrentRun, Health, HostError, RunRecord};
+use crate::host::{
+    ActivationOutcome, ActivationRequest, CancellationOutcome, CancellationRequest, CurrentRun,
+    Health, HostError, MissionIntent, RunRecord,
+};
+
+const CANCELLATION_POLL_LIMIT: Duration = Duration::from_secs(10);
+
+pub trait Clock: Send + Sync + std::fmt::Debug {
+    fn now(&self) -> Instant;
+}
+
+#[derive(Debug)]
+struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanExitAction {
+    Cancelled,
+    CancellationTimedOut,
+    TerminalRun,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OwnerSessionState {
+    pub host_authority: String,
+    pub host_api_major: u32,
+    pub mission_run_id: String,
+    pub console_session_id: String,
+    pub credential: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionStateFile {
+    path: PathBuf,
+}
+
+impl SessionStateFile {
+    pub fn default_path() -> Self {
+        let base = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+            })
+            .unwrap_or_else(|| PathBuf::from(".local/state"));
+        Self::at(base.join("onr/operator-console/session.json"))
+    }
+
+    pub fn at(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> io::Result<Option<OwnerSessionState>> {
+        match fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn save(&self, state: &OwnerSessionState) -> io::Result<()> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| io::Error::other("state path has no parent"))?;
+        #[cfg(unix)]
+        let mut created_directories = Vec::new();
+        #[cfg(unix)]
+        {
+            let mut directory = Some(parent);
+            while let Some(path) = directory {
+                if path.exists() {
+                    break;
+                }
+                created_directories.push(path.to_path_buf());
+                directory = path.parent();
+            }
+        }
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in created_directories {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            }
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+        let temporary = parent.join(format!(".session-{}.tmp", uuid::Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(&serde_json::to_vec(state).map_err(io::Error::other)?)?;
+        file.sync_all()?;
+        fs::rename(&temporary, &self.path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+
+    pub fn remove(&self) -> io::Result<()> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancellationState {
+    Idle,
+    Confirming,
+    Requested { cancellation_request_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellationOrigin {
+    ContinueConsole,
+    CleanExit,
+}
 
 /// Minimum terminal size supported by the fixed dashboard layout.
 pub const MIN_WIDTH: u16 = 100;
@@ -64,6 +207,15 @@ pub enum HostCommand {
     },
     /// Fetch the current Mission Run snapshot.
     PollCurrent { credential: String },
+    FetchIntent {
+        mission_run_id: String,
+        credential: String,
+    },
+    Cancel {
+        mission_run_id: String,
+        request: CancellationRequest,
+        credential: String,
+    },
 }
 
 /// Responses from the host worker thread.
@@ -72,6 +224,8 @@ pub enum HostMessage {
     Connected(Result<Health, HostError>),
     Activated(Result<ActivationOutcome, HostError>),
     Current(Result<CurrentRun, HostError>),
+    Intent(Result<MissionIntent, HostError>),
+    Cancelled(Result<CancellationOutcome, HostError>),
 }
 
 /// Console Session identity generated before activation.
@@ -117,6 +271,7 @@ pub struct App {
     pub activation: Option<crate::host::ActivationAccepted>,
     /// Latest known Mission Run snapshot.
     pub run: Option<RunRecord>,
+    pub cancellation: CancellationState,
     /// Last observed terminal size.
     pub last_size: (u16, u16),
     should_quit: bool,
@@ -124,15 +279,46 @@ pub struct App {
     review_request_id: Option<String>,
     review_intent_snapshot: Option<String>,
     outbox: Vec<HostCommand>,
+    session_state_file: SessionStateFile,
+    recovered_state: Option<OwnerSessionState>,
+    cancellation_deadline: Option<Instant>,
+    cancellation_origin: Option<CancellationOrigin>,
+    cancellation_submitting: bool,
+    cancellation_request_id: Option<String>,
+    clean_exit_action: Option<CleanExitAction>,
+    clock: Arc<dyn Clock>,
 }
 
 impl App {
     /// Create a console that immediately starts the host handshake.
     pub fn new(host_addr: String) -> Self {
+        Self::new_with_session_file(host_addr, SessionStateFile::default_path())
+    }
+
+    pub fn new_with_session_file(host_addr: String, session_state_file: SessionStateFile) -> Self {
+        Self::new_with_session_file_and_clock(host_addr, session_state_file, Arc::new(SystemClock))
+    }
+
+    pub fn new_with_session_file_and_clock(
+        host_addr: String,
+        session_state_file: SessionStateFile,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        let recovered_state = session_state_file
+            .load()
+            .ok()
+            .flatten()
+            .filter(|state| state.host_authority == host_addr && state.host_api_major == 1);
+        let session = recovered_state
+            .as_ref()
+            .map_or_else(ConsoleSession::generate, |state| ConsoleSession {
+                session_id: state.console_session_id.clone(),
+                credential: state.credential.clone(),
+            });
         App {
             state: AppState::Connecting,
             host_addr,
-            session: ConsoleSession::generate(),
+            session,
             intent: String::new(),
             cursor: 0,
             hint: None,
@@ -140,12 +326,45 @@ impl App {
             health: None,
             activation: None,
             run: None,
+            cancellation: CancellationState::Idle,
             last_size: (MIN_WIDTH, MIN_HEIGHT),
             should_quit: false,
             submitted: false,
             review_request_id: None,
             review_intent_snapshot: None,
             outbox: vec![HostCommand::Connect],
+            session_state_file,
+            recovered_state,
+            cancellation_deadline: None,
+            cancellation_origin: None,
+            cancellation_submitting: false,
+            cancellation_request_id: None,
+            clean_exit_action: None,
+            clock,
+        }
+    }
+
+    pub fn set_session_state_file(&mut self, file: SessionStateFile) {
+        self.session_state_file = file;
+    }
+
+    pub fn recovered_owner(&self) -> bool {
+        self.recovered_state.is_some()
+    }
+
+    pub fn take_clean_exit_action(&mut self) -> Option<CleanExitAction> {
+        self.clean_exit_action.take()
+    }
+
+    pub fn check_deadlines(&mut self) {
+        if self
+            .cancellation_deadline
+            .is_some_and(|deadline| self.clock.now() >= deadline)
+        {
+            self.cancellation_deadline = None;
+            if self.cancellation_origin == Some(CancellationOrigin::CleanExit) {
+                self.clean_exit_action = Some(CleanExitAction::CancellationTimedOut);
+            }
         }
     }
 
@@ -226,7 +445,7 @@ impl App {
             AppState::ResizeRequired { .. } | AppState::Connecting | AppState::Submitting => {}
             AppState::Editing => self.handle_editing_key(key),
             AppState::ReviewActivation => self.handle_review_key(key),
-            AppState::Run => {}
+            AppState::Run => self.handle_run_key(key),
             AppState::Error { retry_connect, .. } => match key.code {
                 KeyCode::Esc => self.state = AppState::Editing,
                 KeyCode::Char('r') if retry_connect => {
@@ -235,6 +454,55 @@ impl App {
                 }
                 _ => {}
             },
+        }
+    }
+
+    fn handle_run_key(&mut self, key: KeyEvent) {
+        match (&self.cancellation, key.code) {
+            (CancellationState::Idle, KeyCode::Char('c')) => {
+                self.cancellation = CancellationState::Confirming;
+                self.cancellation_origin = Some(CancellationOrigin::ContinueConsole);
+            }
+            (CancellationState::Idle, KeyCode::Char('q')) => {
+                if self
+                    .run
+                    .as_ref()
+                    .is_some_and(|run| is_terminal(&run.status))
+                {
+                    if let Err(error) = self.session_state_file.remove() {
+                        self.notice = Some(format!("Could not remove owner session: {error}"));
+                    } else {
+                        self.clean_exit_action = Some(CleanExitAction::TerminalRun);
+                    }
+                } else {
+                    self.cancellation = CancellationState::Confirming;
+                    self.cancellation_origin = Some(CancellationOrigin::CleanExit);
+                }
+            }
+            (CancellationState::Confirming, KeyCode::Esc) => {
+                self.cancellation = CancellationState::Idle;
+                self.cancellation_origin = None;
+                self.cancellation_request_id = None;
+            }
+            (CancellationState::Confirming, KeyCode::Enter) if !self.cancellation_submitting => {
+                let Some(run) = self.run.as_ref() else {
+                    return;
+                };
+                let cancellation_request_id = uuid::Uuid::new_v4().to_string();
+                self.outbox.push(HostCommand::Cancel {
+                    mission_run_id: run.mission_run_id.clone(),
+                    request: CancellationRequest {
+                        cancellation_request_id: cancellation_request_id.clone(),
+                    },
+                    credential: self.session.credential.clone(),
+                });
+                self.cancellation_submitting = true;
+                self.cancellation_request_id = Some(cancellation_request_id);
+                if self.cancellation_origin == Some(CancellationOrigin::CleanExit) {
+                    self.cancellation_deadline = Some(self.clock.now() + CANCELLATION_POLL_LIMIT);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -390,7 +658,10 @@ impl App {
 
     /// Ask for a Mission Run poll; only meaningful in the Run state.
     pub fn request_poll(&mut self) {
-        if matches!(self.logical_state_name(), "Run") {
+        let within_cancellation_limit = self
+            .cancellation_deadline
+            .is_none_or(|deadline| self.clock.now() <= deadline);
+        if matches!(self.logical_state_name(), "Run") && within_cancellation_limit {
             self.outbox.push(HostCommand::PollCurrent {
                 credential: self.session.credential.clone(),
             });
@@ -403,7 +674,17 @@ impl App {
             HostMessage::Connected(Ok(health)) => {
                 if health.api_version.major == 1 {
                     self.health = Some(health);
-                    *self.logical_state_mut() = AppState::Editing;
+                    if let Some(owner) = self.recovered_state.as_ref() {
+                        self.outbox.push(HostCommand::FetchIntent {
+                            mission_run_id: owner.mission_run_id.clone(),
+                            credential: owner.credential.clone(),
+                        });
+                        self.outbox.push(HostCommand::PollCurrent {
+                            credential: owner.credential.clone(),
+                        });
+                    } else {
+                        *self.logical_state_mut() = AppState::Editing;
+                    }
                 } else {
                     *self.logical_state_mut() = AppState::Error {
                         message: format!(
@@ -432,6 +713,18 @@ impl App {
                 });
                 self.activation = Some(accepted);
                 self.notice = None;
+                if let (Some(health), Some(run)) = (self.health.as_ref(), self.run.as_ref()) {
+                    let owner = OwnerSessionState {
+                        host_authority: self.host_addr.clone(),
+                        host_api_major: health.api_version.major,
+                        mission_run_id: run.mission_run_id.clone(),
+                        console_session_id: self.session.session_id.clone(),
+                        credential: self.session.credential.clone(),
+                    };
+                    if let Err(error) = self.session_state_file.save(&owner) {
+                        self.notice = Some(format!("Could not persist owner session: {error}"));
+                    }
+                }
                 *self.logical_state_mut() = AppState::Run;
                 self.outbox.push(HostCommand::PollCurrent {
                     credential: self.session.credential.clone(),
@@ -450,14 +743,119 @@ impl App {
                 };
             }
             HostMessage::Current(Ok(current)) => {
+                if let (Some(owner), Some(run)) =
+                    (self.recovered_state.as_ref(), current.mission_run.as_ref())
+                    && owner.mission_run_id != run.mission_run_id
+                {
+                    self.notice = Some(format!(
+                        "Recovered owner run {} does not match Host current run {}",
+                        owner.mission_run_id, run.mission_run_id
+                    ));
+                    return;
+                }
                 self.run = current.mission_run;
                 self.notice = None;
+                if self.recovered_state.is_some() && self.run.is_some() {
+                    *self.logical_state_mut() = AppState::Run;
+                }
+                if self.cancellation_origin == Some(CancellationOrigin::CleanExit)
+                    && self
+                        .run
+                        .as_ref()
+                        .is_some_and(|run| run.status == "cancelled")
+                {
+                    if let Err(error) = self.session_state_file.remove() {
+                        self.notice = Some(format!("Could not remove owner session: {error}"));
+                    } else {
+                        self.clean_exit_action = Some(CleanExitAction::Cancelled);
+                        self.cancellation_deadline = None;
+                    }
+                } else if self.cancellation_origin == Some(CancellationOrigin::ContinueConsole)
+                    && self
+                        .run
+                        .as_ref()
+                        .is_some_and(|run| run.status == "cancelled")
+                {
+                    self.cancellation = CancellationState::Idle;
+                    self.cancellation_origin = None;
+                    self.cancellation_request_id = None;
+                    self.cancellation_submitting = false;
+                }
             }
             HostMessage::Current(Err(error)) => {
                 self.notice = Some(format!(
                     "Host poll failed ({error}); showing last known state"
                 ));
             }
+            HostMessage::Intent(Ok(intent)) => {
+                if self
+                    .recovered_state
+                    .as_ref()
+                    .is_some_and(|owner| owner.mission_run_id == intent.mission_run_id)
+                {
+                    self.intent = intent.mission_intent;
+                    self.cursor = self.intent.chars().count();
+                }
+            }
+            HostMessage::Intent(Err(error)) => {
+                *self.logical_state_mut() = AppState::Error {
+                    message: format!("Owner recovery failed: {error}"),
+                    retry_connect: false,
+                };
+            }
+            HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(accepted))) => {
+                let Some(pending_request_id) = self.cancellation_request_id.as_deref() else {
+                    return;
+                };
+                let current_run_id = self.run.as_ref().map(|run| run.mission_run_id.as_str());
+                if current_run_id != Some(accepted.mission_run_id.as_str())
+                    || pending_request_id != accepted.cancellation_request_id
+                    || accepted.disposition != "cancellation_requested"
+                {
+                    self.cancellation_submitting = false;
+                    self.cancellation = CancellationState::Idle;
+                    self.cancellation_request_id = None;
+                    if self.cancellation_origin == Some(CancellationOrigin::ContinueConsole) {
+                        self.cancellation_origin = None;
+                    }
+                    self.notice = Some(
+                        "Cancellation contract failure: Host acceptance did not match the current run and pending request"
+                            .to_string(),
+                    );
+                    return;
+                }
+                let cancellation_request_id = self
+                    .cancellation_request_id
+                    .take()
+                    .expect("validated pending cancellation request exists");
+                self.cancellation_submitting = false;
+                self.cancellation = CancellationState::Requested {
+                    cancellation_request_id,
+                };
+                self.request_poll();
+            }
+            HostMessage::Cancelled(Ok(CancellationOutcome::Rejected { code, message })) => {
+                self.cancellation_submitting = false;
+                self.cancellation = CancellationState::Idle;
+                self.cancellation_request_id = None;
+                if self.cancellation_origin == Some(CancellationOrigin::ContinueConsole) {
+                    self.cancellation_origin = None;
+                }
+                self.notice = Some(format!("Cancellation rejected ({code}): {message}"));
+            }
+            HostMessage::Cancelled(Err(error)) => {
+                self.cancellation_submitting = false;
+                self.cancellation = CancellationState::Idle;
+                self.cancellation_request_id = None;
+                if self.cancellation_origin == Some(CancellationOrigin::ContinueConsole) {
+                    self.cancellation_origin = None;
+                }
+                self.notice = Some(format!("Cancellation failed: {error}"));
+            }
         }
     }
+}
+
+fn is_terminal(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
 }

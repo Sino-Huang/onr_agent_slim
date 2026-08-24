@@ -1,0 +1,30 @@
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Cancel Mission Run ──────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│                                                                                                  │
+│ Request cancellation of Mission Run run-51d3b84c?                                                │
+│                                                                                                  │
+│ The Runtime Host records cancellation-requested and stops the                                    │
+│ local Run Worker tree before reporting terminal cancelled.                                       │
+│ The environment and submitted Maneuver Commands are untouched.                                   │
+│                                                                                                  │
+│ Enter: confirm cancellation · Esc: keep running                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Enter: confirm cancellation · Esc: keep running                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
