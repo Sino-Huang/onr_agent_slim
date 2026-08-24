@@ -40,6 +40,9 @@ const CURRENT_NONE_RESPONSE: &str = include_str!(
 const CURRENT_ACTIVE_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-runs.current.active.response.json"
 );
+const CURRENT_AWAITING_HUMAN_DECISION_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-runs.current.awaiting-human-decision.response.json"
+);
 const INTENT_RESPONSE: &str =
     include_str!("../../../docs/design/operator-console/contract/v1/mission-intent.response.json");
 const CANCELLATION_ACCEPTED_RESPONSE: &str = include_str!(
@@ -186,6 +189,17 @@ impl FixtureHost {
         self.state.lock().unwrap().last_authorization.clone()
     }
 
+    /// Move the current run to `awaiting_human_decision`.
+    pub fn await_human_decision(&self) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(run) = state.run.as_mut() {
+            run.status = "awaiting_human_decision".to_string();
+            run.started_at = Some("2026-08-24T12:00:03Z".to_string());
+            run.finished_at = None;
+            run.terminal_classification = None;
+        }
+    }
+
     /// Move the current run to `running`.
     pub fn promote_to_running(&self) {
         let mut state = self.state.lock().unwrap();
@@ -271,21 +285,28 @@ fn route(
             let state = state.lock().unwrap();
             let payload = match state.run.as_ref() {
                 None => CURRENT_NONE_RESPONSE.trim_end().to_string(),
-                Some(run) => from_example(
-                    CURRENT_ACTIVE_RESPONSE,
-                    &[
-                        ("mission_id", json!(run.mission_id)),
-                        ("mission_run_id", json!(run.mission_run_id)),
-                        ("status", json!(run.status)),
-                        ("created_at", json!(run.created_at)),
-                        ("started_at", json!(run.started_at)),
-                        ("finished_at", json!(run.finished_at)),
-                        (
-                            "terminal_classification",
-                            json!(run.terminal_classification),
-                        ),
-                    ],
-                ),
+                Some(run) => {
+                    let example = if run.status == "awaiting_human_decision" {
+                        CURRENT_AWAITING_HUMAN_DECISION_RESPONSE
+                    } else {
+                        CURRENT_ACTIVE_RESPONSE
+                    };
+                    from_example(
+                        example,
+                        &[
+                            ("mission_id", json!(run.mission_id)),
+                            ("mission_run_id", json!(run.mission_run_id)),
+                            ("status", json!(run.status)),
+                            ("created_at", json!(run.created_at)),
+                            ("started_at", json!(run.started_at)),
+                            ("finished_at", json!(run.finished_at)),
+                            (
+                                "terminal_classification",
+                                json!(run.terminal_classification),
+                            ),
+                        ],
+                    )
+                }
             };
             ("200 OK", payload)
         }

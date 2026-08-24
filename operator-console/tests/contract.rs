@@ -175,6 +175,34 @@ fn current_run_is_null_before_activation() {
 }
 
 #[test]
+fn current_run_reports_awaiting_human_decision_then_running() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+
+    let empty = client
+        .current_run("cred-evidence")
+        .expect("empty current run");
+    assert_eq!(empty.mission_run, None);
+
+    activate_fixture_run(&client);
+    host.await_human_decision();
+    let awaiting = client
+        .current_run("cred-evidence")
+        .expect("awaiting current run")
+        .mission_run
+        .expect("awaiting mission run");
+    assert_eq!(awaiting.status, "awaiting_human_decision");
+
+    host.promote_to_running();
+    let running = client
+        .current_run("cred-evidence")
+        .expect("running current run")
+        .mission_run
+        .expect("running mission run");
+    assert_eq!(running.status, "running");
+}
+
+#[test]
 fn current_run_reports_lifecycle_transitions() {
     let host = FixtureHost::start();
     let client = client(&host);
