@@ -271,12 +271,7 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     if app.recovered_owner() {
         draw_recovered_owner_intent(frame, bottom[0], app);
     } else {
-        draw_reserved(
-            frame,
-            bottom[0],
-            " Narrative ",
-            "No Run Narrative generated.",
-        );
+        draw_narrative(frame, bottom[0], app);
     }
     draw_reserved(
         frame,
@@ -284,6 +279,50 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
         " Human Decisions ",
         "No Human Decision Requests require action.",
     );
+}
+
+fn draw_narrative(frame: &mut Frame, area: Rect, app: &App) {
+    const UNAVAILABLE_MESSAGE: &str =
+        "Run Narrative generation failed; Mission Run state is unaffected.";
+
+    let block = Block::default().borders(Borders::ALL).title(" Narrative ");
+    let inner = block.inner(area);
+    let content = Rect {
+        x: inner.x.saturating_add(1),
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
+    let status = app
+        .narrative
+        .as_ref()
+        .map(|narrative| narrative.status.as_str());
+    let lines = match status {
+        Some("available") => {
+            let mut lines = vec![Line::from(Span::styled("(non-authoritative)", dim()))];
+            if let Some(text) = app
+                .narrative
+                .as_ref()
+                .and_then(|narrative| narrative.text.as_deref())
+            {
+                lines.extend(text.lines().map(|line| Line::from(line.to_string())));
+            }
+            lines
+        }
+        Some("unavailable") => vec![
+            Line::from("Run Narrative unavailable."),
+            Line::from(Span::styled(UNAVAILABLE_MESSAGE, dim())),
+        ],
+        _ => vec![Line::from(Span::styled(
+            "No Run Narrative generated.",
+            dim(),
+        ))],
+    };
+    frame.render_widget(block, area);
+    if matches!(status, Some("available") | Some("unavailable")) {
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), content);
+    } else {
+        frame.render_widget(Paragraph::new(lines), content);
+    }
 }
 
 fn draw_run_panel(frame: &mut Frame, area: Rect, app: &App) {

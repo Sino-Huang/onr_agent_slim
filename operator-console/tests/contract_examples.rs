@@ -1,4 +1,4 @@
-//! The committed #27-#29 v1 wire-contract examples under
+//! The committed #27-#31 v1 wire-contract examples under
 //! `docs/design/operator-console/contract/v1/` are the single source of truth
 //! for the console's HTTP client shapes. Each example must round-trip through
 //! the client DTOs with exact value equality, and the fixture HTTP server
@@ -6,12 +6,12 @@
 //!
 //! Real interoperability against the Python Runtime Host process is validated
 //! at parent level by the Python Host tests; this lane guarantees the Rust
-//! fixture reflects the precise #27-#29 contract, not a divergent schema.
+//! fixture reflects the precise #27-#31 contract, not a divergent schema.
 
 use operator_console::host::{
     ActivationAccepted, ActivationRequest, ActivitiesPage, ArtifactContentPage, ArtifactsPage,
     CancellationAccepted, CancellationRequest, ConversationEntriesPage, CurrentRun, ErrorBody,
-    Health, MissionIntent, ObservationsPage,
+    Health, MissionIntent, NarrativeResponse, ObservationsPage,
 };
 use serde_json::Value;
 
@@ -182,6 +182,26 @@ fn activity_page_examples_round_trip_exactly() {
     let empty: ActivitiesPage = exact_roundtrip("mission-run-activities.empty.response.json");
     assert!(empty.activities.is_empty());
     assert_eq!(empty.next_cursor, None);
+}
+
+#[test]
+fn narrative_examples_round_trip_exactly() {
+    let none: NarrativeResponse = exact_roundtrip("mission-run-narrative.none.response.json");
+    assert_eq!(none.narrative.status, "none");
+    assert_eq!(none.narrative.text, None);
+
+    let available: NarrativeResponse =
+        exact_roundtrip("mission-run-narrative.available.response.json");
+    assert_eq!(available.narrative.status, "available");
+    assert!(available.narrative.text.is_some());
+
+    let unavailable: NarrativeResponse =
+        exact_roundtrip("mission-run-narrative.unavailable.response.json");
+    assert_eq!(unavailable.narrative.status, "unavailable");
+    assert_eq!(
+        unavailable.narrative.evidence.unwrap().kind,
+        "summary-unavailable"
+    );
 }
 
 #[test]

@@ -102,6 +102,55 @@ from onr.runtime.lease import RuntimeLeaseStore
 from onr.runtime.llm_debug import LLMResponseRecorder
 
 
+def create_chat_model(
+    config: RuntimeConfig,
+    *,
+    mission_id: str | None = None,
+    debug_scope: str = "runtime",
+) -> ChatOpenAI:
+    """Create the configured OpenAI-compatible chat model."""
+
+    llm = config.llm
+    options: dict[str, Any] = {}
+    recorder: LLMResponseRecorder | None = None
+    agent_recorder: AgentDebugRecorder | None = None
+    if config.debug and mission_id:
+        recorder = LLMResponseRecorder(
+            config.storage.root.parent / "debug" / "llm",
+            mission_id,
+            role=debug_scope,
+        )
+        agent_recorder = AgentDebugRecorder(
+            config.storage.root.parent / "debug" / "agent",
+            mission_id,
+            role=debug_scope,
+        )
+        options["http_client"] = recorder.http_client
+    model = ChatOpenAI(
+        base_url=llm.base_url,
+        model=llm.model,
+        api_key=cast(Any, llm.api_key),
+        temperature=llm.temperature,
+        top_p=0.95,
+        presence_penalty=0.0,
+        reasoning_effort="medium",
+        streaming=True,
+        timeout=800.0,
+        max_retries=0,
+        extra_body={
+            "top_k": 20,
+            "min_p": 0.0,
+            "repetition_penalty": 1.0,
+        },
+        **options,
+    )
+    if recorder is not None:
+        object.__setattr__(model, "_llm_response_recorder", recorder)
+    if agent_recorder is not None:
+        object.__setattr__(model, "_agent_debug_recorder", agent_recorder)
+    return model
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeRunResult:
     """Evidence returned by one synchronous, file-backed runtime run."""
@@ -283,46 +332,11 @@ class RuntimeComposition:
         debug_scope: str = "runtime",
     ) -> ChatOpenAI:
         """Create the configured OpenAI-compatible chat model."""
-
-        llm = self.config.llm
-        options: dict[str, Any] = {}
-        recorder: LLMResponseRecorder | None = None
-        agent_recorder: AgentDebugRecorder | None = None
-        if self.config.debug and mission_id:
-            recorder = LLMResponseRecorder(
-                self.config.storage.root.parent / "debug" / "llm",
-                mission_id,
-                role=debug_scope,
-            )
-            agent_recorder = AgentDebugRecorder(
-                self.config.storage.root.parent / "debug" / "agent",
-                mission_id,
-                role=debug_scope,
-            )
-            options["http_client"] = recorder.http_client
-        model = ChatOpenAI(
-            base_url=llm.base_url,
-            model=llm.model,
-            api_key=cast(Any, llm.api_key),
-            temperature=llm.temperature,
-            top_p=0.95,
-            presence_penalty=0.0,
-            reasoning_effort="medium",
-            streaming=True,
-            timeout=800.0,
-            max_retries=0,
-            extra_body={
-                "top_k": 20,
-                "min_p": 0.0,
-                "repetition_penalty": 1.0,
-            },
-            **options,
+        return create_chat_model(
+            self.config,
+            mission_id=mission_id,
+            debug_scope=debug_scope,
         )
-        if recorder is not None:
-            object.__setattr__(model, "_llm_response_recorder", recorder)
-        if agent_recorder is not None:
-            object.__setattr__(model, "_agent_debug_recorder", agent_recorder)
-        return model
 
     def verify_llm_reachability(self, *, timeout: float = 5.0) -> None:
         """Verify the configured vLLM endpoint before composing live agents."""

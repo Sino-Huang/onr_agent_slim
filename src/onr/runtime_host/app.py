@@ -12,6 +12,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from onr.adapters.run_narrative_summarizer import ModelRunNarrativeSummarizer
+from onr.runtime.composition import create_chat_model
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime_host.artifacts import (
     MAX_PAGE_SIZE,
@@ -82,6 +84,9 @@ def create_app(
             clock=lambda: datetime.now(UTC).isoformat(),
             generate_id=lambda kind: f"{kind}-{uuid4()}",
             worker_options=RuntimeWorkerOptions(repo_root=root.resolve()),
+            narrative_summarizer=ModelRunNarrativeSummarizer(
+                create_chat_model(config)
+            ),
         )
 
     app = FastAPI(title="ONR Runtime Host")
@@ -129,6 +134,13 @@ def create_app(
         try:
             return selected.observations(mission_run_id, cursor=cursor, limit=limit)
         except (HostNotFoundError, InvalidCursorError) as exc:
+            return _evidence_error(exc)
+
+    @app.get("/api/v1/mission-runs/{mission_run_id}/narrative")
+    def narrative(mission_run_id: str) -> Any:
+        try:
+            return selected.narrative(mission_run_id)
+        except HostNotFoundError as exc:
             return _evidence_error(exc)
 
     @app.get("/api/v1/mission-runs/{mission_run_id}/activities")

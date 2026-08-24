@@ -1,11 +1,11 @@
-# Operator Console Design (issues #27-#30 contract slices)
+# Operator Console Design (issues #27-#31 contract slices)
 
 Rust 2024 Ratatui 0.30 Operator Console: a peer client of the loopback Python
 Runtime Host (ADR 0001). The committed contract covers Mission Intent editing,
 reviewed Mission Activation, observation of one current Mission Run, owner-only
 Mission Intent readback, idempotent Mission Run Cancellation, redacted Run
-Activities/Observations, and public Artifact/Conversation browsing. Narratives
-and HITL behavior remain reserved for later issues (#31-#32).
+Activities/Observations, public Artifact/Conversation browsing, and optional
+non-authoritative Run Narratives. HITL behavior remains reserved for issue #32.
 
 ## States
 
@@ -33,9 +33,10 @@ Header (3 rows: console, host, API version, short session id), footer (3 rows:
 key hints plus transient hint/notice), and per-state body. The Run dashboard
 presents Mission Run identity/status/timestamps/terminal classification next to
 selectable Run Activities and the selected activity's linked Observations.
-Artifacts and Conversation are live evidence panes; Narrative and Human
-Decisions remain stable reserved regions. A recovered owner's Mission Intent
-occupies the bottom-left slot in place of Narrative. Below 100x30 only the
+Artifacts and Conversation are live evidence panes. Narrative presents available
+and unavailable Run Narrative states as non-authoritative; Human Decisions stays
+reserved for HITL issue #32. A recovered owner's Mission Intent occupies the
+bottom-left slot in place of Narrative. Below 100x30 only the
 resize-required state is drawn (also enforced as a draw-time guard, not only via
 resize events).
 
@@ -72,6 +73,11 @@ server in `operator-console/tests/support/`, no Python process):
 - `GET /api/v1/mission-runs/{mission_run_id}/activities?cursor=&limit=` -> a
   public `200` page with `schema_version`, Mission/Mission Run IDs,
   `mapping_version: 1`, activity projections, and an opaque `next_cursor`.
+- `GET /api/v1/mission-runs/{mission_run_id}/narrative` -> a public `200`
+  optional Run Narrative with `none`, `available`, or `unavailable` status,
+  nullable text and generation time, a source watermark, terminal flag, and
+  nullable unavailability evidence. Available Run Narratives are displayed as
+  non-authoritative. An unknown Mission Run returns `404 mission_run_not_found`.
 - `GET /api/v1/mission-runs/{mission_run_id}/artifacts?cursor=&limit=` -> a
   public `200` page with `schema_version`, Mission/Mission Run IDs, Artifact
   descriptors sorted by `artifact_id`, and opaque `next_cursor`. A descriptor

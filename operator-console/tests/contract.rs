@@ -329,6 +329,21 @@ fn activities_support_paging_and_stable_errors() {
 }
 
 #[test]
+fn narrative_fetches_without_a_cursor_and_preserves_not_found_errors() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let response = client.fetch_narrative(&run_id).unwrap();
+    assert_eq!(response.narrative.status, "available");
+    assert!(response.narrative.text.is_some());
+    assert!(matches!(
+        client.fetch_narrative("run-unknown"),
+        Err(HostError::NotFound { ref code, .. }) if code == "mission_run_not_found"
+    ));
+}
+
+#[test]
 fn all_observations_accumulates_until_the_empty_page() {
     let host = FixtureHost::start();
     let client = client(&host);

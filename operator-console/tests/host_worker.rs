@@ -10,7 +10,7 @@ use operator_console::host::{
     ActivationOutcome, ActivationRequest, ActivitiesPage, ApiVersion, ArtifactContentPage,
     ArtifactsPage, CancellationAccepted, CancellationOutcome, CancellationRequest,
     ConversationEntriesPage, CurrentRun, Health, HostClient, HostError, MissionIntent,
-    ObservationsPage, RunRecord, spawn_worker,
+    NarrativeResponse, ObservationsPage, RunNarrative, RunRecord, spawn_worker,
 };
 
 #[derive(Default)]
@@ -100,6 +100,23 @@ impl HostClient for ScriptedClient {
             mission_run_id: mission_run_id.to_string(),
             observations: Vec::new(),
             next_cursor: None,
+        })
+    }
+
+    fn fetch_narrative(&self, mission_run_id: &str) -> Result<NarrativeResponse, HostError> {
+        self.calls.lock().unwrap().push("narrative".to_string());
+        Ok(NarrativeResponse {
+            schema_version: 1,
+            mission_id: "mission-1".to_string(),
+            mission_run_id: mission_run_id.to_string(),
+            narrative: RunNarrative {
+                status: "none".to_string(),
+                text: None,
+                generated_at: None,
+                source_watermark: 0,
+                terminal: false,
+                evidence: None,
+            },
         })
     }
 
@@ -249,6 +266,19 @@ fn worker_executes_commands_and_reports_in_order() {
             assert_eq!(current.mission_run.unwrap().status, "running");
         }
         other => panic!("expected Current, got {other:?}"),
+    }
+
+    command_tx
+        .send(HostCommand::FetchNarrative {
+            mission_run_id: "run-1".to_string(),
+        })
+        .unwrap();
+    match recv_timeout(&message_rx) {
+        HostMessage::Narrative {
+            mission_run_id,
+            result: Ok(_),
+        } => assert_eq!(mission_run_id, "run-1"),
+        other => panic!("expected Narrative, got {other:?}"),
     }
 
     command_tx

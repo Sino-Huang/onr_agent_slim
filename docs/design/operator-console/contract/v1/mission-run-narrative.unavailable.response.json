@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "narrative": {
+    "status": "unavailable",
+    "text": null,
+    "generated_at": "2026-08-24T12:05:02+00:00",
+    "source_watermark": 3,
+    "terminal": true,
+    "evidence": {
+      "kind": "summary-unavailable",
+      "message": "Run Narrative generation failed; Mission Run state is unaffected."
+    }
+  }
+}

@@ -69,6 +69,9 @@ const INVALID_CURSOR_RESPONSE: &str = include_str!(
 const RUN_NOT_FOUND_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-run.not-found.response.json"
 );
+const NARRATIVE_AVAILABLE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-narrative.available.response.json"
+);
 const ARTIFACTS_PAGE_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-run-artifacts.page.response.json"
 );
@@ -305,6 +308,7 @@ fn route(
             ACTIVITIES_EMPTY_RESPONSE,
             state,
         ),
+        ("GET", path) if path.ends_with("/narrative") => narrative(path, state),
         ("GET", path) if path.ends_with("/artifacts") => evidence_page(
             path,
             query,
@@ -327,6 +331,27 @@ fn route(
             json!({"error": {"code": "not_found", "message": "unknown route"}}).to_string(),
         ),
     }
+}
+
+fn narrative(path: &str, state: &Arc<Mutex<State>>) -> (&'static str, String) {
+    let mission_run_id = path
+        .trim_start_matches("/api/v1/mission-runs/")
+        .trim_end_matches("/narrative");
+    let state = state.lock().unwrap();
+    if state
+        .run
+        .as_ref()
+        .is_none_or(|run| run.mission_run_id != mission_run_id)
+    {
+        return (
+            "404 Not Found",
+            RUN_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    }
+    (
+        "200 OK",
+        NARRATIVE_AVAILABLE_RESPONSE.trim_end().to_string(),
+    )
 }
 
 fn evidence_page(

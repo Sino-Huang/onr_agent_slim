@@ -19,8 +19,8 @@ use operator_console::app::{
 };
 use operator_console::host::{
     ActivationAccepted, ActivitiesPage, ArtifactContentPage, ArtifactsPage, CancellationAccepted,
-    CancellationOutcome, ConversationEntriesPage, CurrentRun, EvidencePage, ObservationsPage,
-    RunRecord,
+    CancellationOutcome, ConversationEntriesPage, CurrentRun, EvidencePage, NarrativeResponse,
+    ObservationsPage, RunRecord,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -123,6 +123,7 @@ fn review_app() -> App {
 
 fn run_app(record: RunRecord) -> App {
     let mut app = review_app();
+    let mission_run_id = record.mission_run_id.clone();
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::NONE,
@@ -141,7 +142,38 @@ fn run_app(record: RunRecord) -> App {
     app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
         mission_run: Some(record),
     })));
+    app.handle_host_message(HostMessage::Narrative {
+        mission_run_id,
+        result: Ok(narrative_response("none")),
+    });
     assert_eq!(app.state, AppState::Run);
+    app
+}
+
+fn narrative_response(status: &str) -> NarrativeResponse {
+    serde_json::from_str(match status {
+        "none" => {
+            include_str!(
+                "../../docs/design/operator-console/contract/v1/mission-run-narrative.none.response.json"
+            )
+        }
+        "available" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-narrative.available.response.json"
+        ),
+        "unavailable" => include_str!(
+            "../../docs/design/operator-console/contract/v1/mission-run-narrative.unavailable.response.json"
+        ),
+        _ => panic!("unknown narrative fixture"),
+    })
+    .unwrap()
+}
+
+fn narrative_app(status: &str) -> App {
+    let mut app = evidence_app();
+    app.handle_host_message(HostMessage::Narrative {
+        mission_run_id: app.run.as_ref().unwrap().mission_run_id.clone(),
+        result: Ok(narrative_response(status)),
+    });
     app
 }
 
@@ -297,6 +329,25 @@ fn run_dashboard_frame_matches_committed_capture() {
         "run-dashboard-100x30.txt",
         render(&app, MIN_WIDTH, MIN_HEIGHT),
     );
+}
+
+#[test]
+fn available_narrative_frame_matches_committed_capture() {
+    let app = narrative_app("available");
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("(non-authoritative)"));
+    assert!(frame.contains("The recon patrol held the ridge line"));
+    assert_frame("run-dashboard-narrative-100x30.txt", frame);
+}
+
+#[test]
+fn unavailable_narrative_frame_matches_committed_capture() {
+    let app = narrative_app("unavailable");
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("Run Narrative unavailable."));
+    assert!(frame.contains("Run Narrative generation failed; Mission Run"));
+    assert!(frame.contains("state is unaffected."));
+    assert_frame("run-dashboard-narrative-unavailable-100x30.txt", frame);
 }
 
 #[test]

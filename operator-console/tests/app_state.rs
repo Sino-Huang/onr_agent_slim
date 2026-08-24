@@ -9,7 +9,7 @@ use operator_console::host::{
     ActivationAccepted, ActivationOutcome, ActivitiesPage, ArtifactContentPage, ArtifactDescriptor,
     ArtifactsPage, CancellationAccepted, CancellationOutcome, ConversationEntriesPage,
     ConversationEntry, CurrentRun, EvidencePage, Health, HostError, MissionIntent,
-    ObservationEnvelope, ObservationsPage, RunActivity, RunRecord,
+    NarrativeResponse, ObservationEnvelope, ObservationsPage, RunActivity, RunRecord,
 };
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -74,6 +74,9 @@ fn poll_commands(app: &App) -> Vec<HostCommand> {
         HostCommand::FetchObservations {
             mission_run_id: run_id.clone(),
         },
+        HostCommand::FetchNarrative {
+            mission_run_id: run_id.clone(),
+        },
         HostCommand::FetchArtifacts {
             mission_run_id: run_id,
         },
@@ -118,6 +121,13 @@ fn observations() -> Vec<ObservationEnvelope> {
     ))
     .unwrap()
     .observations
+}
+
+fn narrative_response() -> NarrativeResponse {
+    serde_json::from_str(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-narrative.available.response.json"
+    ))
+    .unwrap()
 }
 
 fn artifacts() -> Vec<ArtifactDescriptor> {
@@ -419,6 +429,45 @@ fn poll_updates_run_snapshot_and_notice_on_failure() {
     ))));
     assert!(app.notice.is_some());
     assert_eq!(app.run.as_ref().unwrap().status, "running");
+}
+
+#[test]
+fn stale_narrative_response_is_ignored() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+
+    app.handle_host_message(HostMessage::Narrative {
+        mission_run_id: "run-previous".to_string(),
+        result: Ok(narrative_response()),
+    });
+
+    assert!(app.narrative.is_none());
+}
+
+#[test]
+fn narrative_is_cleared_when_current_run_changes() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.handle_host_message(HostMessage::Narrative {
+        mission_run_id: "run-1".to_string(),
+        result: Ok(narrative_response()),
+    });
+    assert!(app.narrative.is_some());
+
+    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
+        mission_run: Some(RunRecord {
+            mission_id: "mission-2".to_string(),
+            mission_run_id: "run-2".to_string(),
+            status: "running".to_string(),
+            created_at: Some("2026-08-25T12:00:00Z".to_string()),
+            started_at: Some("2026-08-25T12:00:03Z".to_string()),
+            finished_at: None,
+            terminal_classification: None,
+        }),
+    })));
+
+    assert_eq!(app.run.as_ref().unwrap().mission_run_id, "run-2");
+    assert!(app.narrative.is_none());
 }
 
 #[test]
@@ -1092,6 +1141,9 @@ fn run_poll_fans_out_to_current_activities_and_observations() {
                 mission_run_id: "run-1".to_string(),
             },
             HostCommand::FetchObservations {
+                mission_run_id: "run-1".to_string(),
+            },
+            HostCommand::FetchNarrative {
                 mission_run_id: "run-1".to_string(),
             },
             HostCommand::FetchArtifacts {

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "narrative": {
+    "status": "none",
+    "text": null,
+    "generated_at": null,
+    "source_watermark": 0,
+    "terminal": false,
+    "evidence": null
+  }
+}

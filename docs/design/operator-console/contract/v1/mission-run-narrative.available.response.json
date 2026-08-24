@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "narrative": {
+    "status": "available",
+    "text": "The recon patrol held the ridge line and reported an obstacle near grid square 18T WL 432 876.",
+    "generated_at": "2026-08-24T12:05:02+00:00",
+    "source_watermark": 3,
+    "terminal": true,
+    "evidence": null
+  }
+}

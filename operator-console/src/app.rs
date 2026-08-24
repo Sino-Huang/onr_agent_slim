@@ -15,7 +15,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::host::{
     ActivationOutcome, ActivationRequest, ArtifactContentPage, ArtifactDescriptor,
     CancellationOutcome, CancellationRequest, ConversationEntry, CurrentRun, EvidencePage, Health,
-    HostError, MissionIntent, ObservationEnvelope, RunActivity, RunRecord,
+    HostError, MissionIntent, NarrativeResponse, ObservationEnvelope, RunActivity, RunNarrative,
+    RunRecord,
 };
 
 const CANCELLATION_POLL_LIMIT: Duration = Duration::from_secs(10);
@@ -240,6 +241,8 @@ pub enum HostCommand {
     FetchActivities { mission_run_id: String },
     /// Fetch all public observation evidence pages for the current Mission Run.
     FetchObservations { mission_run_id: String },
+    /// Fetch the optional Run Narrative for the current Mission Run.
+    FetchNarrative { mission_run_id: String },
     /// Fetch all public Artifact descriptors for the current Mission Run.
     FetchArtifacts { mission_run_id: String },
     FetchArtifactContent {
@@ -267,6 +270,10 @@ pub enum HostMessage {
     Intent(Result<MissionIntent, HostError>),
     Activities(Result<EvidencePage<RunActivity>, HostError>),
     Observations(Result<EvidencePage<ObservationEnvelope>, HostError>),
+    Narrative {
+        mission_run_id: String,
+        result: Result<NarrativeResponse, HostError>,
+    },
     Artifacts(Result<EvidencePage<ArtifactDescriptor>, HostError>),
     ArtifactContent(Result<ArtifactContentPage, HostError>),
     ConversationEntries {
@@ -340,6 +347,8 @@ pub struct App {
     pub activities: Vec<RunActivity>,
     /// Latest redacted observation projection for the current Mission Run.
     pub observations: Vec<ObservationEnvelope>,
+    /// Latest optional Run Narrative for the current Mission Run.
+    pub narrative: Option<RunNarrative>,
     /// Whether the activity timeline hit the client page cap.
     pub activities_truncated: bool,
     /// Whether the observation timeline hit the client page cap.
@@ -417,6 +426,7 @@ impl App {
             run: None,
             activities: Vec::new(),
             observations: Vec::new(),
+            narrative: None,
             activities_truncated: false,
             observations_truncated: false,
             selected_activity: None,
@@ -1022,6 +1032,9 @@ impl App {
                 self.outbox.push(HostCommand::FetchObservations {
                     mission_run_id: run.mission_run_id.clone(),
                 });
+                self.outbox.push(HostCommand::FetchNarrative {
+                    mission_run_id: run.mission_run_id.clone(),
+                });
                 self.outbox.push(HostCommand::FetchArtifacts {
                     mission_run_id: run.mission_run_id.clone(),
                 });
@@ -1130,6 +1143,14 @@ impl App {
                     ));
                     return;
                 }
+                let run_changed = self.run.as_ref().map(|run| run.mission_run_id.as_str())
+                    != current
+                        .mission_run
+                        .as_ref()
+                        .map(|run| run.mission_run_id.as_str());
+                if run_changed {
+                    self.narrative = None;
+                }
                 self.run = current.mission_run;
                 self.update_evidence_notice();
                 if self.recovered_state.is_some() && self.run.is_some() {
@@ -1211,6 +1232,24 @@ impl App {
                 self.notice = Some(format!(
                     "Host evidence poll failed ({error}); showing last known state"
                 ));
+            }
+            HostMessage::Narrative {
+                mission_run_id,
+                result: Ok(response),
+            } => {
+                if self.narrative_response_matches(&mission_run_id) {
+                    self.narrative = Some(response.narrative);
+                }
+            }
+            HostMessage::Narrative {
+                mission_run_id,
+                result: Err(error),
+            } => {
+                if self.narrative_response_matches(&mission_run_id) {
+                    self.notice = Some(format!(
+                        "Host evidence poll failed ({error}); showing last known state"
+                    ));
+                }
             }
             HostMessage::Artifacts(Ok(page)) => {
                 let selected = self.selected_artifact.clone();
@@ -1356,6 +1395,12 @@ impl App {
                 artifact.classification == "conversation" && artifact.artifact_id == artifact_id
             })
     }
+
+    fn narrative_response_matches(&self, mission_run_id: &str) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.mission_run_id == mission_run_id)
+    }
 }
 
 fn result_proves_response<T>(result: &Result<T, HostError>) -> bool {
@@ -1372,6 +1417,7 @@ fn host_message_proves_response(message: &HostMessage) -> bool {
         HostMessage::Intent(result) => result_proves_response(result),
         HostMessage::Activities(result) => result_proves_response(result),
         HostMessage::Observations(result) => result_proves_response(result),
+        HostMessage::Narrative { result, .. } => result_proves_response(result),
         HostMessage::Artifacts(result) => result_proves_response(result),
         HostMessage::ArtifactContent(result) => result_proves_response(result),
         HostMessage::ConversationEntries { result, .. } => result_proves_response(result),

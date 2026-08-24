@@ -13,10 +13,11 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from multiprocessing import Event as ProcessEvent
 from multiprocessing import Process
 from pathlib import Path
-from threading import RLock, Thread, current_thread
+from threading import Lock, RLock, Thread, current_thread
 from typing import Any, Protocol
 
 from onr.adapters.file_transport import FileTransport
@@ -25,6 +26,11 @@ from onr.runtime.cli import run_closed_loop_demo
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.config import RuntimeConfig
 from onr.runtime_host.artifacts import PublicArtifactInbox
+from onr.runtime_host.narrative import (
+    RunNarrativeRecord,
+    RunNarrativeSummarizer,
+    sanitize_narrative_text,
+)
 from onr.runtime_host.observations import (
     ACTIVITY_MAPPING_VERSION,
     DEFAULT_PAGE_SIZE,
@@ -293,6 +299,8 @@ class RuntimeHost:
         worker_options: RuntimeWorkerOptions | None = None,
         evidence_source: EvidenceSource | None = None,
         artifact_inbox_root: Path | None = None,
+        narrative_summarizer: RunNarrativeSummarizer | None = None,
+        narrative_interval_seconds: float = 30.0,
     ) -> None:
         self.config = config
         self.root = config.storage.root / "runtime-host"
@@ -311,7 +319,11 @@ class RuntimeHost:
         self._artifact_inbox = PublicArtifactInbox(
             artifact_inbox_root or config.storage.root / "artifact-inbox"
         )
+        self._narrative_summarizer = narrative_summarizer
+        self._narrative_interval_seconds = narrative_interval_seconds
         self._lock = RLock()
+        self._narrative_locks: dict[str, Lock] = {}
+        self._narrative_records: dict[str, RunNarrativeRecord] = {}
         self._workers: dict[str, WorkerHandle] = {}
         self._reconcilers: dict[str, Thread] = {}
         recoveries: list[tuple[str, dict[str, Any]]] = []
@@ -526,15 +538,7 @@ class RuntimeHost:
             page, last_sequence = page_entries(
                 log.entries, after=after, limit=limit or DEFAULT_PAGE_SIZE
             )
-            observations = [
-                {
-                    "schema_version": OBSERVATION_SCHEMA_VERSION,
-                    "observation_sequence": entry["observation_sequence"],
-                    "observed_at": entry["observed_at"],
-                    "item": entry["item"],
-                }
-                for entry in page
-            ]
+            observations = _observation_envelopes(page)
             return {
                 "schema_version": OBSERVATION_SCHEMA_VERSION,
                 "mission_id": run["mission_id"],
@@ -546,6 +550,60 @@ class RuntimeHost:
                     else encode_cursor(mission_run_id, last_sequence)
                 ),
             }
+
+    def narrative(self, mission_run_id: str) -> dict[str, object]:
+        with self._state_guard():
+            run, log = self._refresh_observations(mission_run_id)
+            record = self._narrative_record(mission_run_id)
+            attempt_lock = self._narrative_locks.setdefault(mission_run_id, Lock())
+            should_attempt = self._should_attempt_narrative(
+                run, record, len(log.entries), self._clock()
+            )
+            response = self._narrative_response(run, mission_run_id, record)
+        if self._narrative_summarizer is None or not should_attempt:
+            return response
+        if not attempt_lock.acquire(blocking=False):
+            with self._state_guard():
+                current = self._narrative_record(mission_run_id)
+                return self._narrative_response(run, mission_run_id, current)
+        try:
+            with self._state_guard():
+                run, log = self._refresh_observations(mission_run_id)
+                record = self._narrative_record(mission_run_id)
+                now = self._clock()
+                max_sequence = len(log.entries)
+                if not self._should_attempt_narrative(
+                    run, record, max_sequence, now
+                ):
+                    return self._narrative_response(run, mission_run_id, record)
+                terminal = run["status"] not in _NONTERMINAL_STATUSES
+                observations = _observation_envelopes(log.entries)
+                mission_id = str(run["mission_id"])
+                record.begin_attempt(started_at=now, terminal=terminal)
+            try:
+                generated = self._narrative_summarizer.summarize_narrative(
+                    mission_id=mission_id,
+                    mission_run_id=mission_run_id,
+                    terminal=terminal,
+                    observations=observations,
+                )
+                text = sanitize_narrative_text(generated)
+            except Exception:  # noqa: BLE001 - failures publish only typed evidence.
+                text = None
+            with self._state_guard():
+                record = self._narrative_record(mission_run_id)
+                if text is None:
+                    record.publish_unavailable(generated_at=now, terminal=terminal)
+                else:
+                    record.publish_available(
+                        text=text,
+                        generated_at=now,
+                        source_watermark=max_sequence,
+                        terminal=terminal,
+                    )
+                return self._narrative_response(run, mission_run_id, record)
+        finally:
+            attempt_lock.release()
 
     def activities(
         self,
@@ -772,6 +830,48 @@ class RuntimeHost:
         )
         log.ingest(items, observed_at=self._clock())
         return run, log
+
+    def _narrative_record(self, mission_run_id: str) -> RunNarrativeRecord:
+        record = self._narrative_records.get(mission_run_id)
+        if record is None:
+            record = RunNarrativeRecord(
+                self.root / "narratives" / f"{mission_run_id}.json", mission_run_id
+            )
+            self._narrative_records[mission_run_id] = record
+        return record
+
+    def _should_attempt_narrative(
+        self,
+        run: Mapping[str, object],
+        record: RunNarrativeRecord,
+        max_sequence: int,
+        now: str,
+    ) -> bool:
+        if self._narrative_summarizer is None:
+            return False
+        if run["status"] not in _NONTERMINAL_STATUSES:
+            return not record.terminal_generated
+        if max_sequence <= record.source_watermark:
+            return False
+        last_attempt_at = record.last_attempt_at
+        if last_attempt_at is None:
+            return True
+        return (
+            datetime.fromisoformat(now) - datetime.fromisoformat(last_attempt_at)
+        ).total_seconds() >= self._narrative_interval_seconds
+
+    @staticmethod
+    def _narrative_response(
+        run: Mapping[str, object],
+        mission_run_id: str,
+        record: RunNarrativeRecord,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "mission_id": run["mission_id"],
+            "mission_run_id": mission_run_id,
+            "narrative": record.public_narrative(),
+        }
 
     def _transition(
         self,
@@ -1068,6 +1168,20 @@ def _project_evidence(records: Sequence[object]) -> tuple[TraceViewItem, ...]:
         for _, batch in sorted(groups.values(), key=lambda group: group[0])
         for item in projection.project(batch)
     )
+
+
+def _observation_envelopes(
+    entries: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "schema_version": OBSERVATION_SCHEMA_VERSION,
+            "observation_sequence": entry["observation_sequence"],
+            "observed_at": entry["observed_at"],
+            "item": entry["item"],
+        }
+        for entry in entries
+    ]
 
 
 def _projection_batch_key(record: object) -> str:

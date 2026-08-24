@@ -150,6 +150,30 @@ pub struct ObservationsPage {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NarrativeEvidence {
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunNarrative {
+    pub status: String,
+    pub text: Option<String>,
+    pub generated_at: Option<String>,
+    pub source_watermark: u64,
+    pub terminal: bool,
+    pub evidence: Option<NarrativeEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NarrativeResponse {
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub mission_run_id: String,
+    pub narrative: RunNarrative,
+}
+
 /// One deterministic mapping-version-1 activity projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunActivity {
@@ -439,6 +463,13 @@ pub fn spawn_worker(
                 HostCommand::FetchObservations { mission_run_id } => {
                     HostMessage::Observations(client.all_observations(&mission_run_id))
                 }
+                HostCommand::FetchNarrative { mission_run_id } => {
+                    let result = client.fetch_narrative(&mission_run_id);
+                    HostMessage::Narrative {
+                        mission_run_id,
+                        result,
+                    }
+                }
                 HostCommand::FetchArtifacts { mission_run_id } => {
                     HostMessage::Artifacts(client.all_artifacts(&mission_run_id))
                 }
@@ -505,6 +536,8 @@ pub trait HostClient: Send {
         mission_run_id: &str,
         cursor: Option<&str>,
     ) -> Result<ObservationsPage, HostError>;
+    /// `GET /api/v1/mission-runs/{id}/narrative`.
+    fn fetch_narrative(&self, mission_run_id: &str) -> Result<NarrativeResponse, HostError>;
     /// `GET /api/v1/mission-runs/{id}/activities`.
     fn activities(
         &self,
@@ -832,6 +865,10 @@ impl HostClient for UreqHostClient {
         cursor: Option<&str>,
     ) -> Result<ObservationsPage, HostError> {
         self.evidence_get(mission_run_id, "observations", cursor)
+    }
+
+    fn fetch_narrative(&self, mission_run_id: &str) -> Result<NarrativeResponse, HostError> {
+        self.evidence_get(mission_run_id, "narrative", None)
     }
 
     fn activities(

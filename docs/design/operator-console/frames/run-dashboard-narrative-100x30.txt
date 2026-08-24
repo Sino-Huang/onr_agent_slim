@@ -10,19 +10,19 @@
 │ Finished: -                                   ││                                                 │
 │ Terminal: -                                   ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-┌ Observations ──────┐┌ * Artifacts ───────────┐┌ Conversation ────────────────────────────────────┐
-│ id: correlation:c… ││ perception_frame Dete… ││ #1 operator [message] Survey sector seven and re…│
-│ maneuver_command … ││ conversation Operator… ││ #2 hyper-agent [status] Route planning started.  │
-│ corr: cmd-9f8e · … ││ log Planner log (8.0 … ││ #4 perception-agent [perception_rationale] [ref]…│
-│ #2 command comman… ││                        ││                                                  │
-│ #3 command-outcom… ││                        ││                                                  │
-│ {"target":"maneuv… ││                        ││                                                  │
-└────────────────────┘└────────────────────────┘└──────────────────────────────────────────────────┘
+┌ Observations ─────────────────┐┌ Artifacts ────────────────────┐┌ Conversation ──────────────────┐
+│ id: correlation:cmd-9f8e      ││ No Artifacts published.       ││ No Conversation recorded.      │
+│ maneuver_command [completed]  ││ (reserved for a later view)   ││ (reserved for a later view)    │
+│ corr: cmd-9f8e · unknown -> … ││                               ││                                │
+│ #2 command command-source -   ││                               ││                                │
+│ #3 command-outcome command-t… ││                               ││                                │
+│ {"target":"maneuver_control"} ││                               ││                                │
+└───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
 ┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
-│ No Run Narrative generated.                   ││ No Human Decision Requests require action.      │
-│                                               ││ (reserved for a later view)                     │
-│                                               ││                                                 │
-│                                               ││                                                 │
+│ (non-authoritative)                           ││ No Human Decision Requests require action.      │
+│ The recon patrol held the ridge line and      ││ (reserved for a later view)                     │
+│ reported an obstacle near grid square 18T WL  ││                                                 │
+│ 432 876.                                      ││                                                 │
 │                                               ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
