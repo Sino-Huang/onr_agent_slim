@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "observations": [],
+  "next_cursor": null
+}

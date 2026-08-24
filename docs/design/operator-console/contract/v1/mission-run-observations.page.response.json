@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "observations": [
+    {
+      "schema_version": 1,
+      "observation_sequence": 1,
+      "observed_at": "2026-08-24T12:00:01+00:00",
+      "item": {
+        "schema_version": 1,
+        "trace_id": "mission-fixture-001:1:mission-started",
+        "event_id": "mission-fixture-001:1:mission-started",
+        "mission_id": "mission-fixture-001",
+        "sequence": 1,
+        "occurred_at": "2026-08-24T12:00:01+00:00",
+        "component": "runtime",
+        "authority": "operational-log",
+        "event_kind": "mission-started",
+        "status": null,
+        "outcome": "recorded",
+        "correlation_id": null,
+        "parent_id": null,
+        "replay_disposition": "normal",
+        "payload": {
+          "lifecycle": "started"
+        },
+        "observation_sequence": null,
+        "observed_at": null,
+        "redacted_fields": [],
+        "missing_fields": []
+      }
+    },
+    {
+      "schema_version": 1,
+      "observation_sequence": 2,
+      "observed_at": "2026-08-24T12:00:02+00:00",
+      "item": {
+        "schema_version": 1,
+        "trace_id": "command:cmd-9f8e",
+        "event_id": "command:cmd-9f8e",
+        "mission_id": "mission-fixture-001",
+        "sequence": 0,
+        "occurred_at": "unknown",
+        "component": "command-source",
+        "authority": "command",
+        "event_kind": "command",
+        "status": null,
+        "outcome": null,
+        "correlation_id": "cmd-9f8e",
+        "parent_id": null,
+        "replay_disposition": "normal",
+        "payload": {
+          "target_service": "maneuver_control",
+          "command_kind": "maneuver"
+        },
+        "observation_sequence": null,
+        "observed_at": null,
+        "redacted_fields": [],
+        "missing_fields": []
+      }
+    },
+    {
+      "schema_version": 1,
+      "observation_sequence": 3,
+      "observed_at": "2026-08-24T12:00:04+00:00",
+      "item": {
+        "schema_version": 1,
+        "trace_id": "outcome:cmd-9f8e",
+        "event_id": "outcome:cmd-9f8e",
+        "mission_id": "mission-fixture-001",
+        "sequence": 0,
+        "occurred_at": "unknown",
+        "component": "command-target",
+        "authority": "command-outcome",
+        "event_kind": "command-outcome",
+        "status": "completed",
+        "outcome": "completed",
+        "correlation_id": "cmd-9f8e",
+        "parent_id": "command:cmd-9f8e",
+        "replay_disposition": "normal",
+        "payload": {},
+        "observation_sequence": null,
+        "observed_at": null,
+        "redacted_fields": [],
+        "missing_fields": []
+      }
+    }
+  ],
+  "next_cursor": "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjN9"
+}

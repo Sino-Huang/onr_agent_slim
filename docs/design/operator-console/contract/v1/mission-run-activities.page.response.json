@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "mapping_version": 1,
+  "activities": [
+    {
+      "schema_version": 1,
+      "activity_id": "event:mission-fixture-001:1:mission-started",
+      "activity_sequence": 1,
+      "mapping_version": 1,
+      "kind": "operational",
+      "status": "recorded",
+      "summary": "Operational mission-started: recorded",
+      "component": "runtime",
+      "event_kind": "mission-started",
+      "outcome": "recorded",
+      "correlation_id": null,
+      "started_at": "2026-08-24T12:00:01+00:00",
+      "finished_at": null,
+      "observation_sequences": [1],
+      "replay_disposition": "normal",
+      "redacted_fields": [],
+      "missing_fields": []
+    },
+    {
+      "schema_version": 1,
+      "activity_id": "correlation:cmd-9f8e",
+      "activity_sequence": 2,
+      "mapping_version": 1,
+      "kind": "maneuver_command",
+      "status": "completed",
+      "summary": "Maneuver command maneuver_control: completed",
+      "component": "command-source",
+      "event_kind": "command",
+      "outcome": "completed",
+      "correlation_id": "cmd-9f8e",
+      "started_at": "unknown",
+      "finished_at": "unknown",
+      "observation_sequences": [2, 3],
+      "replay_disposition": "normal",
+      "redacted_fields": [],
+      "missing_fields": []
+    }
+  ],
+  "next_cursor": "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjJ9"
+}

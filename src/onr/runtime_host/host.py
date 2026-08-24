@@ -10,7 +10,7 @@ import os
 import secrets
 import signal
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from multiprocessing import Event as ProcessEvent
@@ -24,6 +24,19 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.runtime.cli import run_closed_loop_demo
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.config import RuntimeConfig
+from onr.runtime_host.observations import (
+    ACTIVITY_MAPPING_VERSION,
+    DEFAULT_PAGE_SIZE,
+    OBSERVATION_SCHEMA_VERSION,
+    EvidenceSource,
+    FileEvidenceSource,
+    ObservationLog,
+    decode_cursor,
+    encode_cursor,
+    map_activities,
+    page_entries,
+)
+from onr.viewer.trace import TraceProjection, TraceViewItem
 
 Clock = Callable[[], str]
 IdGenerator = Callable[[str], str]
@@ -119,6 +132,10 @@ class HostConflictError(Exception):
 
 class HostAuthorizationError(Exception):
     """An owner-only request could not be authorized."""
+
+
+class HostNotFoundError(Exception):
+    """A public Mission Run lookup did not resolve on this Host."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +290,7 @@ class RuntimeHost:
         worker_entrypoint: WorkerEntrypoint | None = None,
         launch_worker: WorkerLauncher | None = None,
         worker_options: RuntimeWorkerOptions | None = None,
+        evidence_source: EvidenceSource | None = None,
     ) -> None:
         self.config = config
         self.root = config.storage.root / "runtime-host"
@@ -283,6 +301,11 @@ class RuntimeHost:
         self._worker_entrypoint = worker_entrypoint or runtime_worker
         self._launch_worker = launch_worker or _launch_process
         self._worker_options = worker_options or RuntimeWorkerOptions(repo_root=Path.cwd())
+        self._evidence_source = evidence_source or FileEvidenceSource(
+            storage_root=config.storage.root,
+            transport_backend=config.transport.backend,
+            transport_root=config.transport.root,
+        )
         self._lock = RLock()
         self._workers: dict[str, WorkerHandle] = {}
         self._reconcilers: dict[str, Thread] = {}
@@ -476,6 +499,84 @@ class RuntimeHost:
             run = self._current_run(self._load_state())
             return None if run is None else _public_run(run)
 
+    def observations(
+        self,
+        mission_run_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        with self._state_guard():
+            run, log = self._refresh_observations(mission_run_id)
+            max_sequence = len(log.entries)
+            after = (
+                0
+                if cursor is None
+                else decode_cursor(
+                    cursor,
+                    mission_run_id=mission_run_id,
+                    max_sequence=max_sequence,
+                )
+            )
+            page, last_sequence = page_entries(
+                log.entries, after=after, limit=limit or DEFAULT_PAGE_SIZE
+            )
+            observations = [
+                {
+                    "schema_version": OBSERVATION_SCHEMA_VERSION,
+                    "observation_sequence": entry["observation_sequence"],
+                    "observed_at": entry["observed_at"],
+                    "item": entry["item"],
+                }
+                for entry in page
+            ]
+            return {
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "mission_id": run["mission_id"],
+                "mission_run_id": mission_run_id,
+                "observations": observations,
+                "next_cursor": (
+                    None
+                    if last_sequence is None
+                    else encode_cursor(mission_run_id, last_sequence)
+                ),
+            }
+
+    def activities(
+        self,
+        mission_run_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        with self._state_guard():
+            run, log = self._refresh_observations(mission_run_id)
+            activities = map_activities(log.entries)
+            after = (
+                0
+                if cursor is None
+                else decode_cursor(
+                    cursor,
+                    mission_run_id=mission_run_id,
+                    max_sequence=len(activities),
+                )
+            )
+            page, last_sequence = page_entries(
+                activities, after=after, limit=limit or DEFAULT_PAGE_SIZE
+            )
+            return {
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "mission_id": run["mission_id"],
+                "mission_run_id": mission_run_id,
+                "mapping_version": ACTIVITY_MAPPING_VERSION,
+                "activities": page,
+                "next_cursor": (
+                    None
+                    if last_sequence is None
+                    else encode_cursor(mission_run_id, last_sequence)
+                ),
+            }
+
     def mission_intent(self, mission_run_id: str, credential: str) -> dict[str, object]:
         with self._state_guard():
             state = self._load_state()
@@ -581,6 +682,24 @@ class RuntimeHost:
             )
         else:
             self._transition(context.mission_run_id, "succeeded")
+
+    def _refresh_observations(
+        self, mission_run_id: str
+    ) -> tuple[dict[str, Any], ObservationLog]:
+        state = self._load_state()
+        run = state["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        try:
+            records = list(self._evidence_source.records(str(run["mission_id"])))
+        except Exception:  # noqa: BLE001 - retain the last committed evidence.
+            records = []
+        items = _project_evidence(records)
+        log = ObservationLog(
+            self.root / "observations" / f"{mission_run_id}.json"
+        )
+        log.ingest(items, observed_at=self._clock())
+        return run, log
 
     def _transition(
         self,
@@ -858,6 +977,62 @@ class RuntimeHost:
 def _digest_json(value: Mapping[str, object]) -> str:
     encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _project_evidence(records: Sequence[object]) -> tuple[TraceViewItem, ...]:
+    """Project heterogeneous public records without bypassing the redaction seam."""
+
+    groups: dict[str, tuple[int, list[Any]]] = {}
+    for index, record in enumerate(records):
+        key = _projection_batch_key(record)
+        group = groups.get(key)
+        if group is None:
+            group = (index, [])
+            groups[key] = group
+        group[1].append(record)
+    projection = TraceProjection()
+    return tuple(
+        item
+        for _, batch in sorted(groups.values(), key=lambda group: group[0])
+        for item in projection.project(batch)
+    )
+
+
+def _projection_batch_key(record: object) -> str:
+    if isinstance(record, str):
+        try:
+            decoded = json.loads(record)
+        except (TypeError, ValueError):
+            return "malformed"
+        record = decoded
+    if not isinstance(record, Mapping):
+        return "malformed"
+    keys = set(record)
+    if "entry_state" in keys or "transitions" in keys and "states" in keys:
+        return "statechart"
+    if "record_id" in keys:
+        return "operational_log"
+    if "summary_id" in keys:
+        return "summary"
+    if "feedback_id" in keys:
+        return "maneuver_feedback"
+    if "request_id" in keys and "requester" in keys:
+        return "replan_request"
+    if "command_id" in keys and "command_kind" in keys:
+        return "command"
+    if "command_id" in keys and "target_service" in keys:
+        return "receipt"
+    if "command_id" in keys:
+        return "outcome"
+    if "event_id" in keys:
+        return "transport_event"
+    if "version" in keys or "source_references" in keys:
+        return "snapshot"
+    if "record_revision" in keys or "active_configuration" in keys:
+        return "fsm_execution"
+    if "transition_candidates" in keys:
+        return "fsm_status"
+    return "malformed"
 
 
 def _process_start_time(pid: int) -> str | None:

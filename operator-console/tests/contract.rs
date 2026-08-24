@@ -268,3 +268,111 @@ fn owner_endpoints_return_fixed_authorization_failure() {
         Err(HostError::AuthorizationFailed { ref code, .. }) if code == "authorization_failed"
     ));
 }
+
+fn activate_fixture_run(client: &UreqHostClient) -> String {
+    match client
+        .activate(
+            &request("req-evidence", "survey the ridge"),
+            "cred-evidence",
+        )
+        .unwrap()
+    {
+        ActivationOutcome::Accepted(accepted) => accepted.mission_run_id,
+        other => panic!("expected acceptance, got {other:?}"),
+    }
+}
+
+#[test]
+fn observations_support_paging_and_stable_errors() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let first = client.observations(&run_id, None).unwrap();
+    assert_eq!(first.observations.len(), 3);
+    let next = first.next_cursor.expect("page cursor");
+    let empty = client.observations(&run_id, Some(&next)).unwrap();
+    assert!(empty.observations.is_empty());
+    assert_eq!(empty.next_cursor, None);
+    assert!(matches!(
+        client.observations(&run_id, Some("bogus")),
+        Err(HostError::InvalidCursor { ref code, .. }) if code == "invalid_cursor"
+    ));
+    assert!(matches!(
+        client.observations("run-unknown", None),
+        Err(HostError::NotFound { ref code, .. }) if code == "mission_run_not_found"
+    ));
+}
+
+#[test]
+fn activities_support_paging_and_stable_errors() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let first = client.activities(&run_id, None).unwrap();
+    assert_eq!(first.activities.len(), 2);
+    let next = first.next_cursor.expect("activity page cursor");
+    assert_eq!(next, "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjJ9");
+    let empty = client.activities(&run_id, Some(&next)).unwrap();
+    assert_eq!(empty.mapping_version, 1);
+    assert!(empty.activities.is_empty());
+    assert_eq!(empty.next_cursor, None);
+    assert!(matches!(
+        client.activities(&run_id, Some("bogus")),
+        Err(HostError::InvalidCursor { ref code, .. }) if code == "invalid_cursor"
+    ));
+    assert!(matches!(
+        client.activities("run-unknown", None),
+        Err(HostError::NotFound { ref code, .. }) if code == "mission_run_not_found"
+    ));
+}
+
+#[test]
+fn all_observations_accumulates_until_the_empty_page() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+    let observations = client.all_observations(&run_id).unwrap();
+    assert!(!observations.truncated);
+    assert_eq!(observations.items.len(), 3);
+    assert_eq!(observations.items[0].observation_sequence, 1);
+    assert_eq!(observations.items[2].observation_sequence, 3);
+}
+
+#[test]
+fn endless_evidence_is_retained_and_reported_as_truncated() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+    host.enable_endless_evidence();
+
+    let observations = client.all_observations(&run_id).unwrap();
+    assert!(observations.truncated);
+    assert_eq!(observations.items.len(), 300);
+    let activities = client.all_activities(&run_id).unwrap();
+    assert!(activities.truncated);
+    assert_eq!(activities.items.len(), 200);
+
+    let mut app = operator_console::app::App::new_with_session_file(
+        host.url(),
+        operator_console::app::SessionStateFile::at(
+            std::env::temp_dir()
+                .join(format!(
+                    "operator-console-truncated-{}",
+                    uuid::Uuid::new_v4()
+                ))
+                .join("session.json"),
+        ),
+    );
+    app.take_commands();
+    app.handle_host_message(operator_console::app::HostMessage::Observations(Ok(
+        observations,
+    )));
+    assert_eq!(app.observations.len(), 300);
+    assert!(app.observations_truncated);
+    assert_eq!(
+        app.notice.as_deref(),
+        Some("Showing the first 300 evidence entries; the Host retains the full timeline")
+    );
+}

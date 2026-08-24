@@ -10,18 +10,36 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use operator_console::app::{
-    App, AppState, CancellationState, HostCommand, HostMessage, MIN_HEIGHT, MIN_WIDTH,
-    OwnerSessionState, SessionStateFile,
+    App, AppState, CancellationState, Clock, HostCommand, HostMessage, LivenessThresholds,
+    MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, SessionStateFile,
 };
 use operator_console::host::{
-    ActivationAccepted, CancellationAccepted, CancellationOutcome, CurrentRun, RunRecord,
+    ActivationAccepted, ActivitiesPage, CancellationAccepted, CancellationOutcome, CurrentRun,
+    EvidencePage, ObservationsPage, RunRecord,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 const SESSION_ID: &str = "c0ns01e0-0000-4000-8000-5e5510n5a1d0";
+
+#[derive(Debug)]
+struct ManualClock(Mutex<Instant>);
+
+impl ManualClock {
+    fn advance(&self, duration: Duration) {
+        *self.0.lock().unwrap() += duration;
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> Instant {
+        *self.0.lock().unwrap()
+    }
+}
 
 fn frames_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/design/operator-console/frames")
@@ -126,6 +144,63 @@ fn run_app(record: RunRecord) -> App {
     app
 }
 
+fn evidence_app() -> App {
+    let mut app = run_app(RunRecord {
+        mission_id: "mission-fixture-001".to_string(),
+        mission_run_id: "run-fixture-001".to_string(),
+        ..running_record()
+    });
+    let activities: ActivitiesPage = serde_json::from_str(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-activities.page.response.json"
+    ))
+    .unwrap();
+    let observations: ObservationsPage = serde_json::from_str(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-observations.page.response.json"
+    ))
+    .unwrap();
+    app.handle_host_message(HostMessage::Activities(Ok(EvidencePage {
+        items: activities.activities,
+        truncated: false,
+    })));
+    app.handle_host_message(HostMessage::Observations(Ok(EvidencePage {
+        items: observations.observations,
+        truncated: false,
+    })));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Down,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app
+}
+
+fn liveness_app(elapsed: Duration) -> App {
+    let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
+    let mut app = App::new_with_session_file_and_clock(
+        "http://127.0.0.1:8787".to_string(),
+        test_session_file("liveness"),
+        clock.clone(),
+    )
+    .with_liveness_thresholds(LivenessThresholds::default());
+    app.session.session_id = SESSION_ID.to_string();
+    app.take_commands();
+    app.handle_host_message(HostMessage::Connected(Ok(operator_console::host::Health {
+        status: "ok".to_string(),
+        api_version: operator_console::host::ApiVersion { major: 1, minor: 0 },
+    })));
+    app.run = Some(RunRecord {
+        mission_id: "mission-fixture-001".to_string(),
+        mission_run_id: "run-fixture-001".to_string(),
+        ..running_record()
+    });
+    app.state = AppState::Run;
+    let evidence = evidence_app();
+    app.activities = evidence.activities;
+    app.observations = evidence.observations;
+    app.selected_activity = evidence.selected_activity;
+    clock.advance(elapsed);
+    app
+}
+
 fn recovered_owner_app() -> App {
     let file = test_session_file("recovered");
     file.save(&OwnerSessionState {
@@ -194,6 +269,33 @@ fn run_dashboard_frame_matches_committed_capture() {
         "run-dashboard-100x30.txt",
         render(&app, MIN_WIDTH, MIN_HEIGHT),
     );
+}
+
+#[test]
+fn activity_detail_frame_matches_committed_capture() {
+    let app = evidence_app();
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("maneuver_command"));
+    assert!(frame.contains("command-outcome"));
+    assert!(frame.contains("maneuver_control"));
+    assert_frame("activity-detail-100x30.txt", frame);
+}
+
+#[test]
+fn stale_run_frame_matches_committed_capture() {
+    let app = liveness_app(Duration::from_secs(5));
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("stale - showing last received evidence"));
+    assert!(frame.contains("maneuver_command"));
+    assert_frame("run-stale-100x30.txt", frame);
+}
+
+#[test]
+fn offline_run_frame_matches_committed_capture() {
+    let app = liveness_app(Duration::from_secs(30));
+    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
+    assert!(frame.contains("offline - showing last received evidence"));
+    assert_frame("run-offline-100x30.txt", frame);
 }
 
 #[test]

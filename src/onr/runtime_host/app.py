@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -16,9 +16,11 @@ from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime_host.host import (
     HostAuthorizationError,
     HostConflictError,
+    HostNotFoundError,
     RuntimeHost,
     RuntimeWorkerOptions,
 )
+from onr.runtime_host.observations import InvalidCursorError
 
 
 class ActivationRequest(BaseModel):
@@ -112,6 +114,28 @@ def create_app(
     def current_run() -> dict[str, object]:
         return {"mission_run": selected.current_run()}
 
+    @app.get("/api/v1/mission-runs/{mission_run_id}/observations")
+    def observations(
+        mission_run_id: str,
+        cursor: str | None = None,
+        limit: Annotated[int | None, Query(gt=0, le=500)] = None,
+    ) -> Any:
+        try:
+            return selected.observations(mission_run_id, cursor=cursor, limit=limit)
+        except (HostNotFoundError, InvalidCursorError) as exc:
+            return _evidence_error(exc)
+
+    @app.get("/api/v1/mission-runs/{mission_run_id}/activities")
+    def activities(
+        mission_run_id: str,
+        cursor: str | None = None,
+        limit: Annotated[int | None, Query(gt=0, le=500)] = None,
+    ) -> Any:
+        try:
+            return selected.activities(mission_run_id, cursor=cursor, limit=limit)
+        except (HostNotFoundError, InvalidCursorError) as exc:
+            return _evidence_error(exc)
+
     @app.get("/api/v1/mission-runs/{mission_run_id}/mission-intent")
     def mission_intent(
         mission_run_id: str,
@@ -165,6 +189,20 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 def _invalid_request() -> JSONResponse:
     return _error(422, "invalid_request", "request body or authorization is invalid")
+
+
+def _evidence_error(exc: HostNotFoundError | InvalidCursorError) -> JSONResponse:
+    if isinstance(exc, HostNotFoundError):
+        return _error(
+            404,
+            "mission_run_not_found",
+            "Mission Run is unknown to this Runtime Host",
+        )
+    return _error(
+        422,
+        "invalid_cursor",
+        "cursor is malformed, expired, or does not belong to this Mission Run",
+    )
 
 
 def _authorization_failed() -> JSONResponse:

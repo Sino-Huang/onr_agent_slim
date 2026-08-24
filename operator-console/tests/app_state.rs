@@ -2,12 +2,13 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use operator_console::app::{
-    App, AppState, CancellationState, CleanExitAction, Clock, HostCommand, HostMessage, MIN_HEIGHT,
-    MIN_WIDTH, OwnerSessionState, SessionStateFile,
+    App, AppState, CancellationState, CleanExitAction, Clock, HostCommand, HostMessage, Liveness,
+    LivenessThresholds, MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, SessionStateFile,
 };
 use operator_console::host::{
-    ActivationAccepted, ActivationOutcome, CancellationAccepted, CancellationOutcome, CurrentRun,
-    Health, HostError, MissionIntent, RunRecord,
+    ActivationAccepted, ActivationOutcome, ActivitiesPage, CancellationAccepted,
+    CancellationOutcome, CurrentRun, EvidencePage, Health, HostError, MissionIntent,
+    ObservationEnvelope, ObservationsPage, RunActivity, RunRecord,
 };
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -62,6 +63,19 @@ fn poll_command(app: &App) -> HostCommand {
     }
 }
 
+fn poll_commands(app: &App) -> Vec<HostCommand> {
+    let run_id = app.run.as_ref().unwrap().mission_run_id.clone();
+    vec![
+        poll_command(app),
+        HostCommand::FetchActivities {
+            mission_run_id: run_id.clone(),
+        },
+        HostCommand::FetchObservations {
+            mission_run_id: run_id,
+        },
+    ]
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -84,6 +98,53 @@ fn accepted() -> ActivationAccepted {
         status: "queued".to_string(),
         created_at: "2026-08-24T12:00:00Z".to_string(),
     }
+}
+
+fn activities() -> Vec<RunActivity> {
+    serde_json::from_str::<ActivitiesPage>(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-activities.page.response.json"
+    ))
+    .unwrap()
+    .activities
+}
+
+fn observations() -> Vec<ObservationEnvelope> {
+    serde_json::from_str::<ObservationsPage>(include_str!(
+        "../../docs/design/operator-console/contract/v1/mission-run-observations.page.response.json"
+    ))
+    .unwrap()
+    .observations
+}
+
+fn evidence<T>(items: Vec<T>) -> EvidencePage<T> {
+    EvidencePage {
+        items,
+        truncated: false,
+    }
+}
+
+fn active_run_app_with_clock(clock: Arc<ManualClock>) -> App {
+    let mut app = App::new_with_session_file_and_clock(
+        "http://127.0.0.1:8787".to_string(),
+        temp_state_file("liveness"),
+        clock,
+    )
+    .with_liveness_thresholds(LivenessThresholds {
+        stale: Duration::from_secs(5),
+        offline: Duration::from_secs(30),
+    });
+    app.take_commands();
+    app.handle_host_message(HostMessage::Connected(Ok(health())));
+    app.intent = "survey the ridge".to_string();
+    app.cursor = app.intent.len();
+    app.handle_key(alt_enter());
+    app.handle_key(key(KeyCode::Enter));
+    app.take_commands();
+    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
+        accepted(),
+    ))));
+    app.take_commands();
+    app
 }
 
 fn temp_state_file(name: &str) -> SessionStateFile {
@@ -282,7 +343,7 @@ fn accepted_activation_enters_run_and_polls() {
         accepted(),
     ))));
     assert_eq!(app.state, AppState::Run);
-    assert_eq!(app.take_commands(), vec![poll_command(&app)]);
+    assert_eq!(app.take_commands(), poll_commands(&app));
     let run = app
         .run
         .as_ref()
@@ -338,7 +399,7 @@ fn poll_requests_only_fire_in_run_state() {
     ))));
     app.take_commands();
     app.request_poll();
-    assert_eq!(app.take_commands(), vec![poll_command(&app)]);
+    assert_eq!(app.take_commands(), poll_commands(&app));
 }
 
 #[test]
@@ -930,4 +991,197 @@ fn q_cancellation_submit_failure_keeps_deadline_and_exits_at_ten_seconds() {
     );
     assert!(file.path().exists());
     file.remove().unwrap();
+}
+
+#[test]
+fn liveness_uses_inclusive_response_receipt_boundaries() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let app = active_run_app_with_clock(clock.clone());
+    assert!(app.last_host_response.is_some());
+    assert_eq!(app.liveness(), Liveness::Live);
+    clock.advance(Duration::from_secs(5));
+    assert_eq!(app.liveness(), Liveness::Stale);
+    clock.advance(Duration::from_secs(25));
+    assert_eq!(app.liveness(), Liveness::Offline);
+}
+
+#[test]
+fn evidence_and_mutations_survive_an_error_gap_and_recover() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock.clone());
+    app.handle_host_message(HostMessage::Activities(Ok(evidence(activities()))));
+    app.handle_host_message(HostMessage::Observations(Ok(evidence(observations()))));
+    let response_at = app.last_host_response;
+    app.handle_host_message(HostMessage::Activities(Err(HostError::Transport(
+        "timeout".to_string(),
+    ))));
+    app.handle_host_message(HostMessage::Current(Err(HostError::Transport(
+        "timeout".to_string(),
+    ))));
+    assert_eq!(app.last_host_response, response_at);
+    assert_eq!(app.activities.len(), 2);
+    assert_eq!(app.observations.len(), 3);
+    assert_eq!(app.run.as_ref().unwrap().mission_run_id, "run-1");
+
+    clock.advance(Duration::from_secs(5));
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert_eq!(
+        app.notice.as_deref(),
+        Some("Mutation controls disabled while the Host connection is stale or offline")
+    );
+    app.handle_key(key(KeyCode::Char('q')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+
+    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
+        mission_run: app.run.clone(),
+    })));
+    assert_eq!(app.liveness(), Liveness::Live);
+    assert_eq!(app.activities.len(), 2);
+    assert_eq!(app.observations.len(), 3);
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+}
+
+#[test]
+fn run_poll_fans_out_to_current_activities_and_observations() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.request_poll();
+    assert_eq!(
+        app.take_commands(),
+        vec![
+            poll_command(&app),
+            HostCommand::FetchActivities {
+                mission_run_id: "run-1".to_string(),
+            },
+            HostCommand::FetchObservations {
+                mission_run_id: "run-1".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn activity_selection_is_stable_moves_and_drops_when_empty() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    let list = activities();
+    app.handle_host_message(HostMessage::Activities(Ok(evidence(list.clone()))));
+    assert_eq!(app.selected_activity().unwrap().0, 0);
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.selected_activity().unwrap().0, 1);
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.selected_activity().unwrap().0, 1);
+    app.handle_key(key(KeyCode::Char('k')));
+    assert_eq!(app.selected_activity().unwrap().0, 0);
+    app.handle_key(key(KeyCode::Char('j')));
+    let selected_id = app.selected_activity().unwrap().1.activity_id.clone();
+    app.handle_host_message(HostMessage::Activities(Ok(evidence(list))));
+    assert_eq!(app.selected_activity().unwrap().1.activity_id, selected_id);
+    app.handle_host_message(HostMessage::Activities(Ok(evidence(Vec::new()))));
+    assert!(app.selected_activity().is_none());
+}
+
+#[test]
+fn selected_observations_returns_only_activity_links() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.handle_host_message(HostMessage::Activities(Ok(evidence(activities()))));
+    app.handle_host_message(HostMessage::Observations(Ok(evidence(observations()))));
+    app.handle_key(key(KeyCode::Down));
+    let selected = app.selected_observations();
+    assert_eq!(
+        selected
+            .iter()
+            .map(|item| item.observation_sequence)
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+}
+
+#[test]
+fn definitive_host_errors_refresh_liveness_but_transport_does_not() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock.clone());
+
+    for message in [
+        HostMessage::Activities(Err(HostError::NotFound {
+            code: "mission_run_not_found".to_string(),
+            message: "missing".to_string(),
+        })),
+        HostMessage::Observations(Err(HostError::InvalidCursor {
+            code: "invalid_cursor".to_string(),
+            message: "invalid".to_string(),
+        })),
+        HostMessage::Cancelled(Err(HostError::AuthorizationFailed {
+            code: "authorization_failed".to_string(),
+            message: "denied".to_string(),
+        })),
+        HostMessage::Current(Err(HostError::UnexpectedStatus(
+            503,
+            "unavailable".to_string(),
+        ))),
+    ] {
+        clock.advance(Duration::from_secs(5));
+        app.handle_host_message(message);
+        assert_eq!(app.liveness(), Liveness::Live);
+    }
+
+    app.handle_host_message(HostMessage::Current(Err(HostError::Transport(
+        "timeout".to_string(),
+    ))));
+    clock.advance(Duration::from_secs(5));
+    assert_eq!(app.liveness(), Liveness::Stale);
+}
+
+#[test]
+fn mutations_require_matching_console_session_ownership() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.run.as_mut().unwrap().mission_run_id = "run-independent".to_string();
+    assert_eq!(app.liveness(), Liveness::Live);
+    assert!(!app.ownership_available());
+    assert!(!app.mutations_enabled());
+
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert_eq!(
+        app.notice.as_deref(),
+        Some("Mutation controls disabled while the Host connection is stale or offline")
+    );
+    app.handle_key(key(KeyCode::Char('q')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+
+    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
+        mission_run: Some(RunRecord {
+            mission_id: "mission-1".to_string(),
+            mission_run_id: "run-1".to_string(),
+            status: "running".to_string(),
+            created_at: None,
+            started_at: None,
+            finished_at: None,
+            terminal_classification: None,
+        }),
+    })));
+    assert!(app.ownership_available());
+    assert!(app.mutations_enabled());
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+}
+
+#[test]
+fn truncated_evidence_sets_flags_and_visible_notice() {
+    let clock = Arc::new(ManualClock::new(Instant::now()));
+    let mut app = active_run_app_with_clock(clock);
+    app.handle_host_message(HostMessage::Activities(Ok(EvidencePage {
+        items: activities(),
+        truncated: true,
+    })));
+    assert!(app.activities_truncated);
+    assert_eq!(app.activities.len(), 2);
+    assert_eq!(
+        app.notice.as_deref(),
+        Some("Showing the first 2 evidence entries; the Host retains the full timeline")
+    );
 }

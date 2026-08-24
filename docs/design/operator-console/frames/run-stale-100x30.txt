@@ -2,28 +2,28 @@
 │ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0                   │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Mission Run ──────────────────────────────────┐┌ Run Activities ─────────────────────────────────┐
-│ Status:   running                             ││ No Run Activities recorded.                     │
-│ Mission:  mission-7c1f9a2e                    ││                                                 │
-│ Run:      run-51d3b84c                        ││                                                 │
+│ Status:   running                             ││ #1 operational [recorded] Operational mission-… │
+│ stale - showing last received evidence        ││ #2 maneuver_command [completed] Maneuver comma… │
+│ Mission:  mission-fixture-001                 ││                                                 │
+│ Run:      run-fixture-001                     ││                                                 │
 │ Created:  2026-08-24T12:00:00Z                ││                                                 │
 │ Started:  2026-08-24T12:00:03Z                ││                                                 │
 │ Finished: -                                   ││                                                 │
-│ Terminal: -                                   ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 ┌ Observations ─────────────────┐┌ Artifacts ────────────────────┐┌ Conversation ──────────────────┐
-│ No Run Observations recorded. ││ No Artifacts published.       ││ No Conversation recorded.      │
-│                               ││ (reserved for a later view)   ││ (reserved for a later view)    │
-│                               ││                               ││                                │
-│                               ││                               ││                                │
-│                               ││                               ││                                │
-│                               ││                               ││                                │
+│ id: correlation:cmd-9f8e      ││ No Artifacts published.       ││ No Conversation recorded.      │
+│ maneuver_command [completed]  ││ (reserved for a later view)   ││ (reserved for a later view)    │
+│ corr: cmd-9f8e · unknown -> … ││                               ││                                │
+│ #2 command command-source -   ││                               ││                                │
+│ #3 command-outcome command-t… ││                               ││                                │
+│ {"target":"maneuver_control"} ││                               ││                                │
 └───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
-┌ Recovered Owner ──────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
-│ Recovered owner session                       ││ No Human Decision Requests require action.      │
-│                                               ││ (reserved for a later view)                     │
-│ Mission Intent:                               ││                                                 │
-│ Hold the ridge line.                          ││                                                 │
-│ Report obstacles by grid square.              ││                                                 │
+┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
+│ No Run Narrative generated.                   ││ No Human Decision Requests require action.      │
+│ (reserved for a later view)                   ││ (reserved for a later view)                     │
+│                                               ││                                                 │
+│                                               ││                                                 │
+│                                               ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Up/k Down/j: select activity · c: request cancellation · Ctrl+C: quit                            │

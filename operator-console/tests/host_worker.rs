@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use operator_console::app::{HostCommand, HostMessage};
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, ApiVersion, CancellationAccepted, CancellationOutcome,
-    CancellationRequest, CurrentRun, Health, HostClient, HostError, MissionIntent, RunRecord,
-    spawn_worker,
+    ActivationOutcome, ActivationRequest, ActivitiesPage, ApiVersion, CancellationAccepted,
+    CancellationOutcome, CancellationRequest, CurrentRun, Health, HostClient, HostError,
+    MissionIntent, ObservationsPage, RunRecord, spawn_worker,
 };
 
 #[derive(Default)]
@@ -85,6 +85,37 @@ impl HostClient for ScriptedClient {
             status: "running".to_string(),
             requested_at: "2026-08-24T12:05:00Z".to_string(),
         }))
+    }
+
+    fn observations(
+        &self,
+        mission_run_id: &str,
+        _cursor: Option<&str>,
+    ) -> Result<ObservationsPage, HostError> {
+        self.calls.lock().unwrap().push("observations".to_string());
+        Ok(ObservationsPage {
+            schema_version: 1,
+            mission_id: "mission-1".to_string(),
+            mission_run_id: mission_run_id.to_string(),
+            observations: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
+    fn activities(
+        &self,
+        mission_run_id: &str,
+        _cursor: Option<&str>,
+    ) -> Result<ActivitiesPage, HostError> {
+        self.calls.lock().unwrap().push("activities".to_string());
+        Ok(ActivitiesPage {
+            schema_version: 1,
+            mission_id: "mission-1".to_string(),
+            mission_run_id: mission_run_id.to_string(),
+            mapping_version: 1,
+            activities: Vec::new(),
+            next_cursor: None,
+        })
     }
 }
 

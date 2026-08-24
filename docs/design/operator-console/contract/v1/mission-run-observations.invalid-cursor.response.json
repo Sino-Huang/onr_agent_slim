@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_cursor",
+    "message": "cursor is malformed, expired, or does not belong to this Mission Run"
+  }
+}

@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::app::{App, AppState, CancellationState, MIN_HEIGHT, MIN_WIDTH};
+use crate::app::{App, AppState, CancellationState, Liveness, MIN_HEIGHT, MIN_WIDTH};
 
 const HEADER_ROWS: u16 = 3;
 const FOOTER_ROWS: u16 = 3;
@@ -98,7 +98,9 @@ fn footer_lines(app: &App) -> (String, Option<String>) {
         "ReviewActivation" => "Enter: confirm and submit once · Esc: return to editing",
         "Submitting" => "waiting for host acknowledgement · Ctrl+C: quit",
         "Run" => match app.cancellation {
-            CancellationState::Idle => "c: request cancellation · Ctrl+C: quit",
+            CancellationState::Idle => {
+                "Up/k Down/j: select activity · c: request cancellation · Ctrl+C: quit"
+            }
             CancellationState::Confirming => "Enter: confirm cancellation · Esc: keep running",
             CancellationState::Requested { .. } => {
                 "cancellation requested · polling current Mission Run · Ctrl+C: quit"
@@ -225,16 +227,7 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(49), Constraint::Min(0)])
         .split(rows[0]);
     draw_run_panel(frame, top[0], app);
-    if app.recovered_owner() {
-        draw_recovered_owner_intent(frame, top[1], app);
-    } else {
-        draw_reserved(
-            frame,
-            top[1],
-            " Run Activities ",
-            "No Run Activities recorded.",
-        );
-    }
+    draw_activities(frame, top[1], app);
 
     let middle = Layout::default()
         .direction(Direction::Horizontal)
@@ -244,12 +237,7 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
             Constraint::Min(0),
         ])
         .split(rows[1]);
-    draw_reserved(
-        frame,
-        middle[0],
-        " Observations ",
-        "No Run Observations recorded.",
-    );
+    draw_observations(frame, middle[0], app);
     draw_reserved(frame, middle[1], " Artifacts ", "No Artifacts published.");
     draw_reserved(
         frame,
@@ -262,12 +250,16 @@ fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(49), Constraint::Min(0)])
         .split(rows[2]);
-    draw_reserved(
-        frame,
-        bottom[0],
-        " Narrative ",
-        "No Run Narrative generated.",
-    );
+    if app.recovered_owner() {
+        draw_recovered_owner_intent(frame, bottom[0], app);
+    } else {
+        draw_reserved(
+            frame,
+            bottom[0],
+            " Narrative ",
+            "No Run Narrative generated.",
+        );
+    }
     draw_reserved(
         frame,
         bottom[1],
@@ -289,21 +281,147 @@ fn draw_run_panel(frame: &mut Frame, area: Rect, app: &App) {
             if matches!(app.cancellation, CancellationState::Requested { .. }) {
                 status.push(Span::styled(" · cancellation requested", hint()));
             }
-            vec![
-                Line::from(status),
+            let mut lines = vec![Line::from(status)];
+            match app.liveness() {
+                Liveness::Live => {}
+                Liveness::Stale => lines.push(Line::from(Span::styled(
+                    " stale - showing last received evidence",
+                    hint(),
+                ))),
+                Liveness::Offline => lines.push(Line::from(Span::styled(
+                    " offline - showing last received evidence",
+                    Style::default().fg(Color::Red),
+                ))),
+            }
+            lines.extend([
                 field("Mission:", &run.mission_id),
                 field("Run:", &run.mission_run_id),
                 field("Created:", run.created_at.as_deref().unwrap_or("-")),
                 field("Started:", run.started_at.as_deref().unwrap_or("-")),
                 field("Finished:", run.finished_at.as_deref().unwrap_or("-")),
-                field(
+            ]);
+            if app.liveness() == Liveness::Live {
+                lines.push(field(
                     "Terminal:",
                     run.terminal_classification.as_deref().unwrap_or("-"),
-                ),
-            ]
+                ));
+            }
+            lines
         }
         None => vec![Line::from(Span::styled(" No current Mission Run.", dim()))],
     };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn truncate(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_string();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut result: String = value.chars().take(width - 1).collect();
+    result.push('…');
+    result
+}
+
+fn draw_activities(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Run Activities ");
+    let width = block.inner(area).width.saturating_sub(1) as usize;
+    let selected = app.selected_activity().map(|(index, _)| index);
+    let lines = if app.activities.is_empty() {
+        vec![Line::from(Span::styled(
+            " No Run Activities recorded.",
+            dim(),
+        ))]
+    } else {
+        app.activities
+            .iter()
+            .enumerate()
+            .map(|(index, activity)| {
+                let text = format!(
+                    " #{} {} [{}] {}",
+                    activity.activity_sequence, activity.kind, activity.status, activity.summary
+                );
+                let style = if selected == Some(index) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                Line::from(Span::styled(truncate(&text, width), style))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_observations(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Observations ");
+    let inner = block.inner(area);
+    let Some((_, activity)) = app.selected_activity() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " No Run Observations recorded.",
+                dim(),
+            )))
+            .block(block),
+            area,
+        );
+        return;
+    };
+    let linked = app.selected_observations();
+    let width = inner.width.saturating_sub(1) as usize;
+    let mut lines = vec![
+        Line::from(truncate(&format!(" id: {}", activity.activity_id), width)),
+        Line::from(truncate(
+            &format!(" {} [{}]", activity.kind, activity.status),
+            width,
+        )),
+        Line::from(truncate(
+            &format!(
+                " corr: {} · {} -> {}",
+                activity.correlation_id.as_deref().unwrap_or("-"),
+                activity.started_at.as_deref().unwrap_or("-"),
+                activity.finished_at.as_deref().unwrap_or("-")
+            ),
+            width,
+        )),
+    ];
+    for observation in &linked {
+        if lines.len() >= inner.height as usize {
+            break;
+        }
+        lines.push(Line::from(truncate(
+            &format!(
+                " #{} {} {} {}",
+                observation.observation_sequence,
+                observation.item.event_kind,
+                observation.item.component,
+                observation.item.outcome.as_deref().unwrap_or("-")
+            ),
+            width,
+        )));
+    }
+    if lines.len() < inner.height as usize
+        && let Some(first) = linked.first()
+    {
+        let payload = first
+            .item
+            .payload
+            .get("target_service")
+            .map(|value| serde_json::json!({"target": value}).to_string())
+            .unwrap_or_else(|| {
+                serde_json::to_string(&first.item.payload).unwrap_or_else(|_| "{}".to_string())
+            });
+        lines.push(Line::from(Span::styled(
+            truncate(&format!(" {payload}"), width),
+            dim(),
+        )));
+    }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 

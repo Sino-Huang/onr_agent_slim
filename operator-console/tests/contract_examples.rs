@@ -1,4 +1,4 @@
-//! The committed #27-#28 v1 wire-contract examples under
+//! The committed #27-#29 v1 wire-contract examples under
 //! `docs/design/operator-console/contract/v1/` are the single source of truth
 //! for the console's HTTP client shapes. Each example must round-trip through
 //! the client DTOs with exact value equality, and the fixture HTTP server
@@ -6,11 +6,11 @@
 //!
 //! Real interoperability against the Python Runtime Host process is validated
 //! at parent level by the Python Host tests; this lane guarantees the Rust
-//! fixture reflects the precise #27-#28 contract, not a divergent schema.
+//! fixture reflects the precise #27-#29 contract, not a divergent schema.
 
 use operator_console::host::{
-    ActivationAccepted, ActivationRequest, CancellationAccepted, CancellationRequest, CurrentRun,
-    ErrorBody, Health, MissionIntent,
+    ActivationAccepted, ActivationRequest, ActivitiesPage, CancellationAccepted,
+    CancellationRequest, CurrentRun, ErrorBody, Health, MissionIntent, ObservationsPage,
 };
 use serde_json::Value;
 
@@ -152,4 +152,33 @@ fn cancellation_conflict_and_owner_authorization_examples_have_stable_codes() {
     let authorization: ErrorBody =
         exact_roundtrip("mission-run-owner.authorization-failed.response.json");
     assert_eq!(authorization.error.code, "authorization_failed");
+}
+
+#[test]
+fn observation_page_examples_round_trip_exactly() {
+    let page: ObservationsPage = exact_roundtrip("mission-run-observations.page.response.json");
+    assert_eq!(page.observations.len(), 3);
+    assert!(page.next_cursor.is_some());
+    let empty: ObservationsPage = exact_roundtrip("mission-run-observations.empty.response.json");
+    assert!(empty.observations.is_empty());
+    assert_eq!(empty.next_cursor, None);
+}
+
+#[test]
+fn evidence_error_examples_round_trip_exactly() {
+    let invalid: ErrorBody =
+        exact_roundtrip("mission-run-observations.invalid-cursor.response.json");
+    assert_eq!(invalid.error.code, "invalid_cursor");
+    let missing: ErrorBody = exact_roundtrip("mission-run.not-found.response.json");
+    assert_eq!(missing.error.code, "mission_run_not_found");
+}
+
+#[test]
+fn activity_page_examples_round_trip_exactly() {
+    let page: ActivitiesPage = exact_roundtrip("mission-run-activities.page.response.json");
+    assert_eq!(page.mapping_version, 1);
+    assert_eq!(page.activities.len(), 2);
+    let empty: ActivitiesPage = exact_roundtrip("mission-run-activities.empty.response.json");
+    assert!(empty.activities.is_empty());
+    assert_eq!(empty.next_cursor, None);
 }

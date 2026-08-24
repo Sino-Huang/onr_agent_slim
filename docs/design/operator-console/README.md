@@ -1,11 +1,11 @@
-# Operator Console Design (issues #27-#28 contract slices)
+# Operator Console Design (issues #27-#29 contract slices)
 
 Rust 2024 Ratatui 0.30 Operator Console: a peer client of the loopback Python
 Runtime Host (ADR 0001). The committed contract covers Mission Intent editing,
 reviewed Mission Activation, observation of one current Mission Run, owner-only
-Mission Intent readback, and idempotent Mission Run Cancellation. Run
-Activities/Observations, Artifacts, Narratives, and HITL behavior remain
-reserved for later issues (#29-#32).
+Mission Intent readback, idempotent Mission Run Cancellation, and redacted Run
+Activities/Observations. Artifacts, Narratives, and HITL behavior remain
+reserved for later issues (#30-#32).
 
 ## States
 
@@ -32,10 +32,11 @@ Connecting ──health ok──> Editing ──Alt+Enter──> ReviewActivatio
 Header (3 rows: console, host, API version, short session id), footer (3 rows:
 key hints plus transient hint/notice), and per-state body. The Run dashboard
 presents Mission Run identity/status/timestamps/terminal classification next to
-stable, empty reserved regions: Run Activities, Observations, Artifacts,
-Conversation, Narrative, Human Decisions. Below 100x30 only the
-resize-required state is drawn (also enforced as a draw-time guard, not only
-via resize events).
+selectable Run Activities and the selected activity's linked Observations.
+Artifacts, Conversation, Narrative, and Human Decisions remain stable reserved
+regions. A recovered owner's Mission Intent occupies the bottom-left slot in
+place of Narrative. Below 100x30 only the resize-required state is drawn (also
+enforced as a draw-time guard, not only via resize events).
 
 ## HTTP boundary
 
@@ -57,6 +58,13 @@ server in `operator-console/tests/support/`, no Python process):
   machine-readable code.
 - `GET /api/v1/mission-runs/current` -> `{"mission_run":null}` or identifiers,
   status, timestamps, and nullable terminal classification.
+- `GET /api/v1/mission-runs/{mission_run_id}/observations?cursor=&limit=` -> a
+  public `200` page with `schema_version`, Mission/Mission Run IDs, redacted
+  observation envelopes, and an opaque `next_cursor`. Each envelope contains
+  `observation_sequence`, `observed_at`, and a redacted `TraceViewItem`.
+- `GET /api/v1/mission-runs/{mission_run_id}/activities?cursor=&limit=` -> a
+  public `200` page with `schema_version`, Mission/Mission Run IDs,
+  `mapping_version: 1`, activity projections, and an opaque `next_cursor`.
 - `GET /api/v1/mission-runs/{mission_run_id}/mission-intent`
   (`Authorization: Bearer <credential>`) -> owner-only `200` with Mission Run
   ID, Mission Intent, and source authority.
@@ -69,6 +77,34 @@ server in `operator-console/tests/support/`, no Python process):
   fixed `403 authorization_failed` response, without Mission Intent or
   credential/verifier data.
 
+The public evidence endpoints require no Authorization header. Their default
+limit is 100 and maximum limit is 500. A cursor is opaque base64url and belongs
+to one Mission Run; an empty page always returns `next_cursor: null`.
+Malformed, foreign, expired, or future cursors return `422 invalid_cursor`, and
+an unknown Mission Run returns `404 mission_run_not_found`. A non-empty page
+always carries a `next_cursor` for the last returned sequence, so a live
+Mission Run has no end-of-stream marker; an empty page means "no new evidence
+since this cursor". The Host durably retains a Mission Run's observation log
+for as long as it retains the Mission Run itself; there is no time-based
+expiry in v1, and issued observation sequences never change, so cursors stay
+valid across retries and Host restarts.
+
+Activity mapping version 1 defines the kinds `maneuver_command`, `correlated`,
+`operational`, `observation`, and `evidence_marker`. Activities and
+Observations are redacted projections for operator evidence display. They are
+never authority for Mission Run lifecycle state; lifecycle authority remains
+the current Mission Run endpoint.
+
+Runtime Host liveness is based only on definitive Host HTTP response receipt,
+not on whether new observations arrived. Successful responses and modeled HTTP
+errors refresh liveness; transport failures and malformed response bodies do
+not. The default inclusive thresholds are stale at 5 seconds and offline at 30
+seconds. Successful empty polls keep the console live. During a response gap,
+the console retains the last Run, Activities, and Observations; stale/offline
+status is displayed and mutation controls are disabled until both connectivity
+and Console Session ownership are available. A later definitive response
+restores connectivity without clearing retained evidence.
+
 The console generates the Activation Request ID, Console Session ID, and a
 high-entropy Bearer credential before activation; it sends `source_authority:
 "operator_console"`.
@@ -76,7 +112,7 @@ high-entropy Bearer credential before activation; it sends `source_authority:
 ### Contract provenance and interoperability
 
 `contract/v1/*.json` are the committed machine-readable wire examples for the
-bounded v1 surface, transcribed from issues #27 and #28. They are the single
+bounded v1 surface, transcribed from issues #27 through #29. They are the single
 source of truth on the Rust side. The #28 additions are:
 
 - `mission-intent.response.json` - owner Mission Intent readback.
@@ -85,6 +121,9 @@ source of truth on the Rust side. The #28 additions are:
 - `mission-run-cancellation.conflict.response.json` - conflicting-ID `409`.
 - `mission-run-owner.authorization-failed.response.json` - fixed `403` shared
   by missing, stale, and non-owner bearer credentials.
+
+The #29 additions are the observation page, empty page, invalid-cursor error,
+Mission Run not-found error, activity page, and activity empty-page examples.
 
 Existing #27 fixture consumers:
 
@@ -121,6 +160,9 @@ spawn a Python process. The exact v1 schema both sides implement:
   cancellation_request_conflict`.
 - Owner recovery is client-side through the local session file specified by
   issue #28. It does not add an HTTP recovery endpoint.
+- `GET /api/v1/mission-runs/{mission_run_id}/observations` and `/activities`
+  are public, cursor-paginated, redacted evidence projections with the status
+  and cursor behavior described above.
 
 ## Committed terminal-frame fixtures
 
@@ -129,7 +171,10 @@ spawn a Python process. The exact v1 schema both sides implement:
 
 - `editing-100x30.txt` - Mission Intent editor
 - `review-activation-100x30.txt` - activation review
-- `run-dashboard-100x30.txt` - active-run dashboard with reserved regions
+- `run-dashboard-100x30.txt` - active-run dashboard with empty evidence panes
+- `activity-detail-100x30.txt` - two activities with linked observation detail
+- `run-stale-100x30.txt` - stale Host badge with retained evidence
+- `run-offline-100x30.txt` - offline Host badge with retained evidence
 - `cancellation-confirmation-100x30.txt` - cancellation confirmation
 - `cancellation-requested-100x30.txt` - cancellation-requested run state
 - `recovered-owner-100x30.txt` - recovered owner session and active run

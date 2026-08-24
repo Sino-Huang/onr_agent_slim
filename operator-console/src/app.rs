@@ -14,7 +14,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::host::{
     ActivationOutcome, ActivationRequest, CancellationOutcome, CancellationRequest, CurrentRun,
-    Health, HostError, MissionIntent, RunRecord,
+    EvidencePage, Health, HostError, MissionIntent, ObservationEnvelope, RunActivity, RunRecord,
 };
 
 const CANCELLATION_POLL_LIMIT: Duration = Duration::from_secs(10);
@@ -158,6 +158,30 @@ pub const MIN_HEIGHT: u16 = 30;
 /// Value sent as `source_authority` on a Mission Activation.
 pub const SOURCE_AUTHORITY: &str = "operator_console";
 
+/// Runtime Host connection freshness derived from successful response receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    Live,
+    Stale,
+    Offline,
+}
+
+/// Inclusive thresholds used to classify Runtime Host liveness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LivenessThresholds {
+    pub stale: Duration,
+    pub offline: Duration,
+}
+
+impl Default for LivenessThresholds {
+    fn default() -> Self {
+        Self {
+            stale: Duration::from_secs(5),
+            offline: Duration::from_secs(30),
+        }
+    }
+}
+
 /// Top-level console states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppState {
@@ -211,6 +235,10 @@ pub enum HostCommand {
         mission_run_id: String,
         credential: String,
     },
+    /// Fetch all public activity evidence pages for the current Mission Run.
+    FetchActivities { mission_run_id: String },
+    /// Fetch all public observation evidence pages for the current Mission Run.
+    FetchObservations { mission_run_id: String },
     Cancel {
         mission_run_id: String,
         request: CancellationRequest,
@@ -225,6 +253,8 @@ pub enum HostMessage {
     Activated(Result<ActivationOutcome, HostError>),
     Current(Result<CurrentRun, HostError>),
     Intent(Result<MissionIntent, HostError>),
+    Activities(Result<EvidencePage<RunActivity>, HostError>),
+    Observations(Result<EvidencePage<ObservationEnvelope>, HostError>),
     Cancelled(Result<CancellationOutcome, HostError>),
 }
 
@@ -271,6 +301,20 @@ pub struct App {
     pub activation: Option<crate::host::ActivationAccepted>,
     /// Latest known Mission Run snapshot.
     pub run: Option<RunRecord>,
+    /// Latest redacted activity projection for the current Mission Run.
+    pub activities: Vec<RunActivity>,
+    /// Latest redacted observation projection for the current Mission Run.
+    pub observations: Vec<ObservationEnvelope>,
+    /// Whether the activity timeline hit the client page cap.
+    pub activities_truncated: bool,
+    /// Whether the observation timeline hit the client page cap.
+    pub observations_truncated: bool,
+    /// Stable activity selection keyed by activity id.
+    pub selected_activity: Option<String>,
+    /// Last definitive Runtime Host HTTP response receipt.
+    pub last_host_response: Option<Instant>,
+    /// Thresholds used to derive Runtime Host liveness.
+    pub liveness_thresholds: LivenessThresholds,
     pub cancellation: CancellationState,
     /// Last observed terminal size.
     pub last_size: (u16, u16),
@@ -326,6 +370,13 @@ impl App {
             health: None,
             activation: None,
             run: None,
+            activities: Vec::new(),
+            observations: Vec::new(),
+            activities_truncated: false,
+            observations_truncated: false,
+            selected_activity: None,
+            last_host_response: None,
+            liveness_thresholds: LivenessThresholds::default(),
             cancellation: CancellationState::Idle,
             last_size: (MIN_WIDTH, MIN_HEIGHT),
             should_quit: false,
@@ -346,6 +397,70 @@ impl App {
 
     pub fn set_session_state_file(&mut self, file: SessionStateFile) {
         self.session_state_file = file;
+    }
+
+    /// Override liveness thresholds, primarily for deterministic tests.
+    pub fn with_liveness_thresholds(mut self, thresholds: LivenessThresholds) -> Self {
+        self.liveness_thresholds = thresholds;
+        self
+    }
+
+    /// Classify the Runtime Host connection using successful response receipt.
+    pub fn liveness(&self) -> Liveness {
+        let Some(last_response) = self.last_host_response else {
+            return Liveness::Live;
+        };
+        let elapsed = self.clock.now().saturating_duration_since(last_response);
+        if elapsed >= self.liveness_thresholds.offline {
+            Liveness::Offline
+        } else if elapsed >= self.liveness_thresholds.stale {
+            Liveness::Stale
+        } else {
+            Liveness::Live
+        }
+    }
+
+    /// Whether the current Run matches this Console Session's ownership record.
+    pub fn ownership_available(&self) -> bool {
+        let Some(run) = self.run.as_ref() else {
+            return false;
+        };
+        self.activation
+            .as_ref()
+            .is_some_and(|activation| activation.mission_run_id == run.mission_run_id)
+            || self
+                .recovered_state
+                .as_ref()
+                .is_some_and(|owner| owner.mission_run_id == run.mission_run_id)
+    }
+
+    /// Whether Host connectivity and Console Session ownership permit mutations.
+    pub fn mutations_enabled(&self) -> bool {
+        self.liveness() == Liveness::Live && self.ownership_available()
+    }
+
+    /// Resolve the stable activity id selection to its current index and item.
+    pub fn selected_activity(&self) -> Option<(usize, &RunActivity)> {
+        let selected = self.selected_activity.as_deref()?;
+        self.activities
+            .iter()
+            .enumerate()
+            .find(|(_, activity)| activity.activity_id == selected)
+    }
+
+    /// Return observations linked by the selected activity projection.
+    pub fn selected_observations(&self) -> Vec<&ObservationEnvelope> {
+        let Some((_, activity)) = self.selected_activity() else {
+            return Vec::new();
+        };
+        self.observations
+            .iter()
+            .filter(|observation| {
+                activity
+                    .observation_sequences
+                    .contains(&observation.observation_sequence)
+            })
+            .collect()
     }
 
     pub fn recovered_owner(&self) -> bool {
@@ -459,7 +574,16 @@ impl App {
 
     fn handle_run_key(&mut self, key: KeyEvent) {
         match (&self.cancellation, key.code) {
+            (CancellationState::Idle, KeyCode::Up | KeyCode::Char('k')) => {
+                self.move_activity_selection(-1);
+            }
+            (CancellationState::Idle, KeyCode::Down | KeyCode::Char('j')) => {
+                self.move_activity_selection(1);
+            }
             (CancellationState::Idle, KeyCode::Char('c')) => {
+                if !self.require_mutations_enabled() {
+                    return;
+                }
                 self.cancellation = CancellationState::Confirming;
                 self.cancellation_origin = Some(CancellationOrigin::ContinueConsole);
             }
@@ -475,6 +599,9 @@ impl App {
                         self.clean_exit_action = Some(CleanExitAction::TerminalRun);
                     }
                 } else {
+                    if !self.require_mutations_enabled() {
+                        return;
+                    }
                     self.cancellation = CancellationState::Confirming;
                     self.cancellation_origin = Some(CancellationOrigin::CleanExit);
                 }
@@ -504,6 +631,33 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn require_mutations_enabled(&mut self) -> bool {
+        if self.mutations_enabled() {
+            true
+        } else {
+            self.notice = Some(
+                "Mutation controls disabled while the Host connection is stale or offline"
+                    .to_string(),
+            );
+            false
+        }
+    }
+
+    fn move_activity_selection(&mut self, delta: isize) {
+        if self.activities.is_empty() {
+            return;
+        }
+        let current = self.selected_activity().map_or(0, |(index, _)| index);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current
+                .saturating_add(delta as usize)
+                .min(self.activities.len() - 1)
+        };
+        self.selected_activity = Some(self.activities[next].activity_id.clone());
     }
 
     fn handle_editing_key(&mut self, key: KeyEvent) {
@@ -665,11 +819,22 @@ impl App {
             self.outbox.push(HostCommand::PollCurrent {
                 credential: self.session.credential.clone(),
             });
+            if let Some(run) = self.run.as_ref() {
+                self.outbox.push(HostCommand::FetchActivities {
+                    mission_run_id: run.mission_run_id.clone(),
+                });
+                self.outbox.push(HostCommand::FetchObservations {
+                    mission_run_id: run.mission_run_id.clone(),
+                });
+            }
         }
     }
 
     /// Handle a response from the host worker thread.
     pub fn handle_host_message(&mut self, message: HostMessage) {
+        if host_message_proves_response(&message) {
+            self.last_host_response = Some(self.clock.now());
+        }
         match message {
             HostMessage::Connected(Ok(health)) => {
                 if health.api_version.major == 1 {
@@ -726,9 +891,7 @@ impl App {
                     }
                 }
                 *self.logical_state_mut() = AppState::Run;
-                self.outbox.push(HostCommand::PollCurrent {
-                    credential: self.session.credential.clone(),
-                });
+                self.request_poll();
             }
             HostMessage::Activated(Ok(ActivationOutcome::Rejected { code, message })) => {
                 *self.logical_state_mut() = AppState::Error {
@@ -754,7 +917,7 @@ impl App {
                     return;
                 }
                 self.run = current.mission_run;
-                self.notice = None;
+                self.update_evidence_notice();
                 if self.recovered_state.is_some() && self.run.is_some() {
                     *self.logical_state_mut() = AppState::Run;
                 }
@@ -802,6 +965,38 @@ impl App {
                     message: format!("Owner recovery failed: {error}"),
                     retry_connect: false,
                 };
+            }
+            HostMessage::Activities(Ok(page)) => {
+                let selected = self.selected_activity.clone();
+                self.activities = page.items;
+                self.activities_truncated = page.truncated;
+                self.selected_activity = selected
+                    .filter(|id| {
+                        self.activities
+                            .iter()
+                            .any(|activity| &activity.activity_id == id)
+                    })
+                    .or_else(|| {
+                        self.activities
+                            .first()
+                            .map(|activity| activity.activity_id.clone())
+                    });
+                self.update_evidence_notice();
+            }
+            HostMessage::Activities(Err(error)) => {
+                self.notice = Some(format!(
+                    "Host evidence poll failed ({error}); showing last known state"
+                ));
+            }
+            HostMessage::Observations(Ok(page)) => {
+                self.observations = page.items;
+                self.observations_truncated = page.truncated;
+                self.update_evidence_notice();
+            }
+            HostMessage::Observations(Err(error)) => {
+                self.notice = Some(format!(
+                    "Host evidence poll failed ({error}); showing last known state"
+                ));
             }
             HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(accepted))) => {
                 let Some(pending_request_id) = self.cancellation_request_id.as_deref() else {
@@ -853,6 +1048,39 @@ impl App {
                 self.notice = Some(format!("Cancellation failed: {error}"));
             }
         }
+    }
+
+    fn update_evidence_notice(&mut self) {
+        let count = if self.observations_truncated {
+            Some(self.observations.len())
+        } else if self.activities_truncated {
+            Some(self.activities.len())
+        } else {
+            None
+        };
+        self.notice = count.map(|count| {
+            format!(
+                "Showing the first {count} evidence entries; the Host retains the full timeline"
+            )
+        });
+    }
+}
+
+fn result_proves_response<T>(result: &Result<T, HostError>) -> bool {
+    result
+        .as_ref()
+        .map_or_else(HostError::proves_host_reachable, |_| true)
+}
+
+fn host_message_proves_response(message: &HostMessage) -> bool {
+    match message {
+        HostMessage::Connected(result) => result_proves_response(result),
+        HostMessage::Activated(result) => result_proves_response(result),
+        HostMessage::Current(result) => result_proves_response(result),
+        HostMessage::Intent(result) => result_proves_response(result),
+        HostMessage::Activities(result) => result_proves_response(result),
+        HostMessage::Observations(result) => result_proves_response(result),
+        HostMessage::Cancelled(result) => result_proves_response(result),
     }
 }
 

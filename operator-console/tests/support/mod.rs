@@ -51,6 +51,24 @@ const CANCELLATION_CONFLICT_RESPONSE: &str = include_str!(
 const AUTHORIZATION_FAILED_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-run-owner.authorization-failed.response.json"
 );
+const OBSERVATIONS_PAGE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-observations.page.response.json"
+);
+const OBSERVATIONS_EMPTY_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-observations.empty.response.json"
+);
+const ACTIVITIES_PAGE_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-activities.page.response.json"
+);
+const ACTIVITIES_EMPTY_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-activities.empty.response.json"
+);
+const INVALID_CURSOR_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run-observations.invalid-cursor.response.json"
+);
+const RUN_NOT_FOUND_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1/mission-run.not-found.response.json"
+);
 
 /// Build a dynamic body by substituting fixture values into a committed
 /// contract example; panics if a substituted key is missing from the example.
@@ -104,6 +122,7 @@ struct State {
     counter: u32,
     last_authorization: Option<String>,
     cancellation: Option<(String, String, String)>,
+    endless_evidence: bool,
 }
 
 /// A running fixture host bound to an ephemeral loopback port.
@@ -158,6 +177,11 @@ impl FixtureHost {
             run.terminal_classification = terminal_classification.map(str::to_string);
         }
     }
+
+    /// Make every evidence request return another non-terminal page.
+    pub fn enable_endless_evidence(&self) {
+        self.state.lock().unwrap().endless_evidence = true;
+    }
 }
 
 fn handle_connection(stream: TcpStream, state: &Arc<Mutex<State>>) {
@@ -210,7 +234,10 @@ fn route(
     body: &[u8],
     state: &Arc<Mutex<State>>,
 ) -> (&'static str, String) {
-    match (method, path) {
+    let (route_path, query) = path
+        .split_once('?')
+        .map_or((path, None), |(path, query)| (path, Some(query)));
+    match (method, route_path) {
         ("GET", "/api/v1/health") => ("200 OK", HEALTH_RESPONSE.trim_end().to_string()),
         ("POST", "/api/v1/mission-activations") => activate(authorization, body, state),
         ("GET", "/api/v1/mission-runs/current") => {
@@ -238,12 +265,74 @@ fn route(
         ("GET", path) if path.ends_with("/mission-intent") => {
             owner_intent(path, authorization, state)
         }
+        ("GET", path) if path.ends_with("/observations") => evidence_page(
+            path,
+            query,
+            "observations",
+            OBSERVATIONS_PAGE_RESPONSE,
+            OBSERVATIONS_EMPTY_RESPONSE,
+            state,
+        ),
+        ("GET", path) if path.ends_with("/activities") => evidence_page(
+            path,
+            query,
+            "activities",
+            ACTIVITIES_PAGE_RESPONSE,
+            ACTIVITIES_EMPTY_RESPONSE,
+            state,
+        ),
         ("POST", path) if path.ends_with("/cancellations") => {
             cancel(path, authorization, body, state)
         }
         _ => (
             "404 Not Found",
             json!({"error": {"code": "not_found", "message": "unknown route"}}).to_string(),
+        ),
+    }
+}
+
+fn evidence_page(
+    path: &str,
+    query: Option<&str>,
+    suffix: &str,
+    page: &str,
+    empty: &str,
+    state: &Arc<Mutex<State>>,
+) -> (&'static str, String) {
+    let mission_run_id = path
+        .trim_start_matches("/api/v1/mission-runs/")
+        .trim_end_matches(&format!("/{suffix}"));
+    let state = state.lock().unwrap();
+    if !state
+        .run
+        .as_ref()
+        .is_some_and(|run| run.mission_run_id == mission_run_id)
+    {
+        return (
+            "404 Not Found",
+            RUN_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    }
+    let cursor = query.and_then(|query| {
+        query.split('&').find_map(|part| {
+            let (name, value) = part.split_once('=')?;
+            (name == "cursor").then_some(value)
+        })
+    });
+    if state.endless_evidence {
+        return ("200 OK", page.trim_end().to_string());
+    }
+    let expected_cursor = match suffix {
+        "observations" => "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjN9",
+        "activities" => "eyJ2IjoxLCJydW4iOiJydW4tZml4dHVyZS0wMDEiLCJzZXEiOjJ9",
+        _ => unreachable!("known evidence route"),
+    };
+    match cursor {
+        None => ("200 OK", page.trim_end().to_string()),
+        Some(cursor) if cursor == expected_cursor => ("200 OK", empty.trim_end().to_string()),
+        Some(_) => (
+            "422 Unprocessable Entity",
+            INVALID_CURSOR_RESPONSE.trim_end().to_string(),
         ),
     }
 }

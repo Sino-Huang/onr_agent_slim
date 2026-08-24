@@ -3,7 +3,7 @@
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Mission Run ──────────────────────────────────┐┌ Run Activities ─────────────────────────────────┐
 │ Status:   running                             ││ No Run Activities recorded.                     │
-│ Mission:  mission-7c1f9a2e                    ││ (reserved for a later view)                     │
+│ Mission:  mission-7c1f9a2e                    ││                                                 │
 │ Run:      run-51d3b84c                        ││                                                 │
 │ Created:  2026-08-24T12:00:00Z                ││                                                 │
 │ Started:  2026-08-24T12:00:03Z                ││                                                 │
@@ -12,7 +12,7 @@
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 ┌ Observations ─────────────────┐┌ Artifacts ────────────────────┐┌ Conversation ──────────────────┐
 │ No Run Observations recorded. ││ No Artifacts published.       ││ No Conversation recorded.      │
-│ (reserved for a later view)   ││ (reserved for a later view)   ││ (reserved for a later view)    │
+│                               ││ (reserved for a later view)   ││ (reserved for a later view)    │
 │                               ││                               ││                                │
 │                               ││                               ││                                │
 │                               ││                               ││                                │
@@ -26,5 +26,5 @@
 │                                               ││                                                 │
 └───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ c: request cancellation · Ctrl+C: quit                                                           │
+│ Up/k Down/j: select activity · c: request cancellation · Ctrl+C: quit                            │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
