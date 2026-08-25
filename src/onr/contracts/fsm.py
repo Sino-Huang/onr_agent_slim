@@ -449,6 +449,9 @@ class Statechart:
             raise ValueError("Statechart cannot contain duplicate event edges")
         if len({item.event for item in transitions}) != len(transitions):
             raise ValueError("Statechart transition events must be globally unique")
+        target_keys = [(item.source, item.target) for item in transitions]
+        if len(set(target_keys)) != len(target_keys):
+            raise ValueError("Statechart cannot contain duplicate source-target edges")
         reachable = {self.entry_state}
         while True:
             expanded = reachable | {
@@ -749,6 +752,7 @@ class FSMStatus:
     last_applied_event: str | None = None
     schema_version: int = 1
     active_state_context: Mapping[str, object] = MappingProxyType({})
+    state_entry_revision: int = 1
 
     def __post_init__(self) -> None:
         _text(self.mission_id, "FSM status mission ID")
@@ -764,6 +768,7 @@ class FSMStatus:
         if self.last_applied_event is not None:
             _text(self.last_applied_event, "FSM status last event")
         _positive_int(self.schema_version, "FSM status schema version")
+        _positive_int(self.state_entry_revision, "FSM status state-entry revision")
         object.__setattr__(self, "transition_candidates", candidates)
         object.__setattr__(
             self,
@@ -791,6 +796,7 @@ class FSMStatus:
             "superseded_plan_revision": self.superseded_plan_revision,
             "last_applied_event": self.last_applied_event,
             "active_state_context": _mapping_json(self.active_state_context),
+            "state_entry_revision": self.state_entry_revision,
         }
 
     def to_canonical_json(self) -> str:
@@ -802,6 +808,7 @@ class FSMStatus:
             "schema_version", "mission_id", "plan_revision", "statechart_revision",
             "active_state", "transition_candidates", "status",
             "superseded_plan_revision", "last_applied_event", "active_state_context",
+            "state_entry_revision",
         }
         if not isinstance(value, Mapping) or set(value) != expected:
             raise ValueError("FSM Status contains unknown or missing fields")

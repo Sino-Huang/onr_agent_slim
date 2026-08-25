@@ -116,6 +116,13 @@ class _ManeuverProvider:
         if now == 5:
             self._transition(invocation, context, "begin")
         elif now == 10 and not self.sent:
+            status = asyncio.run(context.fsm_runner.status())
+            context.transition_intents.select(
+                status,
+                status.transition_candidates[0].target,
+                "Select the revision-one terminal target.",
+                selected_at=now,
+            )
             request = ReplanRequest(
                 "maneuver-request-1",
                 invocation.mission_id,
@@ -153,9 +160,10 @@ class _ManeuverProvider:
 
     @staticmethod
     def _transition(invocation, context, event: str) -> None:  # type: ignore[no-untyped-def]
+        status = asyncio.run(context.fsm_runner.status())
         candidate = next(
             item
-            for item in invocation.fsm_status.transition_candidates
+            for item in status.transition_candidates
             if item.event == event
         )
         decision = ManeuverDecision(
@@ -287,7 +295,7 @@ def test_successful_replan_supersedes_fsm_without_reentrant_activation(
             ("maneuver-request-1",),
         )
 
-    environment, coordinator, _belief, _fsm, _supervisor, _maneuver, provider = (
+    environment, coordinator, _belief, _fsm, _supervisor, maneuver, provider = (
         _runtime_parts(tmp_path, hyper)
     )
     replacement = _revision(2, terminal_event="finish-revision-2")
@@ -304,7 +312,17 @@ def test_successful_replan_supersedes_fsm_without_reentrant_activation(
     assert result.plan_revisions == (1, 2)
     assert result.final_fsm_state == "complete"
     assert provider.invocations[-1].plan_revision == 2
-    assert provider.invocations[-1].hyper_outcomes[0].disposition == "replan"
+    reconciliation = next(
+        invocation
+        for invocation in provider.invocations
+        if invocation.trigger_identities == ("replan-activated:2",)
+    )
+    assert reconciliation.environment_data["scene_graph"]["mission_time_seconds"] == 10
+    assert reconciliation.hyper_outcomes[0].disposition == "replan"
+    assert reconciliation.planning_snapshot.plan_revision == 2
+    assert reconciliation.fsm_context.current_state == replacement.statechart.entry_state
+    assert reconciliation.fsm_context.transition_intent is None
+    assert maneuver.transition_intents.latest("mission-1").status == "invalidated"
 
 
 def test_failed_replan_keeps_revision_one_authoritative(tmp_path: Path) -> None:
@@ -386,7 +404,9 @@ def test_navigation_completion_feedback_triggers_maneuver_before_five_seconds(
                     sequence=1,
                 )
             else:
-                candidate = invocation.fsm_status.transition_candidates[0]
+                candidate = asyncio.run(
+                    tool_context.fsm_runner.status()
+                ).transition_candidates[0]
                 asyncio.run(
                     tool_context.fsm_runner.apply(
                         candidate,
@@ -577,7 +597,9 @@ def test_direct_maneuver_invocation_is_queued_without_overlap(tmp_path: Path) ->
                 )
                 assert outcome["status"] == "queued"
             else:
-                candidate = invocation.fsm_status.transition_candidates[0]
+                candidate = asyncio.run(
+                    context.fsm_runner.status()
+                ).transition_candidates[0]
                 asyncio.run(
                     context.fsm_runner.apply(
                         candidate,

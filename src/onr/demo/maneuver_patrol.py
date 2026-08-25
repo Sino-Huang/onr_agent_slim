@@ -54,17 +54,20 @@ For this live post-Hyper patrol demo, act deterministically from the injected
 evidence:
 
 - Interpret the exact live transition context against mission time and other live
-  evidence. When its desired readiness is satisfied, call transition_fsm once
-  with that exact event.
-- After a successful transition, use only the returned active_state_context for
+  evidence. Retain the current Transition Intent or call set_transition_target
+  with one exact target. When its condition is satisfied, call transition_fsm
+  once with the exact current state, target, assessment, evidence, and uncertainty.
+- After a successful transition, use only the returned current_state_context for
   every remaining physical, belief, or communication choice in that heartbeat;
-  do not act on the source-state context. If phase is moving, call navigate using
-  its maneuver_id, target_x, target_y, speed, and deadline_time. Do not call a
+  do not act on the source-state context. Select the returned state's next target
+  when candidates remain. If phase is moving, call navigate using the
+  planner_assignment_id, desired outcome location, arrival deadline, and a
+  runtime-chosen feasible speed. Do not call a
   physical tool for waiting, observing, or complete phases.
 - If pending_perceptions contains event observations, call ingest_perceptions
   once for the complete pending batch.
-- If an observing context contains report_to_hyper, call communicate to
-  hyper-agent with kind report and that exact message.
+- If an observing context contains hyper_evaluation, call communicate to
+  hyper-agent with its exact kind, reason, evaluation_id, and delivery_policy.
 - If environment_data.scene_graph.emergency_override is present, do not attempt
   an early transition. Call land with its maneuver_id, x, and y, even if another
   physical action is active.
@@ -122,13 +125,13 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
         states.extend((moving, at_stop))
         contexts[moving] = {
             "phase": "moving",
-            "maneuver_id": f"patrol-stop-{number}",
-            "from_x": from_x,
-            "from_y": from_y,
-            "target_x": x,
-            "target_y": y,
-            "speed": 10,
-            "deadline_time": arrive,
+            "planner_assignment_id": f"patrol-stop-{number}",
+            "desired_outcome": {
+                "kind": "arrive_at_planner_selected_location",
+                "location": {"x": x, "y": y},
+                "arrival_deadline_seconds": arrive,
+            },
+            "departure_location": {"x": from_x, "y": from_y},
         }
         contexts[at_stop] = {
             "phase": "observing",
@@ -137,9 +140,14 @@ def create_demo_patrol(mission_input: MissionInput) -> DemoPatrolArtifacts:
             "y": y,
         }
         if number == 3:
-            contexts[at_stop]["report_to_hyper"] = (
-                "Patrol stop 3 has been reached under the verified plan."
-            )
+            contexts[at_stop]["hyper_evaluation"] = {
+                "evaluation_id": "patrol-stop-3-report",
+                "kind": "report",
+                "reason": (
+                    "Patrol stop 3 has been reached under the verified plan."
+                ),
+                "delivery_policy": "once_per_state_entry",
+            }
         transitions.extend(
             (
                 StatechartTransition(

@@ -73,8 +73,8 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "2.3.0",
         "2.0.0",
         "1.1.0",
-        "3.0.0",
-        "1.1.1",
+        "3.1.0",
+        "2.0.0",
         "1.1.0",
         "1.1.0",
     ]
@@ -150,7 +150,7 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
         assert all(permission.mode == "deny" for permission in permissions)
 
 
-def test_only_hyper_agent_receives_todo_list_middleware(monkeypatch) -> None:
+def test_hyper_and_maneuver_agents_receive_todo_list_middleware(monkeypatch) -> None:
     import deepagents
     from langchain.agents.middleware import TodoListMiddleware
 
@@ -170,9 +170,40 @@ def test_only_hyper_agent_receives_todo_list_middleware(monkeypatch) -> None:
     assert isinstance(hyper_middleware, list)
     assert isinstance(maneuver_middleware, list)
     assert [type(middleware) for middleware in hyper_middleware] == [TodoListMiddleware]
-    assert not any(
-        isinstance(middleware, TodoListMiddleware) for middleware in maneuver_middleware
+    assert [type(middleware) for middleware in maneuver_middleware] == [
+        TodoListMiddleware
+    ]
+
+
+def test_maneuver_debug_profile_contains_operational_and_todo_tools(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import deepagents
+
+    profiles: list[tuple[str, list[str]]] = []
+
+    class Recorder:
+        def record_profile(
+            self, role: str, _skills: list[dict[str, str]], tools: list[str]
+        ) -> None:
+            profiles.append((role, tools))
+
+        def callback_for(self, _role: str) -> object:
+            return object()
+
+    monkeypatch.setattr(
+        deepagents, "create_deep_agent", lambda **_: SimpleNamespace()
     )
+    create_maneuver_control_agent(
+        model=SimpleNamespace(_agent_debug_recorder=Recorder())
+    )
+
+    assert profiles[0][0] == "maneuver-control"
+    assert profiles[0][1][0:2] == [
+        "set_transition_target",
+        "transition_fsm",
+    ]
+    assert "write_todos" in profiles[0][1]
 
 
 def test_only_hyper_workflow_receives_minimal_local_shell_backend(
@@ -305,7 +336,7 @@ def test_debug_agent_profile_uses_selected_skill_metadata_and_interpreter_callba
                     "path": str(selected_path),
                 }
             ],
-            [],
+            ["write_todos"],
         )
     ]
     assert result.mission_id == "mission-1"

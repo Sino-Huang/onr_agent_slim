@@ -147,11 +147,9 @@ def build_statechart(
             "desired_outcome": {
                 "kind": "arrive_at_planner_selected_location",
                 "location": {"x": item["x"], "y": item["y"]},
-            },
-            "navigation_adapter_parameters": {
-                "x": item["x"],
-                "y": item["y"],
-                "deadline_time": item["start_tick"] / item["time_scale"],
+                "arrival_deadline": scaled_time(
+                    item["start_tick"], item["time_scale"]
+                ),
             },
         }
         state_context[achieved] = {
@@ -166,12 +164,13 @@ def build_statechart(
         }
         if item["order"] == 1:
             state_context[achieved]["hyper_evaluation"] = {
+                "evaluation_id": "first-evidence-interval-replan",
                 "kind": "replan",
                 "reason": (
                     "Evaluate whether the first completed planner evidence interval "
                     "materially changes the active plan."
                 ),
-                "send_once": True,
+                "delivery_policy": "once_per_state_entry",
             }
         departure_tick = 0 if previous_end_tick is None else previous_end_tick
         observation_end_tick = item["start_tick"] + item["duration_tick"]

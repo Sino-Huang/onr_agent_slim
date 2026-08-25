@@ -213,8 +213,12 @@ The current Statechart configuration and its enabled transition candidates.
 _Avoid_: Mission Snapshot, scene graph
 
 **Transition Candidate**:
-A legal Statechart event that Maneuver Control may select from the current FSM Status.
+A legal target state and unchanged Statechart condition that Maneuver Control may select from the current FSM Status.
 _Avoid_: Arbitrary target state, environment signal
+
+**Transition Intent**:
+Maneuver Control's durable selection of one current Transition Candidate target and its unchanged condition for a single Statechart state entry.
+_Avoid_: FSM transition, rewritten condition, physical maneuver
 
 **FSM Execution Record**:
 The durable control-state record for one active Statechart revision.

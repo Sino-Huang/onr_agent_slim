@@ -298,6 +298,7 @@ class FSMRunner:
             superseded_plan_revision=self._superseded_plan_revision,
             last_applied_event=self._record.last_applied_event,
             active_state_context=self._chart.context_for(self._record.active_state),
+            state_entry_revision=self._record.record_revision,
         )
         if not publish:
             return status

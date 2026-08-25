@@ -152,6 +152,7 @@ _FSM_STATUS_FIELDS = {
     "superseded_plan_revision",
     "last_applied_event",
     "active_state_context",
+    "state_entry_revision",
 }
 _FSM_EXECUTION_FIELDS = {
     "schema_version",

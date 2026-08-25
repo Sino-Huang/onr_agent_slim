@@ -141,7 +141,10 @@ def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -
     )
 
     assert "ManeuverInvocation" in prompt
-    assert "current environment data" in prompt
-    assert "transition/source/target contexts" in prompt
-    assert "semantic judgment remains yours" in prompt
+    assert "current\nenvironment data" in prompt
+    assert "Future target-state\noperational context" in prompt
+    assert "set_transition_target" in prompt
+    assert "satisfied_with_uncertainty" in prompt
+    assert "write_todos" in prompt
+    assert "submitting no physical\n   command" in prompt
     assert "ManeuverHeartbeatCompletion" in prompt

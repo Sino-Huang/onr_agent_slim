@@ -2,6 +2,11 @@
 
 from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.environment import (
+    EntityObservation,
+    EnvironmentTickResult,
+    EventObservation,
+)
 from onr.contracts.fsm import (
     FSMEvent,
     FSMExecutionRecord,
@@ -12,16 +17,11 @@ from onr.contracts.fsm import (
     StatechartTransition,
     TransitionCandidate,
 )
-from onr.contracts.environment import (
-    EntityObservation,
-    EnvironmentTickResult,
-    EventObservation,
-)
 from onr.contracts.hyper_agent import (
+    HumanQuestion,
     HyperHeartbeatDecision,
     HyperHeartbeatDisposition,
     HyperHeartbeatInvocation,
-    HumanQuestion,
     MissionInput,
     ReplanRequest,
 )
@@ -49,6 +49,13 @@ from onr.contracts.role_context import (
     MANEUVER_CONTROL_ROLE,
     RoleSkill,
 )
+from onr.contracts.transition_intent import (
+    ManeuverFSMContext,
+    ManeuverTransitionCandidate,
+    TransitionAssessment,
+    TransitionIntent,
+    TransitionIntentStatus,
+)
 
 __all__ = [
     "HYPER_AGENT_ROLE",
@@ -70,23 +77,28 @@ __all__ = [
     "ManeuverCommand",
     "ManeuverControlDecision",
     "ManeuverDecision",
+    "ManeuverFSMContext",
     "ManeuverFeedback",
     "ManeuverHeartbeatCompletion",
     "ManeuverHeartbeatOutcome",
     "ManeuverInvocation",
+    "ManeuverTransitionCandidate",
     "MissionInput",
     "MissionSnapshot",
     "NonPhysicalChoice",
     "PhysicalAction",
     "PlannerChoiceRecord",
     "PlannerGenerationAttempt",
-    "PlannerRevisionEvidence",
     "PlannerPlan",
+    "PlannerRevisionEvidence",
     "PlanningIntent",
     "ReplanRequest",
     "RoleSkill",
     "Statechart",
     "StatechartTransition",
+    "TransitionAssessment",
     "TransitionCandidate",
+    "TransitionIntent",
+    "TransitionIntentStatus",
     "TranslationAttemptOutcome",
 ]

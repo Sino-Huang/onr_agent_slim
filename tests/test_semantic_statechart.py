@@ -79,6 +79,29 @@ def test_semantic_statechart_round_trips_and_rejects_unreachable_states() -> Non
         )
 
 
+def test_statechart_rejects_duplicate_source_target_edges() -> None:
+    chart = _chart()
+    duplicate = StatechartTransition(
+        event="alternate-start-event",
+        source="at-initial-location",
+        target="moving-to-patrol-stop-1",
+        context={"alternate": True},
+    )
+
+    with pytest.raises(ValueError, match="source-target"):
+        Statechart(
+            mission_id=chart.mission_id,
+            plan_revision=chart.plan_revision,
+            mission_snapshot_id=chart.mission_snapshot_id,
+            planning_profile=chart.planning_profile,
+            entry_state=chart.entry_state,
+            terminal_states=chart.terminal_states,
+            states=chart.states,
+            state_context=chart.state_context,
+            transitions=chart.transitions + (duplicate,),
+        )
+
+
 def test_python_statemachine_factory_builds_and_advances_semantic_chart() -> None:
     machine = PythonStateMachineFactory().build(_chart())
 
@@ -206,7 +229,22 @@ def test_demo_patrol_exposes_absolute_navigation_deadlines() -> None:
 
     assert [
         artifacts.statechart.state_context[f"moving-to-patrol-stop-{number}"][
-            "deadline_time"
-        ]
+            "desired_outcome"
+        ]["arrival_deadline_seconds"]
         for number in range(1, 5)
     ] == [5, 10, 15, 20]
+    assert all(
+        "navigation_adapter_parameters"
+        not in artifacts.statechart.state_context[
+            f"moving-to-patrol-stop-{number}"
+        ]
+        for number in range(1, 5)
+    )
+    assert artifacts.statechart.state_context["at-patrol-stop-3"][
+        "hyper_evaluation"
+    ] == {
+        "evaluation_id": "patrol-stop-3-report",
+        "kind": "report",
+        "reason": "Patrol stop 3 has been reached under the verified plan.",
+        "delivery_policy": "once_per_state_entry",
+    }

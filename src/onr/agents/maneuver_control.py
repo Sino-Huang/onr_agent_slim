@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, cast
 
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.messages import HumanMessage
 
 from onr.agents.hyper_agent import _create_deep_agent
@@ -162,6 +163,7 @@ def create_maneuver_control_agent(
         backend_root=backend_root,
         backend_kind="filesystem",
         tools=list(MANEUVER_OPERATIONAL_TOOLS),
+        middleware=[TodoListMiddleware()],
         context_schema=ManeuverToolContext,
     )
 

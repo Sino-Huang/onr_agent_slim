@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from threading import Lock
 
 from onr.contracts.communication import AgentMessage
 from onr.contracts.transport import Command, CommandOutcome
@@ -17,6 +18,8 @@ class TransportCommunicationPort:
     def __init__(self, transport: Transport) -> None:
         self.transport = transport
         self._handlers: dict[str, AgentMessageHandler] = {}
+        self._identity_locks: dict[str, Lock] = {}
+        self._identity_locks_guard = Lock()
 
     def register(self, recipient: str, handler: AgentMessageHandler) -> None:
         if not isinstance(recipient, str) or not recipient.strip():
@@ -55,26 +58,49 @@ class TransportCommunicationPort:
             if not isinstance(existing, CommandOutcome):
                 raise TypeError("communication transport returned an invalid outcome")
             return existing
+        with self._identity_locks_guard:
+            identity_lock = self._identity_locks.setdefault(
+                command.command_id, Lock()
+            )
+        if not identity_lock.acquire(blocking=False):
+            return CommandOutcome(
+                schema_version=1,
+                command_id=message.message_id,
+                correlation_id=message.correlation_id,
+                mission_id=message.mission_id,
+                status="already_in_flight",
+                payload={"status": "already_in_flight"},
+            )
         try:
-            response = handler(message)
-            payload = self._response_payload(response)
-            status = "completed"
-        except Exception as exc:  # noqa: BLE001 - correlated handler failure evidence.
-            payload = {
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-            }
-            status = "failed"
-        outcome = CommandOutcome(
-            schema_version=1,
-            command_id=message.message_id,
-            correlation_id=message.correlation_id,
-            mission_id=message.mission_id,
-            status=status,
-            payload=payload,
-        )
-        self.transport.publish_outcome(outcome)
-        return outcome
+            existing = get_outcome(command.command_id) if callable(get_outcome) else None
+            if existing is not None:
+                if not isinstance(existing, CommandOutcome):
+                    raise TypeError(
+                        "communication transport returned an invalid outcome"
+                    )
+                return existing
+            try:
+                response = handler(message)
+                payload = self._response_payload(response)
+                status = "completed"
+            except Exception as exc:  # noqa: BLE001 - correlated handler failure evidence.
+                payload = {
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+                status = "failed"
+            outcome = CommandOutcome(
+                schema_version=1,
+                command_id=message.message_id,
+                correlation_id=message.correlation_id,
+                mission_id=message.mission_id,
+                status=status,
+                payload=payload,
+            )
+            self.transport.publish_outcome(outcome)
+            return outcome
+        finally:
+            identity_lock.release()
 
     @staticmethod
     def _response_payload(response: object) -> Mapping[str, object]:

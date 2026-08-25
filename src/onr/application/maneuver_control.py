@@ -7,9 +7,10 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any, cast
 
+from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverDecision
@@ -21,6 +22,7 @@ from onr.contracts.maneuver_control import (
     ManeuverInvocation,
 )
 from onr.contracts.planning import ManeuverIntent
+from onr.contracts.transition_intent import ManeuverFSMContext
 from onr.contracts.transport import (
     Command,
     CommandOutcome,
@@ -62,6 +64,7 @@ class ManeuverControl:
         environment_authority: object | None = None,
         belief_service: object | None = None,
         communication_port: object | None = None,
+        transition_intents: TransitionIntentJournal | None = None,
     ) -> None:
         self.transport = transport
         self.adapter = adapter
@@ -73,7 +76,16 @@ class ManeuverControl:
         self.environment_authority = environment_authority
         self.belief_service = belief_service
         self.communication_port = communication_port
+        self.transition_intents = transition_intents or TransitionIntentJournal(
+            transport
+        )
         self._submitted: dict[str, CommandOutcome] = {}
+        self._heartbeat_physical: dict[
+            tuple[str, str, str], tuple[ManeuverCommand, CommandOutcome]
+        ] = {}
+        self._heartbeat_physical_lock = Lock()
+        self._live_fsm_context: ManeuverFSMContext | None = None
+        self._live_fsm_context_lock = Lock()
         self.last_execution_record: object | None = None
 
     def decide(
@@ -224,12 +236,15 @@ class ManeuverControl:
         heartbeat = getattr(provider, "heartbeat", None)
         if not callable(heartbeat):
             raise TypeError("tool-driven Maneuver provider must expose heartbeat")
+        self._heartbeat_physical = {}
+        self.update_live_fsm_context(invocation.fsm_context)
         context = ManeuverToolContext(
             invocation=invocation,
             fsm_runner=self.fsm_runner,
             command_dispatcher=self,
             belief_service=self.belief_service,
             communication_port=self.communication_port,
+            transition_intents=self.transition_intents,
             operational_log=self.operational_log,
         )
         completion = heartbeat(invocation, context)
@@ -249,13 +264,25 @@ class ManeuverControl:
         )
         return completion
 
+    def update_live_fsm_context(self, context: ManeuverFSMContext) -> None:
+        """Retain the latest focused context across copied heartbeat tool contexts."""
+
+        if not isinstance(context, ManeuverFSMContext):
+            raise TypeError("live Maneuver FSM context must be focused")
+        with self._live_fsm_context_lock:
+            self._live_fsm_context = context
+
+    def current_maneuver_fsm_context(self) -> ManeuverFSMContext | None:
+        with self._live_fsm_context_lock:
+            return self._live_fsm_context
+
     def dispatch_physical(
         self,
         invocation: ManeuverInvocation,
         decision: ManeuverControlDecision,
         *,
         sequence: int,
-    ) -> tuple[ManeuverCommand, CommandOutcome]:
+    ) -> tuple[ManeuverCommand, CommandOutcome, bool]:
         """Submit one code-owned physical choice without plan-action equality gates."""
 
         if not isinstance(invocation, ManeuverInvocation):
@@ -271,20 +298,29 @@ class ManeuverControl:
             or decision.plan_revision != invocation.plan_revision
         ):
             raise ValueError("physical decision identity does not match invocation")
-        command = ManeuverCommand(
-            command_id=f"maneuver:{invocation.request_id}:{sequence}",
-            correlation_id=invocation.correlation_id,
-            mission_id=invocation.mission_id,
-            plan_revision=invocation.plan_revision,
-            maneuver_id=decision.maneuver_id,
-            intent=decision.physical_intent,
-            mission_snapshot_id=(
-                f"{invocation.mission_id}:snapshot:{invocation.planning_snapshot.version}"
-                if invocation.planning_snapshot is not None
-                else None
-            ),
-        )
-        return command, self.handle_command(command)
+        action = str(decision.physical_intent.action)
+        identity = (invocation.request_id, decision.maneuver_id, action)
+        with self._heartbeat_physical_lock:
+            existing = self._heartbeat_physical.get(identity)
+            if existing is not None:
+                return *existing, False
+            command = ManeuverCommand(
+                command_id=f"maneuver:{invocation.request_id}:{sequence}",
+                correlation_id=invocation.correlation_id,
+                mission_id=invocation.mission_id,
+                plan_revision=invocation.plan_revision,
+                maneuver_id=decision.maneuver_id,
+                intent=decision.physical_intent,
+                mission_snapshot_id=(
+                    f"{invocation.mission_id}:snapshot:"
+                    f"{invocation.planning_snapshot.version}"
+                    if invocation.planning_snapshot is not None
+                    else None
+                ),
+            )
+            outcome = self.handle_command(command)
+            self._heartbeat_physical[identity] = (command, outcome)
+            return command, outcome, True
 
     def handle_command(self, command: Command | ManeuverCommand) -> CommandOutcome:
         """Submit a command at most once and return its correlated outcome."""

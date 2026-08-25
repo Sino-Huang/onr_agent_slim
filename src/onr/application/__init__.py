@@ -8,14 +8,16 @@ from onr.application.context_coordination import (
 )
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl, ManeuverHeartbeatResult
+from onr.application.transition_intents import TransitionIntentJournal
 
 __all__ = [
-    "ContextCoordination",
     "ActivePlanRevision",
     "ClosedLoopRunResult",
-    "TransportCommunicationPort",
+    "ContextCoordination",
     "FSMRunner",
     "InMemoryFSMStateStore",
     "ManeuverControl",
     "ManeuverHeartbeatResult",
+    "TransitionIntentJournal",
+    "TransportCommunicationPort",
 ]

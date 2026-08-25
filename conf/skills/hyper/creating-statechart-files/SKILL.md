@@ -1,7 +1,7 @@
 ---
 name: creating-statechart-files
 description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
-version: '3.0.0'
+version: '3.1.0'
 ---
 
 # Creating Statechart Files
@@ -17,11 +17,9 @@ version: '3.0.0'
    lifecycle feedback triggers Maneuver Control immediately, without rounding
    planner timing to the periodic heartbeat cadence. Keep observation start and
    duration distinct from travel timing.
-   Document only the navigation adapter parameters `x`, `y`, and `deadline_time`
-   in the moving state's context. Keep source-event identity, expected evidence,
-   and planner observation timing in readiness or evidence context.
-   `deadline_time` is the continuous planner time at which the target must be
-   reached (normally the evidence-interval start), not a heartbeat boundary.
+   Record planner-derived outcome facts such as location, arrival timing,
+   source-event identity, expected evidence, and observation timing. Maneuver
+   Control chooses the physical action and its adapter parameters at runtime.
    Continuous sensing needs no maneuver-owned sensing state; represent a
    planner assignment with movement followed by its evidence-ready outcome.
 5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
@@ -37,7 +35,7 @@ The draft contains exactly `entry_state`, `terminal_states`, `states`, `state_co
 - `entry_state` and every explicit terminal state are declared.
 - `state_context` maps every declared state to one arbitrary finite JSON object.
 - Every transition contains exactly `event`, `source`, `target`, and `context`.
-- Transition events are globally unique. Every transition context is an arbitrary finite JSON object.
+- Transition events and `(source, target)` pairs are unique. Every transition context is an arbitrary finite JSON object.
 - Every state is reachable from entry and can reach a terminal state.
 
 Context vocabulary belongs to this generator. Use nested objects and names that explain meaning, units, planner provenance, desired outcomes, and readiness evidence without relying on state or event names.

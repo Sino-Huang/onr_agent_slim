@@ -81,6 +81,7 @@ class CommandStatus(StrEnum):
     """Wire status values for command receipts and outcomes."""
 
     ACCEPTED = "accepted"
+    ALREADY_IN_FLIGHT = "already_in_flight"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -267,7 +268,10 @@ class CommandOutcome:
         try:
             status = CommandStatus(self.status)
         except (TypeError, ValueError):
-            raise ValueError("command outcome status must be accepted, completed, or failed")
+            raise ValueError(
+                "command outcome status must be accepted, already_in_flight, "
+                "completed, or failed"
+            )
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "payload", _payload(self.payload))
 

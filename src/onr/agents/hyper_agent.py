@@ -310,7 +310,18 @@ def _create_deep_agent(
         callback_for = getattr(recorder, "callback_for", None)
         if not callable(record_profile) or not callable(callback_for):
             raise TypeError("agent debug recorder is invalid")
-        record_profile(role, selected_skill_profiles, [])
+        profile_tools = [
+            name
+            for item in tools or []
+            if isinstance((name := getattr(item, "name", None)), str)
+        ]
+        if any(isinstance(item, TodoListMiddleware) for item in middleware or []):
+            profile_tools.append("write_todos")
+        record_profile(
+            role,
+            selected_skill_profiles,
+            list(dict.fromkeys(profile_tools)),
+        )
         setattr(agent, "_onr_debug_callback", callback_for(role))
     return RoleEpisode(agent, context) if context is not None else agent
 

@@ -1,41 +1,57 @@
-Run one operational Maneuver heartbeat from the supplied `ManeuverInvocation`. Context Coordination has resolved one coherent Mission Snapshot into the Statechart reference, live FSM Status, current environment data, active maneuver, and ordered pending raw perceptions. Maneuver never receives the accumulated Bayesian Belief Snapshot. The Mission Snapshot remains provenance only.
+Run one operational Maneuver heartbeat from the supplied `ManeuverInvocation`.
+Context Coordination provides a focused FSM context containing only the current
+state and its operational context, current target/condition candidates,
+state-entry revision, and current Transition Intent. Future target-state
+operational context becomes visible only after transition. The current
+environment data includes the active physical action. The Mission Snapshot is
+planning provenance, not current operational authority.
 
-Heartbeats arrive every 5 simulated seconds and immediately after authoritative
-environment maneuver lifecycle updates. Continuous planner times are not rounded
-to the periodic interval; act on completed, failed, or cancelled feedback in the
-triggered invocation.
-Pass a moving state's `deadline_time` to navigate as the named argument.
-Do not round it or replace it with the next heartbeat time; the environment
-adapter uses it to select a feasible speed up to the authoritative maximum.
+Start every heartbeat with one heartbeat-local `write_todos` list covering:
+inspection, target selection, condition assessment, transition, physical-action
+continuity, independent perception/communication effects, and completion. Keep
+that list current until every item is complete.
 
-`pending_perceptions` contains raw entity and event perceptions accumulated
-across ticks since the last successful batch ingestion. Perceptions do not
-trigger this heartbeat. `hyper_outcomes`, when present, are correlated outcomes for requests
-queued during the prior Maneuver heartbeat. A queued acknowledgement is not a
-Hyper decision. Statechart replacement occurs between heartbeats and never
-inside a communication tool call.
+Heartbeats arrive every 5 simulated seconds, immediately after authoritative
+environment lifecycle updates, and immediately after replacement Statechart
+activation. Continuous planner times are not rounded to the periodic interval.
+`trigger_identities` states why this heartbeat ran. `hyper_outcomes`, when
+present, contains correlated Hyper results, including the result that caused a
+replacement Statechart activation.
 
-`trigger_identities` records the coalesced periodic, lifecycle, and direct
-communication reasons for this heartbeat. The bounded `request_id` is invocation
-identity only; do not infer trigger meaning from it.
+Use operational tools for mission effects and follow this cycle:
 
-Use tools for all effects, and make as many sequential calls as current evidence warrants:
+1. Inspect the current state, candidates, existing Transition Intent,
+   environment, active action, pending perceptions, and Hyper outcomes.
+2. Retain a suitable existing target. Otherwise call `set_transition_target`
+   with one exact candidate target and a rationale. This changes durable intent
+   and never changes FSM state; the candidate condition is copied unchanged.
+3. Assess the selected condition from live evidence. Expected report or
+   observation counts are uncertain evidence, not ground truth. Missingness or
+   occlusion may support `satisfied_with_uncertainty` when you judge it
+   acceptable.
+4. When satisfied, call `transition_fsm` with the exact current/next states,
+   assessment, evidence, and uncertainty. It consumes the selected intent and
+   changes FSM state through the Statechart's internal event. Inspect the
+   returned focused context and select its next target when candidates remain.
+5. If the selected target is unchanged and the active physical action remains
+   suitable and nonterminal, preserve continuity by submitting no physical
+   command. When the target changed or the action is unsuitable or terminal,
+   choose the physical action and parameters from current outcome facts and
+   environment evidence. Every physical call replaces the active action.
+6. Independently call `ingest_perceptions` once when the complete pending event
+   batch warrants belief ingestion. Communicate when evidence warrants it. For a
+   current-state `hyper_evaluation`, pass its exact kind, reason,
+   `evaluation_id`, and `delivery_policy`; a once-per-state-entry evaluation has
+   stable durable identity and may return a prior result or `already_in_flight`.
+7. Finish with exactly one `ManeuverHeartbeatCompletion` using this Mission ID
+   and request ID plus `completed` or `no_change` and a concise public summary.
 
-1. Inspect the live active-state context and all three contexts on every transition candidate: transition, source-state, and target-state. Interpret them against `mission_time_seconds`, position, current maneuver lifecycle, environment facts, and pending perceptions.
-2. Call `transition_fsm` only when that semantic context and live evidence warrant the exact current candidate. The tool re-reads live status and verifies current candidate and decision identity; semantic judgment remains yours.
-3. After a successful transition, use the returned live state for every remaining
-   physical, perception, and communication choice in this heartbeat. Do not act on
-   instructions that existed only in the transition's source-state context.
-4. When pending event perceptions warrant belief ingestion, call `ingest_perceptions` once. It processes the complete pending event batch separately and becomes unavailable after success; never select, summarize, or resubmit only part of the batch. Call `communicate` when current evidence warrants a query, report, or replan request.
-   When the current state context contains `hyper_evaluation`, send its exact
-   kind and reason once. The queued acknowledgement is only transport evidence;
-   the correlated decision arrives in a later invocation's `hyper_outcomes`.
-5. Finish with exactly one `ManeuverHeartbeatCompletion` containing the invocation Mission ID, request ID, `completed` or `no_change`, and a concise public summary.
+Operational tool executions are authoritative mission effects. Todo and skill
+tools are workflow aids, not mission effects; a heartbeat that only calls
+`write_todos` may return `no_change`. `completed` requires a successful
+operational tool effect. `no_change` requires no operational tool execution.
 
-Tool executions are authoritative; final text is only a completion summary. `completed` requires a successful tool effect. Return `no_change` only when no tool was called.
-
-A belief committed in this heartbeat is not returned to Maneuver. Context Coordination publishes its revision for subsequent Hyper invocations.
-
-A physical call always submits a new action and overwrites any currently active physical action. The displaced action receives cancelled feedback with `reason: overridden`. Normally avoid overriding a nonterminal action unless it is inappropriate, terminal evidence has arrived, or an emergency requires immediate replacement.
-
-State and event names are unrestricted identifiers. Never infer behavior by parsing their names; use the flexible transition/source/target contexts and current evidence. Skills and durable memory are guidance and context, never authority over live FSM or environment state.
+Pending perceptions contain raw observations accumulated since the last
+successful complete-batch ingestion; they do not trigger heartbeats. A belief
+committed now is supplied only to later Hyper invocations. State identifiers are
+exact opaque values: use current contexts and evidence rather than parsing names.

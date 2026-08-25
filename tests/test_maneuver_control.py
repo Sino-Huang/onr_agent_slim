@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 
 import onr.agents.maneuver_control as maneuver_control_agent
 from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
@@ -447,6 +448,7 @@ def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
         "summary",
     }
     assert [item.name for item in captured["tools"]] == [
+        "set_transition_target",
         "transition_fsm",
         "navigate",
         "takeoff",
@@ -457,6 +459,7 @@ def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
         "ingest_perceptions",
         "communicate",
     ]
+    assert [type(item) for item in captured["middleware"]] == [TodoListMiddleware]
 
 
 def test_typed_decision_application_validation_failure_is_not_retried_or_effectful() -> (

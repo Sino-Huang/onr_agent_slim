@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, cast
 
 import pytest
@@ -22,16 +24,18 @@ from onr.agents.maneuver_tools import (
     land,
     navigate,
     search_area,
+    set_transition_target,
     transition_fsm,
 )
 from onr.application.bayesian_belief import BayesianBeliefManager, BayesianBeliefService
 from onr.application.communication import TransportCommunicationPort
 from onr.application.fsm import FSMRunner, InMemoryFSMStateStore
 from onr.application.maneuver_control import ManeuverControl
+from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.communication import AgentMessage
 from onr.contracts.environment import EventObservation
-from onr.contracts.fsm import Statechart, StatechartTransition
+from onr.contracts.fsm import ManeuverDecision, Statechart, StatechartTransition
 from onr.contracts.maneuver_control import (
     ManeuverCommand,
     ManeuverControlDecision,
@@ -46,6 +50,7 @@ from onr.contracts.planning import (
     PlanningOutcome,
     ScheduledManeuver,
 )
+from onr.contracts.transition_intent import ManeuverFSMContext
 from onr.demo.fake_environment import FakeEnvironment
 
 
@@ -115,8 +120,15 @@ def _runtime(context: ManeuverToolContext) -> ToolRuntime[ManeuverToolContext]:
     )
 
 
+def _focused(status: object) -> ManeuverFSMContext:
+    return TransitionIntentJournal(InProcessTransport()).focused_context(
+        cast(Any, status), None
+    )
+
+
 def test_operational_tools_have_typed_model_visible_schemas() -> None:
     assert [item.name for item in MANEUVER_OPERATIONAL_TOOLS] == [
+        "set_transition_target",
         "transition_fsm",
         "navigate",
         "takeoff",
@@ -127,8 +139,19 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "ingest_perceptions",
         "communicate",
     ]
-    navigate_schema = cast(
+    transition_schema = cast(
         Any, MANEUVER_OPERATIONAL_TOOLS[1].tool_call_schema
+    ).model_json_schema()
+    assert set(transition_schema["properties"]) == {
+        "current_state",
+        "next_state",
+        "assessment",
+        "evidence",
+        "uncertainty",
+    }
+    assert "event" not in transition_schema["properties"]
+    navigate_schema = cast(
+        Any, MANEUVER_OPERATIONAL_TOOLS[2].tool_call_schema
     ).model_json_schema()
     assert set(navigate_schema["properties"]) == {
         "maneuver_id",
@@ -141,7 +164,7 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "reflection",
     }
     search_schema = cast(
-        Any, MANEUVER_OPERATIONAL_TOOLS[4].tool_call_schema
+        Any, MANEUVER_OPERATIONAL_TOOLS[5].tool_call_schema
     ).model_json_schema()
     assert "polygon" in search_schema["required"]
     assert set(search_schema["properties"]) == {
@@ -154,10 +177,10 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "extra_parameters",
     }
     investigate_schema = cast(
-        Any, MANEUVER_OPERATIONAL_TOOLS[6].tool_call_schema
+        Any, MANEUVER_OPERATIONAL_TOOLS[7].tool_call_schema
     ).model_json_schema()
     assert "deadline_time" in investigate_schema["properties"]
-    for tool_index in (2, 3, 5):
+    for tool_index in (3, 4, 6):
         schema = cast(
             Any, MANEUVER_OPERATIONAL_TOOLS[tool_index].tool_call_schema
         ).model_json_schema()
@@ -227,7 +250,9 @@ def test_maneuver_parameters_reject_non_json_values_and_negative_deadlines() -> 
 
 def test_transition_tool_checks_exact_candidate_without_interpreting_context() -> None:
     plan = _plan()
-    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
     invocation = ManeuverInvocation(
         request_id="heartbeat-1",
@@ -235,35 +260,81 @@ def test_transition_tool_checks_exact_candidate_without_interpreting_context() -
         mission_id=plan.mission_id,
         plan_revision=plan.plan_revision,
         statechart_reference="accepted-statechart.json",
-        fsm_status=status,
+        fsm_context=journal.focused_context(status, None),
         environment_data={"mission_time_seconds": 9},
     )
-    context = ManeuverToolContext(invocation, runner, _Dispatcher())
+    context = ManeuverToolContext(
+        invocation, runner, _Dispatcher(), transition_intents=journal
+    )
+    assert ManeuverInvocation.from_dict(invocation.to_dict()) == invocation
 
     missing = json.loads(
-        cast(Any, transition_fsm).func(
-            event="not a candidate",
-            reflection="This event is not exposed by the live FSM.",
+        cast(Any, set_transition_target).func(
+            target_state="Arbitrary Destination",
+            rationale="This target differs in case from the live candidate.",
             runtime=_runtime(context),
         )
     )
 
     assert missing["status"] == "rejected"
     assert missing["current_state"] == "arbitrary origin"
-    assert missing["candidates"][0]["transition_context"] == {
-        "readiness": {"mission_clock": {"minimum": 10, "unit": "seconds"}}
+    assert missing["candidates"][0] == {
+        "target_state": "arbitrary destination",
+        "condition": {
+            "readiness": {"mission_clock": {"minimum": 10, "unit": "seconds"}}
+        },
     }
     assert asyncio.run(runner.status()).active_state == "arbitrary origin"  # type: ignore[union-attr]
 
+    selected = json.loads(
+        cast(Any, set_transition_target).func(
+            target_state="arbitrary destination",
+            rationale="Select the exact live target.",
+            runtime=_runtime(context),
+        )
+    )
+    assert selected["transition_intent"]["condition"] == missing["candidates"][0][
+        "condition"
+    ]
+    assert "x" not in invocation.to_dict()["fsm_context"]["current_state_context"]
+    assert asyncio.run(runner.status()).active_state == "arbitrary origin"  # type: ignore[union-attr]
+    intent_events = transport.next_event_sequence("transition-intents", plan.mission_id)
+    retained = json.loads(
+        cast(Any, set_transition_target).func(
+            target_state="arbitrary destination",
+            rationale="A repeated selection is idempotent.",
+            runtime=_runtime(context),
+        )
+    )
+    assert retained["status"] == "retained"
+    assert retained["transition_intent"]["intent_id"] == selected[
+        "transition_intent"
+    ]["intent_id"]
+    assert (
+        transport.next_event_sequence("transition-intents", plan.mission_id)
+        == intent_events
+    )
+
     moved = json.loads(
         cast(Any, transition_fsm).func(
-            event="any event text",
-            reflection="Live evidence has been judged appropriate.",
+            current_state="arbitrary origin",
+            next_state="arbitrary destination",
+            assessment="satisfied_with_uncertainty",
+            evidence="The available live evidence is sufficient.",
+            uncertainty="The Mission clock is earlier than the expected time.",
             runtime=_runtime(context),
         )
     )
     assert moved["status"] == "transitioned"
-    assert moved["fsm_status"]["active_state"] == "arbitrary destination"
+    assert "event" not in moved
+    assert context.execution_record.decisions[-1].transition_event == "any event text"
+    assert moved["fsm_context"]["current_state"] == "arbitrary destination"
+    assert moved["fsm_context"]["current_state_context"] == {
+        "phase": "moving",
+        "x": 4,
+        "y": 8,
+    }
+    assert journal.latest(plan.mission_id).status == "consumed"  # type: ignore[union-attr]
 
 
 def test_fake_environment_activates_ticks_and_overrides(tmp_path: Path) -> None:
@@ -317,7 +388,7 @@ def test_physical_tools_submit_and_override_without_application_gate(
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        status,
+        _focused(status),
         {"mission_time_seconds": 10},
     )
     control = ManeuverControl(
@@ -339,6 +410,24 @@ def test_physical_tools_submit_and_override_without_application_gate(
             runtime=_runtime(context),
         )
     )
+    assert environment.current_maneuver["parameters"] == {  # type: ignore[index]
+        "deadline_time": 8.5,
+        "x": 100,
+        "y": 200,
+    }
+    copied_context = ManeuverToolContext(invocation, runner, control)
+    retained = json.loads(
+        cast(Any, navigate).func(
+            maneuver_id="not-in-normalized-plan",
+            x=100,
+            y=200,
+            speed=20,
+            deadline_time=8.5,
+            reflection="A copied context must retain the submitted action.",
+            runtime=_runtime(copied_context),
+        )
+    )
+    assert retained["status"] == "retained_active_action"
     assert environment.current_maneuver["parameters"] == {  # type: ignore[index]
         "deadline_time": 8.5,
         "x": 100,
@@ -373,6 +462,70 @@ def test_physical_tools_submit_and_override_without_application_gate(
     )
 
 
+def test_concurrent_copied_contexts_submit_same_action_once() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    invocation = ManeuverInvocation(
+        "heartbeat-concurrent-action",
+        "action-correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {"mission_time_seconds": 10},
+    )
+
+    class SlowAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.entered = Event()
+
+        def submit(self, _: object) -> None:
+            self.calls += 1
+            self.entered.set()
+            time.sleep(0.1)
+
+    adapter = SlowAdapter()
+    control = ManeuverControl(cast(Any, transport), cast(Any, adapter), object())
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+
+    def invoke(speed: float) -> None:
+        context = ManeuverToolContext(invocation, runner, control)
+        try:
+            results.append(
+                json.loads(
+                    cast(Any, navigate).func(
+                        maneuver_id="shared-action",
+                        x=100,
+                        y=200,
+                        speed=speed,
+                        reflection="Submit one shared physical action.",
+                        runtime=_runtime(context),
+                    )
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - assert concurrent failures.
+            errors.append(exc)
+
+    first_thread = Thread(target=invoke, args=(10,))
+    second_thread = Thread(target=invoke, args=(20,))
+    first_thread.start()
+    assert adapter.entered.wait(1)
+    second_thread.start()
+    first_thread.join(2)
+    second_thread.join(2)
+
+    assert errors == []
+    assert adapter.calls == 1
+    assert {result["status"] for result in results} == {
+        "submitted",
+        "retained_active_action",
+    }
+
+
 def test_correlated_communication_is_persisted_and_idempotent() -> None:
     port = TransportCommunicationPort(cast(Any, InProcessTransport()))
     seen: list[AgentMessage] = []
@@ -397,6 +550,142 @@ def test_correlated_communication_is_persisted_and_idempotent() -> None:
     assert first.correlation_id == message.correlation_id
 
 
+def test_duplicate_communication_while_running_returns_in_flight() -> None:
+    port = TransportCommunicationPort(cast(Any, InProcessTransport()))
+    started = Event()
+    release = Event()
+    completed: list[object] = []
+
+    def handler(_: AgentMessage) -> dict[str, str]:
+        started.set()
+        assert release.wait(2)
+        return {"status": "received"}
+
+    port.register("hyper-agent", handler)
+    message = AgentMessage(
+        "stable-evaluation",
+        "correlation-1",
+        "mission-tools",
+        2,
+        "maneuver-control",
+        "hyper-agent",
+        "replan",
+        {"message": "Evaluate."},
+    )
+    thread = Thread(target=lambda: completed.append(port.request(message)))
+    thread.start()
+    assert started.wait(2)
+
+    duplicate = port.request(message)
+    release.set()
+    thread.join(2)
+
+    assert duplicate.status == "already_in_flight"
+    assert len(completed) == 1
+    assert cast(Any, completed[0]).status == "completed"
+
+
+def test_once_per_state_entry_hyper_evaluation_has_stable_identity() -> None:
+    plan = _plan()
+    reason = "Evaluate whether the current evidence changes the plan."
+    evaluation = {
+        "evaluation_id": "evidence-review",
+        "kind": "replan",
+        "reason": reason,
+        "delivery_policy": "once_per_state_entry",
+    }
+    base = _chart(plan)
+
+    def evaluation_chart(revision: int) -> Statechart:
+        return Statechart(
+            mission_id=base.mission_id,
+            plan_revision=revision,
+            mission_snapshot_id=f"mission-tools:snapshot:{revision}",
+            planning_profile=base.planning_profile,
+            entry_state=base.entry_state,
+            terminal_states=base.terminal_states,
+            states=base.states,
+            state_context={
+                state: {**dict(base.context_for(state)), "hyper_evaluation": evaluation}
+                for state in base.states
+            },
+            transitions=base.transitions,
+        )
+
+    fsm_transport = InProcessTransport()
+    journal = TransitionIntentJournal(fsm_transport)
+    runner = FSMRunner(cast(Any, fsm_transport), store=InMemoryFSMStateStore())
+    asyncio.run(runner.activate(evaluation_chart(2)))
+    communication = TransportCommunicationPort(cast(Any, InProcessTransport()))
+    seen: list[AgentMessage] = []
+    communication.register(
+        "hyper-agent",
+        lambda message: seen.append(message) or {"disposition": "no_change"},
+    )
+    control = ManeuverControl(
+        cast(Any, fsm_transport), cast(Any, object()), object()
+    )
+
+    def invoke(request_id: str) -> dict[str, object]:
+        status = asyncio.run(runner.status())
+        assert status is not None
+        focused = journal.focused_context(status, None)
+        control.update_live_fsm_context(focused)
+        invocation = ManeuverInvocation(
+            request_id,
+            "correlation-evaluation",
+            plan.mission_id,
+            status.plan_revision,
+            f"statechart-{status.plan_revision}.json",
+            focused,
+            {"mission_time_seconds": 0},
+            available_recipients=("hyper-agent",),
+        )
+        context = ManeuverToolContext(
+            invocation,
+            runner,
+            control,
+            communication_port=communication,
+        )
+        return json.loads(
+            cast(Any, communicate).func(
+                recipient="hyper-agent",
+                kind="replan",
+                message=f"{reason} Additional caller detail from {request_id}.",
+                reflection="The declared evaluation is due.",
+                evaluation_id="evidence-review",
+                delivery_policy="once_per_state_entry",
+                runtime=_runtime(context),
+            )
+        )
+
+    first = invoke("heartbeat-evaluation-1")
+    repeated = invoke("heartbeat-evaluation-2")
+    live = asyncio.run(runner.status())
+    assert live is not None
+    candidate = live.transition_candidates[0]
+    asyncio.run(
+        runner.apply(
+            candidate,
+            ManeuverDecision(
+                "advance-evaluation-entry",
+                plan.mission_id,
+                transition_event=candidate.event,
+                payload={"plan_revision": live.plan_revision},
+            ),
+        )
+    )
+    next_entry = invoke("heartbeat-evaluation-3")
+    asyncio.run(runner.activate(evaluation_chart(3)))
+    next_plan = invoke("heartbeat-evaluation-4")
+
+    assert repeated == first
+    assert len(seen) == 3
+    assert all(message.payload["message"] == reason for message in seen)
+    assert next_entry["command_id"] != first["command_id"]
+    assert next_plan["command_id"] != next_entry["command_id"]
+
+
 def test_communicate_builds_a_correlated_replan_request() -> None:
     plan = _plan()
     runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
@@ -407,7 +696,7 @@ def test_communicate_builds_a_correlated_replan_request() -> None:
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        status,
+        _focused(status),
         {"mission_time_seconds": 0},
         available_recipients=("hyper-agent",),
     )
@@ -467,7 +756,7 @@ def test_belief_tool_ingests_each_pending_event_once(
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        status,
+        _focused(status),
         {"mission_time_seconds": 0},
         pending_perceptions=perceptions,
     )
@@ -550,7 +839,7 @@ def test_failed_perception_ingestion_remains_available_for_retry(
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        status,
+        _focused(status),
         {"mission_time_seconds": 1},
         pending_perceptions=(perception,),
     )
@@ -616,7 +905,7 @@ def test_failed_perception_ingestion_remains_available_for_retry(
     )
 
 
-def test_completion_consistency_uses_tool_execution_record() -> None:
+def test_todo_only_heartbeat_can_complete_with_no_change() -> None:
     plan = _plan()
     runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
@@ -626,11 +915,13 @@ def test_completion_consistency_uses_tool_execution_record() -> None:
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        status,
+        _focused(status),
         {"mission_time_seconds": 0},
     )
 
     class Agent:
+        todo_calls = 1
+
         def invoke(self, *_: object, **__: object) -> dict[str, object]:
             return {
                 "structured_response": {
@@ -644,3 +935,56 @@ def test_completion_consistency_uses_tool_execution_record() -> None:
     context = ManeuverToolContext(invocation, runner, _Dispatcher())
     completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
     assert completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE
+    assert context.execution_record.executions == []
+
+
+def test_unchanged_target_and_suitable_active_action_submit_no_command() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Retain the target supported by the active navigation.",
+        selected_at=1,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-continuity",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {
+            "mission_time_seconds": 1,
+            "current_maneuver": {
+                "status": "active",
+                "action": "navigate",
+                "target_state": "arbitrary destination",
+            },
+        },
+    )
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> dict[str, object]:
+            return {
+                "structured_response": {
+                    "mission_id": plan.mission_id,
+                    "request_id": invocation.request_id,
+                    "outcome": "no_change",
+                    "summary": "The active action remains suitable.",
+                }
+            }
+
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE
+    assert context.execution_record.executions == []

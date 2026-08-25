@@ -17,9 +17,9 @@ from typing import Any, cast
 
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.environment import Perception, perception_from_dict
-from onr.contracts.fsm import FSMStatus
 from onr.contracts.hyper_agent import HyperHeartbeatDecision
 from onr.contracts.planning import ManeuverIntent, ManeuverParameter
+from onr.contracts.transition_intent import ManeuverFSMContext
 from onr.contracts.transport import Command
 
 
@@ -604,7 +604,7 @@ class ManeuverInvocation:
     mission_id: str
     plan_revision: int
     statechart_reference: str
-    fsm_status: FSMStatus
+    fsm_context: ManeuverFSMContext
     environment_data: Mapping[str, object]
     trigger_identities: tuple[str, ...] = ()
     pending_perceptions: tuple[Perception, ...] = ()
@@ -626,12 +626,16 @@ class ManeuverInvocation:
             or self.plan_revision < 0
         ):
             raise ValueError("Maneuver invocation plan revision must be non-negative")
-        if not isinstance(self.fsm_status, FSMStatus):
-            raise TypeError("Maneuver invocation requires live FSMStatus")
-        if self.fsm_status.mission_id != self.mission_id:
-            raise ValueError("Maneuver invocation Mission identity is inconsistent")
-        if self.fsm_status.plan_revision != self.plan_revision:
-            raise ValueError("Maneuver invocation plan revision is inconsistent")
+        if not isinstance(self.fsm_context, ManeuverFSMContext):
+            raise TypeError("Maneuver invocation requires focused FSM context")
+        intent = self.fsm_context.transition_intent
+        if intent is not None and (
+            intent.mission_id != self.mission_id
+            or intent.plan_revision != self.plan_revision
+            or intent.source_state != self.fsm_context.current_state
+            or intent.state_entry_revision != self.fsm_context.state_entry_revision
+        ):
+            raise ValueError("Maneuver invocation Transition Intent is inconsistent")
         frozen_environment = _payload(
             self.environment_data, "Maneuver invocation environment data"
         )
@@ -681,7 +685,7 @@ class ManeuverInvocation:
             "mission_id": self.mission_id,
             "plan_revision": self.plan_revision,
             "statechart_reference": self.statechart_reference,
-            "fsm_status": self.fsm_status.to_dict(),
+            "fsm_context": self.fsm_context.to_dict(),
             "environment_data": _json_value(self.environment_data),
             "trigger_identities": list(self.trigger_identities),
             "pending_perceptions": [
@@ -715,7 +719,7 @@ class ManeuverInvocation:
             "mission_id",
             "plan_revision",
             "statechart_reference",
-            "fsm_status",
+            "fsm_context",
             "environment_data",
             "trigger_identities",
             "pending_perceptions",
@@ -726,15 +730,15 @@ class ManeuverInvocation:
         legacy_fields = fields - {"hyper_outcomes"}
         if not isinstance(value, Mapping) or set(value) not in (fields, legacy_fields):
             raise ValueError("Maneuver invocation contains unknown or missing fields")
-        status = value["fsm_status"]
+        fsm_context = value["fsm_context"]
         environment = value["environment_data"]
         triggers = value["trigger_identities"]
         perceptions = value["pending_perceptions"]
         recipients = value["available_recipients"]
         snapshot = value["planning_snapshot"]
         outcomes = value.get("hyper_outcomes", ())
-        if not isinstance(status, Mapping):
-            raise TypeError("Maneuver invocation FSM status must be an object")
+        if not isinstance(fsm_context, Mapping):
+            raise TypeError("Maneuver invocation FSM context must be an object")
         if not isinstance(environment, Mapping):
             raise TypeError("Maneuver invocation environment data must be an object")
         if not isinstance(triggers, (list, tuple)):
@@ -763,7 +767,7 @@ class ManeuverInvocation:
                 value["plan_revision"], "Maneuver invocation plan revision"
             ),
             statechart_reference=statechart_reference,
-            fsm_status=FSMStatus.from_dict(status),
+            fsm_context=ManeuverFSMContext.from_dict(fsm_context),
             environment_data=environment,
             trigger_identities=tuple(cast(tuple[str, ...], tuple(triggers))),
             pending_perceptions=tuple(

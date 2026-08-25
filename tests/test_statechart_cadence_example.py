@@ -67,10 +67,26 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
         "expected_observation_count": 2,
     }
     moving = draft["state_context"]["assignment-1-in-progress"]
-    assert moving["navigation_adapter_parameters"] == {
-        "x": 10,
-        "y": 20,
-        "deadline_time": 10.0,
+    assert "navigation_adapter_parameters" not in moving
+    assert moving["desired_outcome"] == {
+        "kind": "arrive_at_planner_selected_location",
+        "location": {"x": 10, "y": 20},
+        "arrival_deadline": {
+            "tick": 20,
+            "ticks_per_second": 2,
+            "seconds": 10.0,
+        },
+    }
+    assert draft["state_context"]["assignment-1-outcome-achieved"][
+        "hyper_evaluation"
+    ] == {
+        "evaluation_id": "first-evidence-interval-replan",
+        "kind": "replan",
+        "reason": (
+            "Evaluate whether the first completed planner evidence interval "
+            "materially changes the active plan."
+        ),
+        "delivery_policy": "once_per_state_entry",
     }
     assert len(draft["states"]) == 6
     assert len(draft["transitions"]) == 5

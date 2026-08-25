@@ -148,7 +148,12 @@ def run_maneuver_demo(
             mission_id=plan.mission_id,
             plan_revision=plan.plan_revision,
             statechart_reference=str(statechart_reference),
-            fsm_status=status,
+            fsm_context=control.transition_intents.focused_context(
+                status,
+                control.transition_intents.current(
+                    status, invalidate_stale=True
+                ),
+            ),
             environment_data=authority.current_environment_data(),
             trigger_identities=(f"manual:{label}",),
             available_recipients=("hyper-agent",),

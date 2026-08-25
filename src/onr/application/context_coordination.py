@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
+from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import (
     MISSION_SNAPSHOT_SOURCES,
@@ -181,6 +182,7 @@ class ContextCoordination:
         )
         self._pending_perceptions: list[Perception] = []
         self._pending_maneuver_triggers: set[str] = set()
+        self._transition_intents = TransitionIntentJournal(transport)
         self._restore_latest_snapshot()
 
     @property
@@ -357,7 +359,6 @@ class ContextCoordination:
 
         self._require_runtime(active_revision)
         environment = cast(Any, self._environment)
-        maneuver = cast(Any, self._maneuver_control)
         hyper = cast(Any, self._hyper_supervisor)
         replan = cast(ReplanWorkflow, self._replan_workflow)
         mission_id = active_revision.planner_plan.mission_id
@@ -388,40 +389,18 @@ class ContextCoordination:
                     if any(item.startswith("environment:") for item in triggers):
                         environment_maneuver_count += 1
                     self._pending_maneuver_triggers.difference_update(triggers)
-                    self._publish_runtime_source_facts(self._required_status())
-                    snapshot = self._drain_required(context_consumer, fallback=snapshot)
-                    invocation = self._maneuver_invocation(
+                    snapshot, status = self._run_maneuver_heartbeat(
                         snapshot,
                         active_revision,
                         maneuver_count,
                         tuple(sorted(triggers)),
                         pending_hyper_outcomes,
+                        context_consumer,
+                        physical_actions,
+                        belief_revisions,
                     )
                     pending_hyper_outcomes = ()
-                    completion = maneuver.heartbeat(invocation)
-                    if not isinstance(completion, ManeuverHeartbeatCompletion):
-                        raise TypeError(
-                            "Maneuver heartbeat returned invalid completion"
-                        )
                     maneuver_count += 1
-                    record = maneuver.last_execution_record
-                    if isinstance(record, ManeuverHeartbeatExecutionRecord):
-                        physical_actions.extend(
-                            item.physical_intent.action
-                            for item in record.decisions
-                            if item.physical_intent is not None
-                        )
-                        if any(
-                            item.name == "ingest_perceptions" and item.successful
-                            for item in record.executions
-                        ):
-                            del self._pending_perceptions[
-                                : len(invocation.pending_perceptions)
-                            ]
-                    status = self._required_status()
-                    self._publish_runtime_source_facts(status)
-                    snapshot = self._drain_required(context_consumer, fallback=snapshot)
-                    self._append_belief_revisions(belief_revisions)
 
                 periodic_hyper = now > 0 and self._due(now, self._hyper_seconds)
                 requested_hyper = bool(hyper.has_pending(mission_id))
@@ -461,12 +440,21 @@ class ContextCoordination:
                             )
                             snapshot = self._drain_required(context_consumer)
                             status = self._activate(replacement.statechart)
+                            self._transition_intents.invalidate_latest(mission_id)
                             active_revision = replacement
                             plan_revisions.append(next_revision)
-                            self._publish_runtime_source_facts(status)
-                            snapshot = self._drain_required(
-                                context_consumer, fallback=snapshot
+                            snapshot, status = self._run_maneuver_heartbeat(
+                                snapshot,
+                                active_revision,
+                                maneuver_count,
+                                (f"replan-activated:{next_revision}",),
+                                pending_hyper_outcomes,
+                                context_consumer,
+                                physical_actions,
+                                belief_revisions,
                             )
+                            pending_hyper_outcomes = ()
+                            maneuver_count += 1
 
                 if status.active_state in active_revision.statechart.terminal_states:
                     break
@@ -506,6 +494,50 @@ class ContextCoordination:
             terminal=terminal,
             environment_triggered_maneuver_heartbeat_count=(environment_maneuver_count),
         )
+
+    def _run_maneuver_heartbeat(
+        self,
+        snapshot: MissionSnapshot,
+        active_revision: ActivePlanRevision,
+        count: int,
+        triggers: tuple[str, ...],
+        hyper_outcomes: tuple[HyperHeartbeatDecision, ...],
+        context_consumer: object,
+        physical_actions: list[str],
+        belief_revisions: list[int],
+    ) -> tuple[MissionSnapshot, FSMStatus]:
+        """Publish fresh authority, invoke Maneuver once, and drain its effects."""
+
+        maneuver = cast(Any, self._maneuver_control)
+        self._publish_runtime_source_facts(self._required_status())
+        snapshot = self._drain_required(context_consumer, fallback=snapshot)
+        invocation = self._maneuver_invocation(
+            snapshot,
+            active_revision,
+            count,
+            triggers,
+            hyper_outcomes,
+        )
+        completion = maneuver.heartbeat(invocation)
+        if not isinstance(completion, ManeuverHeartbeatCompletion):
+            raise TypeError("Maneuver heartbeat returned invalid completion")
+        record = maneuver.last_execution_record
+        if isinstance(record, ManeuverHeartbeatExecutionRecord):
+            physical_actions.extend(
+                item.physical_intent.action
+                for item in record.decisions
+                if item.physical_intent is not None
+            )
+            if any(
+                item.name == "ingest_perceptions" and item.successful
+                for item in record.executions
+            ):
+                del self._pending_perceptions[: len(invocation.pending_perceptions)]
+        status = self._required_status()
+        self._publish_runtime_source_facts(status)
+        snapshot = self._drain_required(context_consumer, fallback=snapshot)
+        self._append_belief_revisions(belief_revisions)
+        return snapshot, status
 
     @staticmethod
     def _positive(value: object, label: str) -> float:
@@ -636,13 +668,17 @@ class ContextCoordination:
     ) -> ManeuverInvocation:
         if snapshot.plan_reference != revision.planner_plan_reference:
             raise ValueError("Mission Snapshot does not reference the active plan")
+        status = self._resolve_status(snapshot)
+        intent = self._transition_intents.current(
+            status, invalidate_stale=True
+        )
         return ManeuverInvocation(
             request_id=f"maneuver-heartbeat:{snapshot.mission_id}:{count}",
             correlation_id=f"mission-loop:{snapshot.mission_id}",
             mission_id=snapshot.mission_id,
             plan_revision=revision.planner_plan.plan_revision,
             statechart_reference=revision.statechart_reference,
-            fsm_status=self._resolve_status(snapshot),
+            fsm_context=self._transition_intents.focused_context(status, intent),
             environment_data=self._resolve_environment(snapshot),
             trigger_identities=triggers,
             pending_perceptions=tuple(self._pending_perceptions),

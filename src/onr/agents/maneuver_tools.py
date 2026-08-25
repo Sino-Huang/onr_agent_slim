@@ -26,6 +26,11 @@ from onr.contracts.maneuver_control import (
     NonPhysicalChoice,
 )
 from onr.contracts.planning import ManeuverIntent, ManeuverParameter
+from onr.contracts.transition_intent import (
+    ManeuverFSMContext,
+    TransitionAssessment,
+    TransitionIntent,
+)
 from onr.contracts.transport import CommandOutcome, TransportEvent
 
 JsonScalar = str | int | float | bool | None
@@ -123,6 +128,7 @@ class ManeuverToolContext:
     command_dispatcher: Any
     belief_service: Any = None
     communication_port: Any = None
+    transition_intents: Any = None
     operational_log: Any = None
     # ToolRuntime asks Pydantic to serialize its context between graph steps.
     # Keep the audit record opaque like the service dependencies so immutable
@@ -157,30 +163,72 @@ def _context(runtime: ToolRuntime[ManeuverToolContext]) -> ManeuverToolContext:
     return context
 
 
+def _intent_journal(context: ManeuverToolContext) -> Any:
+    journal = context.transition_intents
+    for method in (
+        "current",
+        "select",
+        "consume",
+        "exact_candidate",
+        "focused_context",
+    ):
+        if not callable(getattr(journal, method, None)):
+            raise TypeError(
+                f"Maneuver Transition Intent journal must expose {method}"
+            )
+    return journal
+
+
 def _candidate_result(status: FSMStatus) -> dict[str, object]:
     return {
         "current_state": status.active_state,
-        "candidates": [item.to_dict() for item in status.transition_candidates],
+        "candidates": [
+            {
+                "target_state": item.target,
+                "condition": item.to_dict()["transition_context"],
+            }
+            for item in status.transition_candidates
+        ],
     }
 
 
+def _update_live_fsm_context(
+    context: ManeuverToolContext, focused: ManeuverFSMContext
+) -> None:
+    update = getattr(context.command_dispatcher, "update_live_fsm_context", None)
+    if callable(update):
+        update(focused)
+
+
+def _live_fsm_context(context: ManeuverToolContext) -> ManeuverFSMContext:
+    current = getattr(
+        context.command_dispatcher, "current_maneuver_fsm_context", None
+    )
+    if callable(current):
+        focused = current()
+        if isinstance(focused, ManeuverFSMContext):
+            return focused
+    return context.invocation.fsm_context
+
+
 @tool(parse_docstring=True)
-def transition_fsm(
-    event: str,
-    reflection: str,
+def set_transition_target(
+    target_state: str,
+    rationale: str,
     runtime: ToolRuntime[ManeuverToolContext],
 ) -> str:
-    """Apply an exact live FSM candidate with a current Maneuver decision.
+    """Select one exact live target without changing FSM state.
 
     Args:
-        event: Exact event name from the current live transition candidates.
-        reflection: Concise public evidence summary for this transition choice.
+        target_state: Exact target state from the current live candidates.
+        rationale: Concise public rationale for selecting this target.
 
     Returns:
-        Canonical JSON containing rejection evidence or the updated live FSM status.
+        Canonical JSON containing the selected intent or current live candidates.
     """
 
     context = _context(runtime)
+    journal = _intent_journal(context)
     status = _run(context.fsm_runner.status())
     if not isinstance(status, FSMStatus):
         raise TypeError("live FSM Runner did not return FSMStatus")
@@ -193,26 +241,128 @@ def transition_fsm(
             "reason": "live FSM status does not match the current Maneuver invocation",
             **_candidate_result(status),
         }
-        context.execution_record.append("transition_fsm", result, successful=False)
+        context.execution_record.append(
+            "set_transition_target", result, successful=False
+        )
         return _canonical_json(result)
-    candidates = [item for item in status.transition_candidates if item.event == event]
-    base = _candidate_result(status)
-    if len(candidates) != 1:
+    try:
+        journal.exact_candidate(status, target_state)
+    except ValueError:
         result = {
             "status": "rejected",
-            "reason": "event is not an exact current transition candidate",
-            **base,
+            "reason": "target state is not an exact current transition candidate",
+            **_candidate_result(status),
+        }
+        context.execution_record.append(
+            "set_transition_target", result, successful=False
+        )
+        return _canonical_json(result)
+    before = journal.current(status, invalidate_stale=True)
+    selected_at = context.invocation.environment_data.get("mission_time_seconds")
+    if selected_at is None:
+        scene_graph = context.invocation.environment_data.get("scene_graph", {})
+        if isinstance(scene_graph, Mapping):
+            selected_at = scene_graph.get("mission_time_seconds")
+    if selected_at is None:
+        selected_at = 0.0
+    intent = journal.select(
+        status,
+        target_state,
+        rationale,
+        selected_at=float(selected_at),
+    )
+    _update_live_fsm_context(
+        context, journal.focused_context(status, intent)
+    )
+    result = {
+        "status": (
+            "retained"
+            if before is not None and before.intent_id == intent.intent_id
+            else "selected"
+        ),
+        "transition_intent": intent.to_dict(),
+        **_candidate_result(status),
+    }
+    context.execution_record.append(
+        "set_transition_target", result, successful=True
+    )
+    return _canonical_json(result)
+
+
+@tool(parse_docstring=True)
+def transition_fsm(
+    current_state: str,
+    next_state: str,
+    assessment: Literal["satisfied", "satisfied_with_uncertainty"],
+    evidence: str,
+    uncertainty: str,
+    runtime: ToolRuntime[ManeuverToolContext],
+) -> str:
+    """Consume the selected intent and apply its exact internal FSM event.
+
+    Args:
+        current_state: Exact current state returned by the live FSM context.
+        next_state: Exact selected target state from the current Transition Intent.
+        assessment: Maneuver's semantic assessment of the selected condition.
+        evidence: Concise public evidence supporting the assessment.
+        uncertainty: Concise public uncertainty or accepted missingness summary.
+
+    Returns:
+        Canonical JSON containing rejection evidence or the updated focused FSM context.
+    """
+
+    context = _context(runtime)
+    journal = _intent_journal(context)
+    status = _run(context.fsm_runner.status())
+    if not isinstance(status, FSMStatus):
+        raise TypeError("live FSM Runner did not return FSMStatus")
+    if (
+        status.mission_id != context.invocation.mission_id
+        or status.plan_revision != context.invocation.plan_revision
+        or status.active_state != current_state
+    ):
+        result = {
+            "status": "rejected",
+            "reason": "live FSM identity does not match the transition request",
+            **_candidate_result(status),
         }
         context.execution_record.append("transition_fsm", result, successful=False)
         return _canonical_json(result)
-    candidate = candidates[0]
+    try:
+        parsed_assessment = TransitionAssessment(assessment)
+        candidate = journal.exact_candidate(status, next_state)
+    except ValueError:
+        result = {
+            "status": "rejected",
+            "reason": "source and target are not an exact current transition candidate",
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
+    intent = journal.current(status, invalidate_stale=True)
+    if (
+        not isinstance(intent, TransitionIntent)
+        or intent.source_state != current_state
+        or intent.target_state != next_state
+        or intent.condition != candidate.transition_context
+    ):
+        result = {
+            "status": "rejected",
+            "reason": "transition request does not match the current Transition Intent",
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
     sequence = len(context.execution_record.executions) + 1
     decision_id = f"maneuver-transition:{context.invocation.request_id}:{sequence}"
     authorization = ManeuverDecision(
         decision_id=decision_id,
         mission_id=context.invocation.mission_id,
         transition_event=candidate.event,
-        payload={"plan_revision": context.invocation.plan_revision},
+        payload={
+            "plan_revision": context.invocation.plan_revision,
+            "transition_intent": intent.intent_id,
+        },
     )
     updated = _run(context.fsm_runner.apply(candidate, authorization))
     if not isinstance(updated, FSMStatus) or updated.active_state != candidate.target:
@@ -228,9 +378,20 @@ def transition_fsm(
         mission_id=context.invocation.mission_id,
         plan_revision=context.invocation.plan_revision,
         transition_event=candidate.event,
-        payload={"reflection": reflection},
+        payload={
+            "assessment": parsed_assessment,
+            "evidence": evidence,
+            "uncertainty": uncertainty,
+            "transition_intent": intent.intent_id,
+        },
     )
-    result = {"status": "transitioned", "fsm_status": updated.to_dict()}
+    journal.consume(intent)
+    focused = journal.focused_context(updated, None)
+    _update_live_fsm_context(context, focused)
+    result = {
+        "status": "transitioned",
+        "fsm_context": focused.to_dict(),
+    }
     context.execution_record.append(
         "transition_fsm", result, successful=True, decision=audit
     )
@@ -301,7 +462,7 @@ def _physical(
         physical_intent=ManeuverIntent(action, parameters),
         payload={"reflection": reflection},
     )
-    command, outcome = context.command_dispatcher.dispatch_physical(
+    command, outcome, submitted = context.command_dispatcher.dispatch_physical(
         context.invocation,
         decision,
         sequence=sequence,
@@ -312,14 +473,17 @@ def _physical(
     }:
         raise RuntimeError("maneuver command dispatcher did not accept the action")
     result = {
-        "status": "submitted",
+        "status": "submitted" if submitted else "retained_active_action",
         "command_id": command.command_id,
         "correlation_id": command.correlation_id,
         "maneuver_id": command.maneuver_id,
         "action": command.action,
     }
     context.execution_record.append(
-        tool_name, result, successful=True, decision=decision
+        tool_name,
+        result,
+        successful=submitted,
+        decision=decision if submitted else None,
     )
     return _canonical_json(result)
 
@@ -630,6 +794,11 @@ def communicate(
     kind: Literal["invoke", "query", "report", "replan"],
     message: str,
     reflection: str,
+    evaluation_id: str | None = None,
+    delivery_policy: Literal[
+        "unrestricted", "once_per_state_entry"
+    ] = "unrestricted",
+    *,
     runtime: ToolRuntime[ManeuverToolContext],
 ) -> str:
     """Send a correlated message to one invocation-authorized agent recipient.
@@ -639,6 +808,8 @@ def communicate(
         kind: Correlated request kind.
         message: Concise factual request or report.
         reflection: Concise public evidence summary for this communication.
+        evaluation_id: Stable current-state evaluation identity, when declared.
+        delivery_policy: Unrestricted delivery or one evaluation per state entry.
 
     Returns:
         Canonical JSON containing the correlated response envelope.
@@ -651,7 +822,30 @@ def communicate(
     if context.communication_port is None:
         raise RuntimeError("Maneuver heartbeat has no communication port")
     sequence = len(context.execution_record.executions) + 1
-    message_id = f"maneuver-message:{invocation.request_id}:{sequence}"
+    focused = _live_fsm_context(context)
+    state_entry_revision = focused.state_entry_revision
+    if delivery_policy == "once_per_state_entry":
+        evaluation = focused.current_state_context.get("hyper_evaluation")
+        if (
+            not isinstance(evaluation, Mapping)
+            or evaluation.get("evaluation_id") != evaluation_id
+            or evaluation.get("delivery_policy") != delivery_policy
+            or evaluation.get("kind") != kind
+            or not isinstance(evaluation.get("reason"), str)
+            or not cast(str, evaluation.get("reason")).strip()
+        ):
+            raise ValueError(
+                "once-per-state-entry communication must exactly match the "
+                "current hyper_evaluation"
+            )
+        message = cast(str, evaluation["reason"])
+        message_id = (
+            f"hyper-evaluation:{invocation.mission_id}:"
+            f"{invocation.plan_revision}:"
+            f"{state_entry_revision}:{evaluation_id}"
+        )
+    else:
+        message_id = f"maneuver-message:{invocation.request_id}:{sequence}"
     payload: dict[str, object]
     choice: NonPhysicalChoice
     if kind == AgentMessageKind.REPLAN:
@@ -677,6 +871,13 @@ def communicate(
             AgentMessageKind.REPORT: NonPhysicalChoice.REPORT,
             AgentMessageKind.INVOKE: NonPhysicalChoice.REPORT,
         }[AgentMessageKind(kind)]
+    payload.update(
+        {
+            "delivery_policy": delivery_policy,
+            "evaluation_id": evaluation_id,
+            "state_entry_revision": state_entry_revision,
+        }
+    )
     request = AgentMessage(
         message_id=message_id,
         correlation_id=invocation.correlation_id,
@@ -693,7 +894,7 @@ def communicate(
         or outcome.command_id != message_id
         or outcome.correlation_id != invocation.correlation_id
         or outcome.mission_id != invocation.mission_id
-        or str(outcome.status) != "completed"
+        or str(outcome.status) not in {"completed", "already_in_flight"}
     ):
         raise RuntimeError(
             "agent communication did not return a successful correlation"
@@ -703,7 +904,13 @@ def communicate(
         mission_id=invocation.mission_id,
         plan_revision=invocation.plan_revision,
         choice=choice,
-        payload={"recipient": recipient, "kind": kind, "message": message},
+        payload={
+            "recipient": recipient,
+            "kind": kind,
+            "message": message,
+            "evaluation_id": evaluation_id,
+            "delivery_policy": delivery_policy,
+        },
     )
     result = outcome.to_dict()
     context.execution_record.append(
@@ -713,6 +920,7 @@ def communicate(
 
 
 MANEUVER_OPERATIONAL_TOOLS = (
+    set_transition_target,
     transition_fsm,
     navigate,
     takeoff,
@@ -737,6 +945,7 @@ __all__ = [
     "navigate",
     "pursue",
     "search_area",
+    "set_transition_target",
     "takeoff",
     "transition_fsm",
 ]
