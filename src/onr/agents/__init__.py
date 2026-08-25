@@ -12,10 +12,10 @@ from onr.agents.hyper_workflow import (
     create_hyper_workflow_agent,
 )
 from onr.agents.maneuver_control import (
-    MANEUVER_HEARTBEAT_COMPLETION_SCHEMA,
     DeepAgentsDecisionProvider,
     DeepAgentsHeartbeatProvider,
     DeepAgentsManeuverProvider,
+    ManeuverHeartbeatOrderingError,
     create_maneuver_control_agent,
 )
 from onr.agents.maneuver_tools import ManeuverToolContext
@@ -31,7 +31,7 @@ __all__ = [
     "HyperWorkflowContext",
     "HyperWorkflowRunResult",
     "MissionRoleContext",
-    "MANEUVER_HEARTBEAT_COMPLETION_SCHEMA",
+    "ManeuverHeartbeatOrderingError",
     "ManeuverToolContext",
     "RoleEpisode",
     "create_hyper_workflow_agent",

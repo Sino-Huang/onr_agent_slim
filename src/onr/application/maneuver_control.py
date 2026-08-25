@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 from typing import Any, cast
 
 from onr.application.transition_intents import TransitionIntentJournal
@@ -84,6 +84,7 @@ class ManeuverControl:
             tuple[str, str, str], tuple[ManeuverCommand, CommandOutcome]
         ] = {}
         self._heartbeat_physical_lock = Lock()
+        self._heartbeat_tool_lock = RLock()
         self._live_fsm_context: ManeuverFSMContext | None = None
         self._live_fsm_context_lock = Lock()
         self.last_execution_record: object | None = None
@@ -247,19 +248,49 @@ class ManeuverControl:
             transition_intents=self.transition_intents,
             operational_log=self.operational_log,
         )
-        completion = heartbeat(invocation, context)
-        if not isinstance(completion, ManeuverHeartbeatCompletion):
-            raise TypeError("Maneuver provider did not return a heartbeat completion")
+        try:
+            completion = heartbeat(invocation, context)
+            if not isinstance(completion, ManeuverHeartbeatCompletion):
+                raise TypeError(
+                    "Maneuver provider did not return a heartbeat completion"
+                )
+        except Exception as exc:
+            self.last_execution_record = context.execution_record
+            self._emit(
+                invocation.mission_id,
+                "heartbeat",
+                "failed",
+                {
+                    "operation": "maneuver_heartbeat",
+                    "plan_revision": invocation.plan_revision,
+                    "request_id": invocation.request_id,
+                    "error_type": type(exc).__name__,
+                    "successful_tool_calls": (
+                        context.execution_record.successful_count
+                    ),
+                    "successful_transition_count": (
+                        context.execution_record.successful_transition_count
+                    ),
+                    "initial_intent_id": (
+                        context.execution_record.initial_intent_id
+                    ),
+                },
+            )
+            raise
         self.last_execution_record = context.execution_record
         self._emit(
             invocation.mission_id,
             "heartbeat",
-            str(completion.outcome),
+            "completed",
             {
                 "operation": "maneuver_heartbeat",
                 "plan_revision": invocation.plan_revision,
                 "request_id": invocation.request_id,
                 "successful_tool_calls": context.execution_record.successful_count,
+                "successful_transition_count": (
+                    context.execution_record.successful_transition_count
+                ),
+                "initial_intent_id": context.execution_record.initial_intent_id,
             },
         )
         return completion
@@ -275,6 +306,12 @@ class ManeuverControl:
     def current_maneuver_fsm_context(self) -> ManeuverFSMContext | None:
         with self._live_fsm_context_lock:
             return self._live_fsm_context
+
+    @property
+    def heartbeat_tool_lock(self) -> object:
+        """Serialize live-FSM tool sections across copied DeepAgents contexts."""
+
+        return self._heartbeat_tool_lock
 
     def dispatch_physical(
         self,

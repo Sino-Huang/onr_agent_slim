@@ -154,7 +154,6 @@ class _ManeuverProvider:
         return ManeuverHeartbeatCompletion(
             invocation.mission_id,
             invocation.request_id,
-            "completed" if now in {5, 10, 15} else "no_change",
             "Deterministic test heartbeat.",
         )
 
@@ -421,7 +420,6 @@ def test_navigation_completion_feedback_triggers_maneuver_before_five_seconds(
             return ManeuverHeartbeatCompletion(
                 invocation.mission_id,
                 invocation.request_id,
-                "completed",
                 "Handled current navigation lifecycle evidence.",
             )
 
@@ -516,7 +514,6 @@ def test_four_perceptions_commit_four_ordered_beliefs_without_agent_belief(
             return ManeuverHeartbeatCompletion(
                 invocation.mission_id,
                 invocation.request_id,
-                "no_change" if now == 5 else "completed",
                 "Applied the current serialized effects.",
             )
 
@@ -615,7 +612,6 @@ def test_direct_maneuver_invocation_is_queued_without_overlap(tmp_path: Path) ->
             return ManeuverHeartbeatCompletion(
                 invocation.mission_id,
                 invocation.request_id,
-                "completed" if now > 0 else "no_change",
                 "Handled the serialized direct invocation.",
             )
 

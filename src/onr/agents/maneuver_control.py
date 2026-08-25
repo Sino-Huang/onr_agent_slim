@@ -15,6 +15,7 @@ from onr.agents.hyper_agent import _create_deep_agent
 from onr.agents.maneuver_tools import (
     MANEUVER_OPERATIONAL_TOOLS,
     ManeuverToolContext,
+    _run,
 )
 from onr.agents.structured_output import (
     StructuralIssue,
@@ -27,11 +28,11 @@ from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverControlDecision,
     ManeuverHeartbeatCompletion,
-    ManeuverHeartbeatOutcome,
     ManeuverInvocation,
     NonPhysicalChoice,
     PhysicalAction,
 )
+from onr.contracts.transition_intent import ManeuverFSMContext
 
 _DECISION_FIELDS: Final = frozenset(
     {
@@ -59,6 +60,10 @@ _NON_PHYSICAL_CHOICES_EXPECTED: Final = (
     + ", ".join(f'"{value}"' for value in _NON_PHYSICAL_CHOICES)
     + ", or null"
 )
+
+
+class ManeuverHeartbeatOrderingError(RuntimeError):
+    """The heartbeat ended without satisfying its FSM ordering obligations."""
 
 MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
     "title": "ManeuverControlDecision",
@@ -125,16 +130,13 @@ MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
     },
 }
 
-MANEUVER_HEARTBEAT_COMPLETION_SCHEMA: dict[str, Any] = {
-    "title": "ManeuverHeartbeatCompletion",
+_MANEUVER_HEARTBEAT_RESPONSE_SCHEMA: dict[str, Any] = {
+    "title": "ManeuverHeartbeatResponse",
     "type": "object",
     "properties": {
-        "mission_id": {"type": "string", "minLength": 1},
-        "request_id": {"type": "string", "minLength": 1},
-        "outcome": {"type": "string", "enum": ["completed", "no_change"]},
         "summary": {"type": "string", "minLength": 1},
     },
-    "required": ["mission_id", "request_id", "outcome", "summary"],
+    "required": ["summary"],
     "additionalProperties": False,
 }
 
@@ -154,7 +156,7 @@ def create_maneuver_control_agent(
     return _create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        response_format=MANEUVER_HEARTBEAT_COMPLETION_SCHEMA,
+        response_format=_MANEUVER_HEARTBEAT_RESPONSE_SCHEMA,
         mission_id=mission_id,
         role="maneuver-control",
         memory_store=memory_store,
@@ -169,7 +171,7 @@ def create_maneuver_control_agent(
 
 
 class DeepAgentsHeartbeatProvider:
-    """Invoke a Maneuver Deep Agent and validate completion against tool effects."""
+    """Invoke a Maneuver Deep Agent and identify its heartbeat completion."""
 
     def __init__(self, agent: object, max_retries: int = 1) -> None:
         if (
@@ -206,66 +208,39 @@ class DeepAgentsHeartbeatProvider:
                 )
             )
         ]
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            kwargs: dict[str, object] = {"context": tool_context}
-            if config is not None:
-                kwargs["config"] = config
-            response = invoke({"messages": messages}, **kwargs)
+        kwargs: dict[str, object] = {"context": tool_context}
+        if config is not None:
+            kwargs["config"] = config
+        response = invoke({"messages": messages}, **kwargs)
+        summary = _parse_heartbeat_summary(response)
+        try:
+            _require_final_transition_intent(tool_context)
+        except ManeuverHeartbeatOrderingError as exc:
+            if self.max_retries < 1:
+                raise
+            correction_state = _heartbeat_correction_state(
+                response,
+                original_messages=messages,
+                tool_context=tool_context,
+                error=exc,
+            )
+            response = invoke(correction_state, **kwargs)
             try:
-                completion = _parse_heartbeat_completion(response)
-                self._validate_completion(completion, invocation, tool_context)
-                return completion
-            except (TypeError, ValueError) as exc:
-                last_error = exc
-                if attempt == self.max_retries:
-                    break
-                messages = [
-                    HumanMessage(
-                        content=json.dumps(
-                            {
-                                "completion_correction": str(exc),
-                                "request_id": invocation.request_id,
-                                "successful_tool_calls": (
-                                    tool_context.execution_record.successful_count
-                                ),
-                                "tool_executions": len(
-                                    tool_context.execution_record.executions
-                                ),
-                            },
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                    )
-                ]
-        assert last_error is not None
-        raise last_error
-
-    @staticmethod
-    def _validate_completion(
-        completion: ManeuverHeartbeatCompletion,
-        invocation: ManeuverInvocation,
-        tool_context: ManeuverToolContext,
-    ) -> None:
-        if (
-            completion.mission_id != invocation.mission_id
-            or completion.request_id != invocation.request_id
-        ):
-            raise ValueError("Maneuver completion identity does not match invocation")
-        successful = tool_context.execution_record.successful_count
-        executed = len(tool_context.execution_record.executions)
-        if (
-            completion.outcome is ManeuverHeartbeatOutcome.COMPLETED
-            and successful < 1
-        ):
-            raise ValueError("completed Maneuver heartbeat requires a successful tool call")
-        if completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE and executed != 0:
-            raise ValueError("no_change Maneuver heartbeat requires no tool executions")
+                summary = _parse_heartbeat_summary(response)
+                _require_final_transition_intent(tool_context)
+            except (TypeError, ValueError, ManeuverHeartbeatOrderingError) as retry_exc:
+                raise ManeuverHeartbeatOrderingError(
+                    "Maneuver heartbeat correction did not select the required "
+                    "Transition Intent"
+                ) from retry_exc
+        return ManeuverHeartbeatCompletion(
+            mission_id=invocation.mission_id,
+            request_id=invocation.request_id,
+            summary=summary,
+        )
 
 
-def _parse_heartbeat_completion(response: object) -> ManeuverHeartbeatCompletion:
-    if isinstance(response, ManeuverHeartbeatCompletion):
-        return response
+def _parse_heartbeat_summary(response: object) -> str:
     if not isinstance(response, Mapping):
         raise TypeError("Maneuver heartbeat returned invalid agent state")
     candidate = response.get("structured_response")
@@ -276,7 +251,83 @@ def _parse_heartbeat_completion(response: object) -> ManeuverHeartbeatCompletion
         candidate = _decision_from_final_message(response)
     if not isinstance(candidate, Mapping):
         raise TypeError("Maneuver heartbeat returned invalid structured output")
-    return ManeuverHeartbeatCompletion.from_dict(cast(Mapping[str, object], candidate))
+    if set(candidate) != {"summary"}:
+        raise ValueError("Maneuver heartbeat response has invalid fields")
+    summary = candidate["summary"]
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("Maneuver heartbeat response summary must be non-empty")
+    return summary
+
+
+def _current_focused_fsm_context(
+    tool_context: ManeuverToolContext,
+) -> ManeuverFSMContext:
+    status = _run(tool_context.fsm_runner.status())
+    if not isinstance(status, FSMStatus):
+        raise TypeError("live FSM Runner did not return FSMStatus")
+    journal = tool_context.transition_intents
+    current = getattr(journal, "current", None)
+    focused_context = getattr(journal, "focused_context", None)
+    if not callable(current) or not callable(focused_context):
+        raise TypeError("Maneuver heartbeat requires a Transition Intent journal")
+    intent = current(status, invalidate_stale=True)
+    focused = focused_context(status, intent)
+    if not isinstance(focused, ManeuverFSMContext):
+        raise TypeError("Transition Intent journal returned invalid focused context")
+    return focused
+
+
+def _require_final_transition_intent(
+    tool_context: ManeuverToolContext,
+) -> None:
+    focused = _current_focused_fsm_context(tool_context)
+    if focused.transition_candidates and focused.transition_intent is None:
+        raise ManeuverHeartbeatOrderingError(
+            "the final live FSM state has transition candidates but no valid "
+            "selected Transition Intent"
+        )
+
+
+def _heartbeat_correction_state(
+    response: object,
+    *,
+    original_messages: Sequence[object],
+    tool_context: ManeuverToolContext,
+    error: ManeuverHeartbeatOrderingError,
+) -> dict[str, object]:
+    if not isinstance(response, Mapping):
+        raise ManeuverHeartbeatOrderingError(
+            "Maneuver heartbeat cannot resume an invalid agent state"
+        ) from error
+    state = dict(response)
+    state.pop("structured_response", None)
+    response_messages = state.get("messages")
+    messages = (
+        list(response_messages)
+        if isinstance(response_messages, Sequence)
+        and not isinstance(response_messages, (str, bytes))
+        else list(original_messages)
+    )
+    focused = _current_focused_fsm_context(tool_context)
+    messages.append(
+        HumanMessage(
+            content=json.dumps(
+                {
+                    "completion_correction": str(error),
+                    "fsm_context": focused.to_dict(),
+                    "prohibition": (
+                        "Do not call transition_fsm again in this heartbeat."
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        )
+    )
+    state["messages"] = messages
+    return state
 
 
 class DeepAgentsDecisionProvider:
@@ -557,9 +608,9 @@ def _is_json_value(value: object) -> bool:
     return False
 __all__ = [
     "MANEUVER_CONTROL_DECISION_SCHEMA",
-    "MANEUVER_HEARTBEAT_COMPLETION_SCHEMA",
     "DeepAgentsDecisionProvider",
     "DeepAgentsHeartbeatProvider",
     "DeepAgentsManeuverProvider",
+    "ManeuverHeartbeatOrderingError",
     "create_maneuver_control_agent",
 ]

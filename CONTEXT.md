@@ -197,7 +197,7 @@ A current maneuver intent with lifecycle status and result information represent
 _Avoid_: FSM state, ground truth
 
 **Maneuver Heartbeat**:
-A periodic Maneuver Control Agent invocation that evaluates the current Mission Snapshot and FSM transition candidates.
+A Maneuver Control Agent decision cycle over one injected evidence snapshot, with at most one FSM transition.
 _Avoid_: FSM runner invocation, plan revision
 
 **Statechart**:

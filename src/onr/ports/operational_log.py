@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import re
 from types import MappingProxyType
 from typing import Protocol, TypeAlias, cast
-
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -22,6 +21,7 @@ _SAFE_DETAIL_KEYS = {
     "request_id", "revision", "sequence", "service", "snapshot_id", "source", "state",
     "status", "target_service", "timer_due", "topic", "transition", "translator_id",
     "translator_version", "transport_event_id", "transport_sequence",
+    "initial_intent_id", "successful_tool_calls", "successful_transition_count",
 }
 _SECRET_RE = re.compile(
     r"(?i)(?:api[_ -]?key|secret|token|password|authorization)\s*[:=]\s*[^\s,;]+|"

@@ -42,25 +42,17 @@ class TransportCommunicationPort:
         handler = self._handlers.get(message.recipient)
         if handler is None:
             raise ValueError("agent message recipient is not registered")
-        command = Command(
-            schema_version=1,
-            command_id=message.message_id,
-            correlation_id=message.correlation_id,
-            mission_id=message.mission_id,
-            target_service=message.recipient,
-            command_kind="agent-message",
-            payload=message.to_dict(),
-        )
-        self.transport.send_command(command)
         get_outcome = getattr(self.transport, "get_command_outcome", None)
-        existing = get_outcome(command.command_id) if callable(get_outcome) else None
+        existing = (
+            get_outcome(message.message_id) if callable(get_outcome) else None
+        )
         if existing is not None:
             if not isinstance(existing, CommandOutcome):
                 raise TypeError("communication transport returned an invalid outcome")
             return existing
         with self._identity_locks_guard:
             identity_lock = self._identity_locks.setdefault(
-                command.command_id, Lock()
+                message.message_id, Lock()
             )
         if not identity_lock.acquire(blocking=False):
             return CommandOutcome(
@@ -72,13 +64,26 @@ class TransportCommunicationPort:
                 payload={"status": "already_in_flight"},
             )
         try:
-            existing = get_outcome(command.command_id) if callable(get_outcome) else None
+            existing = (
+                get_outcome(message.message_id) if callable(get_outcome) else None
+            )
             if existing is not None:
                 if not isinstance(existing, CommandOutcome):
                     raise TypeError(
                         "communication transport returned an invalid outcome"
                     )
                 return existing
+            self.transport.send_command(
+                Command(
+                    schema_version=1,
+                    command_id=message.message_id,
+                    correlation_id=message.correlation_id,
+                    mission_id=message.mission_id,
+                    target_service=message.recipient,
+                    command_kind="agent-message",
+                    payload=message.to_dict(),
+                )
+            )
             try:
                 response = handler(message)
                 payload = self._response_payload(response)

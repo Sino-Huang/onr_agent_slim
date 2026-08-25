@@ -478,10 +478,13 @@ class FakeEnvironment:
             remaining_distance = max(entity_distance - standoff, 0.0)
             if remaining_distance > 1e-9:
                 scale = remaining_distance / entity_distance
-                target = tuple(
-                    self.drone_position[index]
-                    + (entity_position[index] - self.drone_position[index]) * scale
-                    for index in range(3)
+                target = (
+                    self.drone_position[0]
+                    + (entity_position[0] - self.drone_position[0]) * scale,
+                    self.drone_position[1]
+                    + (entity_position[1] - self.drone_position[1]) * scale,
+                    self.drone_position[2]
+                    + (entity_position[2] - self.drone_position[2]) * scale,
                 )
         else:
             return None
@@ -771,9 +774,8 @@ class FakeEnvironment:
         source_fact_id = f"source-fact:{self.mission_id}:environment_data:{reference}"
         source_fact = self.transport.get_event(source_fact_id)
         if source_fact is None:
-            source_fact = self.transport.publish_event(
-                self.context_topic,
-                create_source_fact_event(
+            def source_event() -> TransportEvent:
+                return create_source_fact_event(
                     self.mission_id,
                     "environment_data",
                     self._environment_revision,
@@ -782,8 +784,18 @@ class FakeEnvironment:
                         self.context_topic, self.mission_id
                     ),
                     reference=environment_event_id,
-                ),
-            )
+                )
+
+            try:
+                source_fact = self.transport.publish_event(
+                    self.context_topic, source_event()
+                )
+            except ValueError as exc:
+                if str(exc) != "event sequence conflicts with existing content":
+                    raise
+                source_fact = self.transport.publish_event(
+                    self.context_topic, source_event()
+                )
             self._environment_revision += 1
         self._environment_facts[reference] = (environment_event, source_fact)
         self.latest_environment_event = environment_event

@@ -53,14 +53,17 @@ MANEUVER_DEMO_INSTRUCTIONS = """
 For this live post-Hyper patrol demo, act deterministically from the injected
 evidence:
 
-- Interpret the exact live transition context against mission time and other live
-  evidence. Retain the current Transition Intent or call set_transition_target
-  with one exact target. When its condition is satisfied, call transition_fsm
-  once with the exact current state, target, assessment, evidence, and uncertainty.
+- Assess the injected Transition Intent against mission time and other live
+  evidence before considering another target. If none exists, bootstrap one
+  exact target and assess it immediately. When the assessed condition is
+  satisfied, call transition_fsm once with the exact current state, target,
+  assessment, evidence, and uncertainty. If an injected intent is unsuitable,
+  replace it but defer assessment of the replacement to the next heartbeat.
 - After a successful transition, use only the returned current_state_context for
   every remaining physical, belief, or communication choice in that heartbeat;
   do not act on the source-state context. Select the returned state's next target
-  when candidates remain. If phase is moving, call navigate using the
+  when candidates remain, but do not assess it in this heartbeat. If phase is
+  moving, call navigate using the
   planner_assignment_id, desired outcome location, arrival deadline, and a
   runtime-chosen feasible speed. Do not call a
   physical tool for waiting, observing, or complete phases.
@@ -71,8 +74,8 @@ evidence:
 - If environment_data.scene_graph.emergency_override is present, do not attempt
   an early transition. Call land with its maneuver_id, x, and y, even if another
   physical action is active.
-- Do not call tools not directed by these rules. Finish each heartbeat with a
-  completion consistent with the tool effects performed.
+- Do not call tools not directed by these rules. Finish each heartbeat with one
+  concise public summary; Python supplies the completion identities.
 """
 
 

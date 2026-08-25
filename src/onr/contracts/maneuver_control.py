@@ -588,13 +588,6 @@ class InvocationOverlay:
         }
 
 
-class ManeuverHeartbeatOutcome(StrEnum):
-    """Allowed public outcomes of one tool-driven heartbeat."""
-
-    COMPLETED = "completed"
-    NO_CHANGE = "no_change"
-
-
 @dataclass(frozen=True, slots=True)
 class ManeuverInvocation:
     """Model-visible evidence injected for one live Maneuver heartbeat."""
@@ -798,29 +791,21 @@ class ManeuverInvocation:
 
 @dataclass(frozen=True, slots=True)
 class ManeuverHeartbeatCompletion:
-    """Small public completion returned after tool effects have been applied."""
+    """Code-identified completion of one Maneuver heartbeat."""
 
     mission_id: str
     request_id: str
-    outcome: ManeuverHeartbeatOutcome | str
     summary: str
 
     def __post_init__(self) -> None:
         _text(self.mission_id, "Maneuver heartbeat completion Mission ID")
         _text(self.request_id, "Maneuver heartbeat completion request ID")
         _text(self.summary, "Maneuver heartbeat completion summary")
-        try:
-            object.__setattr__(self, "outcome", ManeuverHeartbeatOutcome(self.outcome))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Maneuver heartbeat completion outcome is invalid"
-            ) from exc
 
     def to_dict(self) -> dict[str, object]:
         return {
             "mission_id": self.mission_id,
             "request_id": self.request_id,
-            "outcome": self.outcome,
             "summary": self.summary,
         }
 
@@ -838,14 +823,12 @@ class ManeuverHeartbeatCompletion:
         if not isinstance(value, Mapping) or set(value) != {
             "mission_id",
             "request_id",
-            "outcome",
             "summary",
         }:
             raise ValueError("Maneuver heartbeat completion has invalid fields")
         return cls(
             mission_id=_text(value["mission_id"], "Maneuver completion Mission ID"),
             request_id=_text(value["request_id"], "Maneuver completion request ID"),
-            outcome=_text(value["outcome"], "Maneuver completion outcome"),
             summary=_text(value["summary"], "Maneuver completion summary"),
         )
 
@@ -865,7 +848,6 @@ __all__ = [
     "ManeuverCommand",
     "ManeuverControlDecision",
     "ManeuverHeartbeatCompletion",
-    "ManeuverHeartbeatOutcome",
     "ManeuverInvocation",
     "NonPhysicalChoice",
     "PhysicalAction",

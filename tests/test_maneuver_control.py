@@ -13,7 +13,6 @@ from langchain.agents.middleware import TodoListMiddleware
 import onr.agents.maneuver_control as maneuver_control_agent
 from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
 from onr.agents.maneuver_control import (
-    MANEUVER_HEARTBEAT_COMPLETION_SCHEMA,
     DeepAgentsDecisionProvider,
     create_maneuver_control_agent,
 )
@@ -24,7 +23,6 @@ from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import (
     FSMStatus,
     ManeuverDecision,
-    ManeuverFeedback,
     Statechart,
     StatechartTransition,
     TransitionCandidate,
@@ -426,7 +424,7 @@ def test_typed_decision_response_shapes_return_without_retry() -> None:
         assert len(agent.calls) == 1
 
 
-def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
+def test_agent_factory_receives_private_summary_response_and_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -439,14 +437,10 @@ def test_agent_factory_receives_strict_heartbeat_completion_and_tools(
 
     create_maneuver_control_agent(model="model")
 
-    assert captured["response_format"] is MANEUVER_HEARTBEAT_COMPLETION_SCHEMA
-    assert MANEUVER_HEARTBEAT_COMPLETION_SCHEMA["additionalProperties"] is False
-    assert set(MANEUVER_HEARTBEAT_COMPLETION_SCHEMA["required"]) == {
-        "mission_id",
-        "request_id",
-        "outcome",
-        "summary",
-    }
+    response_format = cast(dict[str, object], captured["response_format"])
+    assert response_format["additionalProperties"] is False
+    assert response_format["required"] == ["summary"]
+    assert set(cast(dict[str, object], response_format["properties"])) == {"summary"}
     assert [item.name for item in captured["tools"]] == [
         "set_transition_target",
         "transition_fsm",

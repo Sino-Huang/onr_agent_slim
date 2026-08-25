@@ -7,14 +7,13 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from threading import Thread
+from threading import RLock, Thread
 from typing import Annotated, Any, Literal, cast
 
 from langchain.tools import ToolRuntime, tool
 from pydantic import Field
 from typing_extensions import TypedDict
 
-from onr.application.bayesian_belief import create_risk_observation_event
 from onr.contracts.bayesian_belief import EntityAssociation, RiskObservation
 from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.environment import EventObservation
@@ -97,14 +96,30 @@ class ManeuverToolExecution:
 
 @dataclass(slots=True)
 class ManeuverHeartbeatExecutionRecord:
-    """Per-heartbeat effects used to validate the final completion."""
+    """Code-owned audit of one heartbeat's initial intent and tool effects."""
 
     executions: list[ManeuverToolExecution] = field(default_factory=list)
     decisions: list[ManeuverControlDecision] = field(default_factory=list)
+    initial_intent_id: str | None = None
+    successful_transition_count: int = 0
+    tool_lock: Any = field(default_factory=RLock, repr=False)
 
     @property
     def successful_count(self) -> int:
         return sum(item.successful for item in self.executions)
+
+    @property
+    def selected_intent_ids(self) -> tuple[str, ...]:
+        selected: list[str] = []
+        for execution in self.executions:
+            if execution.name != "set_transition_target" or not execution.successful:
+                continue
+            intent = execution.result.get("transition_intent")
+            if isinstance(intent, Mapping):
+                intent_id = intent.get("intent_id")
+                if isinstance(intent_id, str):
+                    selected.append(intent_id)
+        return tuple(selected)
 
     def append(
         self,
@@ -115,6 +130,8 @@ class ManeuverHeartbeatExecutionRecord:
         decision: ManeuverControlDecision | None = None,
     ) -> None:
         self.executions.append(ManeuverToolExecution(name, successful, dict(result)))
+        if name == "transition_fsm" and successful:
+            self.successful_transition_count += 1
         if decision is not None:
             self.decisions.append(decision)
 
@@ -139,6 +156,14 @@ class ManeuverToolContext:
     def __post_init__(self) -> None:
         if not isinstance(self.invocation, ManeuverInvocation):
             raise TypeError("Maneuver tools require a ManeuverInvocation")
+        initial_intent = self.invocation.fsm_context.transition_intent
+        initial_intent_id = (
+            initial_intent.intent_id if initial_intent is not None else None
+        )
+        if self.execution_record.initial_intent_id is None:
+            self.execution_record.initial_intent_id = initial_intent_id
+        elif self.execution_record.initial_intent_id != initial_intent_id:
+            raise ValueError("Maneuver execution record initial intent does not match")
         for dependency, method, label in (
             (self.fsm_runner, "status", "FSM Runner"),
             (self.fsm_runner, "apply", "FSM Runner"),
@@ -211,6 +236,11 @@ def _live_fsm_context(context: ManeuverToolContext) -> ManeuverFSMContext:
     return context.invocation.fsm_context
 
 
+def _heartbeat_tool_lock(context: ManeuverToolContext) -> Any:
+    lock = getattr(context.command_dispatcher, "heartbeat_tool_lock", None)
+    return lock if lock is not None else context.execution_record.tool_lock
+
+
 @tool(parse_docstring=True)
 def set_transition_target(
     target_state: str,
@@ -228,6 +258,15 @@ def set_transition_target(
     """
 
     context = _context(runtime)
+    with _heartbeat_tool_lock(context):
+        return _set_transition_target(context, target_state, rationale)
+
+
+def _set_transition_target(
+    context: ManeuverToolContext,
+    target_state: str,
+    rationale: str,
+) -> str:
     journal = _intent_journal(context)
     status = _run(context.fsm_runner.status())
     if not isinstance(status, FSMStatus):
@@ -312,10 +351,41 @@ def transition_fsm(
     """
 
     context = _context(runtime)
+    with _heartbeat_tool_lock(context):
+        return _transition_fsm(
+            context,
+            current_state=current_state,
+            next_state=next_state,
+            assessment=assessment,
+            evidence=evidence,
+            uncertainty=uncertainty,
+        )
+
+
+def _transition_fsm(
+    context: ManeuverToolContext,
+    *,
+    current_state: str,
+    next_state: str,
+    assessment: Literal["satisfied", "satisfied_with_uncertainty"],
+    evidence: str,
+    uncertainty: str,
+) -> str:
     journal = _intent_journal(context)
     status = _run(context.fsm_runner.status())
     if not isinstance(status, FSMStatus):
         raise TypeError("live FSM Runner did not return FSMStatus")
+    if context.execution_record.successful_transition_count >= 1:
+        result = {
+            "status": "rejected",
+            "reason": (
+                "one successful FSM transition is already recorded for this "
+                "Maneuver heartbeat"
+            ),
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
     if (
         status.mission_id != context.invocation.mission_id
         or status.plan_revision != context.invocation.plan_revision
@@ -349,6 +419,35 @@ def transition_fsm(
         result = {
             "status": "rejected",
             "reason": "transition request does not match the current Transition Intent",
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
+    initial_intent_id = context.execution_record.initial_intent_id
+    if (
+        initial_intent_id is not None
+        and intent.intent_id != initial_intent_id
+    ):
+        result = {
+            "status": "rejected",
+            "reason": (
+                "a replacement Transition Intent cannot be assessed until a "
+                "fresh Maneuver heartbeat"
+            ),
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
+    if (
+        initial_intent_id is None
+        and intent.intent_id not in context.execution_record.selected_intent_ids
+    ):
+        result = {
+            "status": "rejected",
+            "reason": (
+                "a heartbeat that began without a Transition Intent must select "
+                "one before transition"
+            ),
             **_candidate_result(status),
         }
         context.execution_record.append("transition_fsm", result, successful=False)
@@ -412,7 +511,7 @@ def _parameters(
     for value in extras.values():
         if value is not None and not isinstance(value, (str, int, float, bool)):
             raise ValueError("extra parameters must contain only JSON scalars")
-    values: dict[str, object] = extras
+    values: dict[str, Any] = dict(extras)
     values.update(required)
     return tuple(ManeuverParameter(name, value) for name, value in values.items())
 
@@ -453,6 +552,55 @@ def _physical(
     parameters: tuple[ManeuverParameter, ...],
     reflection: str,
 ) -> str:
+    with _heartbeat_tool_lock(context):
+        return _physical_once(
+            context,
+            tool_name=tool_name,
+            maneuver_id=maneuver_id,
+            action=action,
+            parameters=parameters,
+            reflection=reflection,
+        )
+
+
+def _physical_once(
+    context: ManeuverToolContext,
+    *,
+    tool_name: str,
+    maneuver_id: str,
+    action: str,
+    parameters: tuple[ManeuverParameter, ...],
+    reflection: str,
+) -> str:
+    status = _run(context.fsm_runner.status())
+    if not isinstance(status, FSMStatus):
+        raise TypeError("live FSM Runner did not return FSMStatus")
+    if (
+        status.mission_id != context.invocation.mission_id
+        or status.plan_revision != context.invocation.plan_revision
+    ):
+        result = {
+            "status": "rejected",
+            "reason": "live FSM status does not match the current Maneuver invocation",
+            **_candidate_result(status),
+        }
+        context.execution_record.append(tool_name, result, successful=False)
+        return _canonical_json(result)
+    if status.transition_candidates:
+        intent = _intent_journal(context).current(
+            status, invalidate_stale=True
+        )
+        if not isinstance(intent, TransitionIntent):
+            result = {
+                "status": "rejected",
+                "reason": (
+                    "a valid Transition Intent is required before a physical "
+                    "action in the current state"
+                ),
+                **_candidate_result(status),
+            }
+            context.execution_record.append(tool_name, result, successful=False)
+            return _canonical_json(result)
     sequence = len(context.execution_record.executions) + 1
     decision = ManeuverControlDecision(
         decision_id=f"maneuver-action:{context.invocation.request_id}:{sequence}",
@@ -513,20 +661,26 @@ def navigate(
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
-    required: dict[str, JsonScalar] = {"x": x, "y": y}
-    if z is not None:
-        required["z"] = z
-    if speed is not None:
-        required["speed"] = speed
-    if deadline_time is not None:
-        required["deadline_time"] = _deadline(deadline_time)
     context = _context(runtime)
+    try:
+        required: dict[str, JsonScalar] = {"x": x, "y": y}
+        if z is not None:
+            required["z"] = z
+        if speed is not None:
+            required["speed"] = speed
+        if deadline_time is not None:
+            required["deadline_time"] = _deadline(deadline_time)
+        parameters = _parameters(required, extra_parameters)
+    except ValueError as exc:
+        result = {"status": "rejected", "reason": str(exc)}
+        context.execution_record.append("navigate", result, successful=False)
+        return _canonical_json(result)
     return _physical(
         context,
         tool_name="navigate",
         maneuver_id=maneuver_id,
         action="navigate",
-        parameters=_parameters(required, extra_parameters),
+        parameters=parameters,
         reflection=reflection,
     )
 
@@ -723,6 +877,8 @@ def ingest_perceptions(
         Completed batch status; new belief content enters later Hyper invocations.
     """
 
+    from onr.application.bayesian_belief import create_risk_observation_event
+
     context = _context(runtime)
     if context.perception_batch_ingested:
         raise RuntimeError("perception batch tool is unavailable after success")
@@ -834,10 +990,19 @@ def communicate(
             or not isinstance(evaluation.get("reason"), str)
             or not cast(str, evaluation.get("reason")).strip()
         ):
-            raise ValueError(
-                "once-per-state-entry communication must exactly match the "
-                "current hyper_evaluation"
+            result = {
+                "status": "rejected",
+                "reason": (
+                    "once-per-state-entry communication does not match the "
+                    "current live hyper_evaluation"
+                ),
+                "current_state": focused.current_state,
+                "state_entry_revision": state_entry_revision,
+            }
+            context.execution_record.append(
+                "communicate", result, successful=False
             )
+            return _canonical_json(result)
         message = cast(str, evaluation["reason"])
         message_id = (
             f"hyper-evaluation:{invocation.mission_id}:"

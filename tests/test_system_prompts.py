@@ -134,7 +134,7 @@ def test_hyper_supervisor_prompt_is_heartbeat_only() -> None:
         assert planning_instruction not in prompt
 
 
-def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -> None:
+def test_maneuver_prompt_enforces_assess_first_single_snapshot_ordering() -> None:
     prompt = load_system_prompt(
         Path(__file__).parents[1] / "conf/system_prompt",
         "maneuver-control",
@@ -146,5 +146,12 @@ def test_maneuver_prompt_uses_semantic_fsm_and_environment_before_transition() -
     assert "set_transition_target" in prompt
     assert "satisfied_with_uncertainty" in prompt
     assert "write_todos" in prompt
-    assert "submitting no physical\n   command" in prompt
+    assert "at\nmost one FSM transition" in prompt
+    assert "assess the injected Transition Intent before considering another" in prompt
+    assert "Do not assess or transition against that new target" in prompt
+    assert "submitting no physical command" in prompt
+    assert "Python supplies\n   the authoritative Mission and request identities" in prompt
     assert "ManeuverHeartbeatCompletion" in prompt
+    assert "do not submit a hold" in prompt
+    assert "Terminal lifecycle alone does not require replacement" in prompt
+    assert "no_change Maneuver heartbeat requires no tool executions" not in prompt

@@ -10,13 +10,19 @@ from typing import Any, cast
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import HumanMessage
 
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport
-from onr.agents.maneuver_control import DeepAgentsHeartbeatProvider
+from onr.adapters.operational_log import InProcessOperationalLog
+from onr.agents.maneuver_control import (
+    DeepAgentsHeartbeatProvider,
+    ManeuverHeartbeatOrderingError,
+)
 from onr.agents.maneuver_tools import (
     MANEUVER_OPERATIONAL_TOOLS,
+    ManeuverHeartbeatExecutionRecord,
     ManeuverToolContext,
     communicate,
     ingest_perceptions,
@@ -39,7 +45,7 @@ from onr.contracts.fsm import ManeuverDecision, Statechart, StatechartTransition
 from onr.contracts.maneuver_control import (
     ManeuverCommand,
     ManeuverControlDecision,
-    ManeuverHeartbeatOutcome,
+    ManeuverHeartbeatCompletion,
     ManeuverInvocation,
 )
 from onr.contracts.planning import (
@@ -51,6 +57,7 @@ from onr.contracts.planning import (
     ScheduledManeuver,
 )
 from onr.contracts.transition_intent import ManeuverFSMContext
+from onr.contracts.transport import TransportEvent
 from onr.demo.fake_environment import FakeEnvironment
 
 
@@ -99,6 +106,75 @@ def _chart(plan: NormalizedPlan) -> Statechart:
                 context={
                     "readiness": {"mission_clock": {"minimum": 10, "unit": "seconds"}}
                 },
+            ),
+        ),
+    )
+
+
+def _assess_first_chart(plan: NormalizedPlan) -> Statechart:
+    return Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="patrol-awaiting-first-assignment",
+        terminal_states=("assignment-1-complete",),
+        states=(
+            "patrol-awaiting-first-assignment",
+            "assignment-1-in-progress",
+            "assignment-1-complete",
+        ),
+        state_context={
+            "patrol-awaiting-first-assignment": {"phase": "waiting"},
+            "assignment-1-in-progress": {
+                "phase": "navigate",
+                "maneuver_id": "patrol-action-185",
+                "target": {"x": 306, "y": -17},
+            },
+            "assignment-1-complete": {"phase": "complete"},
+        },
+        transitions=(
+            StatechartTransition(
+                event="assignment-1-may-begin",
+                source="patrol-awaiting-first-assignment",
+                target="assignment-1-in-progress",
+                context={"not_before": 0.0},
+            ),
+            StatechartTransition(
+                event="assignment-1-outcome-achieved",
+                source="assignment-1-in-progress",
+                target="assignment-1-complete",
+                context={
+                    "not_before": 57.0,
+                    "expected_observation_count": 4,
+                },
+            ),
+        ),
+    )
+
+
+def _branching_chart(plan: NormalizedPlan) -> Statechart:
+    return Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="origin",
+        terminal_states=("destination-a", "destination-b"),
+        states=("origin", "destination-a", "destination-b"),
+        state_context={state: {} for state in ("origin", "destination-a", "destination-b")},
+        transitions=(
+            StatechartTransition(
+                event="choose-a",
+                source="origin",
+                target="destination-a",
+                context={"path": "a"},
+            ),
+            StatechartTransition(
+                event="choose-b",
+                source="origin",
+                target="destination-b",
+                context={"path": "b"},
             ),
         ),
     )
@@ -185,6 +261,28 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
             Any, MANEUVER_OPERATIONAL_TOOLS[tool_index].tool_call_schema
         ).model_json_schema()
         assert "deadline_time" not in schema["properties"]
+
+
+def test_heartbeat_completion_has_only_code_owned_identity_and_summary() -> None:
+    completion = ManeuverHeartbeatCompletion(
+        mission_id="mission-tools",
+        request_id="heartbeat-contract",
+        summary="Completed one decision cycle.",
+    )
+
+    assert completion.to_dict() == {
+        "mission_id": "mission-tools",
+        "request_id": "heartbeat-contract",
+        "summary": "Completed one decision cycle.",
+    }
+    assert ManeuverHeartbeatCompletion.from_json(
+        completion.to_canonical_json()
+    ) == completion
+    assert not hasattr(completion, "outcome")
+    with pytest.raises(ValueError, match="invalid fields"):
+        ManeuverHeartbeatCompletion.from_dict(
+            {**completion.to_dict(), "outcome": "completed"}
+        )
 
 
 def test_nested_polygon_round_trips_through_decisions_and_commands() -> None:
@@ -337,6 +435,617 @@ def test_transition_tool_checks_exact_candidate_without_interpreting_context() -
     assert journal.latest(plan.mission_id).status == "consumed"  # type: ignore[union-attr]
 
 
+def test_assess_first_heartbeat_persists_new_state_intent_for_fresh_evidence(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    transport = FileTransport(tmp_path / "transport")
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_assess_first_chart(plan)))
+    environment = FakeEnvironment(transport, plan.mission_id)
+    operational_log = InProcessOperationalLog()
+
+    class Agent:
+        def __init__(self) -> None:
+            self.invocation_count = 0
+
+        def invoke(
+            self,
+            state: dict[str, object],
+            *,
+            context: ManeuverToolContext,
+            **_: object,
+        ) -> dict[str, object]:
+            self.invocation_count += 1
+            now = context.invocation.environment_data["mission_time_seconds"]
+            if now == 0:
+                runtime = _runtime(context)
+                cast(Any, set_transition_target).func(
+                    target_state="assignment-1-in-progress",
+                    rationale="Bootstrap the first current-state target.",
+                    runtime=runtime,
+                )
+                cast(Any, transition_fsm).func(
+                    current_state="patrol-awaiting-first-assignment",
+                    next_state="assignment-1-in-progress",
+                    assessment="satisfied",
+                    evidence="The initial assignment is available at Mission time zero.",
+                    uncertainty="None.",
+                    runtime=runtime,
+                )
+                cast(Any, set_transition_target).func(
+                    target_state="assignment-1-complete",
+                    rationale="Track the outcome condition for the active assignment.",
+                    runtime=runtime,
+                )
+                cast(Any, navigate).func(
+                    maneuver_id="patrol-action-185",
+                    x=306,
+                    y=-17,
+                    speed=1,
+                    deadline_time=16.5,
+                    reflection="Navigate using the newly active state's outcome facts.",
+                    runtime=runtime,
+                )
+            else:
+                assert now == 5
+                intent = context.invocation.fsm_context.transition_intent
+                assert intent is not None
+                assert intent.target_state == "assignment-1-complete"
+                assert intent.condition["not_before"] == 57.0
+            return {
+                **state,
+                "structured_response": {
+                    "summary": "Applied one assess-first decision cycle.",
+                },
+            }
+
+    agent = Agent()
+    control = ManeuverControl(
+        cast(Any, transport),
+        environment,
+        DeepAgentsHeartbeatProvider(agent),
+        fsm_runner=runner,
+        environment_authority=environment,
+        transition_intents=journal,
+        operational_log=operational_log,
+    )
+
+    first = ManeuverInvocation(
+        request_id="heartbeat-assess-first-0",
+        correlation_id="correlation-assess-first",
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        statechart_reference="assess-first-statechart.json",
+        fsm_context=journal.focused_context(status, None),
+        environment_data={"mission_time_seconds": 0},
+    )
+    first_completion = control.heartbeat(first)
+    assert isinstance(first_completion, ManeuverHeartbeatCompletion)
+    first_record = control.last_execution_record
+    assert isinstance(first_record, ManeuverHeartbeatExecutionRecord)
+    assert first_record.initial_intent_id is None
+    assert first_record.successful_transition_count == 1
+    assert [item.name for item in first_record.executions] == [
+        "set_transition_target",
+        "transition_fsm",
+        "set_transition_target",
+        "navigate",
+    ]
+    assert environment.current_maneuver["maneuver_id"] == "patrol-action-185"  # type: ignore[index]
+
+    for _ in range(10):
+        environment.tick()
+    live = asyncio.run(runner.status())
+    assert live is not None
+    persisted = journal.current(live)
+    assert persisted is not None
+    second = ManeuverInvocation(
+        request_id="heartbeat-assess-first-5",
+        correlation_id="correlation-assess-first",
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        statechart_reference="assess-first-statechart.json",
+        fsm_context=journal.focused_context(live, persisted),
+        environment_data={"mission_time_seconds": 5},
+    )
+
+    second_completion = control.heartbeat(second)
+    assert isinstance(second_completion, ManeuverHeartbeatCompletion)
+    second_record = control.last_execution_record
+    assert isinstance(second_record, ManeuverHeartbeatExecutionRecord)
+    assert second_record.initial_intent_id == persisted.intent_id
+    assert second_record.successful_transition_count == 0
+    assert second_record.executions == []
+    assert agent.invocation_count == 2
+    assert environment.current_maneuver["command_id"] == "maneuver:heartbeat-assess-first-0:4"  # type: ignore[index]
+    heartbeat_records = [
+        item
+        for item in operational_log.replay(plan.mission_id)
+        if item.event_kind == "heartbeat"
+    ]
+    assert [item.outcome for item in heartbeat_records] == ["completed", "completed"]
+    assert [
+        item.details["successful_transition_count"] for item in heartbeat_records
+    ] == [1, 0]
+
+
+def test_second_successful_transition_is_rejected_with_new_intent_retained() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_assess_first_chart(plan)))
+    invocation = ManeuverInvocation(
+        "heartbeat-one-snapshot",
+        "correlation-one-snapshot",
+        plan.mission_id,
+        plan.plan_revision,
+        "assess-first-statechart.json",
+        journal.focused_context(status, None),
+        {"mission_time_seconds": 0},
+    )
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    runtime = _runtime(context)
+
+    cast(Any, set_transition_target).func(
+        target_state="assignment-1-in-progress",
+        rationale="Bootstrap the initial target.",
+        runtime=runtime,
+    )
+    first = json.loads(
+        cast(Any, transition_fsm).func(
+            current_state="patrol-awaiting-first-assignment",
+            next_state="assignment-1-in-progress",
+            assessment="satisfied",
+            evidence="The initial condition is satisfied.",
+            uncertainty="None.",
+            runtime=runtime,
+        )
+    )
+    selected = json.loads(
+        cast(Any, set_transition_target).func(
+            target_state="assignment-1-complete",
+            rationale="Select the new state's target for later assessment.",
+            runtime=runtime,
+        )
+    )
+    second = json.loads(
+        cast(Any, transition_fsm).func(
+            current_state="assignment-1-in-progress",
+            next_state="assignment-1-complete",
+            assessment="satisfied",
+            evidence="Reused evidence from the same injected snapshot.",
+            uncertainty="None.",
+            runtime=runtime,
+        )
+    )
+
+    assert first["status"] == "transitioned"
+    assert second["status"] == "rejected"
+    assert "one successful FSM transition" in second["reason"]
+    assert context.execution_record.successful_transition_count == 1
+    live = asyncio.run(runner.status())
+    assert live is not None and live.active_state == "assignment-1-in-progress"
+    retained = journal.current(live)
+    assert retained is not None
+    assert retained.intent_id == selected["transition_intent"]["intent_id"]
+
+
+def test_retargeted_injected_intent_cannot_transition_until_fresh_heartbeat() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_branching_chart(plan)))
+    original = journal.select(
+        status,
+        "destination-a",
+        "Initially prefer route A.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-retarget",
+        "correlation-retarget",
+        plan.mission_id,
+        plan.plan_revision,
+        "branching-statechart.json",
+        journal.focused_context(status, original),
+        {"mission_time_seconds": 5},
+    )
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    runtime = _runtime(context)
+
+    replacement_result = json.loads(
+        cast(Any, set_transition_target).func(
+            target_state="destination-b",
+            rationale="Fresh evidence makes route A unsuitable.",
+            runtime=runtime,
+        )
+    )
+    premature = json.loads(
+        cast(Any, transition_fsm).func(
+            current_state="origin",
+            next_state="destination-b",
+            assessment="satisfied",
+            evidence="Evidence used to reject route A.",
+            uncertainty="None.",
+            runtime=runtime,
+        )
+    )
+
+    replacement = journal.latest(plan.mission_id)
+    assert replacement is not None
+    assert replacement.intent_id == replacement_result["transition_intent"]["intent_id"]
+    assert premature["status"] == "rejected"
+    assert "fresh Maneuver heartbeat" in premature["reason"]
+    assert context.execution_record.successful_transition_count == 0
+    live = asyncio.run(runner.status())
+    assert live is not None and live.active_state == "origin"
+
+    fresh_invocation = ManeuverInvocation(
+        "heartbeat-retarget-fresh",
+        "correlation-retarget",
+        plan.mission_id,
+        plan.plan_revision,
+        "branching-statechart.json",
+        journal.focused_context(live, replacement),
+        {"mission_time_seconds": 10},
+    )
+    fresh_context = ManeuverToolContext(
+        fresh_invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    transitioned = json.loads(
+        cast(Any, transition_fsm).func(
+            current_state="origin",
+            next_state="destination-b",
+            assessment="satisfied",
+            evidence="Fresh heartbeat evidence satisfies route B.",
+            uncertainty="None.",
+            runtime=_runtime(fresh_context),
+        )
+    )
+    assert transitioned["status"] == "transitioned"
+    assert fresh_context.execution_record.initial_intent_id == replacement.intent_id
+    assert fresh_context.execution_record.successful_transition_count == 1
+
+
+def test_physical_action_is_rejected_when_live_candidates_have_no_intent() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_branching_chart(plan)))
+    invocation = ManeuverInvocation(
+        "heartbeat-physical-without-intent",
+        "correlation-physical-without-intent",
+        plan.mission_id,
+        plan.plan_revision,
+        "branching-statechart.json",
+        journal.focused_context(status, None),
+        {"mission_time_seconds": 0},
+    )
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+
+    result = json.loads(
+        cast(Any, navigate).func(
+            maneuver_id="premature-navigation",
+            x=1,
+            y=2,
+            reflection="This action must wait for target selection.",
+            runtime=_runtime(context),
+        )
+    )
+
+    assert result["status"] == "rejected"
+    assert "valid Transition Intent" in result["reason"]
+    assert [item.name for item in context.execution_record.executions] == ["navigate"]
+    assert context.execution_record.executions[0].successful is False
+
+
+def test_missing_post_transition_intent_resumes_same_episode_once() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_assess_first_chart(plan)))
+    initial = journal.select(
+        status,
+        "assignment-1-in-progress",
+        "Select the injected target before the heartbeat.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-correct-selection",
+        "correlation-correct-selection",
+        plan.mission_id,
+        plan.plan_revision,
+        "assess-first-statechart.json",
+        journal.focused_context(status, initial),
+        {"mission_time_seconds": 5},
+    )
+    todo_state = [{"content": "one heartbeat-local cycle", "status": "in_progress"}]
+
+    class Agent:
+        def __init__(self) -> None:
+            self.states: list[dict[str, object]] = []
+
+        def invoke(
+            self,
+            state: dict[str, object],
+            *,
+            context: ManeuverToolContext,
+            **_: object,
+        ) -> dict[str, object]:
+            self.states.append(state)
+            runtime = _runtime(context)
+            if len(self.states) == 1:
+                transitioned = json.loads(
+                    cast(Any, transition_fsm).func(
+                        current_state="patrol-awaiting-first-assignment",
+                        next_state="assignment-1-in-progress",
+                        assessment="satisfied",
+                        evidence="The injected intent condition is satisfied.",
+                        uncertainty="None.",
+                        runtime=runtime,
+                    )
+                )
+                assert transitioned["status"] == "transitioned"
+                return {
+                    "messages": [
+                        *cast(list[object], state["messages"]),
+                        HumanMessage(content="preserved-first-response"),
+                    ],
+                    "todos": todo_state,
+                    "structured_response": {"summary": "Premature completion."},
+                }
+
+            assert state["todos"] is todo_state
+            assert "structured_response" not in state
+            messages = cast(list[HumanMessage], state["messages"])
+            assert messages[-2].content == "preserved-first-response"
+            correction = json.loads(cast(str, messages[-1].content))
+            assert correction["fsm_context"]["current_state"] == (
+                "assignment-1-in-progress"
+            )
+            assert correction["fsm_context"]["transition_intent"] is None
+            assert correction["prohibition"] == (
+                "Do not call transition_fsm again in this heartbeat."
+            )
+            cast(Any, set_transition_target).func(
+                target_state="assignment-1-complete",
+                rationale="Select the new state's target without assessing it.",
+                runtime=runtime,
+            )
+            return {
+                **state,
+                "structured_response": {"summary": "Selected the deferred target."},
+            }
+
+    agent = Agent()
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    completion = DeepAgentsHeartbeatProvider(agent).heartbeat(invocation, context)
+
+    assert completion.summary == "Selected the deferred target."
+    assert len(agent.states) == 2
+    assert context.execution_record.successful_transition_count == 1
+    assert [item.name for item in context.execution_record.executions] == [
+        "transition_fsm",
+        "set_transition_target",
+    ]
+    live = asyncio.run(runner.status())
+    assert live is not None and live.active_state == "assignment-1-in-progress"
+    assert journal.current(live) is not None
+    assert invocation.environment_data["mission_time_seconds"] == 5
+
+
+def test_terminal_transition_completion_requires_no_new_intent() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the terminal target.",
+        selected_at=10,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-terminal",
+        "correlation-terminal",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 10},
+    )
+
+    class Agent:
+        calls = 0
+
+        def invoke(
+            self,
+            state: dict[str, object],
+            *,
+            context: ManeuverToolContext,
+            **_: object,
+        ) -> dict[str, object]:
+            self.calls += 1
+            result = json.loads(
+                cast(Any, transition_fsm).func(
+                    current_state="arbitrary origin",
+                    next_state="arbitrary destination",
+                    assessment="satisfied",
+                    evidence="The terminal condition is satisfied.",
+                    uncertainty="None.",
+                    runtime=_runtime(context),
+                )
+            )
+            assert result["status"] == "transitioned"
+            return {
+                **state,
+                "structured_response": {"summary": "Reached the terminal state."},
+            }
+
+    agent = Agent()
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    completion = DeepAgentsHeartbeatProvider(agent).heartbeat(invocation, context)
+
+    assert completion.summary == "Reached the terminal state."
+    assert agent.calls == 1
+    live = asyncio.run(runner.status())
+    assert live is not None and live.transition_candidates == ()
+    assert journal.current(live) is None
+
+
+def test_failed_post_transition_selection_correction_raises_ordering_error() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_assess_first_chart(plan)))
+    intent = journal.select(
+        status,
+        "assignment-1-in-progress",
+        "Select the injected target.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-failed-correction",
+        "correlation-failed-correction",
+        plan.mission_id,
+        plan.plan_revision,
+        "assess-first-statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 0},
+    )
+
+    class Agent:
+        calls = 0
+
+        def invoke(
+            self,
+            state: dict[str, object],
+            *,
+            context: ManeuverToolContext,
+            **_: object,
+        ) -> dict[str, object]:
+            self.calls += 1
+            if self.calls == 1:
+                cast(Any, transition_fsm).func(
+                    current_state="patrol-awaiting-first-assignment",
+                    next_state="assignment-1-in-progress",
+                    assessment="satisfied",
+                    evidence="The injected target is satisfied.",
+                    uncertainty="None.",
+                    runtime=_runtime(context),
+                )
+            return {
+                **state,
+                "structured_response": {"summary": "Still missing a selection."},
+            }
+
+    agent = Agent()
+    operational_log = InProcessOperationalLog()
+    control = ManeuverControl(
+        cast(Any, transport),
+        cast(Any, object()),
+        DeepAgentsHeartbeatProvider(agent),
+        operational_log=operational_log,
+        fsm_runner=runner,
+        transition_intents=journal,
+    )
+
+    with pytest.raises(
+        ManeuverHeartbeatOrderingError,
+        match="correction did not select",
+    ):
+        control.heartbeat(invocation)
+
+    assert agent.calls == 2
+    record = control.last_execution_record
+    assert isinstance(record, ManeuverHeartbeatExecutionRecord)
+    assert record.successful_transition_count == 1
+    heartbeat_record = operational_log.replay(plan.mission_id)[-1]
+    assert heartbeat_record.event_kind == "heartbeat"
+    assert heartbeat_record.outcome == "failed"
+    assert heartbeat_record.details["error_type"] == (
+        "ManeuverHeartbeatOrderingError"
+    )
+
+
+def test_provider_failure_emits_durable_failed_heartbeat_record() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    operational_log = InProcessOperationalLog()
+    invocation = ManeuverInvocation(
+        "heartbeat-provider-failure",
+        "correlation-provider-failure",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {"mission_time_seconds": 0},
+    )
+
+    class Provider:
+        def heartbeat(self, *_: object) -> ManeuverHeartbeatCompletion:
+            raise RuntimeError("provider unavailable")
+
+    control = ManeuverControl(
+        cast(Any, transport),
+        cast(Any, object()),
+        Provider(),
+        operational_log=operational_log,
+        fsm_runner=runner,
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        control.heartbeat(invocation)
+
+    records = operational_log.replay(plan.mission_id)
+    assert len(records) == 1
+    assert records[0].source == "maneuver-control"
+    assert records[0].event_kind == "heartbeat"
+    assert records[0].outcome == "failed"
+    assert records[0].details["operation"] == "maneuver_heartbeat"
+    assert records[0].details["request_id"] == invocation.request_id
+    assert records[0].details["error_type"] == "RuntimeError"
+    assert isinstance(control.last_execution_record, ManeuverHeartbeatExecutionRecord)
+
+
 def test_fake_environment_activates_ticks_and_overrides(tmp_path: Path) -> None:
     transport = FileTransport(tmp_path)
     environment = FakeEnvironment(transport, "mission-tools")
@@ -374,21 +1083,89 @@ def test_fake_environment_activates_ticks_and_overrides(tmp_path: Path) -> None:
     assert graph["mission_time_seconds"] == 0.5  # type: ignore[index]
 
 
+def test_fake_environment_survives_concurrent_context_sequence_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = FileTransport(tmp_path / "transport")
+    environment = FakeEnvironment(transport, "mission-tools")
+    command = ManeuverCommand(
+        "command-concurrent-publication",
+        "correlation",
+        "mission-tools",
+        2,
+        "concurrent-publication-navigation",
+        ManeuverIntent(
+            "navigate",
+            (ManeuverParameter("x", 1), ManeuverParameter("y", 1)),
+        ),
+    )
+    original_publish = transport.publish_event
+    inserted = False
+    competing_sequence: int | None = None
+
+    def publish_with_competitor(topic: str, event: object) -> object:
+        nonlocal competing_sequence, inserted
+        if (
+            not inserted
+            and topic == environment.context_topic
+            and isinstance(event, TransportEvent)
+            and event.payload.get("source") == "environment_data"
+        ):
+            inserted = True
+            competing_sequence = event.sequence
+            original_publish(
+                topic,
+                TransportEvent(
+                    schema_version=1,
+                    event_id="belief.updated:mission-tools:concurrent",
+                    mission_id="mission-tools",
+                    sequence=event.sequence,
+                    event_kind="belief.updated",
+                    payload={"belief_revision": 99},
+                ),
+            )
+        return original_publish(topic, cast(Any, event))
+
+    monkeypatch.setattr(transport, "publish_event", publish_with_competitor)
+
+    result = environment.submit(command)
+
+    assert inserted is True
+    assert result.command == command
+    latest = transport.latest_event(
+        environment.context_topic,
+        environment.mission_id,
+        event_kind="source-fact",
+    )
+    assert latest is not None
+    assert latest.payload["source"] == "environment_data"
+    assert competing_sequence is not None
+    assert latest.sequence == competing_sequence + 1
+
+
 def test_physical_tools_submit_and_override_without_application_gate(
     tmp_path: Path,
 ) -> None:
     plan = _plan()
     transport = FileTransport(tmp_path / "transport")
     environment = FakeEnvironment(transport, plan.mission_id)
+    journal = TransitionIntentJournal(transport)
     runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the target before choosing a physical action.",
+        selected_at=10,
+    )
     invocation = ManeuverInvocation(
         "heartbeat-actions",
         "action-correlation",
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        _focused(status),
+        journal.focused_context(status, intent),
         {"mission_time_seconds": 10},
     )
     control = ManeuverControl(
@@ -397,8 +1174,11 @@ def test_physical_tools_submit_and_override_without_application_gate(
         object(),
         fsm_runner=runner,
         environment_authority=environment,
+        transition_intents=journal,
     )
-    context = ManeuverToolContext(invocation, runner, control)
+    context = ManeuverToolContext(
+        invocation, runner, control, transition_intents=journal
+    )
 
     first = json.loads(
         cast(Any, navigate).func(
@@ -415,7 +1195,9 @@ def test_physical_tools_submit_and_override_without_application_gate(
         "x": 100,
         "y": 200,
     }
-    copied_context = ManeuverToolContext(invocation, runner, control)
+    copied_context = ManeuverToolContext(
+        invocation, runner, control, transition_intents=journal
+    )
     retained = json.loads(
         cast(Any, navigate).func(
             maneuver_id="not-in-normalized-plan",
@@ -433,7 +1215,7 @@ def test_physical_tools_submit_and_override_without_application_gate(
         "x": 100,
         "y": 200,
     }
-    with pytest.raises(ValueError, match="retired observation parameters"):
+    rejected = json.loads(
         cast(Any, navigate).func(
             maneuver_id="retired-window",
             x=1,
@@ -442,6 +1224,9 @@ def test_physical_tools_submit_and_override_without_application_gate(
             reflection="Retired sensing parameters must not pass through extras.",
             runtime=_runtime(context),
         )
+    )
+    assert rejected["status"] == "rejected"
+    assert "retired observation parameters" in rejected["reason"]
     second = json.loads(
         cast(Any, land).func(
             maneuver_id="emergency-landing",
@@ -465,15 +1250,22 @@ def test_physical_tools_submit_and_override_without_application_gate(
 def test_concurrent_copied_contexts_submit_same_action_once() -> None:
     plan = _plan()
     transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
     runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the shared action's transition target.",
+        selected_at=10,
+    )
     invocation = ManeuverInvocation(
         "heartbeat-concurrent-action",
         "action-correlation",
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        _focused(status),
+        journal.focused_context(status, intent),
         {"mission_time_seconds": 10},
     )
 
@@ -493,7 +1285,9 @@ def test_concurrent_copied_contexts_submit_same_action_once() -> None:
     errors: list[BaseException] = []
 
     def invoke(speed: float) -> None:
-        context = ManeuverToolContext(invocation, runner, control)
+        context = ManeuverToolContext(
+            invocation, runner, control, transition_intents=journal
+        )
         try:
             results.append(
                 json.loads(
@@ -526,6 +1320,197 @@ def test_concurrent_copied_contexts_submit_same_action_once() -> None:
     }
 
 
+def test_parallel_physical_calls_share_one_heartbeat_status_gate() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    base_runner = FSMRunner(
+        cast(Any, transport), store=InMemoryFSMStateStore()
+    )
+    status = asyncio.run(base_runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the shared parallel action target.",
+        selected_at=10,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-parallel-action",
+        "parallel-action-correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 10},
+    )
+
+    class ContendedRunner:
+        def __init__(self) -> None:
+            self.lock = asyncio.Lock()
+            self.entered = Event()
+
+        async def status(self) -> object:
+            async with self.lock:
+                self.entered.set()
+                await asyncio.sleep(0.05)
+                return status
+
+        async def apply(self, *_: object) -> object:
+            raise AssertionError("FSM transition was not expected")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def submit(self, _: object) -> None:
+            self.calls += 1
+
+    runner = ContendedRunner()
+    adapter = Adapter()
+    control = ManeuverControl(cast(Any, transport), cast(Any, adapter), object())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        control,
+        transition_intents=journal,
+    )
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            results.append(
+                json.loads(
+                    cast(Any, navigate).func(
+                        maneuver_id="parallel-action",
+                        x=100,
+                        y=200,
+                        reflection="Submit one deduplicated parallel action.",
+                        runtime=_runtime(context),
+                    )
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - assert thread failures.
+            errors.append(exc)
+
+    first = Thread(target=invoke, daemon=True)
+    second = Thread(target=invoke, daemon=True)
+    first.start()
+    assert runner.entered.wait(1)
+    second.start()
+    first.join(1)
+    second.join(1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert adapter.calls == 1
+    assert {result["status"] for result in results} == {
+        "submitted",
+        "retained_active_action",
+    }
+
+
+def test_parallel_target_selection_and_physical_action_share_fsm_gate() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    base_runner = FSMRunner(
+        cast(Any, transport), store=InMemoryFSMStateStore()
+    )
+    status = asyncio.run(base_runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the target before the parallel tool turn.",
+        selected_at=10,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-parallel-selection-action",
+        "parallel-selection-action-correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 10},
+    )
+
+    class ContendedRunner:
+        def __init__(self) -> None:
+            self.lock = asyncio.Lock()
+            self.entered = Event()
+
+        async def status(self) -> object:
+            async with self.lock:
+                self.entered.set()
+                await asyncio.sleep(0.05)
+                return status
+
+        async def apply(self, *_: object) -> object:
+            raise AssertionError("FSM transition was not expected")
+
+    class Adapter:
+        def submit(self, _: object) -> None:
+            return None
+
+    runner = ContendedRunner()
+    control = ManeuverControl(cast(Any, transport), Adapter(), object())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        control,
+        transition_intents=journal,
+    )
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+
+    def select() -> None:
+        try:
+            results.append(
+                json.loads(
+                    cast(Any, set_transition_target).func(
+                        target_state="arbitrary destination",
+                        rationale="Retain the injected target.",
+                        runtime=_runtime(context),
+                    )
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - assert thread failures.
+            errors.append(exc)
+
+    def act() -> None:
+        try:
+            results.append(
+                json.loads(
+                    cast(Any, navigate).func(
+                        maneuver_id="parallel-selection-action",
+                        x=100,
+                        y=200,
+                        reflection="Act only after target selection is visible.",
+                        runtime=_runtime(context),
+                    )
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - assert thread failures.
+            errors.append(exc)
+
+    selection = Thread(target=select, daemon=True)
+    physical = Thread(target=act, daemon=True)
+    selection.start()
+    assert runner.entered.wait(1)
+    physical.start()
+    selection.join(1)
+    physical.join(1)
+
+    assert not selection.is_alive()
+    assert not physical.is_alive()
+    assert errors == []
+    assert {result["status"] for result in results} == {
+        "retained",
+        "submitted",
+    }
+
+
 def test_correlated_communication_is_persisted_and_idempotent() -> None:
     port = TransportCommunicationPort(cast(Any, InProcessTransport()))
     seen: list[AgentMessage] = []
@@ -548,6 +1533,42 @@ def test_correlated_communication_is_persisted_and_idempotent() -> None:
     assert first == second
     assert len(seen) == 1
     assert first.correlation_id == message.correlation_id
+
+
+def test_completed_stable_communication_returns_outcome_before_payload_comparison() -> None:
+    transport = InProcessTransport()
+    port = TransportCommunicationPort(cast(Any, transport))
+    seen: list[AgentMessage] = []
+    port.register(
+        "hyper-agent",
+        lambda message: seen.append(message) or {"status": "queued"},
+    )
+    first = AgentMessage(
+        "stable-evaluation",
+        "correlation-1",
+        "mission-tools",
+        2,
+        "maneuver-control",
+        "hyper-agent",
+        "replan",
+        {"message": "Canonical reason.", "source_revisions": {"environment": 1}},
+    )
+    later_snapshot = AgentMessage(
+        "stable-evaluation",
+        "correlation-1",
+        "mission-tools",
+        2,
+        "maneuver-control",
+        "hyper-agent",
+        "replan",
+        {"message": "Canonical reason.", "source_revisions": {"environment": 2}},
+    )
+
+    original = port.request(first)
+    repeated = port.request(later_snapshot)
+
+    assert repeated == original
+    assert len(seen) == 1
 
 
 def test_duplicate_communication_while_running_returns_in_flight() -> None:
@@ -905,17 +1926,25 @@ def test_failed_perception_ingestion_remains_available_for_retry(
     )
 
 
-def test_todo_only_heartbeat_can_complete_with_no_change() -> None:
+def test_todo_only_heartbeat_retains_intent_and_returns_typed_completion() -> None:
     plan = _plan()
-    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Retain this unsatisfied intent.",
+        selected_at=0,
+    )
     invocation = ManeuverInvocation(
         "heartbeat-no-change",
         "correlation",
         plan.mission_id,
         plan.plan_revision,
         "statechart.json",
-        _focused(status),
+        journal.focused_context(status, intent),
         {"mission_time_seconds": 0},
     )
 
@@ -925,17 +1954,145 @@ def test_todo_only_heartbeat_can_complete_with_no_change() -> None:
         def invoke(self, *_: object, **__: object) -> dict[str, object]:
             return {
                 "structured_response": {
-                    "mission_id": plan.mission_id,
-                    "request_id": invocation.request_id,
-                    "outcome": "no_change",
                     "summary": "Current evidence warrants no effect.",
                 }
             }
 
-    context = ManeuverToolContext(invocation, runner, _Dispatcher())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
     completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
-    assert completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE
+    assert completion.mission_id == invocation.mission_id
+    assert completion.request_id == invocation.request_id
     assert context.execution_record.executions == []
+
+
+def test_rejected_tool_heartbeat_returns_normal_typed_completion() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_branching_chart(plan)))
+    intent = journal.select(
+        status,
+        "destination-a",
+        "Retain the valid injected intent.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-rejected-tool",
+        "correlation-rejected-tool",
+        plan.mission_id,
+        plan.plan_revision,
+        "branching-statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 0},
+    )
+
+    class Agent:
+        def invoke(
+            self,
+            state: dict[str, object],
+            *,
+            context: ManeuverToolContext,
+            **_: object,
+        ) -> dict[str, object]:
+            rejected = json.loads(
+                cast(Any, set_transition_target).func(
+                    target_state="unknown-destination",
+                    rationale="Exercise a rejected tool call.",
+                    runtime=_runtime(context),
+                )
+            )
+            assert rejected["status"] == "rejected"
+            return {
+                **state,
+                "structured_response": {"summary": "Retained the valid intent."},
+            }
+
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert completion.summary == "Retained the valid intent."
+    assert len(context.execution_record.executions) == 1
+    assert context.execution_record.executions[0].successful is False
+
+
+def test_rejected_stale_evaluation_communication_can_complete_heartbeat() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Retain the valid target while rejecting stale communication.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-rejected-communication",
+        "correlation-rejected-communication",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 0},
+        available_recipients=("hyper-agent",),
+    )
+    communication = TransportCommunicationPort(cast(Any, InProcessTransport()))
+    communication.register(
+        "hyper-agent", lambda _: {"disposition": "no_change"}
+    )
+
+    class Agent:
+        def invoke(
+            self,
+            state: dict[str, object],
+            *,
+            context: ManeuverToolContext,
+            **_: object,
+        ) -> dict[str, object]:
+            rejected = json.loads(
+                cast(Any, communicate).func(
+                    recipient="hyper-agent",
+                    kind="replan",
+                    message="This evaluation belongs to an earlier state.",
+                    reflection="Reject stale state-entry communication.",
+                    evaluation_id="stale-evaluation",
+                    delivery_policy="once_per_state_entry",
+                    runtime=_runtime(context),
+                )
+            )
+            assert rejected["status"] == "rejected"
+            return {
+                **state,
+                "structured_response": {
+                    "summary": "Retained the current intent after rejection."
+                },
+            }
+
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        communication_port=communication,
+        transition_intents=journal,
+    )
+    completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert completion.summary == "Retained the current intent after rejection."
+    assert len(context.execution_record.executions) == 1
+    assert context.execution_record.executions[0].name == "communicate"
+    assert context.execution_record.executions[0].successful is False
 
 
 def test_unchanged_target_and_suitable_active_action_submit_no_command() -> None:
@@ -971,9 +2128,6 @@ def test_unchanged_target_and_suitable_active_action_submit_no_command() -> None
         def invoke(self, *_: object, **__: object) -> dict[str, object]:
             return {
                 "structured_response": {
-                    "mission_id": plan.mission_id,
-                    "request_id": invocation.request_id,
-                    "outcome": "no_change",
                     "summary": "The active action remains suitable.",
                 }
             }
@@ -986,5 +2140,6 @@ def test_unchanged_target_and_suitable_active_action_submit_no_command() -> None
     )
     completion = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
 
-    assert completion.outcome is ManeuverHeartbeatOutcome.NO_CHANGE
+    assert completion.mission_id == invocation.mission_id
+    assert completion.request_id == invocation.request_id
     assert context.execution_record.executions == []
