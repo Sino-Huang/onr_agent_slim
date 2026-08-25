@@ -308,34 +308,39 @@ function regionHyper(oy) {
   const h = 452;
   const shell = regionShell(oy, h, "hyper",
     "Hyper Agent — phase pipeline",
-    "DeepAgents · phase-gated tools · verified planner revision + statechart");
+    "Mission Snapshot + belief snapshot input · phase-gated tools · verified revision → planning-evidence");
   const chainY = oy + 180;
   const boxes = PHASES.map((_, i) => box(26 + i * 198, chainY, 170, 84));
   const llmBox = box(40, oy + 72, 230, 56);
+  // snapshot-authorized input: the Mission Snapshot authorizes the belief snapshot
+  const inBox = box(330, oy + 72, 300, 48);
   const solverBox = box(760, oy + 320, 218, 56);
-  const termBox = box(980, oy + 66, 216, 46);
+  const termBox = box(964, oy + 66, 232, 46);
 
   let svg = shell.open;
   // edges first (under nodes)
+  svg += edge(port(inBox, "W"), port(llmBox, "E"), { kind: "data" });
   svg += edge(port(llmBox, "S"), port(boxes[0], "N"), { label: "phase-gated tools", kind: "llm" });
   for (let i = 0; i < boxes.length - 1; i++) {
     svg += edge(port(boxes[i], "E"), port(boxes[i + 1], "W"), {});
   }
   svg += edge(port(boxes[4], "S", 0.25), port(solverBox, "N", 0.25), { label: "invoke" });
   svg += edge(port(solverBox, "N", 0.75), port(boxes[4], "S", 0.75), { label: "plan ∨ rejection", kind: "retry" });
+  // handoff: the verified revision is published on planning-evidence
+  svg += edge(port(boxes[5], "N", 0.8), port(termBox, "S", 0.8), {});
   // retry loops route around the outside of the chain
   svg += edge(port(boxes[4], "N"), port(boxes[1], "N"),
-    { label: "rejection + repair ↺ ≤ max_planner_attempts", kind: "retry", clear: oy + 124 });
-  svg += edge(port(boxes[5], "N", 0.3), port(boxes[5], "N", 0.7),
-    { label: "schema + machine-build validation ↺ ≤ max_statechart_attempts", kind: "retry", clear: oy + 141 });
-  svg += edge(port(boxes[5], "N", 0.8), port(termBox, "S", 0.8), {});
+    { label: "rejection + repair ↺ ≤ max_planner_attempts", kind: "retry", clear: oy + 134 });
+  svg += edge(port(boxes[5], "N", 0.2), port(boxes[5], "N", 0.6),
+    { label: "schema + machine-build ↺ ≤ max_statechart_attempts", kind: "retry", clear: oy + 141 });
   // nodes
+  svg += node(inBox, { kind: "data", title: "Mission Snapshot + belief snapshot", caption: "belief-aware, snapshot-authorized planning / replanning input" });
   svg += node(llmBox, { kind: "llm", title: "DeepAgents LLM", caption: "reasons + calls phase-gated tools" });
   PHASES.forEach((phase, i) => {
     svg += node(boxes[i], { kind: phase.kind, num: phase.num, title: phase.title, caption: phase.caption, mono: true });
   });
   svg += node(solverBox, { kind: "tool", title: "planner engines", caption: "MiniZinc / Fast Downward + VAL" });
-  svg += terminal(termBox, "execution_ready → Context Coordination");
+  svg += terminal(termBox, "planning-evidence → Context Coordination");
   // L2 strip
   svg += runStrip(28, oy + 410, PHASES.filter((p) => p.chip).map((p) => ({ label: p.chip, phase: p.run })));
   return { h, svg: svg + shell.close };
@@ -389,27 +394,51 @@ function regionManeuver(oy) {
 }
 
 const DATA_NODES = [
-  { kind: "io",   title: "transport event bus", caption: ["snapshots · env-data · plans", "fsm-status · statechart · feedback", "commands + receipts / outcomes"] },
-  { kind: "data", title: "operational log",     caption: ["structured timeline", "of every step", "mission_report.json"] },
-  { kind: "data", title: "FSM store",           caption: ["statechart +", "execution record"] },
-  { kind: "data", title: "planner artifacts",   caption: ["model.mzn · data.dzn", "statechart attempts", "verification.json"] },
-  { kind: "data", title: "debug recorders",     caption: ["raw LLM + agent", "invocations"] },
-  { kind: "data", title: "environment state",   caption: "live world snapshot" },
+  { kind: "io",   title: "transport event bus",  caption: ["snapshots · plans · fsm-status", "planning-evidence · feedback", "belief-observations · commands"] },
+  { kind: "data", title: "environment snapshot", caption: ["live world state", "not the Bayesian", "belief snapshot"] },
+  { kind: "data", title: "operational log",      caption: ["structured timeline", "of every step", "mission_report.json"] },
+  { kind: "data", title: "FSM store",            caption: ["statechart +", "execution record"] },
+  { kind: "data", title: "planner artifacts",    caption: ["model.mzn · data.dzn", "statechart attempts", "verification.json"] },
+  { kind: "data", title: "debug recorders",      caption: ["raw LLM + agent invocations", "debugging + audit trail"] },
 ];
 
 function regionData(oy) {
-  const h = 250;
+  // height derives from the content: header → store row → belief service row
+  // → bottom pad
+  const rowY = oy + 68, svcY = oy + 196, svcH = 72;
+  const h = (svcY - oy) + svcH + 22;
   const shell = regionShell(oy, h, "data",
     "Data & Memory Plane — durable artifacts",
-    "transport bus · operational log · FSM store · planner workspace · debug recorders · environment · verification + report");
-  const boxes = DATA_NODES.map((_, i) => box(23 + i * 202, oy + 72, 184, 78));
-  const viewer = box(24, oy + 196, 280, 30);
+    "transport bus · environment snapshot · durable stores · debug + audit recorders · Bayesian Belief Manager → belief.updated → Context Coordination → next Mission Snapshot");
+  const boxes = DATA_NODES.map((_, i) => box(23 + i * 202, rowY, 184, 78));
+  const viewer = box(24, oy + 212, 250, 30);
+  // the Bayesian Belief Manager is a standalone service — not a store, and
+  // not part of Maneuver Control — that owns the durable belief store
+  const manager = box(360, svcY, 280, svcH);
+  const store = box(730, svcY, 240, svcH);
+  const term = box(980, svcY + 10, 240, 44);
 
   let svg = shell.open;
-  svg += edge(port(boxes[0], "S"), port(viewer, "N", 0.4), { label: "read by this viewer", kind: "data" });
+  // edges first (under nodes)
+  svg += edge(port(boxes[0], "S", 0.25), port(viewer, "N", 0.5), { label: "read by this viewer", kind: "data" });
+  // in: Maneuver Control's perception batch, via the belief-observations topic
+  svg += edge(port(boxes[0], "S", 0.6), port(manager, "N", 0.25),
+    { label: "risk.observed / belief.constraints", kind: "data", mid: oy + 168 });
+  // out: published on planning-evidence for Context Coordination
+  svg += edge(port(manager, "N", 0.75), port(term, "N", 0.5),
+    { label: "belief.updated", kind: "data", clear: oy + 180 });
+  svg += edge(port(manager, "E", 0.35), port(store, "W", 0.35), { kind: "data" });
+  svg += edge(port(store, "W", 0.65), port(manager, "E", 0.65), { kind: "data" });
+  svg += pairLabel(685, svcY + 36, "read + write");
+  // nodes
   DATA_NODES.forEach((def, i) => {
     svg += node(boxes[i], { kind: def.kind, title: def.title, caption: def.caption });
   });
+  svg += node(manager, { kind: "tool", title: "Bayesian Belief Manager",
+    caption: ["standalone application service", "consumes belief-observations", "publishes belief.updated"] });
+  svg += node(store, { kind: "data", title: "Bayesian belief store",
+    caption: ["durable checkpoints +", "hash-addressed snapshots"] });
+  svg += terminal(term, "planning-evidence → Context Coordination");
   svg += `<g><rect x="${viewer.x}" y="${viewer.y}" width="${viewer.w}" height="${viewer.h}" rx="8"` +
     ` fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="4 3"/>` +
     `<text x="${viewer.x + viewer.w / 2}" y="${viewer.y + 19.5}" text-anchor="middle" class="wf-chip-text">run viewer — this app</text></g>`;
@@ -422,7 +451,7 @@ function regionMission(oy) {
     "Mission — input",
     "examples/mission.json · CLI/runtime composes both agents");
   const file = box(28, oy + 84, 220, 56);
-  const cli = box(330, oy + 84, 250, 56);
+  const cli = box(360, oy + 84, 250, 56);
   let svg = shell.open;
   svg += edge(port(file, "E"), port(cli, "W"), { label: "composes agents" });
   svg += node(file, { kind: "io", title: "mission.json", caption: "objective + constraints", mono: true });
