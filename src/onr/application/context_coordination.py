@@ -556,6 +556,7 @@ class ContextCoordination:
                                 active_revision.planner_plan.plan_revision + 1
                             )
                             planning_view = environment.planning_view()
+                            self._publish_runtime_source_facts(status)
                             snapshot = self._drain_required(
                                 context_consumer, fallback=snapshot
                             )
@@ -1211,6 +1212,17 @@ class ContextCoordination:
             source: self._facts[source].fresh if source in self._facts else False
             for source in MISSION_SNAPSHOT_SOURCES
         }
+        environment = self._environment_source
+        if (
+            environment is not None
+            and environment.update_ownership == "environment_driven"
+            and environment.has_current_maneuver
+            and revisions["environment_data"] is not None
+        ):
+            revisions["active_maneuver"] = revisions["environment_data"]
+            references["active_maneuver"] = references["environment_data"]
+            health["active_maneuver"] = health["environment_data"]
+            freshness["active_maneuver"] = freshness["environment_data"]
         plan_revision = revisions["plan"]
         return MissionSnapshot(
             mission_id=self.subscription.mission_id,

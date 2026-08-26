@@ -147,6 +147,47 @@ def test_context_coordination_does_not_publish_unchanged_facts_and_tracks_health
         assert changed.source_freshness["environment_data"] is True
 
 
+def test_environment_driven_snapshot_uses_latest_environment_for_active_maneuver() -> None:
+    input_subscription = Subscription(
+        "context-coordination", "mission-context", "planning-evidence"
+    )
+    transport = InProcessTransport((input_subscription,))
+    environment = type(
+        "EnvironmentSource",
+        (),
+        {
+            "update_ownership": "environment_driven",
+            "has_current_maneuver": True,
+        },
+    )()
+    coordination = ContextCoordination(
+        transport,
+        "mission-context",
+        input_topic="planning-evidence",
+        subscription=input_subscription,
+        environment_update_source=cast(Any, environment),
+    )
+
+    with transport.open_consumer(input_subscription) as consumer:
+        coordination.publish_source_fact(
+            "environment_data", 1, reference="environment-data:mission-context:1"
+        )
+        assert _deliver(coordination, consumer) is not None
+        coordination.publish_source_fact(
+            "active_maneuver", 1, reference="environment-data:mission-context:1"
+        )
+        assert _deliver(coordination, consumer) is not None
+        coordination.publish_source_fact(
+            "environment_data", 2, reference="environment-data:mission-context:2"
+        )
+        snapshot = _deliver(coordination, consumer)
+
+    assert snapshot is not None
+    assert snapshot.environment_data == "environment-data:mission-context:2"
+    assert snapshot.active_maneuver == snapshot.environment_data
+    assert snapshot.source_revisions["active_maneuver"] == 2
+
+
 def test_context_coordination_restores_latest_snapshot_and_preserves_reference_on_health_only_update() -> None:
     input_subscription = Subscription(
         "context-coordination", "mission-context", "normalized-plans"

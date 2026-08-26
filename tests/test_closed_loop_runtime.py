@@ -23,6 +23,7 @@ from onr.application.hyper_supervisor import HyperSupervisor
 from onr.application.maneuver_control import ManeuverControl
 from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.communication import AgentMessage
+from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import ManeuverDecision, Statechart, StatechartTransition
 from onr.contracts.hyper_agent import (
     HyperHeartbeatDecision,
@@ -30,6 +31,7 @@ from onr.contracts.hyper_agent import (
     ReplanRequest,
 )
 from onr.contracts.maneuver_control import (
+    ManeuverCommand,
     ManeuverControlDecision,
     ManeuverHeartbeatCompletion,
 )
@@ -45,6 +47,7 @@ from onr.demo.environment_updates import (
     EnvironmentDrivenFakeEnvironment,
 )
 from onr.demo.fake_environment import FakeEnvironment
+from onr.ports.environment import EnvironmentPlanningView
 from onr.ports.transport import Subscription
 
 
@@ -337,6 +340,53 @@ def test_successful_replan_supersedes_fsm_without_reentrant_activation(
     )
     assert reconciliation.fsm_context.transition_intent is None
     assert maneuver.transition_intents.latest("mission-1").status == "invalidated"
+
+
+def test_replan_snapshot_keeps_active_maneuver_coherent_with_planning_view(
+    tmp_path: Path,
+) -> None:
+    def hyper(invocation: HyperHeartbeatInvocation) -> HyperHeartbeatDecision:
+        return HyperHeartbeatDecision(
+            invocation.mission_id,
+            invocation.plan_revision,
+            "replan",
+            "The requested revision is warranted.",
+            invocation.trigger_identities,
+            ("maneuver-request-1",),
+        )
+
+    environment, coordinator, *_ = _runtime_parts(tmp_path, hyper)
+    environment.apply_command(
+        ManeuverCommand(
+            command_id="active-during-replan",
+            correlation_id="correlation:active-during-replan",
+            mission_id="mission-1",
+            plan_revision=1,
+            maneuver_id="maneuver:active-during-replan",
+            intent=ManeuverIntent(
+                "navigate",
+                (
+                    ManeuverParameter("x", 1_000.0),
+                    ManeuverParameter("y", 0.0),
+                    ManeuverParameter("z", -250.0),
+                    ManeuverParameter("speed", 1.0),
+                ),
+            ),
+        )
+    )
+
+    def replan(
+        _invocation: HyperHeartbeatInvocation,
+        _revision_number: int,
+        snapshot: MissionSnapshot,
+        planning_view: EnvironmentPlanningView,
+    ) -> None:
+        assert snapshot.environment_data == snapshot.active_maneuver
+        assert snapshot.environment_data == planning_view.environment_event.event_id
+
+    result = coordinator(replan).run(_revision(1))
+
+    assert result.terminal
 
 
 def test_failed_replan_keeps_revision_one_authoritative(tmp_path: Path) -> None:
