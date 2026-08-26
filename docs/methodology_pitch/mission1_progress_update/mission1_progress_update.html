@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mission 1 progress update — from planned method to executable loop</title>
+  <style>
+    :root {
+      --paper: #f6f3ec;
+      --paper-deep: #ece7dc;
+      --ink: #1e2933;
+      --muted: #5e6870;
+      --rule: #c9c3b7;
+      --standard: #dbe5eb;
+      --proposed: #243b72;
+      --proposed-ink: #f7f4ee;
+      --caution: #9c542c;
+      --caution-bg: #f5e5d5;
+      --evidence: #2f6a58;
+      --focus: #174ea6;
+      --white: #fffdf8;
+      --shadow: 0 12px 32px rgba(30, 41, 51, .08);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 1px 1px, rgba(30,41,51,.055) .7px, transparent .8px) 0 0 / 11px 11px,
+        var(--paper);
+      font: 16px/1.58 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-x: hidden;
+    }
+    h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; line-height: 1.08; }
+    h1 { margin: .35rem 0 .8rem; font-size: clamp(2.7rem, 6vw, 5.7rem); max-width: 15ch; letter-spacing: -.045em; }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.9rem, 3.4vw, 3.1rem); letter-spacing: -.025em; }
+    h3 { margin: 0 0 .45rem; font-size: 1.25rem; }
+    p { margin: .45rem 0 1rem; }
+    a { color: var(--focus); }
+    button, summary { font: inherit; }
+    button { min-height: 44px; }
+    button:focus-visible, summary:focus-visible, a:focus-visible {
+      outline: 3px solid var(--focus); outline-offset: 3px;
+    }
+    .page { width: min(1380px, calc(100% - 40px)); margin: 0 auto; }
+    .eyebrow { text-transform: uppercase; letter-spacing: .16em; font-size: .73rem; font-weight: 800; color: #52616c; }
+    .rule { border-top: 1px solid var(--rule); }
+    .muted { color: var(--muted); }
+    .small { font-size: .86rem; }
+    .nowrap { white-space: nowrap; }
+    header {
+      padding: 48px 0 42px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .header-top { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+    .headline { max-width: 1020px; }
+    .dek { max-width: 860px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(1.25rem, 2vw, 1.65rem); }
+    .boundary {
+      max-width: 980px; margin-top: 28px; padding: 18px 22px;
+      display: grid; grid-template-columns: 165px 1fr; gap: 22px;
+      color: var(--proposed-ink); background: var(--proposed);
+    }
+    .boundary strong { text-transform: uppercase; letter-spacing: .14em; font-size: .76rem; }
+    .badge, .evidence-kind {
+      display: inline-flex; align-items: center; min-height: 26px; padding: 3px 9px;
+      border: 1px solid currentColor; border-radius: 999px; font-size: .68rem;
+      font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+    }
+    .status-run, .status-implemented { color: var(--evidence); background: #edf5f1; }
+    .status-designed { color: var(--proposed); background: #edf0f8; }
+    .status-planned, .status-assumed, .status-open { color: #7b481f; background: #fbf0e5; }
+    .evidence-kind { color: #3f4d57; background: transparent; border-style: dashed; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; align-items: center; }
+    main > section { padding: 62px 0; border-bottom: 1px solid var(--rule); }
+    .section-intro { max-width: 820px; margin-bottom: 28px; }
+    .one-minute {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
+    }
+    .brief-card, .paper-card {
+      background: rgba(255,253,248,.86); border: 1px solid var(--rule); box-shadow: var(--shadow);
+      min-width: 0; overflow-wrap: anywhere;
+    }
+    .brief-card { padding: 18px; min-height: 190px; }
+    .brief-card .eyebrow { color: var(--caution); }
+    .brief-card strong { display: block; font-family: Georgia, "Times New Roman", serif; font-size: 1.12rem; margin: 10px 0; }
+    .brief-card p { font-size: .92rem; }
+    .progress-window {
+      margin-top: 24px; padding: 20px 24px; border-left: 4px solid var(--proposed); background: var(--white);
+      display: flex; justify-content: space-between; gap: 18px; align-items: baseline;
+    }
+    .progress-window strong { font: 700 1.4rem/1 Georgia, serif; }
+    .milestones { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 24px; }
+    .milestone { padding: 16px; min-width: 0; overflow-wrap: anywhere; border-top: 3px solid var(--proposed); background: rgba(255,253,248,.7); }
+    .milestone time { color: var(--caution); font-weight: 800; font-size: .76rem; text-transform: uppercase; letter-spacing: .12em; }
+    .milestone p { font-size: .9rem; margin-bottom: .5rem; }
+    .assumption-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .assumption { padding: 20px; }
+    .assumption dl { display: grid; grid-template-columns: minmax(95px, 120px) minmax(0, 1fr); gap: 8px 12px; margin: 14px 0 0; }
+    dt { font-weight: 800; color: #52616c; }
+    dd { margin: 0; }
+    .map-toolbar {
+      display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px;
+      margin-bottom: 14px; align-items: center;
+    }
+    .toolbar-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .segmented { display: inline-flex; border: 1px solid var(--ink); border-radius: 8px; overflow: hidden; }
+    .segmented button, .toolbar-button {
+      border: 0; background: var(--white); color: var(--ink); padding: 9px 14px; cursor: pointer; font-weight: 750;
+    }
+    .segmented button + button { border-left: 1px solid var(--ink); }
+    .segmented button[aria-selected="true"] { color: var(--proposed-ink); background: var(--proposed); }
+    .toolbar-button { border: 1px solid var(--ink); border-radius: 8px; }
+    .mode-summary { font-size: .87rem; color: var(--muted); max-width: 620px; }
+    .map-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; min-width: 0; }
+    .map-scroll { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; border: 1px solid var(--rule); background: rgba(255,253,248,.78); }
+    .scroll-cue { display: none; margin: 0 0 8px; color: var(--muted); font-size: .82rem; }
+    .method-map { position: relative; width: 1000px; height: 720px; margin: 0; }
+    .connectors { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+    .connector { fill: none; stroke: #60707b; stroke-width: 2.2; marker-end: url(#arrow); }
+    .connector.conditional { stroke-dasharray: 8 6; }
+    .connector.optional { stroke-dasharray: 3 6; }
+    .connector.inactive { opacity: .12; }
+    .connector.related { stroke: var(--focus); stroke-width: 3.6; }
+    .node {
+      position: absolute; width: 140px; min-height: 90px; padding: 12px;
+      border: 1px solid #87939b; border-radius: 8px; background: var(--standard); color: var(--ink);
+      text-align: left; cursor: pointer; z-index: 2; box-shadow: 0 5px 14px rgba(30,41,51,.09);
+    }
+    .node strong { display: block; font-family: Georgia, "Times New Roman", serif; font-size: 1rem; }
+    .node small { display: block; margin-top: 7px; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
+    .node[data-kind="input"], .node[data-kind="output"] { background: var(--white); }
+    .node.proposed { background: var(--proposed); color: var(--proposed-ink); border: 3px double var(--proposed-ink); }
+    .node[aria-pressed="true"] { outline: 4px solid var(--focus); outline-offset: 3px; }
+    .node.inactive { opacity: .28; filter: grayscale(.6); }
+    .edge-control {
+      position: absolute; transform: translate(-50%, -50%); z-index: 3;
+      min-height: 28px; max-width: 128px; padding: 4px 7px; border: 1px solid #7d8b94;
+      border-radius: 6px; color: #35434d; background: rgba(255,253,248,.96); cursor: pointer;
+      font-size: .66rem; line-height: 1.15; box-shadow: 0 2px 7px rgba(30,41,51,.08);
+    }
+    .edge-control[aria-pressed="true"] { outline: 3px solid var(--focus); }
+    .edge-control.inactive { opacity: .18; }
+    figcaption { position: absolute; left: 22px; bottom: 15px; width: 650px; color: var(--muted); font-size: .82rem; }
+    .inspector { position: sticky; top: 16px; min-height: 620px; padding: 20px; background: var(--white); border: 1px solid var(--rule); box-shadow: var(--shadow); }
+    .inspector h3 { font-size: 1.55rem; }
+    .inspector details { border-top: 1px solid var(--rule); padding: 10px 0; }
+    .inspector summary { cursor: pointer; font-weight: 780; min-height: 32px; }
+    .inspector dl { display: grid; grid-template-columns: 100px 1fr; gap: 7px 10px; font-size: .86rem; }
+    .inactive-notice { padding: 10px; margin: 10px 0; color: #6f3c18; background: var(--caution-bg); border-left: 3px solid var(--caution); }
+    .evidence-table-wrap { overflow-x: auto; }
+    .evidence-table-wrap table { min-width: 980px; }
+    table { width: 100%; border-collapse: collapse; background: rgba(255,253,248,.75); }
+    th, td { padding: 13px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
+    th { font-size: .72rem; text-transform: uppercase; letter-spacing: .09em; color: #52616c; }
+    .evidence-button { border: 0; background: transparent; color: var(--focus); font-weight: 800; text-align: left; cursor: pointer; padding: 0; min-height: auto; }
+    .support { margin-top: 8px; font-size: .78rem; color: var(--muted); }
+    .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .limit-card, .decision-card { padding: 20px; }
+    .decision-card { border-left: 4px solid var(--proposed); }
+    .limit-card { border-left: 4px solid var(--caution); }
+    .question-list { display: grid; gap: 12px; }
+    .question { padding: 15px; background: rgba(255,253,248,.76); border: 1px solid var(--rule); }
+    .presentation-bar {
+      display: none; position: sticky; top: 0; z-index: 20; padding: 10px 16px;
+      color: var(--proposed-ink); background: var(--proposed); align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .presentation-bar button { border: 1px solid var(--proposed-ink); color: inherit; background: transparent; padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+    body.presentation-mode .presentation-bar { display: flex; }
+    body.presentation-mode header { padding: 18px 0; }
+    body.presentation-mode header h1 { font-size: 2rem; margin: 0; }
+    body.presentation-mode header .dek, body.presentation-mode header .boundary, body.presentation-mode header .legend, body.presentation-mode main > section:not(.active-section) { display: none; }
+    body.presentation-mode main > section.active-section { display: block; padding-top: 24px; }
+    .presentation-focus { animation: pulse-border .55s ease-out; }
+    @keyframes pulse-border { from { outline-offset: 12px; } to { outline-offset: 3px; } }
+    @media (max-width: 1080px) {
+      .one-minute { grid-template-columns: repeat(2, 1fr); }
+      .milestones { grid-template-columns: repeat(2, 1fr); }
+      .map-workspace { grid-template-columns: 1fr; }
+      .inspector { position: static; min-height: 0; }
+    }
+    @media (max-width: 720px) {
+      body { font-size: 15px; }
+      .page { width: min(100% - 24px, 1380px); }
+      header { padding-top: 28px; }
+      .header-top, .progress-window { align-items: flex-start; flex-direction: column; }
+      .boundary { grid-template-columns: 1fr; gap: 5px; }
+      main > section { padding: 42px 0; }
+      .one-minute, .milestones, .assumption-grid, .two-column { grid-template-columns: 1fr; }
+      .brief-card { min-height: auto; }
+      .scroll-cue { display: block; }
+      .map-toolbar { align-items: flex-start; }
+      .presentation-bar { flex-wrap: wrap; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+    @media print {
+      body { background: white; color: black; font-size: 10.5pt; }
+      .page { width: 100%; }
+      header, main > section { padding: 24px 0; }
+      .map-toolbar, .presentation-bar, .scroll-cue, .edge-control { display: none !important; }
+      .map-workspace { display: block; }
+      .map-scroll { overflow: visible; border: 1px solid #777; }
+      .method-map { transform: scale(.72); transform-origin: top left; height: 520px; }
+      .inspector { position: static; box-shadow: none; margin-top: 12px; }
+      .brief-card, .paper-card { box-shadow: none; break-inside: avoid; }
+      details { display: block; }
+      details > * { display: block !important; }
+      a { color: black; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="presentation-bar" role="region" aria-label="Presentation controls">
+    <div><strong id="presentation-counter">Step 1 of 6</strong> · <span id="presentation-title">Question and progress</span></div>
+    <div class="toolbar-group">
+      <button type="button" id="presentation-prev">Previous</button>
+      <button type="button" id="presentation-next">Next</button>
+      <button type="button" id="presentation-exit">Exit presentation</button>
+    </div>
+  </div>
+
+  <header>
+    <div class="page">
+      <div class="header-top">
+        <span class="eyebrow">Mission 1 · supervisor progress review</span>
+        <span class="badge status-implemented">Mixed maturity · evidence tagged</span>
+      </div>
+      <div class="headline">
+        <h1>From planned method to executable loop.</h1>
+        <p class="dek">Since Friday, Mission 1 has become an observable, tool-executing closed loop with explicit environment ownership. The current evidence is still from a fake environment; actual environment integration is the next methodological step.</p>
+      </div>
+      <div class="boundary">
+        <strong>Important boundary</strong>
+        <span>The agent has not been integrated with an actual environment. Both ownership modes below were exercised with the deterministic fake environment. The implemented result is an integration seam, not production-environment readiness.</span>
+      </div>
+      <div class="legend" aria-label="Evidence legend">
+        <span class="small"><strong>Truth status:</strong></span>
+        <span class="badge status-implemented">implemented</span>
+        <span class="badge status-run">run</span>
+        <span class="badge status-planned">planned/open</span>
+        <span class="small" style="margin-left:8px"><strong>Evidence kind:</strong></span>
+        <span class="evidence-kind">measured</span>
+        <span class="evidence-kind">qualitative</span>
+        <span class="evidence-kind">TBD</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="opening-summary" class="active-section" data-presentation-step="0">
+      <div class="page">
+        <div class="section-intro">
+          <span class="eyebrow">One-minute orientation</span>
+          <h2>What changed—and what counts as success?</h2>
+          <p>This update preserves the original research question—how limited drone observations support trustworthy action—while focusing on the execution methodology now available to test it.</p>
+        </div>
+        <div class="one-minute">
+          <article class="brief-card"><span class="eyebrow">Challenge</span><strong>Plans must survive contact with a changing environment.</strong><p>We need auditable planning, action selection, feedback, and replanning without letting the agent invent physical state.</p></article>
+          <article class="brief-card"><span class="eyebrow">Known at start</span><strong>Mission intent, scene evidence, tools and protocol profile.</strong><p>The current experiment uses a deterministic fake environment and configured planners; ground truth and lifecycle truth remain outside agent authority.</p></article>
+          <article class="brief-card"><span class="eyebrow">Input</span><strong>Mission Activation plus versioned Mission Snapshot.</strong><p>Hyper and Maneuver receive only their scoped evidence, tools and current control context.</p></article>
+          <article class="brief-card"><span class="eyebrow">Output</span><strong>Verified plan, Statechart, durable commands and authoritative feedback.</strong><p>The workflow tab projects the same retained evidence for inspection rather than becoming authority itself.</p></article>
+          <article class="brief-card"><span class="eyebrow">Success now</span><strong>Terminal coordinator run; truthful asynchronous environment run.</strong><p>Coordinator mode completed; environment mode demonstrated update batching and exposed the next stale-decision problem.</p></article>
+        </div>
+        <div class="progress-window">
+          <div><span class="eyebrow">Repository evidence · 21–26 August 2026</span><br><strong>47 commits since the Friday baseline</strong></div>
+          <div class="muted">Measured by <code>git rev-list --count aeba4b8..4a45a5e</code>. Commit volume is context, not a quality metric.</div>
+        </div>
+        <div class="milestones" id="milestone-list" aria-label="Progress milestones"></div>
+      </div>
+    </section>
+
+    <section id="assumptions-section">
+      <div class="page">
+        <div class="section-intro"><span class="eyebrow">Starting conditions</span><h2>What the current evidence does—and does not—cover.</h2></div>
+        <div class="assumption-grid" id="assumption-list"></div>
+        <noscript>
+          <p class="inactive-notice">Core assumptions: the current runs use only the fake environment; agent decisions are serialized; initial planning is outside Mission time; and actual-environment startup, failure behavior and stale-decision rejection remain unresolved.</p>
+        </noscript>
+      </div>
+    </section>
+
+    <section id="method-map-section" data-presentation-step="1,2,3,4">
+      <div class="page">
+        <div class="section-intro"><span class="eyebrow">Current methodology map</span><h2>One decision lane; explicit authority boundaries.</h2><p>The map separates reasoning, durable delivery, physical lifecycle truth, and observation. Select a component or labelled flow to inspect its contract and evidence.</p></div>
+        <div class="map-toolbar">
+          <div class="toolbar-group">
+            <div class="segmented" role="tablist" aria-label="Method phase">
+              <button type="button" role="tab" id="mode-training" aria-selected="false" data-mode="training">Training · not in scope</button>
+              <button type="button" role="tab" id="mode-inference" aria-selected="true" data-mode="inference">Inference / execution</button>
+            </div>
+            <span class="mode-summary" id="mode-summary">No project-specific model training occurs here; the presentation prioritises the runtime inference and execution path.</span>
+          </div>
+          <div class="toolbar-group">
+            <button type="button" class="toolbar-button" id="reset-view">Reset view</button>
+            <button type="button" class="toolbar-button" id="start-presentation">Presentation mode</button>
+          </div>
+        </div>
+        <p class="scroll-cue">The method map scrolls horizontally on narrow screens.</p>
+        <div class="map-workspace">
+          <div class="map-scroll" id="map-scroll">
+            <figure class="method-map" id="method-map" aria-describedby="map-caption">
+              <svg class="connectors" id="connector-layer" aria-hidden="true">
+                <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#60707b"></path></marker></defs>
+              </svg>
+              <div id="node-layer"></div>
+              <div id="edge-layer"></div>
+              <figcaption id="map-caption">Inference mode. Inspecting the environment boundary. Solid arrows are forward evidence or control payloads; dashed arrows are conditional feedback/replanning paths.</figcaption>
+            </figure>
+          </div>
+          <aside class="inspector" id="inspector" aria-live="polite" aria-label="Method item inspector"></aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="objectives-and-evidence" data-presentation-step="4">
+      <div class="page">
+        <div class="section-intro"><span class="eyebrow">Evidence and falsification</span><h2>What has been observed, and what remains an ablation.</h2><p>These are functional case-study traces, not population-level statistical results. Select an experiment to return to its affected components.</p></div>
+        <p class="inactive-notice"><strong>Research-performance boundary:</strong> these runs validate the planning-to-execution method. They do not yet evaluate the original per-ship deception estimates using posterior log-loss, watchlist precision, repeated episodes, or named patrol baselines.</p>
+        <p class="scroll-cue">The evidence table scrolls horizontally on narrow screens.</p>
+        <div class="evidence-table-wrap"><table>
+          <thead><tr><th>Experiment</th><th>Outcome</th><th>Observed / expected result</th><th>Falsified if</th><th>Support</th></tr></thead>
+          <tbody id="experiment-rows"></tbody>
+        </table></div>
+        <div class="two-column" style="margin-top:24px">
+          <article class="paper-card" style="padding:20px"><h3>Why Execute matters</h3><p id="execute-claim"></p><p class="inactive-notice"><strong>Evidence limit:</strong> the improvement is a supervisor-facing qualitative case study. A controlled Execute-on/off ablation has not been run.</p></article>
+          <article class="paper-card" style="padding:20px"><h3>Ownership comparison</h3><p><strong>Coordinator-driven:</strong> 13 commands queued and applied; 11 completed, 2 cancelled during replans; terminal at 305 s.</p><p><strong>Environment-driven:</strong> 4 commands queued, 3 applied and completed; the fourth remained queued after the fake producer stopped at 600 s.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="limitations-and-decisions" data-presentation-step="5">
+      <div class="page">
+        <div class="section-intro"><span class="eyebrow">Supervisor discussion</span><h2>Limits first; then the next decision.</h2></div>
+        <div class="two-column">
+          <article class="paper-card limit-card">
+            <h3>Limitations and uncertainties</h3>
+            <ul>
+              <li><strong>No actual environment is integrated.</strong> Both live comparisons use the fake environment.</li>
+              <li><strong>No controlled Execute ablation.</strong> “Dramatic improvement” is qualitative, not a causal effect estimate.</li>
+              <li><strong>The TUI lacks integrated live acceptance.</strong> Contract, state and render tests exist; the full operator-to-terminal mission path remains unrun.</li>
+              <li><strong>Environment-driven decisions can become stale.</strong> The 600-second run was truthful but nonterminal; stale-decision fencing is deliberately deferred.</li>
+              <li><strong>Single episodes are functional evidence only.</strong> No replications, uncertainty estimates or statistical tests support comparative performance.</li>
+              <li><strong>The original Mission 1 belief benchmark remains unrun.</strong> Current success is execution validity, not deception-estimation accuracy.</li>
+            </ul>
+          </article>
+          <article class="paper-card decision-card">
+            <h3>Supervisor decisions requested</h3>
+            <div class="question-list" id="question-list"></div>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="application/json" id="methodology-schema">
+{
+  "metadata": {
+    "title": "Mission 1 progress update: from planned method to executable loop",
+    "slug": "mission1-progress-update",
+    "version": "0.3",
+    "updated": "2026-08-26",
+    "author": "TBD",
+    "status": "implemented",
+    "oneSentenceClaim": "Since 21 August, Mission 1 has moved from a planned experiment to an observable, tool-executing closed loop with explicit environment ownership; only the fake environment has been exercised and actual environment integration remains planned.",
+    "presentationForm": "method-map",
+    "defaultMode": "inference",
+    "challenge": "Turn mission intent and partial environment evidence into verified plans and safe physical actions while preserving auditable authority boundaries.",
+    "task": "Explain and validate the current planning-to-execution methodology, its evidence, and the next actual-environment integration step.",
+    "benchmark": "Supervisor progress review against Mission 1 pitch v0.2, Git history from 21 August 2026, and two documented single-episode fake-environment live runs."
+  },
+  "claims": [
+    {
+      "id": "claim-progress",
+      "text": "The repository contains 47 commits between the pre-Friday baseline aeba4b8 and the current implementation commit 4a45a5e.",
+      "status": "implemented",
+      "evidenceKind": "measured",
+      "provenance": "git rev-list --count aeba4b844126f029cade68d14c43b8d7c2d50989..4a45a5e, run 2026-08-26",
+      "falsification": "The same Git revision count produces a value other than 47; commit count is not treated as a quality or research-performance metric."
+    },
+    {
+      "id": "claim-workflow-view",
+      "text": "The viewer now contains a hierarchical Workflow tab that projects planning, execution, mission result, and data/memory evidence with drill-down into phases and trajectories.",
+      "status": "implemented",
+      "evidenceKind": "qualitative",
+      "provenance": "commits 469b4cb, 6e93d89, dd60c21 and b9e890f; src/onr/viewer/web/app/workflow.js",
+      "falsification": "The current viewer cannot render or navigate the documented workflow hierarchy from retained trace data."
+    },
+    {
+      "id": "claim-execute",
+      "text": "Hyper alone receives a constrained local-shell Execute backend for inspecting and repairing planner artifacts; planning-intent and Maneuver agents retain filesystem-only access.",
+      "status": "implemented",
+      "evidenceKind": "qualitative",
+      "provenance": "commit c897727; tests/test_role_context.py::test_only_hyper_workflow_receives_minimal_local_shell_backend",
+      "falsification": "A non-Hyper role receives shell execution, or Hyper cannot execute within the configured virtual backend and restricted environment."
+    },
+    {
+      "id": "claim-execute-impact",
+      "text": "Allowing Execute coincides with a dramatic practical improvement in planner artifact generation and repair in the current case study, but the causal magnitude has not been measured.",
+      "status": "run",
+      "evidenceKind": "qualitative",
+      "provenance": "scholar confirmation 2026-08-26; commit c897727; terminal coordinator-driven run documented in docs/inspection_agent_implementation/2026-08-26_14-11-39_AEST_environment-update-ownership-live-comparison.md",
+      "falsification": "A matched Execute-on/off experiment shows no improvement in accepted planner artifacts, correction efficiency, or terminal completion."
+    },
+    {
+      "id": "claim-tui",
+      "text": "A Rust Operator Console and Python Runtime Host now cover activation, run observation, cancellation, public artifacts, narratives, and a status-only Human Decision view; integrated live mission acceptance through the TUI remains open.",
+      "status": "implemented",
+      "evidenceKind": "qualitative",
+      "provenance": "commits 388f2e3, 43486e4, 7faaf25, b77be3c, 2040de7, 4b7aeb2 and 72ccc35; docs/design/operator-console/README.md; scholar confirmation 2026-08-26",
+      "falsification": "The committed contract/render/state tests fail, or an integrated TUI trial cannot activate, observe, and close one Mission Run."
+    },
+    {
+      "id": "claim-environment-seam",
+      "text": "Environment update ownership, protocol versions, capabilities and topics are now profile-owned; Maneuver Commands are durably queued and only environment feedback owns physical lifecycle truth.",
+      "status": "implemented",
+      "evidenceKind": "qualitative",
+      "provenance": "commits a00337b and 4a45a5e; conf/environment_params.yaml; docs/adr/0013-environment-owned-updates-and-asynchronous-maneuver-delivery.md",
+      "falsification": "Maneuver Control calls an environment object synchronously, synthesizes accepted lifecycle truth, or update ownership cannot be changed by the Environment Profile."
+    },
+    {
+      "id": "claim-coordinator-run",
+      "text": "One coordinator-driven fake-environment episode reached terminal state patrol-objective-complete at Mission time 305 seconds with 13 commands applied, 26 feedback events and 42 perceptions retained.",
+      "status": "run",
+      "evidenceKind": "measured",
+      "provenance": "data/past_debug_rounds/20260826T041258.508709Z/var; 2026-08-26 environment-update ownership live comparison report",
+      "falsification": "The archived transport, feedback, perception, FSM and terminal records do not reconcile to these values."
+    },
+    {
+      "id": "claim-environment-run",
+      "text": "One environment-driven fake-environment episode advanced during inference to the 600-second bound, retained all four perceptions, coalesced 168 updates and stopped cleanly, but remained nonterminal.",
+      "status": "run",
+      "evidenceKind": "measured",
+      "provenance": "var from the 2026-08-26 environment-driven live run; docs/inspection_agent_implementation/2026-08-26_14-11-39_AEST_environment-update-ownership-live-comparison.md",
+      "falsification": "The run does not show Mission-time advance within inference windows, preserved perception identities, coalescing, clean producer shutdown, or the stated nonterminal result."
+    },
+    {
+      "id": "claim-actual-environment",
+      "text": "An actual external environment has not yet been integrated; replacing the fake adapter/process and validating its transport and timing behavior is the next step.",
+      "status": "planned",
+      "evidenceKind": "TBD",
+      "provenance": "scholar confirmation 2026-08-26; ADR 0013 defers external-process startup; current Environment Profile adapter_kind is fake",
+      "falsification": "An external environment process is connected through the profile, consumes commands, publishes authoritative events, and passes the integration protocol."
+    },
+    {
+      "id": "claim-belief-benchmark",
+      "text": "The original Mission 1 per-ship report-deception benchmark remains unrun; current live traces validate execution methodology, not posterior accuracy or watchlist quality.",
+      "status": "planned",
+      "evidenceKind": "qualitative",
+      "provenance": "Mission 1 methodology pitch v0.2; no observed baseline-comparison result is present in the current repository or 2026-08-26 live reports",
+      "falsification": "A repeated, named-baseline evaluation reports posterior log-loss, top-k watchlist precision and complete statistical support under the agreed Mission 1 protocol."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "assumption-fake-environment",
+      "text": "Current functional evidence uses the deterministic fake environment, not an actual environment.",
+      "rationale": "It isolates orchestration, authority boundaries, timing ownership, transport delivery and evidence retention before external integration.",
+      "status": "run",
+      "provenance": "conf/environment_params.yaml adapter_kind: fake; scholar confirmation 2026-08-26; live comparison report",
+      "failureImpact": "External timing, failure modes, command semantics and sensor payloads may invalidate current behavior or require a new adapter."
+    },
+    {
+      "id": "assumption-serialized-lane",
+      "text": "Hyper, Maneuver and replan decisions use one serialized agent lane.",
+      "rationale": "It prevents overlapping model decisions from racing for FSM transitions or command authority while environment evidence may accumulate independently.",
+      "status": "implemented",
+      "provenance": "src/onr/application/context_coordination.py; tests/test_closed_loop_runtime.py; zero overlapping LLM request intervals in both 2026-08-26 live runs",
+      "failureImpact": "Concurrent decisions require explicit conflict resolution and stale-decision fencing before commands can remain trustworthy."
+    },
+    {
+      "id": "assumption-initial-planning-time",
+      "text": "Initial Hyper planning occurs outside Mission execution time.",
+      "rationale": "The current experiment starts environment updates only after the first plan is accepted, giving both ownership modes the same initial authority state.",
+      "status": "implemented",
+      "provenance": "src/onr/runtime/cli.py and live run evidence showing Mission time 0.0 throughout initial planning",
+      "failureImpact": "An already-running external environment requires startup synchronization and evidence refresh before the first physical decision."
+    },
+    {
+      "id": "assumption-transport-semantics",
+      "text": "The current file transport is a valid functional stand-in for durable enqueue, consumer acknowledgement and replay behavior.",
+      "rationale": "It makes identities, receipts, cursors, retries and feedback inspectable and restartable in the local harness.",
+      "status": "assumed",
+      "provenance": "src/onr/adapters/file_transport.py; tests/test_transport_adapters.py; ADR 0013",
+      "failureImpact": "A production transport with different ordering, delivery or acknowledgement semantics needs separate qualification."
+    },
+    {
+      "id": "assumption-execute-scope",
+      "text": "Execute remains constrained to Hyper's virtual local-shell backend and the repository-scoped planner workflow.",
+      "rationale": "Hyper needs to inspect, run and repair generated planner artifacts, while Maneuver should not gain general shell authority.",
+      "status": "implemented",
+      "provenance": "commit c897727; tests/test_role_context.py lines 209–253",
+      "failureImpact": "Broader shell authority would weaken reproducibility and blur the boundary between planning capability and physical action authority."
+    }
+  ],
+  "inputs": [
+    {
+      "id": "input-mission",
+      "name": "Mission Activation: Mission Intent, source authority and idempotent request identity",
+      "scope": "end-to-end",
+      "format": "Strict Runtime Host JSON contract or direct MissionInput in the demo CLI",
+      "availableIn": ["inference"],
+      "status": "implemented",
+      "provenance": "src/onr/runtime_host/host.py; operator-console contract/v1; examples/mission.json"
+    },
+    {
+      "id": "input-snapshot",
+      "name": "Versioned Mission Snapshot with plan, environment, belief, FSM and active-maneuver references",
+      "scope": "component",
+      "format": "MissionSnapshot schema plus referenced transport events/artifacts",
+      "availableIn": ["inference"],
+      "status": "implemented",
+      "provenance": "src/onr/contracts/context_coordination.py; CONTEXT.md"
+    },
+    {
+      "id": "input-toolchain",
+      "name": "Planner toolchain and constrained Hyper Execute environment",
+      "scope": "component",
+      "format": "MiniZinc/Fast Downward/VAL executables, repository files, virtual LocalShellBackend",
+      "availableIn": ["inference"],
+      "status": "implemented",
+      "provenance": "src/onr/runtime/composition.py; src/onr/agents/hyper_workflow.py; commit c897727"
+    },
+    {
+      "id": "input-environment-profile",
+      "name": "Environment Profile and current fake scenario",
+      "scope": "end-to-end",
+      "format": "Strict YAML with adapter kind, protocol versions, ownership, cadence, topics, capabilities and fake settings",
+      "availableIn": ["inference"],
+      "status": "implemented",
+      "provenance": "conf/environment_params.yaml; src/onr/runtime/config.py"
+    }
+  ],
+  "outputs": [
+    {
+      "id": "output-result",
+      "name": "Closed-loop Mission result and terminal/nonterminal classification",
+      "scope": "end-to-end",
+      "format": "ClosedLoopRunResult plus authoritative FSM/environment evidence",
+      "status": "implemented",
+      "provenance": "src/onr/application/context_coordination.py; 2026-08-26 live comparison report"
+    },
+    {
+      "id": "output-lifecycle",
+      "name": "Durable Maneuver Commands and environment-authoritative lifecycle feedback",
+      "scope": "end-to-end",
+      "format": "Transport CommandReceipt, ManeuverCommand and ManeuverFeedback streams",
+      "status": "implemented",
+      "provenance": "src/onr/contracts/maneuver_control.py; ADR 0013"
+    },
+    {
+      "id": "output-workflow-view",
+      "name": "Operator-facing workflow, activity, artifact and trace views",
+      "scope": "end-to-end",
+      "format": "Read-only Workflow viewer plus Runtime Host/TUI public projections",
+      "status": "implemented",
+      "provenance": "src/onr/viewer/web/app/workflow.js; docs/design/operator-console/README.md"
+    },
+    {
+      "id": "output-integration-contract",
+      "name": "Environment integration contract for the next external adapter/process",
+      "scope": "end-to-end",
+      "format": "EnvironmentProfile, EnvironmentUpdateSource and transport protocol boundaries",
+      "status": "implemented",
+      "provenance": "src/onr/ports/environment.py; conf/environment_params.yaml; ADR 0013"
+    }
+  ],
+  "components": [
+    {
+      "id": "component-host",
+      "name": "Runtime Host + Operator Console",
+      "purpose": "Own Mission Run activation/lifecycle and expose safe operator views.",
+      "designation": "standard",
+      "order": 1,
+      "rationale": "Separates operator interaction from agent execution and keeps run ownership explicit.",
+      "inputRefs": ["input-mission"],
+      "outputRefs": ["output-result", "output-workflow-view"],
+      "phases": ["inference"],
+      "trainingRole": "No project-specific training role.",
+      "inferenceRole": "Activates and observes one Mission Run; the TUI is implemented but not yet accepted in a full live mission.",
+      "assumptionsRisks": ["Integrated live TUI acceptance remains open.", "Host and console remain local-loopback in the current contract."],
+      "computation": "Python Runtime Host plus Rust Ratatui client; performance benchmark TBD.",
+      "openQuestionRefs": ["question-tui"],
+      "status": "implemented",
+      "provenance": "commits 388f2e3–72ccc35; docs/design/operator-console/README.md"
+    },
+    {
+      "id": "component-hyper",
+      "name": "Hyper planning workflow + Execute",
+      "purpose": "Derive planning intent, author planner-native files, run external tools, repair failures, validate a Statechart and return executable authority.",
+      "designation": "core",
+      "order": 2,
+      "rationale": "A tool-executing workflow can ground planning in actual file and solver evidence rather than text-only guesses.",
+      "inputRefs": ["input-mission", "input-snapshot", "input-toolchain"],
+      "outputRefs": ["output-result", "output-workflow-view"],
+      "phases": ["inference"],
+      "trainingRole": "No project-specific training; the configured language model is used at inference.",
+      "inferenceRole": "Runs a gated planning episode and periodic/replan supervision over current evidence.",
+      "assumptionsRisks": ["Execute impact lacks a controlled ablation.", "Generated artifacts still depend on model behavior and verifier diagnostics."],
+      "computation": "Qwen inference plus MiniZinc or Fast Downward and validation; latency varies and is recorded, not benchmarked here.",
+      "openQuestionRefs": ["question-execute"],
+      "status": "implemented",
+      "provenance": "commits 387f66e, c897727, 4a9f968 and d0b3d09; src/onr/agents/hyper_workflow.py"
+    },
+    {
+      "id": "component-context",
+      "name": "Context Coordination + FSM",
+      "purpose": "Assemble the latest authority snapshot, serialize agent decisions, activate Statecharts and reconcile replans.",
+      "designation": "core",
+      "order": 3,
+      "rationale": "One coordinator makes evidence timing, control state and decision ordering inspectable.",
+      "inputRefs": ["input-snapshot", "input-environment-profile"],
+      "outputRefs": ["output-result", "output-workflow-view"],
+      "phases": ["inference"],
+      "trainingRole": "No training role.",
+      "inferenceRole": "Drains updates, coalesces triggers, invokes Hyper/Maneuver in one lane, and publishes the latest Mission Snapshot.",
+      "assumptionsRisks": ["Environment-driven decisions may become stale during long inference.", "Mission Snapshot provenance remains load-bearing."],
+      "computation": "Deterministic coordination plus model invocation latency; update batch and evidence/completion times are recorded.",
+      "openQuestionRefs": ["question-fencing"],
+      "status": "implemented",
+      "provenance": "commit 505d53b; src/onr/application/context_coordination.py; ADRs 0010–0013"
+    },
+    {
+      "id": "component-maneuver",
+      "name": "Maneuver Control",
+      "purpose": "Assess current evidence, select one Transition Intent, apply at most one FSM transition and optionally queue one physical action.",
+      "designation": "core",
+      "order": 4,
+      "rationale": "Tool-mediated decisions keep transition, belief, communication and physical effects explicit and auditable.",
+      "inputRefs": ["input-snapshot"],
+      "outputRefs": ["output-lifecycle", "output-workflow-view"],
+      "phases": ["inference"],
+      "trainingRole": "No training role.",
+      "inferenceRole": "Runs assess-first heartbeats with durable Transition Intent and idempotent physical-command selection.",
+      "assumptionsRisks": ["No stale-decision fence yet for environment-driven evidence.", "Physical tool schemas remain code-owned."],
+      "computation": "Serialized LLM/tool episode; completion validation and transition count are code-enforced.",
+      "openQuestionRefs": ["question-fencing"],
+      "status": "implemented",
+      "provenance": "commits fd7b82c, b0235d6 and cea89d5; src/onr/agents/maneuver_tools.py"
+    },
+    {
+      "id": "component-transport",
+      "name": "Durable transport",
+      "purpose": "Separate enqueue, delivery acknowledgement and domain lifecycle evidence.",
+      "designation": "standard",
+      "order": 5,
+      "rationale": "The agent can finish after durable enqueue without waiting for environment acceptance.",
+      "inputRefs": ["input-environment-profile"],
+      "outputRefs": ["output-lifecycle", "output-workflow-view"],
+      "phases": ["inference"],
+      "trainingRole": "No training role.",
+      "inferenceRole": "Persists commands, receipts, cursors, acknowledgements, feedback and events.",
+      "assumptionsRisks": ["Current evidence uses file transport; production transport qualification is open."],
+      "computation": "File-backed local streams in the harness; external transport cost TBD.",
+      "openQuestionRefs": ["question-external-environment"],
+      "status": "implemented",
+      "provenance": "src/onr/adapters/file_transport.py; ADR 0013"
+    },
+    {
+      "id": "component-environment",
+      "name": "Environment boundary (fake implementation)",
+      "purpose": "Own update cadence, command consumption, physical application, lifecycle feedback and perceptions.",
+      "designation": "proposed",
+      "order": 6,
+      "rationale": "The same profile and port should let the fake harness be replaced by an actual external environment without giving the agent physical lifecycle authority.",
+      "inputRefs": ["input-environment-profile"],
+      "outputRefs": ["output-lifecycle", "output-integration-contract"],
+      "phases": ["inference"],
+      "trainingRole": "No training role.",
+      "inferenceRole": "Currently implemented by the fake environment in coordinator- or environment-driven mode; actual adapter/process is planned.",
+      "assumptionsRisks": ["Only fake adapter_kind is implemented.", "Actual payload mapping, startup, failure propagation and timing are unresolved."],
+      "computation": "Fake environment: deterministic 0.5-second ticks. Actual environment cost/latency: TBD.",
+      "openQuestionRefs": ["question-external-environment", "question-fencing"],
+      "status": "implemented",
+      "provenance": "commits a00337b and 4a45a5e; src/onr/ports/environment.py; src/onr/demo/environment_updates.py"
+    },
+    {
+      "id": "component-viewer",
+      "name": "Workflow viewer + evidence projections",
+      "purpose": "Expose the method's planning, execution, tools, artifacts and evidence without becoming authority.",
+      "designation": "standard",
+      "order": 7,
+      "rationale": "Supervisor and developer inspection require an intelligible projection of the same durable evidence used by the runtime.",
+      "inputRefs": ["input-snapshot"],
+      "outputRefs": ["output-workflow-view"],
+      "phases": ["inference"],
+      "trainingRole": "No training role.",
+      "inferenceRole": "Renders hierarchical Workflow, trajectory, activities, artifacts and related evidence views.",
+      "assumptionsRisks": ["Viewer is observational and must not be mistaken for mission authority.", "No supervisor usability study has been run."],
+      "computation": "Static browser application over local trace projections; performance benchmark TBD.",
+      "openQuestionRefs": [],
+      "status": "implemented",
+      "provenance": "commits 469b4cb, 6e93d89, dd60c21, b9e890f; src/onr/viewer/web/app/workflow.js"
+    }
+  ],
+  "edges": [
+    {"id":"edge-activation","from":"input-mission","to":"component-host","payload":"Mission Activation: intent, authority, request ID","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"Runtime Host v1 activation contract"},
+    {"id":"edge-host-hyper","from":"component-host","to":"component-hyper","payload":"MissionInput and run context","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/runtime_host/host.py"},
+    {"id":"edge-snapshot-hyper","from":"input-snapshot","to":"component-hyper","payload":"Mission Snapshot, environment artifact and belief","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/runtime/cli.py::_run_hyper_revision"},
+    {"id":"edge-tools-hyper","from":"input-toolchain","to":"component-hyper","payload":"Files, Execute calls and planner/verifier diagnostics","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"commit c897727; HyperWorkflowContext"},
+    {"id":"edge-plan-context","from":"component-hyper","to":"component-context","payload":"Accepted PlannerPlan + Statechart","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/runtime/cli.py::_run_hyper_revision"},
+    {"id":"edge-context-maneuver","from":"component-context","to":"component-maneuver","payload":"Latest Mission Snapshot + focused FSM context + triggers","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/application/context_coordination.py"},
+    {"id":"edge-maneuver-transport","from":"component-maneuver","to":"component-transport","payload":"Idempotently identified Maneuver Command","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/agents/maneuver_tools.py"},
+    {"id":"edge-transport-environment","from":"component-transport","to":"component-environment","payload":"Durably delivered command + consumer ack/nack","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/demo/environment_updates.py"},
+    {"id":"edge-profile-environment","from":"input-environment-profile","to":"component-environment","payload":"Adapter kind, ownership, cadence, protocols, topics and capabilities","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"conf/environment_params.yaml"},
+    {"id":"edge-environment-transport","from":"component-environment","to":"component-transport","payload":"Maneuver Feedback + perceptions + environment data","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"ADR 0013; EnvironmentUpdateSource"},
+    {"id":"edge-transport-context","from":"component-transport","to":"component-context","payload":"Ordered evidence stream and queued update batches","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"ContextCoordination._drain_environment_updates"},
+    {"id":"edge-context-hyper","from":"component-context","to":"component-hyper","payload":"Periodic or requested Hyper heartbeat / replan","relationshipType":"conditional","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/application/context_coordination.py"},
+    {"id":"edge-context-result","from":"component-context","to":"output-result","payload":"ClosedLoopRunResult + final FSM state","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"ClosedLoopRunResult"},
+    {"id":"edge-context-viewer","from":"component-context","to":"component-viewer","payload":"Mission Snapshots, FSM, commands, feedback and operational traces","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/viewer/trace.py"},
+    {"id":"edge-hyper-viewer","from":"component-hyper","to":"component-viewer","payload":"Planning phases, tool calls and artifacts","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"src/onr/viewer/web/app/workflow.js"},
+    {"id":"edge-viewer-output","from":"component-viewer","to":"output-workflow-view","payload":"Read-only Workflow and operator evidence views","relationshipType":"forward","gradientBehavior":"not-applicable","phases":["inference"],"status":"implemented","provenance":"viewer Workflow tab; Runtime Host public projections"}
+  ],
+  "objectives": [
+    {
+      "id": "objective-terminal",
+      "name": "Executable mission completion",
+      "purpose": "Reach a terminal Statechart result while retaining command, feedback, perception and plan provenance.",
+      "formula": "Functional outcome: terminal=true plus reconciled durable evidence; no statistical objective is optimized.",
+      "supervision": "External planners/verifiers, FSM constraints, environment feedback and code-owned completion checks.",
+      "weight": "Primary functional acceptance criterion.",
+      "targetComponentRefs": ["component-hyper", "component-context", "component-maneuver"],
+      "targetOutputRefs": ["output-result"],
+      "status": "implemented",
+      "provenance": "tests/test_closed_loop_runtime.py; 2026-08-26 coordinator-driven live run"
+    },
+    {
+      "id": "objective-authority",
+      "name": "Authority separation",
+      "purpose": "Keep planning decisions, durable delivery and physical lifecycle truth distinct.",
+      "formula": "No synchronous environment callback; receipts mean enqueue only; feedback owns lifecycle.",
+      "supervision": "Contract tests and transport/environment trace joins.",
+      "weight": "Hard architectural invariant.",
+      "targetComponentRefs": ["component-maneuver", "component-transport", "component-environment"],
+      "targetOutputRefs": ["output-lifecycle"],
+      "status": "implemented",
+      "provenance": "ADR 0013; issue #54 tests and live comparison"
+    },
+    {
+      "id": "objective-observability",
+      "name": "Inspectable workflow evidence",
+      "purpose": "Let a supervisor trace why the method planned, acted, replanned and stopped without exposing private reasoning as authority.",
+      "formula": "Qualitative inspection criterion; usability metric TBD.",
+      "supervision": "Retained debug/operational/transport artifacts and viewer projections.",
+      "weight": "Required for methodological defense; not an optimization loss.",
+      "targetComponentRefs": ["component-viewer"],
+      "targetOutputRefs": ["output-workflow-view"],
+      "status": "implemented",
+      "provenance": "Workflow viewer commits and current viewer source"
+    }
+  ],
+  "novelty": [
+    {
+      "id": "novelty-progress",
+      "claimId": "claim-environment-seam",
+      "baseline": "Mission 1 methodology pitch v0.2 (2026-08-14)",
+      "baselineSource": "docs/methodology_pitch/mission1_methodology_pitch/mission1_methodology_pitch.html",
+      "delta": "Move from a planned belief/surveillance experiment to an executable, observable planning-to-action loop with explicit transport and environment authority boundaries.",
+      "affectedComponentRefs": ["component-hyper", "component-context", "component-maneuver", "component-environment", "component-viewer"],
+      "expectedConsequence": "A supervisor can inspect functional evidence and isolate integration failures before actual-environment deployment; this is a method-progress delta, not a priority novelty claim.",
+      "status": "implemented",
+      "provenance": "baseline pitch v0.2 and Git history aeba4b8..4a45a5e"
+    },
+    {
+      "id": "novelty-execute",
+      "claimId": "claim-execute-impact",
+      "baseline": "Pre-c897727 Hyper workflow with filesystem-only backend",
+      "baselineSource": "parent of commit c897727; tests/test_role_context.py",
+      "delta": "Give only the Hyper workflow a constrained virtual LocalShellBackend so it can inspect and execute planner-related repository work.",
+      "affectedComponentRefs": ["component-hyper"],
+      "expectedConsequence": "More grounded artifact construction and repair; causal effect remains unmeasured.",
+      "status": "implemented",
+      "provenance": "commit c897727; scholar qualitative assessment 2026-08-26"
+    },
+    {
+      "id": "novelty-environment",
+      "claimId": "claim-environment-seam",
+      "baseline": "Pre-a00337b in-process Maneuver adapter submission",
+      "baselineSource": "parent of commit a00337b; issue #54 implementation plan",
+      "delta": "Replace synchronous adapter submission with durable Maneuver Commands, environment-owned consumption/feedback, and profile-selected update ownership.",
+      "affectedComponentRefs": ["component-context", "component-maneuver", "component-transport", "component-environment"],
+      "expectedConsequence": "The fake environment can evolve toward an external process without making recipient acceptance part of an agent tool call.",
+      "status": "implemented",
+      "provenance": "commit a00337b; ADR 0013"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "experiment-coordinator",
+      "kind": "single-episode functional live run",
+      "claimIds": ["claim-coordinator-run", "claim-environment-seam"],
+      "affectedComponentRefs": ["component-context", "component-maneuver", "component-transport", "component-environment"],
+      "hypothesis": "Coordinator-driven mode preserves the existing serialized timing and can complete the Mission while command delivery remains asynchronous.",
+      "intervention": "Set updates.ownership=coordinator_driven and run the default live fake-environment Mission.",
+      "comparator": "Environment-driven mode in a separate run; not a performance-controlled comparison.",
+      "datasetSetting": "One Mission 1 fake-environment episode on 2026-08-26.",
+      "metric": "Terminal state, Mission time, ticks, command/feedback/perception identity reconciliation.",
+      "expectedEffect": "Terminal completion without synchronous environment acceptance or lost evidence.",
+      "observedResult": "Terminal patrol-objective-complete at 305 s; 610 ticks; 13 commands applied; 26 feedback events; 42 perceptions; plan revisions 1, 2 and 3.",
+      "outcomeCategory": "Observed",
+      "statisticalSupport": {"sampleSize":"1 episode","replications":"1","effectSize":"Not applicable: functional trace, no group comparison","uncertainty":"Not estimated","test":"None","multiplicity":"None"},
+      "falsifiedIf": "The Mission is nonterminal, commands are duplicated/lost, feedback is synthesized, or durable identities do not reconcile.",
+      "status": "run",
+      "provenance": "data/past_debug_rounds/20260826T041258.508709Z/var and live comparison report"
+    },
+    {
+      "id": "experiment-environment",
+      "kind": "single-episode asynchronous timing live run",
+      "claimIds": ["claim-environment-run", "claim-environment-seam"],
+      "affectedComponentRefs": ["component-context", "component-maneuver", "component-transport", "component-environment"],
+      "hypothesis": "Environment-driven mode advances during inference, folds queued evidence into one serialized catch-up lane, and shuts down cleanly.",
+      "intervention": "Set updates.ownership=environment_driven and run the default live fake-environment Mission to the 600-second bound.",
+      "comparator": "Coordinator-driven run; different timing behavior means terminal performance is not directly comparable.",
+      "datasetSetting": "One Mission 1 fake-environment episode on 2026-08-26.",
+      "metric": "Evidence/completion times, maximum update batch, coalescing, commands applied, feedback/perception identity preservation and producer termination.",
+      "expectedEffect": "Mission time advances inside inference while one agent invocation remains active and all evidence is retained.",
+      "observedResult": "Reached the 600 s bound nonterminal; 1200 ticks; maximum batch 394; 168 coalesced updates; 4 commands queued, 3 applied/completed; all 4 perceptions retained; producer stopped cleanly.",
+      "outcomeCategory": "Observed",
+      "statisticalSupport": {"sampleSize":"1 episode","replications":"1","effectSize":"Not applicable: functional trace, no group comparison","uncertainty":"Not estimated","test":"None","multiplicity":"None"},
+      "falsifiedIf": "Mission time does not advance during inference, invocations overlap, updates or identities are lost, or producer failure/thread leakage occurs.",
+      "status": "run",
+      "provenance": "var from successful environment-driven run and live comparison report"
+    },
+    {
+      "id": "experiment-execute-ablation",
+      "kind": "capability ablation",
+      "claimIds": ["claim-execute-impact"],
+      "affectedComponentRefs": ["component-hyper"],
+      "hypothesis": "Constrained Execute access improves valid planner artifact generation and correction compared with filesystem-only Hyper access.",
+      "intervention": "Run matched episode packs with Hyper Execute enabled versus disabled; keep model, prompts, planner, scenario and retry budgets fixed.",
+      "comparator": "Pre-c897727 filesystem-only Hyper backend.",
+      "datasetSetting": "TBD matched Mission 1 episode pack.",
+      "metric": "Accepted planner/statechart rate, correction count, planner diagnostics resolved, wall time and terminal completion.",
+      "expectedEffect": "Higher acceptance/terminal rate or fewer correction cycles with Execute.",
+      "observedResult": "TBD",
+      "outcomeCategory": "Planned",
+      "falsifiedIf": "Execute does not improve acceptance/terminal rate or correction efficiency under matched conditions, or introduces unacceptable failures.",
+      "status": "planned",
+      "provenance": "scholar request 2026-08-26; no controlled ablation currently exists"
+    },
+    {
+      "id": "experiment-tui-live",
+      "kind": "operator-path acceptance",
+      "claimIds": ["claim-tui"],
+      "affectedComponentRefs": ["component-host"],
+      "hypothesis": "The Operator Console can activate, observe, inspect artifacts, and close or cancel a real Mission Run through the Python Runtime Host.",
+      "intervention": "Run one end-to-end live mission from the TUI rather than the demo CLI.",
+      "comparator": "Current CLI-driven live run.",
+      "datasetSetting": "One local live Mission Run; actual scenario TBD.",
+      "metric": "Activation, ownership recovery, run observation, artifact inspection, terminal/cancellation status and clean terminal restoration.",
+      "expectedEffect": "The operator completes the lifecycle without contract, liveness or UI-state divergence.",
+      "observedResult": "TBD",
+      "outcomeCategory": "Planned",
+      "falsifiedIf": "The TUI cannot complete the operator lifecycle or disagrees with Runtime Host authority.",
+      "status": "planned",
+      "provenance": "scholar confirmation 2026-08-26; current tests are contract/render/state tests, not integrated live acceptance"
+    },
+    {
+      "id": "experiment-external-environment",
+      "kind": "integration protocol acceptance",
+      "claimIds": ["claim-actual-environment", "claim-environment-seam"],
+      "affectedComponentRefs": ["component-transport", "component-environment", "component-context"],
+      "hypothesis": "An external environment process can replace the fake adapter while preserving asynchronous command delivery and authoritative feedback/perception semantics.",
+      "intervention": "Implement an actual adapter/process profile and run protocol, failure, restart and timing tests.",
+      "comparator": "Current fake-environment coordinator- and environment-driven harnesses.",
+      "datasetSetting": "Actual environment and scenario: TBD.",
+      "metric": "Protocol conformance, command idempotency, ack/nack/dead-letter behavior, evidence completeness, timing drift and terminal safety.",
+      "expectedEffect": "The runtime changes profile/adapter integration, not agent authority or tool schemas.",
+      "observedResult": "TBD",
+      "outcomeCategory": "Planned",
+      "falsifiedIf": "The external system requires synchronous recipient acceptance, loses lifecycle/perception evidence, violates command identity, or cannot expose required timing/protocol data.",
+      "status": "planned",
+      "provenance": "ADR 0013; scholar confirmation 2026-08-26"
+    },
+    {
+      "id": "experiment-belief-benchmark",
+      "kind": "Mission 1 repeated baseline comparison",
+      "claimIds": ["claim-belief-benchmark"],
+      "affectedComponentRefs": ["component-hyper", "component-context", "component-maneuver"],
+      "hypothesis": "Planner-guided surveillance with report-anchored per-ship beliefs improves posterior calibration or watchlist quality against named patrol baselines.",
+      "intervention": "Run the agreed generated Mission 1 episode pack using the current closed loop and each named baseline.",
+      "comparator": "LLM+MiniZinc, LLM-only, random patrol, lawnmower and oracle from pitch v0.2.",
+      "datasetSetting": "Planned protocol from pitch v0.2: one drone, 20 ships, 300-second episodes, at least 30 episodes; final protocol requires supervisor confirmation.",
+      "metric": "Posterior log-loss and top-k watchlist precision, with coverage and execution validity reported separately.",
+      "expectedEffect": "TBD",
+      "observedResult": "TBD",
+      "outcomeCategory": "Planned",
+      "falsifiedIf": "The current method does not improve the agreed metrics under matched episodes, or execution failures prevent a fair comparison.",
+      "status": "planned",
+      "provenance": "docs/methodology_pitch/mission1_methodology_pitch/mission1_methodology_pitch.html version 0.2"
+    }
+  ],
+  "openQuestions": [
+    {
+      "id": "question-external-environment",
+      "question": "Which actual environment should define the first adapter and protocol-acceptance scenario?",
+      "owner": "Supervisor + scholar",
+      "resolutionPath": "Choose the target environment, map its command/feedback/perception payloads, and define a minimal integration acceptance run.",
+      "decisionRequested": true,
+      "status": "open",
+      "provenance": "scholar confirmation 2026-08-26"
+    },
+    {
+      "id": "question-fencing",
+      "question": "Should stale-decision fencing precede actual-environment integration, or be designed using the first external timing measurements?",
+      "owner": "Supervisor + scholar",
+      "resolutionPath": "Use recorded evidence/completion drift and external latency to define command evidence-age policy and rejection ownership.",
+      "decisionRequested": true,
+      "status": "open",
+      "provenance": "ADR 0013 and environment-driven run (up to 41 s drift in a completed invocation)"
+    },
+    {
+      "id": "question-execute",
+      "question": "Is a controlled Execute-on/off ablation needed before making Execute a formal methodological contribution?",
+      "owner": "Supervisor",
+      "resolutionPath": "Select matched episode packs, success metrics and replication count; otherwise keep the claim qualitative.",
+      "decisionRequested": true,
+      "status": "open",
+      "provenance": "scholar confirmation 2026-08-26"
+    },
+    {
+      "id": "question-tui",
+      "question": "Which milestone should come first: actual-environment integration, a full TUI-driven Mission Run, or the repeated Mission 1 belief benchmark?",
+      "owner": "Supervisor",
+      "resolutionPath": "Choose milestone order; all three have explicit planned acceptance experiments in this artifact.",
+      "decisionRequested": true,
+      "status": "open",
+      "provenance": "TUI implemented but not live-accepted; actual environment not integrated; belief benchmark remains planned"
+    }
+  ]
+}
+  </script>
+
+  <script>
+  (() => {
+    "use strict";
+    const schema = JSON.parse(document.getElementById("methodology-schema").textContent);
+    const byId = new Map();
+    ["claims", "assumptions", "inputs", "outputs", "components", "edges", "experiments", "openQuestions"].forEach(group => {
+      (schema[group] || []).forEach(item => byId.set(item.id, {...item, _group: group}));
+    });
+    const required = ["claims", "assumptions", "inputs", "outputs", "components", "edges", "experiments", "openQuestions"];
+    const missing = required.filter(key => !Array.isArray(schema[key]));
+    if (missing.length) {
+      document.body.insertAdjacentHTML("afterbegin", `<p class="inactive-notice">Methodology data not provided: ${missing.join(", ")}</p>`);
+      return;
+    }
+
+    const esc = value => String(value ?? "TBD").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+    const statusBadge = status => `<span class="badge status-${esc(status)}">status · ${esc(status)}</span>`;
+    const kindBadge = kind => `<span class="evidence-kind">evidence · ${esc(kind)}</span>`;
+    const state = { mode: schema.metadata.defaultMode || "inference", selectedKind: "component", selectedId: "component-environment", highlightedEvidenceId: null, presentationStep: 0 };
+    const positions = {
+      "input-mission":[18,70], "input-snapshot":[18,215], "input-toolchain":[18,360], "input-environment-profile":[18,505],
+      "component-host":[185,70], "component-hyper":[345,115], "component-context":[505,250], "component-maneuver":[665,250],
+      "component-transport":[665,485], "component-environment":[505,525], "component-viewer":[345,525],
+      "output-result":[835,145], "output-workflow-view":[835,485]
+    };
+    const nodeTitles = {
+      "input-mission":"Mission Activation", "input-snapshot":"Mission Snapshot", "input-toolchain":"Planner + Execute",
+      "input-environment-profile":"Environment Profile", "component-host":"Runtime Host + Console", "component-hyper":"Hyper + Execute",
+      "component-context":"Context + FSM", "component-maneuver":"Maneuver Control", "component-transport":"Durable transport",
+      "component-environment":"Environment seam · fake now", "component-viewer":"Workflow viewer", "output-result":"Mission Result",
+      "output-workflow-view":"Workflow + operator views"
+    };
+    const edgeTitles = {
+      "edge-activation":"Mission Activation", "edge-host-hyper":"MissionInput", "edge-snapshot-hyper":"Snapshot + belief",
+      "edge-tools-hyper":"Execute + diagnostics", "edge-plan-context":"Plan + Statechart", "edge-context-maneuver":"Snapshot + FSM context",
+      "edge-maneuver-transport":"Maneuver Command", "edge-transport-environment":"Command delivery", "edge-profile-environment":"Ownership + protocols",
+      "edge-environment-transport":"Feedback + perceptions", "edge-transport-context":"Ordered evidence", "edge-context-hyper":"Heartbeat / replan",
+      "edge-context-result":"Mission result", "edge-context-viewer":"Runtime trace", "edge-hyper-viewer":"Planning trace",
+      "edge-viewer-output":"Workflow view"
+    };
+    const mappedIds = Object.keys(positions);
+    const nodeLayer = document.getElementById("node-layer");
+    const edgeLayer = document.getElementById("edge-layer");
+    const svg = document.getElementById("connector-layer");
+    const inspector = document.getElementById("inspector");
+    const mapCaption = document.getElementById("map-caption");
+
+    function recordName(record) {
+      return record?.name || record?.title || record?.payload || record?.id || "Unknown item";
+    }
+    function recordStatus(record) { return record?.status || "open"; }
+    function activeInMode(record) {
+      const phases = record?.phases || record?.availableIn;
+      return !Array.isArray(phases) || phases.includes(state.mode);
+    }
+    function renderMilestones() {
+      const entries = [
+        ["21 Aug", "Planning reaches Statecharts", "claim-workflow-view"],
+        ["21–22 Aug", "Tool-driven Maneuver + Execute", "claim-execute"],
+        ["23 Aug", "Closed loop moves into Context Coordination", "claim-coordinator-run"],
+        ["24–25 Aug", "Runtime Host/TUI, Transition Intent, assess-first", "claim-tui"],
+        ["26 Aug", "Environment ownership + async delivery", "claim-environment-seam"]
+      ];
+      document.getElementById("milestone-list").innerHTML = entries.map(([date, text, claimId]) => {
+        const claim = byId.get(claimId);
+        return `<article class="milestone"><time>${esc(date)}</time><h3>${esc(text)}</h3><p>${esc(claim.text)}</p><div>${statusBadge(claim.status)} ${kindBadge(claim.evidenceKind)}</div></article>`;
+      }).join("");
+    }
+    function renderAssumptions() {
+      document.getElementById("assumption-list").innerHTML = schema.assumptions.map(item => `
+        <article class="paper-card assumption">
+          <div class="toolbar-group">${statusBadge(item.status)}</div>
+          <h3>${esc(item.text)}</h3>
+          <dl><dt>Why reasonable</dt><dd>${esc(item.rationale)}</dd><dt>If false</dt><dd>${esc(item.failureImpact)}</dd><dt>Provenance</dt><dd class="small">${esc(item.provenance)}</dd></dl>
+        </article>`).join("");
+    }
+    function nodeRecord(id) { return byId.get(id); }
+    function renderNodes() {
+      nodeLayer.innerHTML = mappedIds.map(id => {
+        const record = nodeRecord(id);
+        const [x,y] = positions[id];
+        const kind = record._group === "components" ? "component" : record._group === "inputs" ? "input" : "output";
+        const proposed = record.designation === "proposed" ? " proposed" : "";
+        const inactive = activeInMode(record) ? "" : " inactive";
+        const pressed = state.selectedId === id;
+        const subtitle = kind === "component" ? (record.designation === "proposed" ? "Proposed integration boundary" : record.designation) : kind;
+        return `<button type="button" class="node${proposed}${inactive}" data-id="${esc(id)}" data-kind="${kind}" aria-label="Inspect ${esc(recordName(record))}" aria-pressed="${pressed}" style="left:${x}px;top:${y}px"><strong>${esc(nodeTitles[id] || recordName(record))}</strong><small>${esc(subtitle)} · ${esc(recordStatus(record))}</small></button>`;
+      }).join("");
+      nodeLayer.querySelectorAll("button").forEach(button => button.addEventListener("click", () => selectItem("node", button.dataset.id)));
+    }
+    function mappedEdges() { return schema.edges.filter(edge => positions[edge.from] && positions[edge.to]); }
+    function drawEdges() {
+      svg.querySelectorAll("path.connector").forEach(path => path.remove());
+      edgeLayer.innerHTML = "";
+      const mapRect = document.getElementById("method-map").getBoundingClientRect();
+      mappedEdges().forEach(edge => {
+        const from = nodeLayer.querySelector(`[data-id="${edge.from}"]`).getBoundingClientRect();
+        const to = nodeLayer.querySelector(`[data-id="${edge.to}"]`).getBoundingClientRect();
+        let x1 = from.right - mapRect.left, y1 = from.top + from.height/2 - mapRect.top;
+        let x2 = to.left - mapRect.left, y2 = to.top + to.height/2 - mapRect.top;
+        if (x2 < x1) { x1 = from.left - mapRect.left; x2 = to.right - mapRect.left; }
+        const bend = Math.max(45, Math.abs(x2-x1)*.42);
+        const direction = x2 >= x1 ? 1 : -1;
+        const d = `M ${x1} ${y1} C ${x1 + bend*direction} ${y1}, ${x2 - bend*direction} ${y2}, ${x2} ${y2}`;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        const related = state.selectedId === edge.id || state.selectedId === edge.from || state.selectedId === edge.to;
+        path.setAttribute("d", d);
+        path.setAttribute("class", `connector ${edge.relationshipType}${activeInMode(edge) ? "" : " inactive"}${related ? " related" : ""}`);
+        path.dataset.id = edge.id;
+        svg.appendChild(path);
+        const label = document.createElement("button");
+        label.type = "button";
+        label.className = `edge-control${activeInMode(edge) ? "" : " inactive"}`;
+        label.style.left = `${(x1+x2)/2}px`;
+        label.style.top = `${(y1+y2)/2}px`;
+        label.dataset.id = edge.id;
+        label.setAttribute("aria-label", `Inspect flow: ${edge.payload}`);
+        label.setAttribute("aria-pressed", String(state.selectedId === edge.id));
+        label.textContent = edgeTitles[edge.id] || edge.payload;
+        label.addEventListener("click", () => selectItem("edge", edge.id));
+        edgeLayer.appendChild(label);
+      });
+    }
+    function refNames(refs) { return (refs || []).map(id => recordName(byId.get(id))).join("; ") || "None"; }
+    function inspectorForComponent(record) {
+      const inactive = activeInMode(record) ? "" : `<div class="inactive-notice">This component is not active in ${esc(state.mode)} mode. The current methodology has no project-specific training path.</div>`;
+      const questions = (record.openQuestionRefs || []).map(id => byId.get(id)?.question).filter(Boolean).join(" ") || "None linked.";
+      return `${inactive}<span class="eyebrow">Component · ${esc(record.designation)}</span><h3>${esc(record.name)}</h3><div class="toolbar-group">${statusBadge(record.status)}</div><p>${esc(record.purpose)}</p>
+        <details open><summary>Inputs and outputs</summary><dl><dt>Inputs</dt><dd>${esc(refNames(record.inputRefs))}</dd><dt>Outputs</dt><dd>${esc(refNames(record.outputRefs))}</dd></dl></details>
+        <details open><summary>Rationale</summary><p>${esc(record.rationale)}</p></details>
+        <details><summary>Training role</summary><p>${esc(record.trainingRole)}</p></details>
+        <details open><summary>Inference role</summary><p>${esc(record.inferenceRole)}</p></details>
+        <details><summary>Assumptions and risks</summary><ul>${(record.assumptionsRisks || []).map(item => `<li>${esc(item)}</li>`).join("")}</ul></details>
+        <details><summary>Computation</summary><p>${esc(record.computation)}</p></details>
+        <details><summary>Open questions</summary><p>${esc(questions)}</p></details>
+        <p class="small muted"><strong>Provenance:</strong> ${esc(record.provenance)}</p>`;
+    }
+    function inspectorForEdge(edge) {
+      const from = byId.get(edge.from), to = byId.get(edge.to);
+      return `<span class="eyebrow">Flow · ${esc(edge.relationshipType)}</span><h3>${esc(edge.payload)}</h3><div class="toolbar-group">${statusBadge(edge.status)}</div><p>This payload moves from <strong>${esc(recordName(from))}</strong> to <strong>${esc(recordName(to))}</strong>.</p>
+        <dl><dt>Direction</dt><dd>${esc(edge.from)} → ${esc(edge.to)}</dd><dt>Phase</dt><dd>${esc((edge.phases || []).join(", "))}</dd><dt>Gradient</dt><dd>${esc(edge.gradientBehavior)}</dd></dl>
+        <p class="small muted"><strong>Provenance:</strong> ${esc(edge.provenance)}</p>`;
+    }
+    function inspectorForBoundary(record) {
+      const label = record._group === "inputs" ? "Input" : "Output";
+      return `<span class="eyebrow">${label}</span><h3>${esc(record.name)}</h3><div class="toolbar-group">${statusBadge(record.status)}</div><dl><dt>Scope</dt><dd>${esc(record.scope)}</dd><dt>Format</dt><dd>${esc(record.format)}</dd><dt>Available</dt><dd>${esc((record.availableIn || ["inference"]).join(", "))}</dd></dl><p class="small muted"><strong>Provenance:</strong> ${esc(record.provenance)}</p>`;
+    }
+    function updateInspector() {
+      const record = byId.get(state.selectedId);
+      if (!record) return;
+      inspector.innerHTML = record._group === "components" ? inspectorForComponent(record) : record._group === "edges" ? inspectorForEdge(record) : inspectorForBoundary(record);
+      mapCaption.textContent = `${state.mode === "training" ? "Training mode: no project-specific training path is claimed" : "Inference mode"}. Inspecting ${recordName(record)}. Solid arrows are forward payloads; dashed arrows are conditional feedback or replanning.`;
+    }
+    function selectItem(kind, id, announce=true) {
+      state.selectedKind = kind; state.selectedId = id;
+      renderNodes(); drawEdges(); updateInspector();
+      if (announce) inspector.focus?.({preventScroll:true});
+    }
+    function setMode(mode) {
+      state.mode = mode;
+      document.querySelectorAll("[data-mode]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.mode === mode)));
+      document.getElementById("mode-summary").textContent = mode === "training"
+        ? "No project-specific model training is part of this method. All runtime nodes are muted to make that boundary explicit."
+        : "The deployable path uses one serialized agent lane while environment updates are profile-owned.";
+      renderNodes(); drawEdges(); updateInspector();
+    }
+    function renderExperiments() {
+      document.getElementById("experiment-rows").innerHTML = schema.experiments.map(exp => {
+        const support = exp.statisticalSupport ? Object.entries(exp.statisticalSupport).map(([key,value]) => `${key}: ${value}`).join(" · ") : "Not an observed quantitative experiment.";
+        return `<tr><td><button type="button" class="evidence-button" data-experiment="${esc(exp.id)}">${esc(exp.kind)}</button><div>${statusBadge(exp.status)}</div></td><td><strong>${esc(exp.outcomeCategory)}</strong><br><span class="small">${esc(exp.datasetSetting)}</span></td><td>${esc(exp.observedResult === "TBD" ? exp.expectedEffect : exp.observedResult)}</td><td>${esc(exp.falsifiedIf)}</td><td class="support">${esc(support)}</td></tr>`;
+      }).join("");
+      document.querySelectorAll("[data-experiment]").forEach(button => button.addEventListener("click", () => {
+        const exp = byId.get(button.dataset.experiment);
+        state.highlightedEvidenceId = exp.id;
+        const target = exp.affectedComponentRefs?.[0];
+        if (target) { selectItem("node", target, false); document.getElementById("method-map-section").scrollIntoView({behavior:"smooth"}); }
+      }));
+      const execute = byId.get("claim-execute-impact");
+      document.getElementById("execute-claim").innerHTML = `${esc(execute.text)} <span class="nowrap">${statusBadge(execute.status)} ${kindBadge(execute.evidenceKind)}</span>`;
+    }
+    function renderQuestions() {
+      document.getElementById("question-list").innerHTML = schema.openQuestions.filter(q => q.decisionRequested).map(q => `<div class="question"><div>${statusBadge(q.status)}</div><strong>${esc(q.question)}</strong><p class="small">${esc(q.resolutionPath)}</p><p class="small muted">Owner: ${esc(q.owner)}</p></div>`).join("");
+    }
+    const presentationSteps = [
+      {title:"Question and progress", section:"opening-summary", select:"component-context"},
+      {title:"Planning-to-execution path", section:"method-map-section", select:"component-hyper"},
+      {title:"Workflow evidence view", section:"method-map-section", select:"component-viewer"},
+      {title:"Tool-driven physical decisions", section:"method-map-section", select:"component-maneuver"},
+      {title:"Environment ownership and live evidence", section:"objectives-and-evidence", select:"component-environment"},
+      {title:"Limits and next decisions", section:"limitations-and-decisions", select:"component-environment"}
+    ];
+    let restoreScroll = 0, restoreSelection = state.selectedId;
+    function applyPresentationStep(index) {
+      state.presentationStep = Math.max(0, Math.min(presentationSteps.length-1, index));
+      const step = presentationSteps[state.presentationStep];
+      document.querySelectorAll("main > section").forEach(section => section.classList.toggle("active-section", section.id === step.section));
+      document.getElementById("presentation-counter").textContent = `Step ${state.presentationStep+1} of ${presentationSteps.length}`;
+      document.getElementById("presentation-title").textContent = step.title;
+      selectItem("node", step.select, false);
+      document.getElementById(step.section).scrollIntoView({behavior:"smooth"});
+      const node = nodeLayer.querySelector(`[data-id="${step.select}"]`);
+      if (node) { node.classList.add("presentation-focus"); setTimeout(() => node.classList.remove("presentation-focus"), 650); }
+    }
+    function startPresentation() {
+      restoreScroll = window.scrollY; restoreSelection = state.selectedId;
+      document.body.classList.add("presentation-mode"); applyPresentationStep(0);
+    }
+    function exitPresentation() {
+      document.body.classList.remove("presentation-mode");
+      document.querySelectorAll("main > section").forEach(section => section.classList.remove("active-section"));
+      document.getElementById("opening-summary").classList.add("active-section");
+      selectItem("node", restoreSelection, false); window.scrollTo({top:restoreScroll, behavior:"auto"});
+    }
+    document.querySelectorAll("[data-mode]").forEach(button => {
+      button.addEventListener("click", () => setMode(button.dataset.mode));
+      button.addEventListener("keydown", event => {
+        if (!["ArrowLeft","ArrowRight"].includes(event.key)) return;
+        event.preventDefault(); const next = button.dataset.mode === "training" ? "inference" : "training";
+        setMode(next); document.querySelector(`[data-mode="${next}"]`).focus();
+      });
+    });
+    document.getElementById("reset-view").addEventListener("click", () => { state.highlightedEvidenceId = null; setMode(schema.metadata.defaultMode); selectItem("node", "component-environment", false); document.getElementById("map-scroll").scrollLeft = 0; });
+    document.getElementById("start-presentation").addEventListener("click", startPresentation);
+    document.getElementById("presentation-exit").addEventListener("click", exitPresentation);
+    document.getElementById("presentation-prev").addEventListener("click", () => applyPresentationStep(state.presentationStep-1));
+    document.getElementById("presentation-next").addEventListener("click", () => state.presentationStep === presentationSteps.length-1 ? exitPresentation() : applyPresentationStep(state.presentationStep+1));
+    document.addEventListener("keydown", event => {
+      if (!document.body.classList.contains("presentation-mode") || ["INPUT","BUTTON","SUMMARY","A"].includes(document.activeElement?.tagName)) return;
+      if (event.key === "ArrowRight") { event.preventDefault(); applyPresentationStep(state.presentationStep+1); }
+      if (event.key === "ArrowLeft") { event.preventDefault(); applyPresentationStep(state.presentationStep-1); }
+      if (event.key === "Escape") exitPresentation();
+    });
+    window.addEventListener("resize", drawEdges);
+    if (window.ResizeObserver) new ResizeObserver(drawEdges).observe(document.getElementById("method-map"));
+
+    renderMilestones(); renderAssumptions(); renderNodes(); updateInspector(); renderExperiments(); renderQuestions();
+    requestAnimationFrame(drawEdges);
+  })();
+  </script>
+</body>
+</html>
