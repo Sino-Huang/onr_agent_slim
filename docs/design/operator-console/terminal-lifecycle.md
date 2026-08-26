@@ -39,6 +39,17 @@ The two mechanisms overlap deliberately: a panic while the guard is alive
 restores via the hook (message visible), then unwinding drops the guard
 (restore is a cheap no-op). A panic before the guard exists still restores.
 
+## Bootstrapped Runtime Host ownership
+
+When the console starts its own Runtime Host, a separate guard owns that child
+process. Dropping the guard stops the child on normal quit, event-loop error,
+or panic unwinding. A healthy Runtime Host that already existed at startup is
+never adopted or stopped by the console.
+
+The bootstrapped Host's standard streams are detached from the console
+terminal. This prevents a Host that is still shutting down from inheriting a
+deleted pseudo-terminal and later failing while starting a Run Worker.
+
 ## Boundaries and known limits
 
 - The host worker thread is a channel consumer with bounded per-request

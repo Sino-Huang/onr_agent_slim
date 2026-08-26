@@ -4,7 +4,7 @@
 //! panic restoration design.
 
 use std::io;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
@@ -82,6 +82,9 @@ impl HostProcessSpawner for UvicornSpawner {
                 "--port",
                 &port.to_string(),
             ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?;
         Ok(Box::new(child))
     }
@@ -96,14 +99,37 @@ fn stop_bootstrapped_host(child: Option<&mut (dyn ChildHandle + '_)>) -> io::Res
     Ok(())
 }
 
+#[derive(Debug)]
+struct BootstrappedHostGuard {
+    child: Option<Box<dyn ChildHandle>>,
+}
+
+impl BootstrappedHostGuard {
+    fn new(child: Option<Box<dyn ChildHandle>>) -> Self {
+        Self { child }
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        stop_bootstrapped_host(self.child.as_deref_mut())?;
+        self.child = None;
+        Ok(())
+    }
+}
+
+impl Drop for BootstrappedHostGuard {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
 fn consume_clean_exit(
     action: Option<CleanExitAction>,
-    child: Option<&mut (dyn ChildHandle + '_)>,
+    host: &mut BootstrappedHostGuard,
 ) -> io::Result<bool> {
     if action.is_none() {
         return Ok(false);
     }
-    stop_bootstrapped_host(child)?;
+    host.stop()?;
     Ok(true)
 }
 
@@ -190,11 +216,11 @@ fn main() -> io::Result<()> {
     let host_addr = options.host_addr;
     let mut spawner = UvicornSpawner;
     let mut readiness = UreqReadiness::new(&host_addr);
-    let mut bootstrapped_host = if options.bootstrap_host {
+    let mut bootstrapped_host = BootstrappedHostGuard::new(if options.bootstrap_host {
         bootstrap_host(&host_addr, &mut readiness, &mut spawner)?
     } else {
         None
-    };
+    });
 
     install_panic_hook();
     let mut guard = TerminalGuard::new()?;
@@ -214,10 +240,7 @@ fn main() -> io::Result<()> {
         while let Ok(message) = message_rx.try_recv() {
             app.handle_host_message(message);
         }
-        if consume_clean_exit(
-            app.take_clean_exit_action(),
-            bootstrapped_host.as_deref_mut(),
-        )? {
+        if consume_clean_exit(app.take_clean_exit_action(), &mut bootstrapped_host)? {
             break;
         }
         for command in app.take_commands() {
@@ -244,11 +267,13 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChildHandle, HostProcessSpawner, HostReadiness, bootstrap_host, consume_clean_exit,
-        stop_bootstrapped_host,
+        BootstrappedHostGuard, ChildHandle, HostProcessSpawner, HostReadiness, bootstrap_host,
+        consume_clean_exit, stop_bootstrapped_host,
     };
     use operator_console::app::CleanExitAction;
+    use std::cell::Cell;
     use std::io;
+    use std::rc::Rc;
 
     #[derive(Debug, Default)]
     struct FakeChild {
@@ -288,6 +313,24 @@ mod tests {
         checks: usize,
     }
 
+    #[derive(Debug)]
+    struct ObservedChild {
+        live: bool,
+        stops: Rc<Cell<usize>>,
+    }
+
+    impl ChildHandle for ObservedChild {
+        fn is_live(&mut self) -> io::Result<bool> {
+            Ok(self.live)
+        }
+
+        fn force_stop(&mut self) -> io::Result<()> {
+            self.stops.set(self.stops.get() + 1);
+            self.live = false;
+            Ok(())
+        }
+    }
+
     impl HostReadiness for FakeReadiness {
         fn is_healthy(&mut self) -> bool {
             self.checks += 1;
@@ -307,6 +350,18 @@ mod tests {
         };
         stop_bootstrapped_host(Some(&mut live)).unwrap();
         assert_eq!(live.stops, 1);
+    }
+
+    #[test]
+    fn bootstrapped_host_guard_stops_owned_child_when_scope_exits() {
+        let stops = Rc::new(Cell::new(0));
+        {
+            let _host = BootstrappedHostGuard::new(Some(Box::new(ObservedChild {
+                live: true,
+                stops: Rc::clone(&stops),
+            })));
+        }
+        assert_eq!(stops.get(), 1);
     }
 
     #[test]
@@ -334,7 +389,8 @@ mod tests {
             live: true,
             stops: 0,
         };
-        assert!(consume_clean_exit(Some(CleanExitAction::Cancelled), None).unwrap());
+        let mut owned = BootstrappedHostGuard::new(None);
+        assert!(consume_clean_exit(Some(CleanExitAction::Cancelled), &mut owned).unwrap());
         assert!(independent.live);
         assert_eq!(independent.stops, 0);
     }
