@@ -28,6 +28,7 @@ from onr.contracts.transport import TransportEvent
 from onr.ports.mission_log_summarizer import SummaryArtifact
 from onr.runtime.lease import RuntimeLeaseStore
 from onr.viewer.server import ViewerHTTPServer, create_server
+from tests.config_helpers import write_environment_profile
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WEB_ROOT = _REPO_ROOT / "src" / "onr" / "viewer" / "web"
@@ -76,12 +77,14 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     planner.chmod(0o755)
     storage = tmp_path / "var" / "storage"
     transport = tmp_path / "var" / "transport"
+    environment_profile = write_environment_profile(tmp_path)
     config = tmp_path / "viewer.yaml"
     config.write_text(
         "\n".join(
             (
                 "agent_name: test-agent",
                 "debug: true",
+                f"environment_profile: {environment_profile}",
                 "llm:",
                 "  provider: openai",
                 "  base_url: http://127.0.0.1:1/v1",

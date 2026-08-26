@@ -225,7 +225,6 @@ _LOG_COMPONENTS = {
     "planner": "planner",
 }
 _LOG_DETAIL_FIELDS = {
-    "adapter_submission",
     "attempt_id",
     "command_id",
     "correlation_id",
@@ -1246,7 +1245,7 @@ class TraceProjection:
             occurred_at="unknown",
             event_kind="command-receipt",
             status=status,
-            outcome="accepted",
+            outcome="queued",
             correlation_id=correlation,
             parent_id=f"command:{command_id}",
             payload={"command_id": command_id, "target_service": target},

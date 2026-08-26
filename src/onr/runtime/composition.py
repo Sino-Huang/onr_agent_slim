@@ -92,12 +92,21 @@ from onr.contracts.planning_evidence import (
 from onr.contracts.transport import (
     TransportEvent,
 )
-from onr.ports.maneuver import ManeuverAdapter
+from onr.demo.environment_updates import (
+    CoordinatorDrivenFakeEnvironment,
+    EnvironmentDrivenFakeEnvironment,
+)
+from onr.demo.fake_environment import FakeEnvironment
+from onr.ports.environment import EnvironmentUpdateSource
 from onr.ports.mission_log_summarizer import MissionLogSummarizer, SummaryArtifact
 from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Subscription
 from onr.runtime.agent_debug import AgentDebugRecorder
-from onr.runtime.config import RuntimeConfig, load_runtime_config
+from onr.runtime.config import (
+    EnvironmentUpdateOwnership,
+    RuntimeConfig,
+    load_runtime_config,
+)
 from onr.runtime.lease import RuntimeLeaseStore
 from onr.runtime.llm_debug import LLMResponseRecorder
 
@@ -412,7 +421,7 @@ class RuntimeComposition:
         clock: Callable[[], str] | None = None,
         input_topic: str = "normalized-plans",
         snapshot_topic: str = "mission-snapshots",
-        environment: object | None = None,
+        environment_update_source: EnvironmentUpdateSource | None = None,
         fsm_runner: object | None = None,
         maneuver_control: object | None = None,
         hyper_supervisor: object | None = None,
@@ -442,7 +451,7 @@ class RuntimeComposition:
             clock=clock,
             subscription=subscription,
             operational_log=self._logger(),
-            environment=environment,
+            environment_update_source=environment_update_source,
             fsm_runner=fsm_runner,
             maneuver_control=maneuver_control,
             hyper_supervisor=hyper_supervisor,
@@ -542,10 +551,9 @@ class RuntimeComposition:
 
     def create_maneuver_control(
         self,
-        adapter: ManeuverAdapter,
         decision_provider: object | None = None,
         *,
-        target_service: str = "maneuver-adapter",
+        target_service: str | None = None,
         model: Any | None = None,
         system_prompt: str | None = None,
         mission_id: str | None = None,
@@ -554,7 +562,6 @@ class RuntimeComposition:
         skill_version: str | None = None,
         backend_root: Path | None = None,
         fsm_runner: FSMRunner | None = None,
-        environment_authority: object | None = None,
         belief_service: BayesianBeliefService | None = None,
         communication_port: object | None = None,
     ) -> ManeuverControl:
@@ -593,14 +600,68 @@ class RuntimeComposition:
 
         return ManeuverControl(
             cast(Any, self.transport),
-            adapter,
             decision_provider,
-            target_service=target_service,
+            target_service=(
+                target_service or self.config.environment_profile.topics.command_target
+            ),
+            command_topic=self.config.environment_profile.topics.command,
+            command_protocol_version=(
+                self.config.environment_profile.protocols.maneuver_command
+            ),
+            supported_actions=self.config.environment_profile.supported_actions,
             operational_log=self._logger(),
             fsm_runner=fsm_runner,
-            environment_authority=environment_authority,
             belief_service=belief_service,
             communication_port=communication_port,
+        )
+
+    def create_environment_update_source(
+        self,
+        *,
+        mission_id: str,
+        ownership: EnvironmentUpdateOwnership | str | None = None,
+        output_root: Path | None = None,
+        context_topic: str | None = None,
+    ) -> EnvironmentUpdateSource:
+        """Compose the configured environment-side consumer and update owner."""
+
+        if not isinstance(self.transport, FileTransport):
+            raise TypeError("the fake environment requires file transport")
+        profile = self.config.environment_profile
+        if profile.adapter_kind != "fake":
+            raise ValueError("unsupported environment adapter kind")
+        topics = profile.topics
+        fake = profile.fake
+        environment = FakeEnvironment(
+            self.transport,
+            mission_id,
+            target_service=topics.command_target,
+            command_topic=topics.command,
+            feedback_topic=topics.feedback,
+            perception_topic=topics.perception,
+            environment_topic=topics.environment_data,
+            context_topic=context_topic or topics.context,
+            max_retries=fake.max_retries,
+            output_root=output_root or fake.artifact_root,
+            event_report_path=fake.scenario_path,
+            tick_seconds=float(profile.updates.cadence_seconds),
+            initial_position=fake.initial_position,
+            max_velocity=float(fake.max_velocity),
+            fov_radius=float(fake.sensing_radius),
+            command_protocol_version=profile.protocols.maneuver_command,
+            feedback_protocol_version=profile.protocols.maneuver_feedback,
+            environment_data_protocol_version=profile.protocols.environment_data,
+            perception_protocol_version=profile.protocols.perception,
+            supported_actions=profile.supported_actions,
+        )
+        selected = EnvironmentUpdateOwnership(ownership or profile.updates.ownership)
+        source_type = (
+            CoordinatorDrivenFakeEnvironment
+            if selected is EnvironmentUpdateOwnership.COORDINATOR_DRIVEN
+            else EnvironmentDrivenFakeEnvironment
+        )
+        return source_type(
+            environment, cadence_seconds=float(profile.updates.cadence_seconds)
         )
 
     def create_communication_port(

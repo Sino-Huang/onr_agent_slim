@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +16,10 @@ from onr.contracts.fsm import ManeuverFeedback
 from onr.contracts.maneuver_control import ManeuverCommand
 from onr.contracts.planning import ManeuverIntent, ManeuverParameter
 from onr.contracts.transport import Command
+from onr.demo.environment_updates import (
+    CoordinatorDrivenFakeEnvironment,
+    EnvironmentDrivenFakeEnvironment,
+)
 from onr.ports.transport import Subscription
 
 
@@ -615,3 +620,101 @@ def test_completed_lifecycle_replay_reuses_transport_identity(tmp_path: Path) ->
     assert second.feedback == first.feedback
     assert second.environment_event == first.environment_event
     assert second.source_fact == first.source_fact
+
+
+def test_environment_consumer_can_start_after_command_enqueue_and_applies_once(
+    tmp_path: Path,
+) -> None:
+    mission_id = "mission-1"
+    transport = _transport(tmp_path / "transport", mission_id)
+    report = _report(tmp_path / "report.json", [_event(time=50, x=50)])
+    command = _command(mission_id=mission_id, x=100, speed=1)
+    receipt = transport.send_command(command.to_command("maneuver-adapter"))
+    assert receipt.command_id == command.command_id
+    assert transport.get_command_outcome(command.command_id) is None
+
+    environment = FakeEnvironment(transport, mission_id, event_report_path=report)
+    updates = CoordinatorDrivenFakeEnvironment(environment, cadence_seconds=0.5)
+    first = updates.advance()
+    second = updates.advance()
+    updates.stop()
+
+    feedback_ids = [
+        event.event_id
+        for update in (first, second)
+        for event in update.feedback_events
+        if event.event_id.endswith(":active")
+    ]
+    assert feedback_ids == [f"maneuver-feedback:{command.command_id}:active"]
+    assert environment.active_command == command
+    assert transport.get_cursor(environment.subscription)["command"] == 0
+
+
+def test_command_application_failure_retries_to_dead_letter_asynchronously(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mission_id = "mission-1"
+    transport = _transport(tmp_path / "transport", mission_id)
+    report = _report(tmp_path / "report.json", [_event(time=50, x=50)])
+    command = _command(mission_id=mission_id)
+    transport.send_command(command.to_command("maneuver-adapter"))
+    environment = FakeEnvironment(transport, mission_id, event_report_path=report)
+    attempts = 0
+
+    def fail(_: ManeuverCommand) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("injected command application failure")
+
+    monkeypatch.setattr(environment, "apply_command", fail)
+    updates = CoordinatorDrivenFakeEnvironment(environment, cadence_seconds=0.5)
+    tick = updates.advance()
+    updates.stop()
+
+    assert tick.current_time == 0.5
+    assert attempts == environment.subscription.max_retries
+    dead_letters = transport.get_dead_letters(environment.subscription)
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["identity"] == command.command_id
+
+
+def test_environment_driven_source_advances_and_stops_at_limit(tmp_path: Path) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [_event(time=50, x=50)])
+    environment = FakeEnvironment(
+        transport, "mission-1", event_report_path=report, tick_seconds=0.5
+    )
+    updates = EnvironmentDrivenFakeEnvironment(environment, cadence_seconds=0.01)
+    updates.start(simulation_limit_seconds=1.0)
+    deadline = time.monotonic() + 1
+    while updates.is_alive and time.monotonic() < deadline:
+        time.sleep(0.005)
+    updates.join()
+
+    assert not updates.is_alive
+    assert updates.current_time == 1.0
+    assert [item.current_time for item in updates.drain_updates()] == [0.5, 1.0]
+    updates.raise_if_failed()
+
+
+def test_environment_driven_producer_error_propagates_and_thread_terminates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport = _transport(tmp_path / "transport")
+    report = _report(tmp_path / "report.json", [_event(time=50, x=50)])
+    environment = FakeEnvironment(transport, "mission-1", event_report_path=report)
+
+    def fail_tick() -> object:
+        raise RuntimeError("injected tick failure")
+
+    monkeypatch.setattr(environment, "tick", fail_tick)
+    updates = EnvironmentDrivenFakeEnvironment(environment, cadence_seconds=0.01)
+    updates.start()
+    deadline = time.monotonic() + 1
+    while updates.is_alive and time.monotonic() < deadline:
+        time.sleep(0.005)
+    updates.join()
+
+    assert not updates.is_alive
+    with pytest.raises(RuntimeError, match="producer failed"):
+        updates.raise_if_failed()

@@ -78,7 +78,7 @@ def _payload(value: object) -> Mapping[str, object]:
 
 
 class CommandStatus(StrEnum):
-    """Wire status values for command receipts and outcomes."""
+    """Wire status values for transport receipts and generic command outcomes."""
 
     ACCEPTED = "accepted"
     ALREADY_IN_FLIGHT = "already_in_flight"
@@ -194,7 +194,7 @@ class Command:
 
 @dataclass(frozen=True, slots=True)
 class CommandReceipt:
-    """Durable acknowledgement that a command was accepted by transport."""
+    """Durable enqueue evidence; ``accepted`` means accepted by transport only."""
 
     schema_version: int
     command_id: str

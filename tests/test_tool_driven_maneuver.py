@@ -504,10 +504,8 @@ def test_assess_first_heartbeat_persists_new_state_intent_for_fresh_evidence(
     agent = Agent()
     control = ManeuverControl(
         cast(Any, transport),
-        environment,
         DeepAgentsHeartbeatProvider(agent),
         fsm_runner=runner,
-        environment_authority=environment,
         transition_intents=journal,
         operational_log=operational_log,
     )
@@ -533,6 +531,7 @@ def test_assess_first_heartbeat_persists_new_state_intent_for_fresh_evidence(
         "set_transition_target",
         "navigate",
     ]
+    assert environment.run_once() is not None
     assert environment.current_maneuver["maneuver_id"] == "patrol-action-185"  # type: ignore[index]
 
     for _ in range(10):
@@ -979,7 +978,6 @@ def test_failed_post_transition_selection_correction_raises_ordering_error() -> 
     operational_log = InProcessOperationalLog()
     control = ManeuverControl(
         cast(Any, transport),
-        cast(Any, object()),
         DeepAgentsHeartbeatProvider(agent),
         operational_log=operational_log,
         fsm_runner=runner,
@@ -1026,7 +1024,6 @@ def test_provider_failure_emits_durable_failed_heartbeat_record() -> None:
 
     control = ManeuverControl(
         cast(Any, transport),
-        cast(Any, object()),
         Provider(),
         operational_log=operational_log,
         fsm_runner=runner,
@@ -1170,10 +1167,8 @@ def test_physical_tools_submit_and_override_without_application_gate(
     )
     control = ManeuverControl(
         cast(Any, transport),
-        environment,
         object(),
         fsm_runner=runner,
-        environment_authority=environment,
         transition_intents=journal,
     )
     context = ManeuverToolContext(
@@ -1190,6 +1185,7 @@ def test_physical_tools_submit_and_override_without_application_gate(
             runtime=_runtime(context),
         )
     )
+    assert environment.run_once() is not None
     assert environment.current_maneuver["parameters"] == {  # type: ignore[index]
         "deadline_time": 8.5,
         "x": 100,
@@ -1209,7 +1205,7 @@ def test_physical_tools_submit_and_override_without_application_gate(
             runtime=_runtime(copied_context),
         )
     )
-    assert retained["status"] == "retained_active_action"
+    assert retained["status"] == "already_queued"
     assert environment.current_maneuver["parameters"] == {  # type: ignore[index]
         "deadline_time": 8.5,
         "x": 100,
@@ -1236,8 +1232,9 @@ def test_physical_tools_submit_and_override_without_application_gate(
             runtime=_runtime(context),
         )
     )
+    assert environment.run_once() is not None
 
-    assert first["status"] == second["status"] == "submitted"
+    assert first["status"] == second["status"] == "queued"
     assert environment.navigation_status == "active"
     assert environment.current_maneuver["maneuver_id"] == "emergency-landing"  # type: ignore[index]
     assert environment.last_override_feedback is not None
@@ -1249,7 +1246,20 @@ def test_physical_tools_submit_and_override_without_application_gate(
 
 def test_concurrent_copied_contexts_submit_same_action_once() -> None:
     plan = _plan()
-    transport = InProcessTransport()
+    entered = Event()
+
+    class SlowTransport(InProcessTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def send_command(self, command):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            entered.set()
+            time.sleep(0.1)
+            return super().send_command(command)
+
+    transport = SlowTransport()
     journal = TransitionIntentJournal(transport)
     runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
     status = asyncio.run(runner.activate(_chart(plan)))
@@ -1269,18 +1279,7 @@ def test_concurrent_copied_contexts_submit_same_action_once() -> None:
         {"mission_time_seconds": 10},
     )
 
-    class SlowAdapter:
-        def __init__(self) -> None:
-            self.calls = 0
-            self.entered = Event()
-
-        def submit(self, _: object) -> None:
-            self.calls += 1
-            self.entered.set()
-            time.sleep(0.1)
-
-    adapter = SlowAdapter()
-    control = ManeuverControl(cast(Any, transport), cast(Any, adapter), object())
+    control = ManeuverControl(cast(Any, transport), object())
     results: list[dict[str, object]] = []
     errors: list[BaseException] = []
 
@@ -1307,16 +1306,16 @@ def test_concurrent_copied_contexts_submit_same_action_once() -> None:
     first_thread = Thread(target=invoke, args=(10,))
     second_thread = Thread(target=invoke, args=(20,))
     first_thread.start()
-    assert adapter.entered.wait(1)
+    assert entered.wait(1)
     second_thread.start()
     first_thread.join(2)
     second_thread.join(2)
 
     assert errors == []
-    assert adapter.calls == 1
+    assert transport.calls == 1
     assert {result["status"] for result in results} == {
-        "submitted",
-        "retained_active_action",
+        "queued",
+        "already_queued",
     }
 
 
@@ -1358,16 +1357,8 @@ def test_parallel_physical_calls_share_one_heartbeat_status_gate() -> None:
         async def apply(self, *_: object) -> object:
             raise AssertionError("FSM transition was not expected")
 
-    class Adapter:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def submit(self, _: object) -> None:
-            self.calls += 1
-
     runner = ContendedRunner()
-    adapter = Adapter()
-    control = ManeuverControl(cast(Any, transport), cast(Any, adapter), object())
+    control = ManeuverControl(cast(Any, transport), object())
     context = ManeuverToolContext(
         invocation,
         runner,
@@ -1404,10 +1395,11 @@ def test_parallel_physical_calls_share_one_heartbeat_status_gate() -> None:
     assert not first.is_alive()
     assert not second.is_alive()
     assert errors == []
-    assert adapter.calls == 1
+    queued = transport.state.commands[("maneuver-adapter", plan.mission_id)]
+    assert len(queued) == 1
     assert {result["status"] for result in results} == {
-        "submitted",
-        "retained_active_action",
+        "queued",
+        "already_queued",
     }
 
 
@@ -1449,12 +1441,8 @@ def test_parallel_target_selection_and_physical_action_share_fsm_gate() -> None:
         async def apply(self, *_: object) -> object:
             raise AssertionError("FSM transition was not expected")
 
-    class Adapter:
-        def submit(self, _: object) -> None:
-            return None
-
     runner = ContendedRunner()
-    control = ManeuverControl(cast(Any, transport), Adapter(), object())
+    control = ManeuverControl(cast(Any, transport), object())
     context = ManeuverToolContext(
         invocation,
         runner,
@@ -1507,7 +1495,7 @@ def test_parallel_target_selection_and_physical_action_share_fsm_gate() -> None:
     assert errors == []
     assert {result["status"] for result in results} == {
         "retained",
-        "submitted",
+        "queued",
     }
 
 
@@ -1644,7 +1632,7 @@ def test_once_per_state_entry_hyper_evaluation_has_stable_identity() -> None:
         lambda message: seen.append(message) or {"disposition": "no_change"},
     )
     control = ManeuverControl(
-        cast(Any, fsm_transport), cast(Any, object()), object()
+        cast(Any, fsm_transport), object()
     )
 
     def invoke(request_id: str) -> dict[str, object]:

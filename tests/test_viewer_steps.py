@@ -19,6 +19,7 @@ from onr.viewer.steps import (
     TEXT_FIELD_LIMIT,
     StepProjection,
 )
+from tests.config_helpers import write_environment_profile
 
 MISSION_ID = "mission:steps"
 STARTED = "2026-08-21T10:00:00+00:00"
@@ -578,12 +579,14 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     tool.chmod(0o755)
     storage = tmp_path / "var" / "storage"
     transport = tmp_path / "var" / "transport"
+    environment_profile = write_environment_profile(tmp_path)
     config = tmp_path / "viewer.yaml"
     config.write_text(
         "\n".join(
             (
                 "agent_name: test-agent",
                 "debug: true",
+                f"environment_profile: {environment_profile}",
                 "llm:",
                 "  provider: openai",
                 "  base_url: http://127.0.0.1:1/v1",

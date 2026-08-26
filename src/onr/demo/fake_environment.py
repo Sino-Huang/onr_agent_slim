@@ -9,6 +9,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -21,11 +22,11 @@ from onr.contracts.environment import (
     perception_to_transport_event,
 )
 from onr.contracts.fsm import ManeuverFeedback
-from onr.contracts.maneuver_control import ManeuverCommand
+from onr.contracts.maneuver_control import ManeuverCommand, PhysicalAction
 from onr.contracts.transport import Command, TransportEvent
 from onr.ports.transport import Subscription
 
-SUPPORTED_LIFECYCLES = ("accepted", "active", "completed", "failed", "cancelled")
+SUPPORTED_LIFECYCLES = ("active", "completed", "failed", "cancelled")
 _DEFAULT_EVENT_REPORT_PATH = (
     Path(__file__).parents[3]
     / "data/ships_report_and_trajectory_example/ships/events_report.json"
@@ -89,6 +90,7 @@ class FakeEnvironmentResult:
     risk_observation: TransportEvent | None
     feedback: TransportEvent
     environment_file: Path
+    feedback_events: tuple[TransportEvent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +123,11 @@ class FakeEnvironment:
         initial_position: tuple[float, float, float] = (0, 0, -250),
         max_velocity: float = 20,
         fov_radius: float = 30,
+        command_protocol_version: int = 1,
+        feedback_protocol_version: int = 1,
+        environment_data_protocol_version: int = 1,
+        perception_protocol_version: int = 1,
+        supported_actions: tuple[PhysicalAction | str, ...] = tuple(PhysicalAction),
     ) -> None:
         if not isinstance(transport, FileTransport):
             raise TypeError("FakeEnvironment requires a FileTransport")
@@ -134,6 +141,26 @@ class FakeEnvironment:
         self.perception_topic = perception_topic
         self.environment_topic = environment_topic
         self.context_topic = context_topic
+        self.command_protocol_version = command_protocol_version
+        self.feedback_protocol_version = feedback_protocol_version
+        self.environment_data_protocol_version = environment_data_protocol_version
+        self.perception_protocol_version = perception_protocol_version
+        for value, label in (
+            (command_protocol_version, "Maneuver Command protocol version"),
+            (feedback_protocol_version, "Maneuver Feedback protocol version"),
+            (environment_data_protocol_version, "environment-data protocol version"),
+            (perception_protocol_version, "perception protocol version"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{label} must be a positive integer")
+        try:
+            self.supported_actions = frozenset(
+                PhysicalAction(item) for item in supported_actions
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("fake environment supported action is invalid") from exc
+        if not self.supported_actions:
+            raise ValueError("fake environment requires at least one supported action")
         self.tick_seconds = _positive_number(tick_seconds, "simulation tick")
         self.max_velocity = _positive_number(max_velocity, "maximum velocity")
         self.fov_radius = _positive_number(fov_radius, "field-of-view radius")
@@ -164,6 +191,12 @@ class FakeEnvironment:
         self.subscription = Subscription(
             target_service, mission_id, command_topic, max_retries
         )
+        if self.subscription not in self.transport.subscriptions:
+            self.transport.subscriptions = (
+                *self.transport.subscriptions,
+                self.subscription,
+            )
+        self._lock = RLock()
         self._results: dict[tuple[str, str], FakeEnvironmentResult] = {}
         self._environment_facts: dict[str, tuple[TransportEvent, TransportEvent]] = {}
         self._entity_positions = self._initial_entity_positions()
@@ -175,7 +208,7 @@ class FakeEnvironment:
         self._current_perceptions: tuple[TransportEvent, ...] = ()
         self.last_result: FakeEnvironmentResult | None = None
         self.last_output_path: Path | None = None
-        self.latest_environment_event: TransportEvent | None = None
+        self._latest_environment_event: TransportEvent | None = None
         self.last_override_feedback: TransportEvent | None = None
         self.mission_time_seconds = 0.0
         self.current_maneuver: dict[str, object] | None = None
@@ -195,33 +228,52 @@ class FakeEnvironment:
     def event_report(self) -> tuple[Mapping[str, object], ...]:
         """Read-only planning source; it is never part of live model context."""
 
-        return tuple(self._report)
+        with self._lock:
+            return tuple(self._report)
 
     @property
     def active_command(self) -> ManeuverCommand | None:
-        return self._active_command
+        with self._lock:
+            return self._active_command
+
+    @property
+    def current_time(self) -> float:
+        with self._lock:
+            return self.mission_time_seconds
+
+    @property
+    def latest_environment_event(self) -> TransportEvent | None:
+        with self._lock:
+            return self._latest_environment_event
+
+    @property
+    def has_current_maneuver(self) -> bool:
+        with self._lock:
+            return self.current_maneuver is not None
 
     def heartbeat(self) -> FakeEnvironmentHeartbeat:
         """Publish the complete planning view without advancing simulation time."""
 
-        environment_file = self._environment_file()
-        environment_data = self.planning_environment_data()
-        _atomic_write_json(environment_file, environment_data)
-        self.last_output_path = environment_file
-        environment_event, source_fact = self._publish_environment_data(
-            environment_data
-        )
-        return FakeEnvironmentHeartbeat(
-            environment_event, source_fact, environment_file
-        )
+        with self._lock:
+            environment_file = self._environment_file()
+            environment_data = self.planning_environment_data()
+            _atomic_write_json(environment_file, environment_data)
+            self.last_output_path = environment_file
+            environment_event, source_fact = self._publish_environment_data(
+                environment_data
+            )
+            return FakeEnvironmentHeartbeat(
+                environment_event, source_fact, environment_file
+            )
 
     def planning_environment_data(self) -> dict[str, object]:
         """Return current control state plus the complete report for Hyper planning."""
 
-        current = self.current_environment_data()
-        graph = dict(cast(Mapping[str, object], current["scene_graph"]))
-        graph["entities"] = self._planning_entities()
-        return {"scene_graph": graph, "static_info": self._report}
+        with self._lock:
+            current = self.current_environment_data()
+            graph = dict(cast(Mapping[str, object], current["scene_graph"]))
+            graph["entities"] = self._planning_entities()
+            return {"scene_graph": graph, "static_info": self._report}
 
     def run_once(self, lifecycle: str = "active") -> FakeEnvironmentResult | None:
         """Consume and acknowledge one file-backed Maneuver command."""
@@ -234,7 +286,9 @@ class FakeEnvironment:
                 delivery.ack()
                 return None
             try:
-                command = ManeuverCommand.from_command(delivery.message)
+                command = ManeuverCommand.from_command(
+                    delivery.message, self.command_topic
+                )
                 result = self.process_command(command, lifecycle=lifecycle)
             except Exception:
                 delivery.nack()
@@ -245,12 +299,19 @@ class FakeEnvironment:
     def process_command(
         self, command: ManeuverCommand, lifecycle: str = "active"
     ) -> FakeEnvironmentResult:
-        """Compatibility seam for explicit lifecycle tests and adapter submission."""
+        """Apply one typed command lifecycle idempotently."""
+
+        with self._lock:
+            return self._process_command(command, lifecycle=lifecycle)
+
+    def _process_command(
+        self, command: ManeuverCommand, lifecycle: str = "active"
+    ) -> FakeEnvironmentResult:
 
         if lifecycle not in SUPPORTED_LIFECYCLES:
             raise ValueError(f"unsupported maneuver lifecycle: {lifecycle}")
-        if lifecycle in {"accepted", "active"}:
-            return self.submit(command, lifecycle=lifecycle)
+        if lifecycle == "active":
+            return self._apply_command(command, lifecycle=lifecycle)
         key = (command.command_id, lifecycle)
         existing = self._results.get(key)
         if existing is not None:
@@ -267,25 +328,43 @@ class FakeEnvironment:
         feedback = self._feedback(command, lifecycle)
         environment_event, source_fact, environment_file = self._publish_current_view()
         result = FakeEnvironmentResult(
-            command, environment_event, source_fact, None, feedback, environment_file
+            command,
+            environment_event,
+            source_fact,
+            None,
+            feedback,
+            environment_file,
+            (feedback,),
         )
         self._results[key] = result
         self.last_result = result
         return result
 
-    def submit(
+    def apply_command(
         self, command: ManeuverCommand, *, lifecycle: str = "active"
     ) -> FakeEnvironmentResult:
-        """Activate one physical action and immediately publish feedback."""
+        """Apply one transport-delivered command and publish lifecycle feedback."""
+
+        with self._lock:
+            return self._apply_command(command, lifecycle=lifecycle)
+
+    def _apply_command(
+        self, command: ManeuverCommand, *, lifecycle: str = "active"
+    ) -> FakeEnvironmentResult:
 
         if not isinstance(command, ManeuverCommand):
-            raise TypeError("submit requires a ManeuverCommand")
+            raise TypeError("command application requires a ManeuverCommand")
         if command.mission_id != self.mission_id:
             raise ValueError("maneuver command Mission ID does not match environment")
+        if command.schema_version != self.command_protocol_version:
+            raise ValueError("maneuver command protocol version is unsupported")
+        if PhysicalAction(command.action) not in self.supported_actions:
+            raise ValueError("maneuver command action is not declared by the profile")
         key = (command.command_id, lifecycle)
         existing = self._results.get(key)
         if existing is not None:
             return existing
+        feedback_events: list[TransportEvent] = []
         if (
             self._active_command is not None
             and self._active_command.command_id != command.command_id
@@ -295,6 +374,7 @@ class FakeEnvironment:
                 "cancelled",
                 extra_payload={"reason": "overridden"},
             )
+            feedback_events.append(self.last_override_feedback)
         self._active_command = command
         self._route_targets = ()
         self._route_index = 0
@@ -303,16 +383,35 @@ class FakeEnvironment:
         self._set_current_maneuver(command, "active")
         self.navigation_status = "active"
         feedback = self._feedback(command, lifecycle)
+        feedback_events.append(feedback)
         environment_event, source_fact, environment_file = self._publish_current_view()
         result = FakeEnvironmentResult(
-            command, environment_event, source_fact, None, feedback, environment_file
+            command,
+            environment_event,
+            source_fact,
+            None,
+            feedback,
+            environment_file,
+            tuple(feedback_events),
         )
         self._results[key] = result
         self.last_result = result
         return result
 
+    def submit(
+        self, command: ManeuverCommand, *, lifecycle: str = "active"
+    ) -> FakeEnvironmentResult:
+        """Explicit environment-side application helper used by focused demos."""
+
+        return self.apply_command(command, lifecycle=lifecycle)
+
     def tick(self) -> EnvironmentTickResult:
         """Advance one configured tick and publish only current perceptions."""
+
+        with self._lock:
+            return self._tick()
+
+    def _tick(self) -> EnvironmentTickResult:
 
         previous_time = self.mission_time_seconds
         self.mission_time_seconds = round(previous_time + self.tick_seconds, 10)
@@ -343,6 +442,11 @@ class FakeEnvironment:
 
     def current_environment_data(self) -> dict[str, object]:
         """Return current control evidence and only the latest tick's perceptions."""
+
+        with self._lock:
+            return self._current_environment_data()
+
+    def _current_environment_data(self) -> dict[str, object]:
 
         maneuver = dict(self.current_maneuver) if self.current_maneuver else None
         raw_revision = cast(Mapping[str, object], self.current_maneuver or {}).get(
@@ -699,7 +803,10 @@ class FakeEnvironment:
                     self.transport.publish_event(
                         self.perception_topic,
                         perception_to_transport_event(
-                            self.mission_id, perception, sequence=sequence
+                            self.mission_id,
+                            perception,
+                            sequence=sequence,
+                            schema_version=self.perception_protocol_version,
                         ),
                     )
                 )
@@ -753,7 +860,7 @@ class FakeEnvironment:
         reference = hashlib.sha256(document.encode()).hexdigest()
         cached = self._environment_facts.get(reference)
         if cached is not None:
-            self.latest_environment_event = cached[0]
+            self._latest_environment_event = cached[0]
             return cached
         environment_event_id = f"environment-data:{self.mission_id}:{reference}"
         environment_event = self.transport.get_event(environment_event_id)
@@ -761,7 +868,7 @@ class FakeEnvironment:
             environment_event = self.transport.publish_event(
                 self.environment_topic,
                 TransportEvent(
-                    schema_version=1,
+                    schema_version=self.environment_data_protocol_version,
                     event_id=environment_event_id,
                     mission_id=self.mission_id,
                     sequence=self.transport.next_event_sequence(
@@ -774,6 +881,7 @@ class FakeEnvironment:
         source_fact_id = f"source-fact:{self.mission_id}:environment_data:{reference}"
         source_fact = self.transport.get_event(source_fact_id)
         if source_fact is None:
+
             def source_event() -> TransportEvent:
                 return create_source_fact_event(
                     self.mission_id,
@@ -798,7 +906,7 @@ class FakeEnvironment:
                 )
             self._environment_revision += 1
         self._environment_facts[reference] = (environment_event, source_fact)
-        self.latest_environment_event = environment_event
+        self._latest_environment_event = environment_event
         return environment_event, source_fact
 
     def _feedback(
@@ -829,7 +937,7 @@ class FakeEnvironment:
         return self.transport.publish_event(
             self.feedback_topic,
             TransportEvent(
-                schema_version=1,
+                schema_version=self.feedback_protocol_version,
                 event_id=feedback_id,
                 mission_id=self.mission_id,
                 sequence=self.transport.next_event_sequence(

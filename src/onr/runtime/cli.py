@@ -24,7 +24,7 @@ from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planning import PlannerPlan
 from onr.contracts.transport import TransportEvent
 from onr.demo.fake_belief import seed_event_risk_beliefs
-from onr.demo.fake_environment import FakeEnvironment, FakeEnvironmentHeartbeat
+from onr.ports.environment import EnvironmentPlanningView
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.lease import RuntimeLeaseStore
 
@@ -87,17 +87,6 @@ def _rollover_demo_artifacts(
     destination = archive_root / "var"
     source.rename(destination)
     return destination
-
-
-def _create_demo_environment(
-    runtime: RuntimeComposition,
-    mission_id: str,
-    *,
-    output_root: Path | None = None,
-) -> FakeEnvironment:
-    if not isinstance(runtime.transport, FileTransport):
-        raise RuntimeError("the demo environment requires file transport")
-    return FakeEnvironment(runtime.transport, mission_id, output_root=output_root)
 
 
 def _positive_integer(value: str) -> int:
@@ -240,14 +229,12 @@ def run_closed_loop_demo(
         input_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",
     )
-    environment = FakeEnvironment(
-        runtime.transport,
-        mission_input.mission_id,
-        output_root=runtime.config.transport.root.parent / "environment",
+    environment = runtime.create_environment_update_source(
+        mission_id=mission_input.mission_id,
+        output_root=runtime.config.environment_profile.fake.artifact_root,
         context_topic="planning-evidence",
-        tick_seconds=0.5,
     )
-    planning_view = environment.heartbeat()
+    planning_view = environment.planning_view()
     planning_backend_root = Path(
         os.path.commonpath(
             (
@@ -319,7 +306,6 @@ def run_closed_loop_demo(
         debug_scope="maneuver-control",
     )
     maneuver_control = runtime.create_maneuver_control(
-        environment,
         model=maneuver_model,
         mission_id=mission_input.mission_id,
         system_prompt=f"You are agent {runtime.config.agent_name}. {maneuver_prompt}",
@@ -334,7 +320,7 @@ def run_closed_loop_demo(
         invocation: HyperHeartbeatInvocation,
         revision: int,
         snapshot: MissionSnapshot,
-        latest_planning_view: FakeEnvironmentHeartbeat,
+        latest_planning_view: EnvironmentPlanningView,
     ) -> ActivePlanRevision | None:
         _ = invocation
         return _run_hyper_revision(
@@ -357,7 +343,7 @@ def run_closed_loop_demo(
         mission_id=mission_input.mission_id,
         input_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",
-        environment=environment,
+        environment_update_source=environment,
         fsm_runner=fsm_runner,
         maneuver_control=maneuver_control,
         hyper_supervisor=supervisor,

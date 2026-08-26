@@ -128,10 +128,44 @@ class FixedSummaryModel:
 
 
 def _runtime_config(tmp_path: Path, planner_path: Path) -> Path:
+    scenario = (
+        Path(__file__).parents[1]
+        / "data/ships_report_and_trajectory_example/ships/events_report.json"
+    )
+    environment_profile = tmp_path / "environment.yaml"
+    environment_profile.write_text(
+        f"""adapter_kind: fake
+protocols:
+  maneuver_command: 1
+  maneuver_feedback: 1
+  environment_data: 1
+  perception: 1
+updates:
+  ownership: coordinator_driven
+  cadence_seconds: 0.5
+topics:
+  command_target: maneuver-adapter
+  command: maneuver
+  feedback: maneuver-feedback
+  perception: environment-perceptions
+  environment_data: environment-data
+  context: planning-evidence
+supported_actions: [navigate, takeoff, land, search_area, pursue, investigate]
+fake:
+  scenario_path: {scenario}
+  initial_position: [0, 0, -250]
+  max_velocity: 20
+  sensing_radius: 30
+  max_retries: 3
+  artifact_root: {tmp_path / "environment"}
+""",
+        encoding="utf-8",
+    )
     config = tmp_path / "runtime.yaml"
     config.write_text(
         f"""agent_name: test-agent
 debug: false
+environment_profile: {environment_profile}
 llm:
   provider: test
   base_url: http://127.0.0.1:14398/v1
@@ -232,7 +266,6 @@ def test_planning_mission_uses_heartbeat_environment_data_without_a_mission_spec
         mission_id=mission_input.mission_id,
     )
     maneuver_control = runtime.create_maneuver_control(
-        RecordingAdapter(),
         FixedDecisionProvider(intent),
     )
 
@@ -678,10 +711,8 @@ def test_direct_authority_plan_completes_physical_mission_run(tmp_path: Path) ->
     fsm = runtime.create_fsm_runner(
         mission_id=mission_input.mission_id,
     )
-    adapter = RecordingAdapter()
     decision_provider = FixedDecisionProvider(intent)
     control = runtime.create_maneuver_control(
-        adapter,
         decision_provider,
     )
     environment = FakeEnvironment(

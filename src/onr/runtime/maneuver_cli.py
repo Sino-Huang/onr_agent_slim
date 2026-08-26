@@ -33,6 +33,7 @@ from onr.demo.maneuver_patrol import (
 )
 from onr.runtime.cli import _rollover_demo_artifacts, load_mission_file
 from onr.runtime.composition import RuntimeComposition
+from onr.runtime.config import EnvironmentUpdateOwnership
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,12 +92,13 @@ def run_maneuver_demo(
     statechart_reference = artifact_root / "accepted-statechart.json"
     statechart_reference.write_text(chart.to_canonical_json(), encoding="utf-8")
 
-    environment = FakeEnvironment(
-        runtime.transport,
-        plan.mission_id,
+    environment_updates = runtime.create_environment_update_source(
+        mission_id=plan.mission_id,
+        ownership=EnvironmentUpdateOwnership.COORDINATOR_DRIVEN,
         output_root=repo_root / "var/environment",
     )
-    environment.heartbeat()
+    environment = cast(Any, environment_updates).environment
+    environment_updates.planning_view()
     authority = DemoEnvironmentAuthority(environment)
     runner = runtime.create_fsm_runner(mission_id=plan.mission_id)
     status = asyncio.run(runner.activate(chart))
@@ -118,14 +120,12 @@ def run_maneuver_demo(
     )
     prompt = load_system_prompt(repo_root / "conf/system_prompt", "maneuver-control")
     control = runtime.create_maneuver_control(
-        environment,
         model=model,
         system_prompt=prompt + MANEUVER_DEMO_INSTRUCTIONS,
         mission_id=plan.mission_id,
         skill_catalog=FilesystemRoleSkillCatalog(repo_root / "conf/skills"),
         backend_root=repo_root,
         fsm_runner=runner,
-        environment_authority=authority,
         belief_service=belief_service,
         communication_port=communication,
     )
@@ -135,13 +135,14 @@ def run_maneuver_demo(
     physical_actions: list[str] = []
 
     def advance_to(mission_time: float) -> None:
-        while environment.mission_time_seconds < mission_time:
-            environment.tick()
+        while environment_updates.current_time < mission_time:
+            environment_updates.advance()
+            environment_updates.drain_updates()
 
     def heartbeat(mission_time: float, label: str) -> FSMStatus:
         nonlocal status
         advance_to(mission_time)
-        environment.heartbeat()
+        environment_updates.planning_view()
         invocation = ManeuverInvocation(
             request_id=f"maneuver-demo:{plan.mission_id}:{label}",
             correlation_id=f"maneuver-demo:{plan.mission_id}",
@@ -150,9 +151,7 @@ def run_maneuver_demo(
             statechart_reference=str(statechart_reference),
             fsm_context=control.transition_intents.focused_context(
                 status,
-                control.transition_intents.current(
-                    status, invalidate_stale=True
-                ),
+                control.transition_intents.current(status, invalidate_stale=True),
             ),
             environment_data=authority.current_environment_data(),
             trigger_identities=(f"manual:{label}",),
@@ -162,6 +161,7 @@ def run_maneuver_demo(
         if not isinstance(completion, ManeuverHeartbeatCompletion):
             raise TypeError("Maneuver demo heartbeat returned an invalid completion")
         completions.append(completion)
+        cast(Any, environment_updates).consume_commands()
         record = control.last_execution_record
         if isinstance(record, ManeuverHeartbeatExecutionRecord):
             physical_actions.extend(
@@ -217,7 +217,7 @@ def run_maneuver_demo(
     belief = belief_service.load_current_snapshot()
     mission_component = quote(plan.mission_id, safe="._-")
     debug_root = runtime.config.storage.root.parent / "debug"
-    return ManeuverDemoRunResult(
+    result = ManeuverDemoRunResult(
         mission_id=plan.mission_id,
         plan_revision=plan.plan_revision,
         final_state=final.active_state,
@@ -234,6 +234,9 @@ def run_maneuver_demo(
         ),
         llm_log_directory=(debug_root / "llm" / "maneuver-control" / mission_component),
     )
+    environment_updates.stop()
+    environment_updates.join()
+    return result
 
 
 def _require_state(status: FSMStatus, expected: str) -> None:

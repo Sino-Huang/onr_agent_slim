@@ -40,37 +40,8 @@ from onr.contracts.planning import (
 )
 from onr.contracts.transport import (
     Command,
-    CommandOutcome,
     TransportEvent,
 )
-from onr.ports.transport import Subscription
-
-
-class RecordingAdapter:
-    def __init__(self) -> None:
-        self.commands: list[ManeuverCommand] = []
-
-    def submit(self, command: ManeuverCommand) -> object:
-        self.commands.append(command)
-        return {"adapter_receipt": command.command_id}
-
-
-class FailingAdapter:
-    def __init__(self) -> None:
-        self.attempts = 0
-
-    def submit(self, command: ManeuverCommand) -> object:
-        self.attempts += 1
-        raise RuntimeError("adapter unavailable")
-
-
-class InterruptingAdapter:
-    def __init__(self) -> None:
-        self.commands: list[ManeuverCommand] = []
-
-    def submit(self, command: ManeuverCommand) -> object:
-        self.commands.append(command)
-        raise KeyboardInterrupt("process interrupted")
 
 
 class FixedDecisionProvider:
@@ -388,10 +359,8 @@ def test_structured_output_exhaustion_has_no_maneuver_control_side_effect() -> N
         [{"structured_response": {"choice": "raw-invalid-choice"}}]
     )
     transport = InProcessTransport()
-    adapter = RecordingAdapter()
     control = ManeuverControl(
         cast(Any, transport),
-        adapter,
         DeepAgentsDecisionProvider(agent, max_retries=1),
     )
 
@@ -408,7 +377,6 @@ def test_structured_output_exhaustion_has_no_maneuver_control_side_effect() -> N
     assert transport.state.receipts == {}
     assert transport.state.outcomes == {}
     assert status.to_dict() == original_status
-    assert adapter.commands == []
 
 
 def test_typed_decision_response_shapes_return_without_retry() -> None:
@@ -464,8 +432,7 @@ def test_typed_decision_application_validation_failure_is_not_retried_or_effectf
     agent = RecordingDecisionAgent([decision])
     provider = DeepAgentsDecisionProvider(agent, max_retries=4)
     transport = InProcessTransport()
-    adapter = RecordingAdapter()
-    control = ManeuverControl(cast(Any, transport), adapter, provider)
+    control = ManeuverControl(cast(Any, transport), provider)
 
     with pytest.raises(ValueError, match="mission ID does not match context"):
         control.heartbeat(
@@ -479,7 +446,6 @@ def test_typed_decision_application_validation_failure_is_not_retried_or_effectf
         transport.latest_event("maneuver-invocations/invalid-input", mission_id) is None
     )
     assert transport.state.commands == {}
-    assert adapter.commands == []
 
 
 def test_stale_typed_decision_is_not_retried_or_effectful() -> None:
@@ -487,12 +453,10 @@ def test_stale_typed_decision_is_not_retried_or_effectful() -> None:
     decision = _model_decision(mission_id=mission_id, plan_revision=0)
     agent = RecordingDecisionAgent([decision])
     transport = InProcessTransport()
-    adapter = RecordingAdapter()
     status = _status(mission_id, 1)
     original_status = status.to_dict()
     control = ManeuverControl(
         cast(Any, transport),
-        adapter,
         DeepAgentsDecisionProvider(agent, max_retries=4),
     )
 
@@ -506,7 +470,6 @@ def test_stale_typed_decision_is_not_retried_or_effectful() -> None:
     assert transport.state.events == {}
     assert transport.state.commands == {}
     assert status.to_dict() == original_status
-    assert adapter.commands == []
 
 
 def test_structural_correction_then_typed_decision_has_one_decision_and_command_path() -> (
@@ -521,10 +484,8 @@ def test_structural_correction_then_typed_decision_has_one_decision_and_command_
         ]
     )
     transport = InProcessTransport()
-    adapter = RecordingAdapter()
     control = ManeuverControl(
         cast(Any, transport),
-        adapter,
         DeepAgentsDecisionProvider(agent, max_retries=2),
     )
 
@@ -550,8 +511,9 @@ def test_structural_correction_then_typed_decision_has_one_decision_and_command_
     )
     queued = transport.state.commands[("maneuver-adapter", mission_id)]
     assert sum(isinstance(message, Command) for _, message in queued) == 1
-    control.handle_command(result.command)
-    assert len(adapter.commands) == 1
+    receipt = control.handle_command(result.command)
+    assert receipt.command_id == result.command.command_id
+    assert transport.state.outcomes == {}
 
 
 def test_deep_agents_decision_provider_passes_attached_debug_callback() -> None:
@@ -642,48 +604,32 @@ def test_maneuver_control_validates_only_mission_revision_and_enabled_transition
     )
     control = ManeuverControl(
         cast(Any, InProcessTransport()),
-        RecordingAdapter(),
         FixedDecisionProvider(stale),
     )
     with pytest.raises(ValueError, match="not enabled"):
         control.decide(snapshot, status)
 
 
-def test_adapter_failure_publishes_failed_outcome_and_retries_once() -> None:
+def test_failed_transport_enqueue_fails_heartbeat_immediately() -> None:
     mission_id = "mission-failure"
-    subscription = Subscription("maneuver-adapter", mission_id, "maneuver")
-    transport = InProcessTransport((subscription,))
-    adapter = FailingAdapter()
+
+    class FailingTransport(InProcessTransport):
+        def send_command(self, command: Command):  # type: ignore[no-untyped-def]
+            _ = command
+            raise RuntimeError("transport unavailable")
+
     decision = ManeuverControlDecision(
         "failure-decision", mission_id, 1, maneuver_id="survey", action="navigate"
     )
     control = ManeuverControl(
-        cast(Any, transport), adapter, FixedDecisionProvider(decision)
+        cast(Any, FailingTransport()), FixedDecisionProvider(decision)
     )
-    result = control.heartbeat(_snapshot(mission_id, 1), _status(mission_id, 1))
-    assert result.command is not None
-    consumer = transport.open_consumer(subscription)
-    with pytest.raises(RuntimeError, match="adapter unavailable"):
-        asyncio.run(control.run_once(consumer))
-    failed = transport.get_command_outcome(result.command.command_id)
-    assert failed is not None
-    assert failed.status == "failed"
-    assert failed.command_id == result.command.command_id
-    assert failed.correlation_id == result.command.correlation_id
-    assert failed.mission_id == mission_id
-    assert failed.payload == {
-        "adapter_submission": "failed",
-        "error": "adapter unavailable",
-        "source": "maneuver-adapter-transport",
-    }
-    assert asyncio.run(control.run_once(consumer)) == failed
-    assert asyncio.run(control.run_once(consumer)) == failed
-    assert adapter.attempts == 1
-    assert transport.latest_event("maneuver-feedback", mission_id) is None
-    consumer.close()
+
+    with pytest.raises(RuntimeError, match="transport unavailable"):
+        control.heartbeat(_snapshot(mission_id, 1), _status(mission_id, 1))
 
 
-def test_adapter_submission_marker_survives_maneuver_control_restart() -> None:
+def test_unavailable_environment_leaves_one_durable_command_queued() -> None:
     mission_id = "mission-restart"
     revision = 3
     snapshot = _snapshot(mission_id, revision)
@@ -691,117 +637,37 @@ def test_adapter_submission_marker_survives_maneuver_control_restart() -> None:
     first_decision = ManeuverControlDecision(
         "decision-first", mission_id, revision, maneuver_id="survey", action="navigate"
     )
-    adapter = RecordingAdapter()
     state = InProcessTransportState()
     first_transport = InProcessTransport(state=state)
     first = ManeuverControl(
-        cast(Any, first_transport), adapter, FixedDecisionProvider(first_decision)
+        cast(Any, first_transport), FixedDecisionProvider(first_decision)
     )
     first_result = first.heartbeat(snapshot, status)
     assert first_result.command is not None
     generic = first_result.command.to_command("maneuver-adapter")
-    first_outcome = first.handle_command(generic)
-    assert isinstance(first_outcome, CommandOutcome)
-    assert first_outcome.status == "accepted"
+    first_receipt = first.handle_command(generic)
+    assert first_receipt.command_id == generic.command_id
+    assert first_transport.get_command_outcome(generic.command_id) is None
 
     second_decision = ManeuverControlDecision(
         "decision-second", mission_id, revision, maneuver_id="survey", action="navigate"
     )
-    marker_topic = f"maneuver-submissions/{generic.command_id}"
     second_transport = InProcessTransport(
-        (
-            Subscription("maneuver-adapter", mission_id, "maneuver"),
-            Subscription("maneuver-control", mission_id, marker_topic),
-        ),
         state=state,
     )
     second = ManeuverControl(
-        cast(Any, second_transport), adapter, FixedDecisionProvider(second_decision)
+        cast(Any, second_transport), FixedDecisionProvider(second_decision)
     )
     second_result = second.heartbeat(snapshot, status)
     assert second_result.command is not None
     assert second_result.command.command_id == first_result.command.command_id
-    assert second.handle_command(generic) == first_outcome
-    consumer = second_transport.open_consumer(
-        Subscription("maneuver-adapter", mission_id, "maneuver")
-    )
-    assert asyncio.run(second.run_once(consumer)) == first_outcome
-    assert asyncio.run(second.run_once(consumer)) == first_outcome
-    consumer.close()
-    marker_consumer = second_transport.open_consumer(
-        Subscription("maneuver-control", mission_id, marker_topic)
-    )
-    assert isinstance(asyncio.run(second.run_once(marker_consumer)), TransportEvent)
-    assert asyncio.run(second.run_once(marker_consumer)) is None
-    marker_consumer.close()
-    assert len(adapter.commands) == 1
+    assert second.handle_command(generic) == first_receipt
+    queued = state.commands[("maneuver-adapter", mission_id)]
+    assert sum(isinstance(message, Command) for _, message in queued) == 1
+    assert state.outcomes == {}
 
 
-def test_submission_intent_prevents_resubmit_after_crash_window() -> None:
-    mission_id = "mission-crash-window"
-    revision = 1
-    state = InProcessTransportState()
-    first_transport = InProcessTransport(state=state)
-    interrupted = InterruptingAdapter()
-    decision = ManeuverControlDecision(
-        "crash-window-decision",
-        mission_id,
-        revision,
-        maneuver_id="survey",
-        action="navigate",
-    )
-    first = ManeuverControl(
-        cast(Any, first_transport), interrupted, FixedDecisionProvider(decision)
-    )
-    command = ManeuverCommand(
-        "crash-window-command",
-        "crash-window-command",
-        mission_id,
-        revision,
-        "survey",
-        ManeuverIntent("navigate"),
-    )
-    generic = command.to_command("maneuver-adapter")
-
-    with pytest.raises(KeyboardInterrupt, match="process interrupted"):
-        first.handle_command(generic)
-    assert len(interrupted.commands) == 1
-    assert (
-        first_transport.latest_event(
-            "maneuver-submissions-intents/crash-window-command",
-            mission_id,
-            event_kind="maneuver-submission-intent",
-        )
-        is not None
-    )
-    assert first_transport.get_command_outcome(command.command_id) is None
-
-    restarted_adapter = RecordingAdapter()
-    second_transport = InProcessTransport(state=state)
-    second = ManeuverControl(
-        cast(Any, second_transport), restarted_adapter, FixedDecisionProvider(decision)
-    )
-    outcome = second.handle_command(generic)
-
-    assert outcome.status == "failed"
-    assert outcome.payload == {
-        "adapter_submission": "unknown",
-        "error": "prior adapter submission outcome is unknown; command will not be submitted again",
-        "source": "maneuver-adapter-transport",
-    }
-    assert second_transport.get_command_outcome(command.command_id) == outcome
-    assert restarted_adapter.commands == []
-    assert (
-        second_transport.latest_event(
-            "maneuver-submissions/crash-window-command",
-            mission_id,
-            event_kind="maneuver-submitted",
-        )
-        is None
-    )
-
-
-def test_adapter_submission_is_independent_from_explicit_fsm_decision() -> None:
+def test_command_enqueue_is_independent_from_explicit_fsm_decision() -> None:
     mission_id = "mission-symbolic"
     revision = 7
     chart = Statechart(
@@ -838,9 +704,8 @@ def test_adapter_submission_is_independent_from_explicit_fsm_decision() -> None:
         maneuver_id="survey",
         physical_intent=intent,
     )
-    adapter = RecordingAdapter()
     control = ManeuverControl(
-        cast(Any, transport), adapter, FixedDecisionProvider(decision)
+        cast(Any, transport), FixedDecisionProvider(decision)
     )
     result = control.heartbeat(snapshot, initial)
     assert result.command is not None
@@ -860,7 +725,8 @@ def test_adapter_submission_is_independent_from_explicit_fsm_decision() -> None:
         )
     )
     assert moved.active_state == candidate.target
-    assert len(adapter.commands) == 1
+    queued = transport.state.commands[("maneuver-adapter", mission_id)]
+    assert sum(isinstance(message, Command) for _, message in queued) == 1
 
 
 def test_cancel_maneuver_is_non_physical_until_feedback() -> None:
@@ -873,15 +739,13 @@ def test_cancel_maneuver_is_non_physical_until_feedback() -> None:
         maneuver_id="survey",
         choice=NonPhysicalChoice.CANCEL_MANEUVER,
     )
-    adapter = RecordingAdapter()
     control = ManeuverControl(
-        cast(Any, InProcessTransport()), adapter, FixedDecisionProvider(decision)
+        cast(Any, InProcessTransport()), FixedDecisionProvider(decision)
     )
     result = control.heartbeat(
         _snapshot(mission_id, revision), _status(mission_id, revision)
     )
     assert result.command is None
-    assert adapter.commands == []
     assert "cancelled" not in result.decision.payload
 
 
@@ -1006,7 +870,7 @@ def test_replaying_event_rehydrates_the_stored_maneuver_decision_and_command() -
     )
     provider = AlternatingDecisionProvider((first, second))
     transport = InProcessTransport()
-    control = ManeuverControl(cast(Any, transport), RecordingAdapter(), provider)
+    control = ManeuverControl(cast(Any, transport), provider)
     event = TransportEvent(
         1,
         "maneuver-input-1",
@@ -1024,7 +888,6 @@ def test_replaying_event_rehydrates_the_stored_maneuver_decision_and_command() -
     assert original.decision == first
     assert replay.decision == original.decision
     assert replay.command == original.command
-    assert replay.receipt == original.receipt
     assert provider.calls == 1
 
 

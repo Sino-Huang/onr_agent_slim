@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, cast
 
 from langchain.tools import ToolRuntime
@@ -37,6 +39,10 @@ from onr.contracts.planning import (
     PlannerChoice,
     PlannerPlan,
     PlanningOutcome,
+)
+from onr.demo.environment_updates import (
+    CoordinatorDrivenFakeEnvironment,
+    EnvironmentDrivenFakeEnvironment,
 )
 from onr.demo.fake_environment import FakeEnvironment
 from onr.ports.transport import Subscription
@@ -161,9 +167,7 @@ class _ManeuverProvider:
     def _transition(invocation, context, event: str) -> None:  # type: ignore[no-untyped-def]
         status = asyncio.run(context.fsm_runner.status())
         candidate = next(
-            item
-            for item in status.transition_candidates
-            if item.event == event
+            item for item in status.transition_candidates if item.event == event
         )
         decision = ManeuverDecision(
             decision_id=f"decision:{invocation.request_id}:{event}",
@@ -180,6 +184,8 @@ def _runtime_parts(
     *,
     report_records: list[dict[str, object]] | None = None,
     belief_keys: tuple[BeliefKey, ...] = (BeliefKey("1", "event-risk"),),
+    environment_driven: bool = False,
+    environment_cadence_seconds: float | None = None,
 ):
     mission_id = "mission-1"
     context_subscription = Subscription(
@@ -198,6 +204,15 @@ def _runtime_parts(
         context_topic="planning-evidence",
     )
     environment.heartbeat()
+    source_type = (
+        EnvironmentDrivenFakeEnvironment
+        if environment_driven
+        else CoordinatorDrivenFakeEnvironment
+    )
+    environment_updates = source_type(
+        environment,
+        cadence_seconds=environment_cadence_seconds or environment.tick_seconds,
+    )
     belief = BayesianBeliefService(
         BayesianBeliefManager(mission_id, belief_keys, particle_count=64, seed=3),
         FileBayesianBeliefStore(tmp_path / "belief"),
@@ -212,10 +227,8 @@ def _runtime_parts(
     provider = _ManeuverProvider(communication)
     maneuver = ManeuverControl(
         transport,
-        environment,
         provider,
         fsm_runner=fsm,
-        environment_authority=environment,
         belief_service=belief,
         communication_port=communication,
     )
@@ -231,7 +244,7 @@ def _runtime_parts(
             input_topic="planning-evidence",
             subscription=context_subscription,
             clock=lambda: "2026-08-23T00:00:00+10:00",
-            environment=environment,
+            environment_update_source=environment_updates,
             fsm_runner=fsm,
             maneuver_control=maneuver,
             hyper_supervisor=supervisor,
@@ -319,7 +332,9 @@ def test_successful_replan_supersedes_fsm_without_reentrant_activation(
     assert reconciliation.environment_data["scene_graph"]["mission_time_seconds"] == 10
     assert reconciliation.hyper_outcomes[0].disposition == "replan"
     assert reconciliation.planning_snapshot.plan_revision == 2
-    assert reconciliation.fsm_context.current_state == replacement.statechart.entry_state
+    assert (
+        reconciliation.fsm_context.current_state == replacement.statechart.entry_state
+    )
     assert reconciliation.fsm_context.transition_intent is None
     assert maneuver.transition_intents.latest("mission-1").status == "invalidated"
 
@@ -402,7 +417,10 @@ def test_navigation_completion_feedback_triggers_maneuver_before_five_seconds(
                     ),
                     sequence=1,
                 )
-            else:
+            elif (
+                invocation.environment_data["scene_graph"]["navigation_status"]
+                == "completed"
+            ):
                 candidate = asyncio.run(
                     tool_context.fsm_runner.status()
                 ).transition_candidates[0]
@@ -427,9 +445,9 @@ def test_navigation_completion_feedback_triggers_maneuver_before_five_seconds(
     maneuver.decision_provider = navigation_provider
     result = coordinator(lambda *_: None, simulation_limit_seconds=10).run(active)
 
-    assert navigation_provider.times == [0.0, 1.0]
-    assert result.maneuver_heartbeat_count == 2
-    assert result.environment_triggered_maneuver_heartbeat_count == 1
+    assert navigation_provider.times == [0.0, 0.5, 1.0]
+    assert result.maneuver_heartbeat_count == 3
+    assert result.environment_triggered_maneuver_heartbeat_count == 2
     assert result.simulated_duration_seconds == 1.0
     assert result.final_fsm_state == "complete"
 
@@ -521,15 +539,20 @@ def test_four_perceptions_commit_four_ordered_beliefs_without_agent_belief(
     maneuver.decision_provider = provider
     result = coordinator(lambda *_: None, simulation_limit_seconds=10).run(_revision(1))
 
-    assert [len(item.pending_perceptions) for item in provider.invocations] == [0, 8, 8]
+    assert [len(item.pending_perceptions) for item in provider.invocations] == [
+        0,
+        8,
+        8,
+        8,
+    ]
     assert all(not hasattr(item, "belief_snapshot") for item in provider.invocations)
     assert all(len(item.request_id) < 100 for item in provider.invocations)
-    assert "periodic:5" in provider.invocations[1].trigger_identities
+    assert any("periodic:5" in item.trigger_identities for item in provider.invocations)
     assert any(
         item.startswith("environment:")
         for item in provider.invocations[1].trigger_identities
     )
-    assert result.environment_triggered_maneuver_heartbeat_count == 1
+    assert result.environment_triggered_maneuver_heartbeat_count == 2
     assert result.perception_count == 8
     assert result.belief_revisions == (1, 2, 3, 4)
     assert hyper_invocations[0].belief_snapshot is not None
@@ -622,3 +645,171 @@ def test_direct_maneuver_invocation_is_queued_without_overlap(tmp_path: Path) ->
     assert result.terminal
     assert provider.times == [0.0, 0.5]
     assert provider.max_depth == 1
+
+
+def test_environment_driven_updates_fold_during_blocked_inference(
+    tmp_path: Path,
+) -> None:
+    entered = Event()
+    release = Event()
+    errors: list[BaseException] = []
+    active_invocations = 0
+    maximum_active_invocations = 0
+
+    def hyper(invocation: HyperHeartbeatInvocation) -> HyperHeartbeatDecision:
+        nonlocal active_invocations, maximum_active_invocations
+        active_invocations += 1
+        maximum_active_invocations = max(maximum_active_invocations, active_invocations)
+        active_invocations -= 1
+        return HyperHeartbeatDecision(
+            invocation.mission_id,
+            invocation.plan_revision,
+            "no_change",
+            "The active plan remains valid.",
+            invocation.trigger_identities,
+            (),
+        )
+
+    records = [
+        {
+            "time": 0.5,
+            "position": [1.0, 0.0, -250.0],
+            "event information": {"decision": "left"},
+            "event type": "intersection decision",
+            "entity_id": 1,
+        }
+    ]
+    environment, coordinator, _belief, _fsm, _supervisor, maneuver, _provider = (
+        _runtime_parts(
+            tmp_path,
+            hyper,
+            report_records=records,
+            environment_driven=True,
+            environment_cadence_seconds=0.01,
+        )
+    )
+    base = _revision(1)
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id=base.planner_plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="working",
+        states=("working", "complete"),
+        transitions=(StatechartTransition("finish", "working", "complete", {}),),
+        terminal_states=("complete",),
+        state_context={"working": {}, "complete": {}},
+    )
+    revision = ActivePlanRevision(
+        base.planner_plan,
+        base.planner_plan_reference,
+        chart,
+        "environment-driven-statechart.json",
+    )
+
+    class BarrierProvider:
+        def __init__(self) -> None:
+            self.invocations: list[Any] = []
+
+        def heartbeat(self, invocation, context):  # type: ignore[no-untyped-def]
+            nonlocal active_invocations, maximum_active_invocations
+            active_invocations += 1
+            maximum_active_invocations = max(
+                maximum_active_invocations, active_invocations
+            )
+            try:
+                self.invocations.append(invocation)
+                if len(self.invocations) == 1:
+                    context.command_dispatcher.dispatch_physical(
+                        invocation,
+                        ManeuverControlDecision(
+                            "blocked-navigation",
+                            invocation.mission_id,
+                            invocation.plan_revision,
+                            maneuver_id="blocked-navigation",
+                            physical_intent=ManeuverIntent(
+                                "navigate",
+                                (
+                                    ManeuverParameter("x", 1),
+                                    ManeuverParameter("y", 0),
+                                    ManeuverParameter("z", -250),
+                                    ManeuverParameter("speed", 20),
+                                ),
+                            ),
+                        ),
+                        sequence=1,
+                    )
+                    entered.set()
+                    if not release.wait(2):
+                        raise RuntimeError("barrier was not released")
+                else:
+                    status = asyncio.run(context.fsm_runner.status())
+                    candidate = status.transition_candidates[0]
+                    asyncio.run(
+                        context.fsm_runner.apply(
+                            candidate,
+                            ManeuverDecision(
+                                "finish-after-catch-up",
+                                invocation.mission_id,
+                                transition_event=candidate.event,
+                                payload={"plan_revision": invocation.plan_revision},
+                            ),
+                        )
+                    )
+                return ManeuverHeartbeatCompletion(
+                    invocation.mission_id,
+                    invocation.request_id,
+                    "Completed the serialized barrier heartbeat.",
+                )
+            finally:
+                active_invocations -= 1
+
+    provider = BarrierProvider()
+    maneuver.decision_provider = provider
+    coordination = coordinator(lambda *_: None, simulation_limit_seconds=15)
+    completed: list[Any] = []
+
+    def run() -> None:
+        try:
+            completed.append(coordination.run(revision))
+        except BaseException as exc:  # noqa: BLE001 - asserted below.
+            errors.append(exc)
+
+    thread = Thread(target=run, name="environment-driven-test")
+    thread.start()
+    assert entered.wait(5), errors
+    deadline = time.monotonic() + 2
+    while environment.current_time < 15 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert environment.current_time >= 15
+    release.set()
+    thread.join(3)
+
+    assert not thread.is_alive()
+    assert errors == []
+    result = completed[0]
+    assert result.terminal
+    assert maximum_active_invocations == 1
+    assert len(provider.invocations) == 2
+    catch_up = provider.invocations[1]
+    assert catch_up.environment_data["scene_graph"]["mission_time_seconds"] >= 15
+    assert len(catch_up.pending_perceptions) == 2
+    assert {
+        identity
+        for identity in catch_up.trigger_identities
+        if identity.startswith("environment:")
+    } == {
+        "environment:maneuver-feedback:maneuver:maneuver-heartbeat:mission-1:0:1:active",
+        "environment:maneuver-feedback:maneuver:maneuver-heartbeat:mission-1:0:1:completed",
+    }
+    periodic = [
+        identity
+        for identity in catch_up.trigger_identities
+        if identity.startswith("periodic:")
+    ]
+    assert periodic == ["periodic:15"]
+    assert result.maximum_update_batch >= 30
+    assert result.coalesced_update_count >= 2
+    assert result.inference_windows[0].evidence_time_seconds == 0
+    assert result.inference_windows[0].completion_time_seconds >= 15
+    assert not cast(Any, coordination._environment_source).is_alive

@@ -448,14 +448,14 @@ class ManeuverCommand:
     def physical_intent(self) -> ManeuverIntent:
         return self.intent
 
-    def to_command(self, target_service: str) -> Command:
+    def to_command(self, target_service: str, command_topic: str = "maneuver") -> Command:
         return Command(
             self.schema_version,
             self.command_id,
             self.correlation_id,
             self.mission_id,
             target_service,
-            "maneuver",
+            command_topic,
             self.to_dict(),
         )
 
@@ -515,8 +515,10 @@ class ManeuverCommand:
         return cls.from_dict(_string_mapping(decoded, "maneuver command"))
 
     @classmethod
-    def from_command(cls, command: Command) -> ManeuverCommand:
-        if command.command_kind != "maneuver":
+    def from_command(
+        cls, command: Command, command_topic: str = "maneuver"
+    ) -> ManeuverCommand:
+        if command.command_kind != command_topic:
             raise ValueError("generic command is not a maneuver command")
         payload = command.payload
         intent = payload.get("intent")

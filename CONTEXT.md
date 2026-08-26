@@ -133,8 +133,12 @@ An optional non-authoritative summary generated from sanitized Mission Run evide
 _Avoid_: Progress authority, agent reasoning
 
 **Command**:
-A single-recipient request to an agent or service that produces an accepted, completed, or failed outcome.
+A single-recipient request durably routed to an agent or service. Its transport delivery and any domain outcome are distinct evidence.
 _Avoid_: Event, broadcast
+
+**Command Receipt**:
+Transport-owned evidence that a Command was durably enqueued for delivery. Its `accepted` status means transport acceptance only, never recipient or environment acceptance.
+_Avoid_: Maneuver Feedback, recipient acknowledgement
 
 **Source Authority**:
 The identified authority from which MissionInput originates and whose intent derived planning artifacts preserve.
@@ -241,8 +245,16 @@ An environment-authoritative lifecycle fact for a Maneuver Command.
 _Avoid_: Agent assertion, tool return text
 
 **Maneuver Adapter**:
-The port that submits a Maneuver Command to an environment without deciding its lifecycle outcome.
-_Avoid_: Environment authority, lifecycle simulator
+An environment-side consumer that applies durably delivered Maneuver Commands and acknowledges delivery after local application. It publishes Maneuver Feedback rather than returning lifecycle truth to Maneuver Control.
+_Avoid_: In-process callback, Maneuver Control dependency
+
+**Environment Profile**:
+The non-agent configuration that declares one environment integration's protocols, update ownership, transport routing, physical capabilities, and environment-specific operating settings.
+_Avoid_: Agent prompt, action parameter schema
+
+**Environment Update Ownership**:
+The Environment Profile choice of whether Context Coordination requests each update or the environment advances independently at its declared cadence.
+_Avoid_: Agent scheduling, transport delivery ownership
 
 **Hyper Query**:
 A Maneuver Control Agent question sent to Hyper Agent for an answer, plan outcome, or report.

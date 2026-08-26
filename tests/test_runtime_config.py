@@ -7,9 +7,11 @@ import yaml
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.runtime import (
+    EnvironmentUpdateOwnership,
     HeartbeatsConfig,
     RuntimeConfig,
     create_runtime,
+    load_environment_profile,
     load_runtime_config,
 )
 
@@ -25,6 +27,21 @@ def _shipped_runtime_values() -> dict[str, Any]:
 
 def _write_runtime_values(path: Path, values: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+
+
+def _write_environment_profile(tmp_path: Path) -> Path:
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text("[]\n", encoding="utf-8")
+    profile = tmp_path / "environment.yaml"
+    values = yaml.safe_load(
+        (Path(__file__).parents[1] / "conf/environment_params.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    values["fake"]["scenario_path"] = str(scenario)
+    values["fake"]["artifact_root"] = str(tmp_path / "environment")
+    profile.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+    return profile
 
 
 def test_default_runtime_config_is_complete_and_repo_relative() -> None:
@@ -56,6 +73,25 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.heartbeats.summary_seconds == 30
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
+    profile = config.environment_profile
+    assert profile.source_path == (root / "conf/environment_params.yaml").resolve()
+    assert profile.adapter_kind == "fake"
+    assert profile.protocols.maneuver_command == 1
+    assert profile.protocols.maneuver_feedback == 1
+    assert profile.protocols.environment_data == 1
+    assert profile.protocols.perception == 1
+    assert profile.update_ownership is EnvironmentUpdateOwnership.COORDINATOR_DRIVEN
+    assert profile.update_cadence_seconds == 0.5
+    assert {str(item) for item in profile.supported_actions} == {
+        "navigate",
+        "takeoff",
+        "land",
+        "search_area",
+        "pursue",
+        "investigate",
+    }
+    assert profile.fake.scenario_path.is_absolute()
+    assert profile.fake.artifact_root == (root / "var/environment").resolve()
     assert HeartbeatsConfig(1, 2).summary_seconds == 30
     for invalid in (0, -1, True):
         with pytest.raises(
@@ -75,9 +111,10 @@ def test_runtime_config_rejects_unknown_keys_and_boolean_durations(
     executable = tmp_path / "planner"
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
     executable.chmod(0o755)
+    environment_profile = _write_environment_profile(tmp_path)
     config = tmp_path / "config.yaml"
     config.write_text(
-        """agent_name: test-agent\ndebug: false\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\n  planner_artifacts: planner-artifacts\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",  # noqa: E501
+        f"""agent_name: test-agent\ndebug: false\nenvironment_profile: {environment_profile}\nllm:\n  provider: test\n  base_url: http://127.0.0.1:14398/v1\n  model: model\n  api_key: test-key\n  temperature: 0\nplanners:\n  temporal:\n    entrypoint: planner\n    timeout_seconds: 1\n  symbolic:\n    entrypoint: planner\n    timeout_seconds: 1\nheartbeats:\n  hyper_seconds: true\n  maneuver_seconds: 1\n  summary_seconds: 30\ntransport:\n  backend: inprocess\n  root: transport\nstorage:\n  root: storage\n  planner_artifacts: planner-artifacts\nservices:\n  hyper_agent: hyper\n  maneuver_control: maneuver\n  context_coordination: context\n  fsm_runner: fsm\n  planner: planner\n""",  # noqa: E501
         encoding="utf-8",
     )
     config.write_text(
@@ -193,6 +230,42 @@ def test_runtime_config_requires_agent_name(tmp_path: Path) -> None:
         ValueError, match="runtime configuration has unknown or missing keys"
     ):
         load_runtime_config(config, repo_root=root)
+
+
+def test_environment_profile_rejects_unknown_missing_and_invalid_values(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[1]
+    shipped = yaml.safe_load(
+        (root / "conf/environment_params.yaml").read_text(encoding="utf-8")
+    )
+    profile = tmp_path / "environment.yaml"
+
+    cases = (
+        ({**shipped, "unknown": True}, "environment profile"),
+        (
+            {**shipped, "updates": {"ownership": "external", "cadence_seconds": 1}},
+            "ownership",
+        ),
+        (
+            {
+                **shipped,
+                "protocols": {
+                    **shipped["protocols"],
+                    "maneuver_feedback": 0,
+                },
+            },
+            "maneuver_feedback",
+        ),
+        (
+            {**shipped, "supported_actions": ["navigate", "unsupported"]},
+            "PhysicalAction",
+        ),
+    )
+    for values, message in cases:
+        profile.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            load_environment_profile(profile, repo_root=root)
 
 
 @pytest.mark.parametrize("value", ["", "   ", 1, True])

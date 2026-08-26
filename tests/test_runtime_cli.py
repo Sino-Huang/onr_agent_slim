@@ -88,12 +88,10 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
             _ = subscription
             return nullcontext(object())
 
-    class FakeEnvironment:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            _ = args, kwargs
-            self.event_report: dict[str, object] = {}
+    class FakeEnvironmentSource:
+        event_report: dict[str, object] = {}
 
-        def heartbeat(self) -> object:
+        def planning_view(self) -> object:
             return planning_view
 
     class PlanningContext:
@@ -130,12 +128,19 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
             agent_name="test-agent",
             heartbeats=SimpleNamespace(maneuver_seconds=5, hyper_seconds=10),
             transport=SimpleNamespace(root=tmp_path / "transport"),
+            environment_profile=SimpleNamespace(
+                fake=SimpleNamespace(artifact_root=tmp_path / "environment")
+            ),
         )
 
         def create_context_coordination(self, **kwargs: object) -> object:
-            if "environment" not in kwargs:
+            if "environment_update_source" not in kwargs:
                 return PlanningContext()
             return ClosedLoopContext(kwargs["replan_workflow"])
+
+        def create_environment_update_source(self, **kwargs: object) -> object:
+            _ = kwargs
+            return FakeEnvironmentSource()
 
         def create_bayesian_belief_service(self, **kwargs: object) -> object:
             _ = kwargs
@@ -166,7 +171,6 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         return object()
 
     monkeypatch.setattr(runtime_cli, "FileTransport", FakeTransport)
-    monkeypatch.setattr(runtime_cli, "FakeEnvironment", FakeEnvironment)
     monkeypatch.setattr(
         runtime_cli,
         "load_system_prompt",

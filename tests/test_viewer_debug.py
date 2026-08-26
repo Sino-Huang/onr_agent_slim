@@ -14,6 +14,7 @@ import pytest
 import onr.viewer.server as viewer_server
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
 from onr.viewer.server import ViewerHTTPServer, create_server
+from tests.config_helpers import write_environment_profile
 
 _EMPTY = {
     "enabled": False,
@@ -28,12 +29,14 @@ def _config(tmp_path: Path, *, debug: bool = True) -> tuple[Path, Path]:
     tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     tool.chmod(0o755)
     storage = tmp_path / "storage"
+    environment_profile = write_environment_profile(tmp_path)
     config = tmp_path / "viewer.yaml"
     config.write_text(
         "\n".join(
             (
                 "agent_name: test-agent",
                 f"debug: {'true' if debug else 'false'}",
+                f"environment_profile: {environment_profile}",
                 "llm:",
                 "  provider: openai",
                 "  base_url: http://127.0.0.1:1/v1",

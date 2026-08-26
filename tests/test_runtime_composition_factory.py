@@ -34,12 +34,6 @@ from onr.runtime import (
 from onr.runtime.config import AgentConfig, AgentsConfig, OutputStructureRetryConfig
 
 
-class _FakeAdapter:
-    def submit(self, command: object) -> object:
-        _ = command
-        return None
-
-
 def _runtime(
     *, hyper_max_retries: int = 2, maneuver_max_retries: int = 1
 ) -> RuntimeComposition:
@@ -145,7 +139,7 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     )
 
     runtime.create_hyper_agent()
-    runtime.create_maneuver_control(_FakeAdapter(), mission_id="mission")
+    runtime.create_maneuver_control(mission_id="mission")
     assert factory_calls == [
         {"mission_id": None, "debug_scope": "hyper-agent"},
         {"mission_id": "mission", "debug_scope": "maneuver-control"},
@@ -158,7 +152,7 @@ def test_composition_uses_factory_only_without_explicit_model(monkeypatch) -> No
     runtime.create_hyper_agent(model=explicit)
     assert deep_models[-1] is explicit
     provider = object()
-    runtime.create_maneuver_control(_FakeAdapter(), decision_provider=provider)
+    runtime.create_maneuver_control(decision_provider=provider)
     assert len(factory_calls) == 2
     assert len(deep_models) == 5
 
@@ -203,7 +197,6 @@ def test_create_maneuver_control_passes_optional_system_prompt(monkeypatch) -> N
         fake_create_agent,
     )
     _runtime().create_maneuver_control(
-        _FakeAdapter(),
         model=object(),
         mission_id="mission",
         memory_store=object(),
@@ -345,7 +338,6 @@ def test_default_maneuver_control_uses_configured_provider_retry_limit(
     )
 
     service = _runtime(hyper_max_retries=7, maneuver_max_retries=9).create_maneuver_control(
-        _FakeAdapter(),
         model=object(),
         mission_id="mission",
     )
@@ -369,7 +361,7 @@ def test_explicit_agent_providers_bypass_default_retry_wiring(monkeypatch) -> No
 
     hyper_agent = runtime.create_hyper_agent(interpreter=interpreter)
     maneuver_control = runtime.create_maneuver_control(
-        _FakeAdapter(), decision_provider=decision_provider
+        decision_provider=decision_provider
     )
 
     assert hyper_agent.planning_intent_interpreter is interpreter

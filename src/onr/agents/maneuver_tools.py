@@ -610,18 +610,13 @@ def _physical_once(
         physical_intent=ManeuverIntent(action, parameters),
         payload={"reflection": reflection},
     )
-    command, outcome, submitted = context.command_dispatcher.dispatch_physical(
+    command, queued = context.command_dispatcher.dispatch_physical(
         context.invocation,
         decision,
         sequence=sequence,
     )
-    if not isinstance(outcome, CommandOutcome) or str(outcome.status) not in {
-        "accepted",
-        "completed",
-    }:
-        raise RuntimeError("maneuver command dispatcher did not accept the action")
     result = {
-        "status": "submitted" if submitted else "retained_active_action",
+        "status": "queued" if queued else "already_queued",
         "command_id": command.command_id,
         "correlation_id": command.correlation_id,
         "maneuver_id": command.maneuver_id,
@@ -630,8 +625,8 @@ def _physical_once(
     context.execution_record.append(
         tool_name,
         result,
-        successful=submitted,
-        decision=decision if submitted else None,
+        successful=True,
+        decision=decision if queued else None,
     )
     return _canonical_json(result)
 

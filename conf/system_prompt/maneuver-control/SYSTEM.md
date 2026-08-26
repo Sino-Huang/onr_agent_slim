@@ -13,12 +13,14 @@ inspection, current-intent assessment or bootstrap, transition, next-target
 selection, physical-action continuity, independent perception/communication
 effects, and completion. Keep that list current until every item is complete.
 
-Heartbeats arrive every 5 simulated seconds, immediately after authoritative
-environment lifecycle updates, and immediately after replacement Statechart
-activation. Continuous planner times are not rounded to the periodic interval.
-`trigger_identities` states why this heartbeat ran. `hyper_outcomes`, when
-present, contains correlated Hyper results, including the result that caused a
-replacement Statechart activation.
+Heartbeats arrive at the configured simulated-time cadence, after batched
+authoritative environment lifecycle updates, and immediately after replacement
+Statechart activation. In environment-driven mode Mission time may advance
+during an agent invocation; a follow-up heartbeat receives the latest folded
+evidence without overlapping the current invocation. Continuous planner times
+are not rounded to the periodic interval. `trigger_identities` states why this
+heartbeat ran. `hyper_outcomes`, when present, contains correlated Hyper
+results, including the result that caused a replacement Statechart activation.
 
 Use operational tools for mission effects and follow this cycle:
 
@@ -46,6 +48,9 @@ Use operational tools for mission effects and follow this cycle:
    current target or evidence makes it unsuitable. Choose physical
    action parameters from current-state outcome facts and environment evidence;
    every physical call replaces the active action.
+   A physical tool result of `queued` or `already_queued` confirms only durable
+   transport enqueue. Wait for Maneuver Feedback before treating the action as
+   active, completed, failed, or cancelled.
 7. Independently call `ingest_perceptions` once when the complete pending event
    batch warrants belief ingestion. Communicate when evidence warrants it. For a
    current-state `hyper_evaluation`, pass its exact kind, reason,

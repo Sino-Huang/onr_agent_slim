@@ -202,7 +202,7 @@ class ManeuverFeedback:
             (self.lifecycle, "maneuver feedback lifecycle"),
         ):
             _text(value, label)
-        if self.lifecycle not in {"accepted", "active", "completed", "failed", "cancelled"}:
+        if self.lifecycle not in {"active", "completed", "failed", "cancelled"}:
             raise ValueError("maneuver feedback lifecycle is invalid")
         _positive_int(self.schema_version, "maneuver feedback schema version")
         object.__setattr__(self, "payload", _payload(self.payload, "maneuver feedback payload"))

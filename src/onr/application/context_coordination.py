@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Any, cast
 
 from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
@@ -40,6 +42,7 @@ from onr.contracts.transport import (
     TransportEvent,
     normalized_plan_transport_event_to_wire,
 )
+from onr.ports.environment import EnvironmentUpdateSource
 from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Subscription
 
@@ -82,6 +85,22 @@ class ActivePlanRevision:
 
 
 @dataclass(frozen=True, slots=True)
+class InferenceWindow:
+    """Mission evidence and completion times for one serialized agent invocation."""
+
+    role: str
+    evidence_time_seconds: float
+    completion_time_seconds: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "evidence_time_seconds": self.evidence_time_seconds,
+            "completion_time_seconds": self.completion_time_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ClosedLoopRunResult:
     """Safe final audit summary for one deterministic Mission simulation."""
 
@@ -99,6 +118,9 @@ class ClosedLoopRunResult:
     final_fsm_state: str
     terminal: bool
     environment_triggered_maneuver_heartbeat_count: int = 0
+    inference_windows: tuple[InferenceWindow, ...] = ()
+    maximum_update_batch: int = 0
+    coalesced_update_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -118,6 +140,9 @@ class ClosedLoopRunResult:
             "plan_revisions": list(self.plan_revisions),
             "final_fsm_state": self.final_fsm_state,
             "terminal": self.terminal,
+            "inference_windows": [item.to_dict() for item in self.inference_windows],
+            "maximum_update_batch": self.maximum_update_batch,
+            "coalesced_update_count": self.coalesced_update_count,
         }
 
 
@@ -142,6 +167,7 @@ class ContextCoordination:
         clock: Callable[[], str] | None = None,
         subscription: Subscription | None = None,
         operational_log: OperationalLog | None = None,
+        environment_update_source: EnvironmentUpdateSource | None = None,
         environment: object | None = None,
         fsm_runner: object | None = None,
         maneuver_control: object | None = None,
@@ -169,7 +195,16 @@ class ContextCoordination:
             )
         self._facts: dict[str, _SourceFact] = {}
         self._last_snapshot: MissionSnapshot | None = None
-        self._environment = environment
+        if environment_update_source is not None and environment is not None:
+            raise ValueError("supply one environment update source")
+        if environment_update_source is None and environment is not None:
+            from onr.demo.environment_updates import CoordinatorDrivenFakeEnvironment
+
+            environment_update_source = CoordinatorDrivenFakeEnvironment(
+                cast(Any, environment),
+                cadence_seconds=float(cast(Any, environment).tick_seconds),
+            )
+        self._environment_source = environment_update_source
         self._fsm_runner = fsm_runner
         self._maneuver_control = maneuver_control
         self._hyper_supervisor = hyper_supervisor
@@ -181,7 +216,8 @@ class ContextCoordination:
             simulation_limit_seconds, "simulation limit"
         )
         self._pending_perceptions: list[Perception] = []
-        self._pending_maneuver_triggers: set[str] = set()
+        self._pending_maneuver_triggers: list[str] = []
+        self._pending_trigger_lock = Lock()
         self._transition_intents = TransitionIntentJournal(transport)
         self._restore_latest_snapshot()
 
@@ -351,14 +387,61 @@ class ContextCoordination:
             )
         if message.mission_id != self.subscription.mission_id:
             raise ValueError("direct Maneuver invocation belongs to another Mission")
-        self._pending_maneuver_triggers.add(message.message_id)
+        self._queue_maneuver_trigger(message.message_id)
         return {"status": "queued", "message_id": message.message_id}
+
+    def _queue_maneuver_trigger(self, identity: str) -> None:
+        with self._pending_trigger_lock:
+            if identity not in self._pending_maneuver_triggers:
+                self._pending_maneuver_triggers.append(identity)
+
+    def _take_maneuver_triggers(self) -> tuple[str, ...]:
+        with self._pending_trigger_lock:
+            result = tuple(self._pending_maneuver_triggers)
+            self._pending_maneuver_triggers.clear()
+            return result
+
+    def _has_pending_maneuver_triggers(self) -> bool:
+        with self._pending_trigger_lock:
+            return bool(self._pending_maneuver_triggers)
+
+    def _drain_environment_updates(
+        self,
+        environment: EnvironmentUpdateSource,
+        context_consumer: object,
+        snapshot: MissionSnapshot,
+    ) -> tuple[MissionSnapshot, int]:
+        updates = environment.drain_updates()
+        for update in updates:
+            self._pending_perceptions.extend(
+                perception_from_dict(event.payload)
+                for event in update.perception_events
+            )
+            for event in update.feedback_events:
+                self._queue_maneuver_trigger(f"environment:{event.event_id}")
+        latest = self._drain_required(context_consumer, fallback=snapshot)
+        return latest, len(updates)
+
+    @staticmethod
+    def _environment_time(environment_data: Mapping[str, object]) -> float:
+        scene = environment_data.get("scene_graph")
+        raw = (
+            scene.get("mission_time_seconds")
+            if isinstance(scene, Mapping)
+            else environment_data.get("mission_time_seconds")
+        )
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise TypeError("environment evidence has no finite Mission time")
+        result = float(raw)
+        if not math.isfinite(result) or result < 0:
+            raise ValueError("environment evidence has no finite Mission time")
+        return result
 
     def run(self, active_revision: ActivePlanRevision) -> ClosedLoopRunResult:
         """Run the serialized closed loop from one accepted planner revision."""
 
         self._require_runtime(active_revision)
-        environment = cast(Any, self._environment)
+        environment = cast(EnvironmentUpdateSource, self._environment_source)
         hyper = cast(Any, self._hyper_supervisor)
         replan = cast(ReplanWorkflow, self._replan_workflow)
         mission_id = active_revision.planner_plan.mission_id
@@ -372,111 +455,220 @@ class ContextCoordination:
         environment_maneuver_count = 0
         hyper_count = 0
         tick_count = 0
+        maximum_update_batch = 0
+        coalesced_update_count = 0
+        inference_windows: list[InferenceWindow] = []
+        last_maneuver_periodic = -self._maneuver_seconds
+        last_hyper_periodic = 0.0
 
-        with self._transport.open_consumer(self.subscription) as context_consumer:
-            self.publish_planner_revision(self._revision_evidence(active_revision))
-            self._publish_runtime_source_facts(status)
-            snapshot = self._drain_required(context_consumer)
-            self._append_belief_revisions(belief_revisions)
+        environment_started = False
+        try:
+            with self._transport.open_consumer(self.subscription) as context_consumer:
+                self.publish_planner_revision(self._revision_evidence(active_revision))
+                self._publish_runtime_source_facts(status)
+                snapshot = self._drain_required(context_consumer)
+                self._append_belief_revisions(belief_revisions)
 
-            while True:
-                now = float(environment.mission_time_seconds)
-                periodic_maneuver = self._due(now, self._maneuver_seconds)
-                triggers = set(self._pending_maneuver_triggers)
-                if periodic_maneuver:
-                    triggers.add(f"periodic:{now:g}")
-                if triggers:
-                    if any(item.startswith("environment:") for item in triggers):
-                        environment_maneuver_count += 1
-                    self._pending_maneuver_triggers.difference_update(triggers)
-                    snapshot, status = self._run_maneuver_heartbeat(
-                        snapshot,
-                        active_revision,
-                        maneuver_count,
-                        tuple(sorted(triggers)),
-                        pending_hyper_outcomes,
-                        context_consumer,
-                        physical_actions,
-                        belief_revisions,
+                while True:
+                    environment.raise_if_failed()
+                    snapshot, batch_size = self._drain_environment_updates(
+                        environment, context_consumer, snapshot
                     )
-                    pending_hyper_outcomes = ()
-                    maneuver_count += 1
+                    tick_count += batch_size
+                    maximum_update_batch = max(maximum_update_batch, batch_size)
+                    now = environment.current_time
 
-                periodic_hyper = now > 0 and self._due(now, self._hyper_seconds)
-                requested_hyper = bool(hyper.has_pending(mission_id))
-                if periodic_hyper or requested_hyper:
-                    hyper_triggers = []
-                    if periodic_hyper:
-                        hyper_triggers.append(f"periodic:{now:g}")
-                    hyper_triggers.extend(hyper.pending_request_identities(mission_id))
-                    hyper_invocation = self._hyper_invocation(
-                        snapshot, active_revision, tuple(hyper_triggers)
+                    periodic, last_maneuver_periodic, coalesced = self._next_periodic(
+                        now, self._maneuver_seconds, last_maneuver_periodic
                     )
-                    decision = hyper.heartbeat(hyper_invocation)
-                    if not isinstance(decision, HyperHeartbeatDecision):
-                        raise TypeError("Hyper heartbeat returned invalid decision")
-                    hyper_count += 1
-                    hyper_outcomes.append(decision)
-                    pending_hyper_outcomes += (decision,)
-                    if decision.disposition == HyperHeartbeatDisposition.REPLAN:
-                        next_revision = active_revision.planner_plan.plan_revision + 1
-                        planning_view = environment.heartbeat()
-                        snapshot = self._drain_required(
-                            context_consumer, fallback=snapshot
-                        )
-                        replacement = replan(
-                            hyper_invocation,
-                            next_revision,
-                            snapshot,
-                            planning_view,
-                        )
-                        if replacement is not None:
-                            if replacement.planner_plan.plan_revision != next_revision:
-                                raise ValueError(
-                                    "replan workflow returned wrong revision"
-                                )
-                            self.publish_planner_revision(
-                                self._revision_evidence(replacement)
-                            )
-                            snapshot = self._drain_required(context_consumer)
-                            status = self._activate(replacement.statechart)
-                            self._transition_intents.invalidate_latest(mission_id)
-                            active_revision = replacement
-                            plan_revisions.append(next_revision)
-                            snapshot, status = self._run_maneuver_heartbeat(
+                    coalesced_update_count += coalesced
+                    if periodic is not None:
+                        self._queue_maneuver_trigger(periodic)
+                    triggers = self._take_maneuver_triggers()
+                    if triggers:
+                        if any(item.startswith("environment:") for item in triggers):
+                            environment_maneuver_count += 1
+                        snapshot, status, batch_size, window = (
+                            self._run_maneuver_heartbeat(
                                 snapshot,
                                 active_revision,
                                 maneuver_count,
-                                (f"replan-activated:{next_revision}",),
+                                triggers,
                                 pending_hyper_outcomes,
                                 context_consumer,
                                 physical_actions,
                                 belief_revisions,
+                                environment,
+                                start_environment=not environment_started,
                             )
-                            pending_hyper_outcomes = ()
-                            maneuver_count += 1
+                        )
+                        environment_started = True
+                        inference_windows.append(window)
+                        tick_count += batch_size
+                        maximum_update_batch = max(maximum_update_batch, batch_size)
+                        pending_hyper_outcomes = ()
+                        maneuver_count += 1
 
-                if status.active_state in active_revision.statechart.terminal_states:
-                    break
-                if now >= self._simulation_limit_seconds:
-                    break
+                    now = environment.current_time
+                    periodic_hyper, last_hyper_periodic, coalesced = (
+                        self._next_periodic(
+                            now,
+                            self._hyper_seconds,
+                            last_hyper_periodic,
+                            include_zero=False,
+                        )
+                    )
+                    coalesced_update_count += coalesced
+                    requested_hyper = bool(hyper.has_pending(mission_id))
+                    if periodic_hyper is not None or requested_hyper:
+                        hyper_triggers = []
+                        if periodic_hyper is not None:
+                            hyper_triggers.append(periodic_hyper)
+                        hyper_triggers.extend(
+                            hyper.pending_request_identities(mission_id)
+                        )
+                        hyper_invocation = self._hyper_invocation(
+                            snapshot, active_revision, tuple(hyper_triggers)
+                        )
+                        evidence_time = self._environment_time(
+                            hyper_invocation.environment_data
+                        )
+                        decision = hyper.heartbeat(hyper_invocation)
+                        inference_windows.append(
+                            InferenceWindow(
+                                "hyper",
+                                evidence_time,
+                                environment.current_time,
+                            )
+                        )
+                        if not isinstance(decision, HyperHeartbeatDecision):
+                            raise TypeError("Hyper heartbeat returned invalid decision")
+                        hyper_count += 1
+                        hyper_outcomes.append(decision)
+                        pending_hyper_outcomes += (decision,)
+                        snapshot, batch_size = self._drain_environment_updates(
+                            environment, context_consumer, snapshot
+                        )
+                        tick_count += batch_size
+                        maximum_update_batch = max(maximum_update_batch, batch_size)
+                        if decision.disposition == HyperHeartbeatDisposition.REPLAN:
+                            next_revision = (
+                                active_revision.planner_plan.plan_revision + 1
+                            )
+                            planning_view = environment.planning_view()
+                            snapshot = self._drain_required(
+                                context_consumer, fallback=snapshot
+                            )
+                            replan_evidence_time = self._environment_time(
+                                self._resolve_environment(snapshot)
+                            )
+                            replacement = replan(
+                                hyper_invocation,
+                                next_revision,
+                                snapshot,
+                                planning_view,
+                            )
+                            inference_windows.append(
+                                InferenceWindow(
+                                    "replan",
+                                    replan_evidence_time,
+                                    environment.current_time,
+                                )
+                            )
+                            snapshot, batch_size = self._drain_environment_updates(
+                                environment, context_consumer, snapshot
+                            )
+                            tick_count += batch_size
+                            maximum_update_batch = max(maximum_update_batch, batch_size)
+                            if replacement is not None:
+                                if (
+                                    replacement.planner_plan.plan_revision
+                                    != next_revision
+                                ):
+                                    raise ValueError(
+                                        "replan workflow returned wrong revision"
+                                    )
+                                self.publish_planner_revision(
+                                    self._revision_evidence(replacement)
+                                )
+                                snapshot = self._drain_required(
+                                    context_consumer, fallback=snapshot
+                                )
+                                status = self._activate(replacement.statechart)
+                                self._transition_intents.invalidate_latest(mission_id)
+                                active_revision = replacement
+                                plan_revisions.append(next_revision)
+                                periodic, last_maneuver_periodic, coalesced = (
+                                    self._next_periodic(
+                                        environment.current_time,
+                                        self._maneuver_seconds,
+                                        last_maneuver_periodic,
+                                    )
+                                )
+                                coalesced_update_count += coalesced
+                                if periodic is not None:
+                                    self._queue_maneuver_trigger(periodic)
+                                self._queue_maneuver_trigger(
+                                    f"replan-activated:{next_revision}"
+                                )
+                                reconciliation = self._take_maneuver_triggers()
+                                snapshot, status, batch_size, window = (
+                                    self._run_maneuver_heartbeat(
+                                        snapshot,
+                                        active_revision,
+                                        maneuver_count,
+                                        reconciliation,
+                                        pending_hyper_outcomes,
+                                        context_consumer,
+                                        physical_actions,
+                                        belief_revisions,
+                                        environment,
+                                        start_environment=False,
+                                    )
+                                )
+                                inference_windows.append(window)
+                                tick_count += batch_size
+                                maximum_update_batch = max(
+                                    maximum_update_batch, batch_size
+                                )
+                                pending_hyper_outcomes = ()
+                                maneuver_count += 1
 
-                tick = environment.tick()
-                tick_count += 1
-                self._pending_perceptions.extend(
-                    perception_from_dict(event.payload)
-                    for event in tick.perception_events
-                )
-                self._pending_maneuver_triggers.update(
-                    f"environment:{event.event_id}" for event in tick.feedback_events
-                )
-                snapshot = self._drain_required(context_consumer, fallback=snapshot)
+                    if (
+                        status.active_state
+                        in active_revision.statechart.terminal_states
+                    ):
+                        break
+                    if environment.current_time >= self._simulation_limit_seconds:
+                        periodic, last_maneuver_periodic, coalesced = (
+                            self._next_periodic(
+                                environment.current_time,
+                                self._maneuver_seconds,
+                                last_maneuver_periodic,
+                            )
+                        )
+                        coalesced_update_count += coalesced
+                        if periodic is not None:
+                            self._queue_maneuver_trigger(periodic)
+                        if self._has_pending_maneuver_triggers():
+                            continue
+                        break
+
+                    if environment.update_ownership == "coordinator_driven":
+                        environment.advance()
+                    else:
+                        environment.wait_for_update(environment.cadence_seconds * 2)
+        finally:
+            environment.stop()
+            environment.join()
+
+        environment.raise_if_failed()
 
         self._append_belief_revisions(belief_revisions)
         terminal = status.active_state in active_revision.statechart.terminal_states
         return ClosedLoopRunResult(
             mission_id=mission_id,
-            simulated_duration_seconds=float(environment.mission_time_seconds),
+            simulated_duration_seconds=environment.current_time,
             tick_count=tick_count,
             maneuver_heartbeat_count=maneuver_count,
             hyper_heartbeat_count=hyper_count,
@@ -493,6 +685,9 @@ class ContextCoordination:
             final_fsm_state=status.active_state,
             terminal=terminal,
             environment_triggered_maneuver_heartbeat_count=(environment_maneuver_count),
+            inference_windows=tuple(inference_windows),
+            maximum_update_batch=maximum_update_batch,
+            coalesced_update_count=coalesced_update_count,
         )
 
     def _run_maneuver_heartbeat(
@@ -505,7 +700,10 @@ class ContextCoordination:
         context_consumer: object,
         physical_actions: list[str],
         belief_revisions: list[int],
-    ) -> tuple[MissionSnapshot, FSMStatus]:
+        environment: EnvironmentUpdateSource,
+        *,
+        start_environment: bool,
+    ) -> tuple[MissionSnapshot, FSMStatus, int, InferenceWindow]:
         """Publish fresh authority, invoke Maneuver once, and drain its effects."""
 
         maneuver = cast(Any, self._maneuver_control)
@@ -518,7 +716,11 @@ class ContextCoordination:
             triggers,
             hyper_outcomes,
         )
+        evidence_time = self._environment_time(invocation.environment_data)
+        if start_environment:
+            environment.start(simulation_limit_seconds=self._simulation_limit_seconds)
         completion = maneuver.heartbeat(invocation)
+        completion_time = environment.current_time
         if not isinstance(completion, ManeuverHeartbeatCompletion):
             raise TypeError("Maneuver heartbeat returned invalid completion")
         record = maneuver.last_execution_record
@@ -535,9 +737,18 @@ class ContextCoordination:
                 del self._pending_perceptions[: len(invocation.pending_perceptions)]
         status = self._required_status()
         self._publish_runtime_source_facts(status)
+        snapshot, batch_size = self._drain_environment_updates(
+            environment, context_consumer, snapshot
+        )
+        self._publish_runtime_source_facts(status)
         snapshot = self._drain_required(context_consumer, fallback=snapshot)
         self._append_belief_revisions(belief_revisions)
-        return snapshot, status
+        return (
+            snapshot,
+            status,
+            batch_size,
+            InferenceWindow("maneuver", evidence_time, completion_time),
+        )
 
     @staticmethod
     def _positive(value: object, label: str) -> float:
@@ -549,15 +760,24 @@ class ContextCoordination:
         return result
 
     @staticmethod
-    def _due(now: float, interval: float) -> bool:
-        quotient = now / interval
-        return abs(quotient - round(quotient)) <= 1e-9
+    def _next_periodic(
+        now: float,
+        interval: float,
+        last_due: float,
+        *,
+        include_zero: bool = True,
+    ) -> tuple[str | None, float, int]:
+        due = math.floor((now + 1e-9) / interval) * interval
+        if (not include_zero and due <= 0) or due <= last_due + 1e-9:
+            return None, last_due, 0
+        crossed = max(1, round((due - last_due) / interval))
+        return f"periodic:{due:g}", due, crossed - 1
 
     def _require_runtime(self, active_revision: ActivePlanRevision) -> None:
         if not isinstance(active_revision, ActivePlanRevision):
             raise TypeError("Context Coordination requires ActivePlanRevision")
         required = {
-            "environment": self._environment,
+            "environment update source": self._environment_source,
             "FSM Runner": self._fsm_runner,
             "Maneuver Control": self._maneuver_control,
             "Hyper supervisor": self._hyper_supervisor,
@@ -570,11 +790,10 @@ class ContextCoordination:
                 "Context Coordination runtime dependencies are missing: "
                 + ", ".join(missing)
             )
-        environment = cast(Any, self._environment)
+        environment = cast(EnvironmentUpdateSource, self._environment_source)
         if environment.mission_id != active_revision.planner_plan.mission_id:
             raise ValueError("closed-loop Mission identities do not match")
-        if abs(float(environment.tick_seconds) - 0.5) > 1e-9:
-            raise ValueError("Context Coordination requires 0.5-second ticks")
+        self._positive(environment.cadence_seconds, "environment update cadence")
 
     def _status_or_activate(self, chart: Statechart) -> FSMStatus:
         status = self._status()
@@ -669,9 +888,7 @@ class ContextCoordination:
         if snapshot.plan_reference != revision.planner_plan_reference:
             raise ValueError("Mission Snapshot does not reference the active plan")
         status = self._resolve_status(snapshot)
-        intent = self._transition_intents.current(
-            status, invalidate_stale=True
-        )
+        intent = self._transition_intents.current(status, invalidate_stale=True)
         return ManeuverInvocation(
             request_id=f"maneuver-heartbeat:{snapshot.mission_id}:{count}",
             correlation_id=f"mission-loop:{snapshot.mission_id}",
@@ -734,9 +951,9 @@ class ContextCoordination:
                 fsm_event.sequence,
                 reference=fsm_event.event_id,
             )
-        environment = cast(Any, self._environment)
+        environment = cast(EnvironmentUpdateSource, self._environment_source)
         environment_event = environment.latest_environment_event
-        if environment_event is not None and environment.current_maneuver is not None:
+        if environment_event is not None and environment.has_current_maneuver:
             self.publish_source_fact(
                 "active_maneuver",
                 environment_event.sequence,
@@ -1036,4 +1253,5 @@ __all__ = [
     "ClosedLoopRunResult",
     "ContextCoordination",
     "ContextCoordinationHandler",
+    "InferenceWindow",
 ]

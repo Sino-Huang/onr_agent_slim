@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from threading import Lock, RLock, Thread
+from threading import Lock, RLock
 from typing import Any, cast
 
 from onr.application.transition_intents import TransitionIntentJournal
@@ -20,6 +19,7 @@ from onr.contracts.maneuver_control import (
     ManeuverControlDecision,
     ManeuverHeartbeatCompletion,
     ManeuverInvocation,
+    PhysicalAction,
 )
 from onr.contracts.planning import ManeuverIntent
 from onr.contracts.transition_intent import ManeuverFSMContext
@@ -29,18 +29,16 @@ from onr.contracts.transport import (
     CommandReceipt,
     TransportEvent,
 )
-from onr.ports.maneuver import ManeuverAdapter
 from onr.ports.operational_log import OperationalLog
 from onr.ports.transport import Consumer, Transport
 
 
 @dataclass(frozen=True, slots=True)
 class ManeuverHeartbeatResult:
-    """Transient result of one heartbeat; only ``command`` is transportable."""
+    """Transient result of one heartbeat and its queued command, when any."""
 
     decision: ManeuverControlDecision
     command: ManeuverCommand | None = None
-    receipt: CommandReceipt | None = None
 
 
 DecisionProvider = Callable[
@@ -54,35 +52,47 @@ class ManeuverControl:
     def __init__(
         self,
         transport: Transport,
-        adapter: ManeuverAdapter,
         decision_provider: object,
         *,
         target_service: str = "maneuver-adapter",
-        submission_topic: str = "maneuver-submissions",
+        command_topic: str = "maneuver",
+        command_protocol_version: int = 1,
+        supported_actions: tuple[PhysicalAction | str, ...] = tuple(PhysicalAction),
         operational_log: OperationalLog | None = None,
         fsm_runner: object | None = None,
-        environment_authority: object | None = None,
         belief_service: object | None = None,
         communication_port: object | None = None,
         transition_intents: TransitionIntentJournal | None = None,
     ) -> None:
         self.transport = transport
-        self.adapter = adapter
         self.decision_provider = decision_provider
         self.target_service = target_service
-        self.submission_topic = submission_topic
+        if not isinstance(command_topic, str) or not command_topic.strip():
+            raise ValueError("Maneuver Command topic must be non-empty")
+        self.command_topic = command_topic
+        if (
+            isinstance(command_protocol_version, bool)
+            or not isinstance(command_protocol_version, int)
+            or command_protocol_version <= 0
+        ):
+            raise ValueError("Maneuver Command protocol version must be positive")
+        self.command_protocol_version = command_protocol_version
+        try:
+            self.supported_actions = frozenset(
+                PhysicalAction(item) for item in supported_actions
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("supported physical action is invalid") from exc
+        if not self.supported_actions:
+            raise ValueError("Maneuver Control requires a supported physical action")
         self.operational_log = operational_log
         self.fsm_runner = fsm_runner
-        self.environment_authority = environment_authority
         self.belief_service = belief_service
         self.communication_port = communication_port
         self.transition_intents = transition_intents or TransitionIntentJournal(
             transport
         )
-        self._submitted: dict[str, CommandOutcome] = {}
-        self._heartbeat_physical: dict[
-            tuple[str, str, str], tuple[ManeuverCommand, CommandOutcome]
-        ] = {}
+        self._heartbeat_physical: dict[tuple[str, str, str], ManeuverCommand] = {}
         self._heartbeat_physical_lock = Lock()
         self._heartbeat_tool_lock = RLock()
         self._live_fsm_context: ManeuverFSMContext | None = None
@@ -189,7 +199,7 @@ class ManeuverControl:
                 },
             )
             return ManeuverHeartbeatResult(decision)
-        receipt = self.transport.send_command(command.to_command(self.target_service))
+        self.handle_command(command)
         self._emit(
             snapshot.mission_id,
             "heartbeat",
@@ -200,7 +210,7 @@ class ManeuverControl:
                 "plan_revision": status.plan_revision,
             },
         )
-        return ManeuverHeartbeatResult(decision, command, receipt)
+        return ManeuverHeartbeatResult(decision, command)
 
     def handle_agent_message(
         self, message: AgentMessage
@@ -271,9 +281,7 @@ class ManeuverControl:
                     "successful_transition_count": (
                         context.execution_record.successful_transition_count
                     ),
-                    "initial_intent_id": (
-                        context.execution_record.initial_intent_id
-                    ),
+                    "initial_intent_id": (context.execution_record.initial_intent_id),
                 },
             )
             raise
@@ -319,8 +327,8 @@ class ManeuverControl:
         decision: ManeuverControlDecision,
         *,
         sequence: int,
-    ) -> tuple[ManeuverCommand, CommandOutcome, bool]:
-        """Submit one code-owned physical choice without plan-action equality gates."""
+    ) -> tuple[ManeuverCommand, bool]:
+        """Durably queue one code-owned physical choice."""
 
         if not isinstance(invocation, ManeuverInvocation):
             raise TypeError("physical dispatch requires ManeuverInvocation")
@@ -340,7 +348,12 @@ class ManeuverControl:
         with self._heartbeat_physical_lock:
             existing = self._heartbeat_physical.get(identity)
             if existing is not None:
-                return *existing, False
+                return existing, False
+            action_value = PhysicalAction(action)
+            if action_value not in self.supported_actions:
+                raise ValueError(
+                    "physical action is not supported by the environment profile"
+                )
             command = ManeuverCommand(
                 command_id=f"maneuver:{invocation.request_id}:{sequence}",
                 correlation_id=invocation.correlation_id,
@@ -348,6 +361,7 @@ class ManeuverControl:
                 plan_revision=invocation.plan_revision,
                 maneuver_id=decision.maneuver_id,
                 intent=decision.physical_intent,
+                schema_version=self.command_protocol_version,
                 mission_snapshot_id=(
                     f"{invocation.mission_id}:snapshot:"
                     f"{invocation.planning_snapshot.version}"
@@ -355,94 +369,40 @@ class ManeuverControl:
                     else None
                 ),
             )
-            outcome = self.handle_command(command)
-            self._heartbeat_physical[identity] = (command, outcome)
-            return command, outcome, True
+            already_queued = self._command_receipt(command.command_id) is not None
+            self.handle_command(command)
+            self._heartbeat_physical[identity] = command
+            return command, not already_queued
 
-    def handle_command(self, command: Command | ManeuverCommand) -> CommandOutcome:
-        """Submit a command at most once and return its correlated outcome."""
+    def handle_command(self, command: Command | ManeuverCommand) -> CommandReceipt:
+        """Durably enqueue one idempotently identified Maneuver Command."""
 
         if (
             isinstance(command, Command)
             and command.target_service != self.target_service
         ):
-            raise ValueError("maneuver command target service does not match adapter")
+            raise ValueError("maneuver command target service does not match profile")
         typed = (
             command
             if isinstance(command, ManeuverCommand)
-            else ManeuverCommand.from_command(command)
+            else ManeuverCommand.from_command(command, self.command_topic)
         )
-        generic = typed.to_command(self.target_service)
-        self.transport.send_command(generic)
-        if typed.command_id in self._submitted:
-            return self._submitted[typed.command_id]
-        existing = self._command_outcome(typed.command_id)
-        if existing is not None:
-            self._submitted[typed.command_id] = existing
-            return existing
-        intent_marker = self._submission_intent_marker(typed)
-        if intent_marker is not None:
-            outcome = self._unknown_submission_outcome(typed)
-            self.transport.publish_outcome(outcome)
-            self._submitted[typed.command_id] = outcome
-            return outcome
-        marker = self._submission_marker(typed)
-        if marker is not None:
-            outcome = self._accepted_outcome(typed)
-            self.transport.publish_outcome(outcome)
-            self._submitted[typed.command_id] = outcome
-            return outcome
-        self.transport.publish_event(
-            self._submission_intent_topic_for(typed.command_id),
-            TransportEvent(
-                schema_version=typed.schema_version,
-                event_id=f"maneuver-submission-intent:{typed.command_id}",
-                mission_id=typed.mission_id,
-                sequence=1,
-                event_kind="maneuver-submission-intent",
-                payload={
-                    "command_id": typed.command_id,
-                    "mission_snapshot_id": typed.mission_snapshot_id,
-                },
-            ),
-        )
-        try:
-            self.adapter.submit(typed)
-        except Exception as exc:
-            outcome = self._failed_outcome(typed, exc)
-            self.transport.publish_outcome(outcome)
-            self._submitted[typed.command_id] = outcome
-            self._emit(
-                typed.mission_id,
-                "error",
-                "failed",
-                {"operation": "adapter_submit", "error_type": type(exc).__name__},
+        if typed.schema_version != self.command_protocol_version:
+            raise ValueError("Maneuver Command protocol version does not match profile")
+        if PhysicalAction(typed.action) not in self.supported_actions:
+            raise ValueError(
+                "physical action is not supported by the environment profile"
             )
-            raise
-        self.transport.publish_event(
-            self.submission_topic_for(typed.command_id),
-            TransportEvent(
-                schema_version=typed.schema_version,
-                event_id=f"maneuver-submitted:{typed.command_id}",
-                mission_id=typed.mission_id,
-                sequence=0,
-                event_kind="maneuver-submitted",
-                payload={
-                    "command_id": typed.command_id,
-                    "mission_snapshot_id": typed.mission_snapshot_id,
-                },
-            ),
+        receipt = self.transport.send_command(
+            typed.to_command(self.target_service, self.command_topic)
         )
-        outcome = self._accepted_outcome(typed)
-        self.transport.publish_outcome(outcome)
-        self._submitted[typed.command_id] = outcome
         self._emit(
             typed.mission_id,
             "control",
-            outcome.status,
-            {"operation": "adapter_submit", "command_id": typed.command_id},
+            "queued",
+            {"operation": "queue_command", "command_id": typed.command_id},
         )
-        return outcome
+        return receipt
 
     def _emit(
         self,
@@ -457,12 +417,6 @@ class ManeuverControl:
             )
 
     handle = handle_command
-
-    def submission_topic_for(self, command_id: str) -> str:
-        return f"{self.submission_topic}/{command_id}"
-
-    def _submission_intent_topic_for(self, command_id: str) -> str:
-        return f"{self.submission_topic}-intents/{command_id}"
 
     async def run_once(
         self, consumer_or_message: Consumer | object
@@ -489,8 +443,6 @@ class ManeuverControl:
         if isinstance(message, CommandOutcome):
             return message
         if isinstance(message, TransportEvent):
-            if message.event_kind == "maneuver-submitted":
-                return message
             payload = message.payload
             snapshot = MissionSnapshot.from_dict(_mapping(payload, "snapshot"))
             status = FSMStatus.from_dict(_mapping(payload, "fsm_status"))
@@ -502,28 +454,6 @@ class ManeuverControl:
             "maneuver control message must be a TransportEvent, Command, "
             "or context pair"
         )
-
-    def _submission_marker(self, command: ManeuverCommand) -> TransportEvent | None:
-        latest = self.transport.latest_event(
-            self.submission_topic_for(command.command_id),
-            command.mission_id,
-            event_kind="maneuver-submitted",
-        )
-        if latest is None or latest.payload.get("command_id") != command.command_id:
-            return None
-        return latest
-
-    def _submission_intent_marker(
-        self, command: ManeuverCommand
-    ) -> TransportEvent | None:
-        latest = self.transport.latest_event(
-            self._submission_intent_topic_for(command.command_id),
-            command.mission_id,
-            event_kind="maneuver-submission-intent",
-        )
-        if latest is None or latest.payload.get("command_id") != command.command_id:
-            return None
-        return latest
 
     def _stored_invocation(
         self, event_id: str, mission_id: str
@@ -537,7 +467,7 @@ class ManeuverControl:
             return None
         raw_decision = marker.payload.get("decision")
         if not isinstance(raw_decision, Mapping):
-            raise ValueError("maneuver invocation marker decision is invalid")
+            raise TypeError("maneuver invocation marker decision is invalid")
         raw_command = marker.payload.get("command")
         if raw_command is not None and not isinstance(raw_command, Mapping):
             raise ValueError("maneuver invocation marker command is invalid")
@@ -573,9 +503,8 @@ class ManeuverControl:
     def _invocation_topic(event_id: str) -> str:
         return f"maneuver-invocations/{event_id}"
 
-    @staticmethod
     def _command_for_decision(
-        decision: ManeuverControlDecision, snapshot: MissionSnapshot
+        self, decision: ManeuverControlDecision, snapshot: MissionSnapshot
     ) -> ManeuverCommand | None:
         if decision.physical_intent is None:
             return None
@@ -592,62 +521,16 @@ class ManeuverControl:
             plan_revision=decision.plan_revision,
             maneuver_id=cast(str, decision.maneuver_id),
             intent=decision.physical_intent,
+            schema_version=self.command_protocol_version,
             mission_snapshot_id=f"{snapshot.mission_id}:snapshot:{snapshot.version}",
         )
 
-    def _command_outcome(self, command_id: str) -> CommandOutcome | None:
-        get_outcome = getattr(self.transport, "get_command_outcome", None)
-        if not callable(get_outcome):
+    def _command_receipt(self, command_id: str) -> CommandReceipt | None:
+        get_receipt = getattr(self.transport, "get_command_receipt", None)
+        if not callable(get_receipt):
             return None
-        outcome = get_outcome(command_id)
-        return outcome if isinstance(outcome, CommandOutcome) else None
-
-    @staticmethod
-    def _accepted_outcome(command: ManeuverCommand) -> CommandOutcome:
-        return CommandOutcome(
-            schema_version=command.schema_version,
-            command_id=command.command_id,
-            correlation_id=command.correlation_id,
-            mission_id=command.mission_id,
-            status="accepted",
-            payload={
-                "adapter_submission": "accepted",
-                "source": "maneuver-adapter-transport",
-            },
-        )
-
-    @staticmethod
-    def _unknown_submission_outcome(command: ManeuverCommand) -> CommandOutcome:
-        return CommandOutcome(
-            schema_version=command.schema_version,
-            command_id=command.command_id,
-            correlation_id=command.correlation_id,
-            mission_id=command.mission_id,
-            status="failed",
-            payload={
-                "adapter_submission": "unknown",
-                "error": (
-                    "prior adapter submission outcome is unknown; command will "
-                    "not be submitted again"
-                ),
-                "source": "maneuver-adapter-transport",
-            },
-        )
-
-    @staticmethod
-    def _failed_outcome(command: ManeuverCommand, error: Exception) -> CommandOutcome:
-        return CommandOutcome(
-            schema_version=command.schema_version,
-            command_id=command.command_id,
-            correlation_id=command.correlation_id,
-            mission_id=command.mission_id,
-            status="failed",
-            payload={
-                "adapter_submission": "failed",
-                "error": str(error),
-                "source": "maneuver-adapter-transport",
-            },
-        )
+        receipt = get_receipt(command_id)
+        return receipt if isinstance(receipt, CommandReceipt) else None
 
     def _invoke_provider(
         self,
@@ -717,7 +600,7 @@ class ManeuverControl:
 def _mapping(value: Mapping[str, object], key: str) -> Mapping[str, Any]:
     item = value.get(key)
     if not isinstance(item, Mapping):
-        raise ValueError(f"maneuver event {key} must be an object")
+        raise TypeError(f"maneuver event {key} must be an object")
     return item
 
 
@@ -735,28 +618,6 @@ def _physical_command_id(
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return f"maneuver:{mission_id}:{plan_revision}:{maneuver_id}:{digest}"
-
-
-def _run_sync(awaitable: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(awaitable)
-    result: list[object] = []
-    failure: list[BaseException] = []
-
-    def target() -> None:
-        try:
-            result.append(asyncio.run(awaitable))
-        except Exception as exc:
-            failure.append(exc)
-
-    thread = Thread(target=target, name="maneuver-control-fsm-adapter")
-    thread.start()
-    thread.join()
-    if failure:
-        raise failure[0]
-    return result[0]
 
 
 def _current_environment_data(

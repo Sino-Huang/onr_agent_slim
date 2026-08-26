@@ -40,6 +40,7 @@ from onr.ports.mission_log_summarizer import SummaryArtifact
 from onr.runtime.config import RuntimeConfig
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
 from onr.viewer.server import ViewerHTTPServer, create_server
+from tests.config_helpers import write_environment_profile
 
 
 def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -48,12 +49,14 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
     tool.chmod(0o755)
     storage = tmp_path / "storage"
     transport = tmp_path / "transport"
+    environment_profile = write_environment_profile(tmp_path)
     config = tmp_path / "viewer.yaml"
     config.write_text(
         "\n".join(
             (
                 "agent_name: test-agent",
                 "debug: true",
+                f"environment_profile: {environment_profile}",
                 "llm:",
                 "  provider: openai",
                 "  base_url: http://127.0.0.1:1/v1",

@@ -188,6 +188,7 @@ def perception_to_transport_event(
     perception: Perception,
     *,
     sequence: int,
+    schema_version: int = 1,
 ) -> TransportEvent:
     """Wrap one bounded perception for durable audit and belief consumers."""
 
@@ -195,7 +196,7 @@ def perception_to_transport_event(
     if not isinstance(perception, (EntityObservation, EventObservation)):
         raise TypeError("perception event requires a typed observation")
     return TransportEvent(
-        schema_version=1,
+        schema_version=schema_version,
         event_id=perception.observation_id,
         mission_id=mission_id,
         sequence=sequence,

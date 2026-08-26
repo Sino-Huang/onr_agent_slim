@@ -5,11 +5,14 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+
+from onr.contracts.maneuver_control import PhysicalAction
 
 
 def _text(value: object, label: str) -> str:
@@ -145,6 +148,96 @@ DEFAULT_AGENTS_CONFIG = AgentsConfig(
 )
 
 
+class EnvironmentUpdateOwnership(StrEnum):
+    """The authority that advances environment updates."""
+
+    COORDINATOR_DRIVEN = "coordinator_driven"
+    ENVIRONMENT_DRIVEN = "environment_driven"
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentProtocolVersions:
+    maneuver_command: int
+    maneuver_feedback: int
+    environment_data: int
+    perception: int
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentUpdatesConfig:
+    ownership: EnvironmentUpdateOwnership
+    cadence_seconds: int | float
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentTopicsConfig:
+    command_target: str
+    command: str
+    feedback: str
+    perception: str
+    environment_data: str
+    context: str
+
+
+@dataclass(frozen=True, slots=True)
+class FakeEnvironmentConfig:
+    scenario_path: Path
+    initial_position: tuple[float, float, float]
+    max_velocity: int | float
+    sensing_radius: int | float
+    max_retries: int
+    artifact_root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentProfile:
+    """Code-facing environment capabilities and transport protocol configuration."""
+
+    adapter_kind: str
+    protocols: EnvironmentProtocolVersions
+    updates: EnvironmentUpdatesConfig
+    topics: EnvironmentTopicsConfig
+    supported_actions: tuple[PhysicalAction, ...]
+    fake: FakeEnvironmentConfig
+    source_path: Path = Path("conf/environment_params.yaml")
+
+    @property
+    def update_ownership(self) -> EnvironmentUpdateOwnership:
+        return self.updates.ownership
+
+    @property
+    def update_cadence_seconds(self) -> int | float:
+        return self.updates.cadence_seconds
+
+
+DEFAULT_ENVIRONMENT_PROFILE = EnvironmentProfile(
+    adapter_kind="fake",
+    protocols=EnvironmentProtocolVersions(1, 1, 1, 1),
+    updates=EnvironmentUpdatesConfig(
+        EnvironmentUpdateOwnership.COORDINATOR_DRIVEN, 0.5
+    ),
+    topics=EnvironmentTopicsConfig(
+        command_target="maneuver-adapter",
+        command="maneuver",
+        feedback="maneuver-feedback",
+        perception="environment-perceptions",
+        environment_data="environment-data",
+        context="planning-evidence",
+    ),
+    supported_actions=tuple(PhysicalAction),
+    fake=FakeEnvironmentConfig(
+        scenario_path=Path(
+            "data/ships_report_and_trajectory_example/ships/events_report.json"
+        ),
+        initial_position=(0.0, 0.0, -250.0),
+        max_velocity=20,
+        sensing_radius=30,
+        max_retries=3,
+        artifact_root=Path("var/environment"),
+    ),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     llm: LLMConfig
@@ -156,6 +249,7 @@ class RuntimeConfig:
     debug: bool
     agent_name: str
     agents: AgentsConfig = DEFAULT_AGENTS_CONFIG
+    environment_profile: EnvironmentProfile = DEFAULT_ENVIRONMENT_PROFILE
 
 
 def _path(
@@ -185,6 +279,163 @@ def _url(value: object, label: str, *, require_v1: bool = False) -> str:
     return result.rstrip("/")
 
 
+def _positive_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _position(value: object, label: str) -> tuple[float, float, float]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise ValueError(f"{label} must contain exactly three numbers")
+    result: list[float] = []
+    for item in value:
+        if (
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+        ):
+            raise ValueError(f"{label} must contain exactly three finite numbers")
+        result.append(float(item))
+    return result[0], result[1], result[2]
+
+
+def load_environment_profile(
+    path: Path | str, *, repo_root: Path
+) -> EnvironmentProfile:
+    """Load the strict environment-owned profile referenced by runtime config."""
+
+    root = Path(repo_root).resolve()
+    selected = Path(path)
+    if not selected.is_absolute():
+        selected = root / selected
+    selected = selected.resolve()
+    try:
+        raw = yaml.safe_load(selected.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"environment profile cannot be read: {selected}") from exc
+    top = _exact(
+        raw,
+        {
+            "adapter_kind",
+            "protocols",
+            "updates",
+            "topics",
+            "supported_actions",
+            "fake",
+        },
+        "environment profile",
+    )
+    adapter_kind = _text(top["adapter_kind"], "environment.adapter_kind")
+    if adapter_kind != "fake":
+        raise ValueError("environment.adapter_kind must be fake")
+
+    protocol_values = _exact(
+        top["protocols"],
+        {"maneuver_command", "maneuver_feedback", "environment_data", "perception"},
+        "environment.protocols",
+    )
+    protocols = EnvironmentProtocolVersions(
+        **{
+            name: _positive_integer(
+                protocol_values[name], f"environment.protocols.{name}"
+            )
+            for name in protocol_values
+        }
+    )
+
+    update_values = _exact(
+        top["updates"], {"ownership", "cadence_seconds"}, "environment.updates"
+    )
+    try:
+        ownership = EnvironmentUpdateOwnership(update_values["ownership"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "environment.updates.ownership must be coordinator_driven or "
+            "environment_driven"
+        ) from exc
+    updates = EnvironmentUpdatesConfig(
+        ownership,
+        _positive_duration(
+            update_values["cadence_seconds"],
+            "environment.updates.cadence_seconds",
+        ),
+    )
+
+    topic_values = _exact(
+        top["topics"],
+        {
+            "command_target",
+            "command",
+            "feedback",
+            "perception",
+            "environment_data",
+            "context",
+        },
+        "environment.topics",
+    )
+    topics = EnvironmentTopicsConfig(
+        **{
+            name: _text(topic_values[name], f"environment.topics.{name}")
+            for name in topic_values
+        }
+    )
+
+    raw_actions = top["supported_actions"]
+    if not isinstance(raw_actions, list) or not raw_actions:
+        raise ValueError("environment.supported_actions must be a non-empty list")
+    try:
+        supported_actions = tuple(PhysicalAction(item) for item in raw_actions)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "environment.supported_actions contains an unsupported PhysicalAction"
+        ) from exc
+    if len(set(supported_actions)) != len(supported_actions):
+        raise ValueError("environment.supported_actions must not contain duplicates")
+
+    fake_values = _exact(
+        top["fake"],
+        {
+            "scenario_path",
+            "initial_position",
+            "max_velocity",
+            "sensing_radius",
+            "max_retries",
+            "artifact_root",
+        },
+        "environment.fake",
+    )
+    fake = FakeEnvironmentConfig(
+        scenario_path=_path(
+            fake_values["scenario_path"], "environment.fake.scenario_path", root
+        ),
+        initial_position=_position(
+            fake_values["initial_position"], "environment.fake.initial_position"
+        ),
+        max_velocity=_positive_duration(
+            fake_values["max_velocity"], "environment.fake.max_velocity"
+        ),
+        sensing_radius=_positive_duration(
+            fake_values["sensing_radius"], "environment.fake.sensing_radius"
+        ),
+        max_retries=_positive_integer(
+            fake_values["max_retries"], "environment.fake.max_retries"
+        ),
+        artifact_root=_config_path(
+            fake_values["artifact_root"], "environment.fake.artifact_root", root
+        ),
+    )
+    return EnvironmentProfile(
+        adapter_kind=adapter_kind,
+        protocols=protocols,
+        updates=updates,
+        topics=topics,
+        supported_actions=supported_actions,
+        fake=fake,
+        source_path=selected,
+    )
+
+
 def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> RuntimeConfig:
     """Load a complete stable config; environment variables never overlay fields."""
 
@@ -205,6 +456,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         {
             "agent_name",
             "debug",
+            "environment_profile",
             "llm",
             "planners",
             "heartbeats",
@@ -217,6 +469,12 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
     )
     agent_name = _text(top["agent_name"], "agent_name")
     debug = _boolean(top["debug"], "debug")
+    environment_profile_path = _config_path(
+        top["environment_profile"], "environment_profile", root
+    )
+    environment_profile = load_environment_profile(
+        environment_profile_path, repo_root=root
+    )
     llm = _exact(
         top["llm"],
         {"provider", "base_url", "model", "api_key", "temperature"},
@@ -345,6 +603,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         debug=debug,
         agent_name=agent_name,
         agents=agents,
+        environment_profile=environment_profile,
     )
 
 
