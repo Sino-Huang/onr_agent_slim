@@ -78,7 +78,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         source_freshness={"environment_data": True},
     )
     planning_view = SimpleNamespace(
-        environment_event=object(),
+        environment_event=SimpleNamespace(payload={"static_info": []}),
         environment_file=tmp_path / "environment.json",
     )
     closed_loop_result = object()
@@ -89,8 +89,6 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
             return nullcontext(object())
 
     class FakeEnvironmentSource:
-        event_report: dict[str, object] = {}
-
         def planning_view(self) -> object:
             return planning_view
 
@@ -129,7 +127,8 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
             heartbeats=SimpleNamespace(maneuver_seconds=5, hyper_seconds=10),
             transport=SimpleNamespace(root=tmp_path / "transport"),
             environment_profile=SimpleNamespace(
-                fake=SimpleNamespace(artifact_root=tmp_path / "environment")
+                artifact_root=tmp_path / "environment",
+                fake=SimpleNamespace(artifact_root=tmp_path / "environment"),
             ),
         )
 
@@ -344,6 +343,9 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         def __init__(self) -> None:
             self.transport = FileTransport(tmp_path / "transport")
             self.config = SimpleNamespace(
+                environment_profile=SimpleNamespace(
+                    adapter_kind="external_transport"
+                ),
                 storage=SimpleNamespace(
                     planner_artifacts=tmp_path / "configured-planner-artifacts"
                 )
@@ -357,6 +359,9 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
 
     runtime = FakeRuntime()
     _role_prompt_files(tmp_path)
+    shared_transport = tmp_path / "var/transport/initial-environment.json"
+    shared_transport.parent.mkdir(parents=True)
+    shared_transport.write_text("initial", encoding="utf-8")
     expected = ClosedLoopRunResult(
         mission_id="mission:demo",
         simulated_duration_seconds=15.0,
@@ -412,6 +417,7 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
 
     captured = capsys.readouterr()
     assert result == 0 and captured.err == ""
+    assert shared_transport.read_text(encoding="utf-8") == "initial"
     assert json.loads(captured.out) == expected.to_dict()
     assert calls[0] == (
         "runtime",

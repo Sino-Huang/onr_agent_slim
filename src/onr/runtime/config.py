@@ -190,6 +190,20 @@ class FakeEnvironmentConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalEnvironmentConfig:
+    runtime_repository: Path
+    planning_topic: str
+    update_topic: str
+    control_topic: str
+    planning_artifact_root: Path
+    coordinate_frame: str
+    mission_epoch: str
+    altitude_convention: str
+    max_retries: int
+    update_stale_after_seconds: int | float
+
+
+@dataclass(frozen=True, slots=True)
 class EnvironmentProfile:
     """Code-facing environment capabilities and transport protocol configuration."""
 
@@ -198,7 +212,8 @@ class EnvironmentProfile:
     updates: EnvironmentUpdatesConfig
     topics: EnvironmentTopicsConfig
     supported_actions: tuple[PhysicalAction, ...]
-    fake: FakeEnvironmentConfig
+    fake: FakeEnvironmentConfig | None
+    external: ExternalEnvironmentConfig | None
     source_path: Path = Path("conf/environment_params.yaml")
 
     @property
@@ -208,6 +223,14 @@ class EnvironmentProfile:
     @property
     def update_cadence_seconds(self) -> int | float:
         return self.updates.cadence_seconds
+
+    @property
+    def artifact_root(self) -> Path:
+        if self.fake is not None:
+            return self.fake.artifact_root
+        if self.external is not None:
+            return self.external.planning_artifact_root
+        raise RuntimeError("environment profile has no configured adapter")
 
 
 DEFAULT_ENVIRONMENT_PROFILE = EnvironmentProfile(
@@ -235,6 +258,7 @@ DEFAULT_ENVIRONMENT_PROFILE = EnvironmentProfile(
         max_retries=3,
         artifact_root=Path("var/environment"),
     ),
+    external=None,
 )
 
 
@@ -267,6 +291,16 @@ def _path(
 def _config_path(value: object, label: str, repo_root: Path) -> Path:
     raw = Path(_text(value, label))
     return (raw if raw.is_absolute() else repo_root / raw).resolve()
+
+
+def _absolute_directory(value: object, label: str) -> Path:
+    raw = Path(_text(value, label))
+    if not raw.is_absolute():
+        raise ValueError(f"{label} must be an absolute path")
+    result = raw.resolve()
+    if not result.is_dir():
+        raise ValueError(f"{label} must name an existing directory")
+    return result
 
 
 def _url(value: object, label: str, *, require_v1: bool = False) -> str:
@@ -314,21 +348,24 @@ def load_environment_profile(
         raw = yaml.safe_load(selected.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"environment profile cannot be read: {selected}") from exc
-    top = _exact(
-        raw,
-        {
-            "adapter_kind",
-            "protocols",
-            "updates",
-            "topics",
-            "supported_actions",
-            "fake",
-        },
-        "environment profile",
-    )
-    adapter_kind = _text(top["adapter_kind"], "environment.adapter_kind")
-    if adapter_kind != "fake":
-        raise ValueError("environment.adapter_kind must be fake")
+    if not isinstance(raw, dict):
+        raise ValueError("environment profile must be a mapping")
+    adapter_kind = _text(raw.get("adapter_kind"), "environment.adapter_kind")
+    common_fields = {
+        "adapter_kind",
+        "protocols",
+        "updates",
+        "topics",
+        "supported_actions",
+    }
+    if adapter_kind == "fake":
+        top = _exact(raw, common_fields | {"fake"}, "environment profile")
+    elif adapter_kind == "external_transport":
+        top = _exact(raw, common_fields | {"external"}, "environment profile")
+    else:
+        raise ValueError(
+            "environment.adapter_kind must be fake or external_transport"
+        )
 
     protocol_values = _exact(
         top["protocols"],
@@ -361,6 +398,13 @@ def load_environment_profile(
             "environment.updates.cadence_seconds",
         ),
     )
+    if (
+        adapter_kind == "external_transport"
+        and updates.ownership is not EnvironmentUpdateOwnership.ENVIRONMENT_DRIVEN
+    ):
+        raise ValueError(
+            "external_transport requires environment-driven update ownership"
+        )
 
     topic_values = _exact(
         top["topics"],
@@ -393,38 +437,120 @@ def load_environment_profile(
     if len(set(supported_actions)) != len(supported_actions):
         raise ValueError("environment.supported_actions must not contain duplicates")
 
-    fake_values = _exact(
-        top["fake"],
-        {
-            "scenario_path",
-            "initial_position",
-            "max_velocity",
-            "sensing_radius",
-            "max_retries",
-            "artifact_root",
-        },
-        "environment.fake",
-    )
-    fake = FakeEnvironmentConfig(
-        scenario_path=_path(
-            fake_values["scenario_path"], "environment.fake.scenario_path", root
-        ),
-        initial_position=_position(
-            fake_values["initial_position"], "environment.fake.initial_position"
-        ),
-        max_velocity=_positive_duration(
-            fake_values["max_velocity"], "environment.fake.max_velocity"
-        ),
-        sensing_radius=_positive_duration(
-            fake_values["sensing_radius"], "environment.fake.sensing_radius"
-        ),
-        max_retries=_positive_integer(
-            fake_values["max_retries"], "environment.fake.max_retries"
-        ),
-        artifact_root=_config_path(
-            fake_values["artifact_root"], "environment.fake.artifact_root", root
-        ),
-    )
+    fake: FakeEnvironmentConfig | None = None
+    external: ExternalEnvironmentConfig | None = None
+    if adapter_kind == "fake":
+        fake_values = _exact(
+            top["fake"],
+            {
+                "scenario_path",
+                "initial_position",
+                "max_velocity",
+                "sensing_radius",
+                "max_retries",
+                "artifact_root",
+            },
+            "environment.fake",
+        )
+        fake = FakeEnvironmentConfig(
+            scenario_path=_path(
+                fake_values["scenario_path"], "environment.fake.scenario_path", root
+            ),
+            initial_position=_position(
+                fake_values["initial_position"], "environment.fake.initial_position"
+            ),
+            max_velocity=_positive_duration(
+                fake_values["max_velocity"], "environment.fake.max_velocity"
+            ),
+            sensing_radius=_positive_duration(
+                fake_values["sensing_radius"], "environment.fake.sensing_radius"
+            ),
+            max_retries=_positive_integer(
+                fake_values["max_retries"], "environment.fake.max_retries"
+            ),
+            artifact_root=_config_path(
+                fake_values["artifact_root"], "environment.fake.artifact_root", root
+            ),
+        )
+    else:
+        external_values = _exact(
+            top["external"],
+            {
+                "runtime_repository",
+                "update_topic",
+                "planning_topic",
+                "control_topic",
+                "planning_artifact_root",
+                "coordinate_frame",
+                "mission_epoch",
+                "altitude_convention",
+                "max_retries",
+                "update_stale_after_seconds",
+            },
+            "environment.external",
+        )
+        coordinate_frame = _text(
+            external_values["coordinate_frame"],
+            "environment.external.coordinate_frame",
+        )
+        mission_epoch = _text(
+            external_values["mission_epoch"], "environment.external.mission_epoch"
+        )
+        altitude_convention = _text(
+            external_values["altitude_convention"],
+            "environment.external.altitude_convention",
+        )
+        if coordinate_frame != "local_ned":
+            raise ValueError("environment.external.coordinate_frame must be local_ned")
+        if mission_epoch != "environment_reset":
+            raise ValueError(
+                "environment.external.mission_epoch must be environment_reset"
+            )
+        if altitude_convention != "ned_down_metres":
+            raise ValueError(
+                "environment.external.altitude_convention must be ned_down_metres"
+            )
+        runtime_repository = _absolute_directory(
+            external_values["runtime_repository"],
+            "environment.external.runtime_repository",
+        )
+        if not (
+            runtime_repository / "src/onr_physical_runtime/agent/__init__.py"
+        ).is_file():
+            raise ValueError(
+                "environment.external.runtime_repository does not contain "
+                "onr_physical_runtime.agent"
+            )
+        external = ExternalEnvironmentConfig(
+            runtime_repository=runtime_repository,
+            planning_topic=_text(
+                external_values["planning_topic"],
+                "environment.external.planning_topic",
+            ),
+            update_topic=_text(
+                external_values["update_topic"], "environment.external.update_topic"
+            ),
+            control_topic=_text(
+                external_values["control_topic"],
+                "environment.external.control_topic",
+            ),
+            planning_artifact_root=_config_path(
+                external_values["planning_artifact_root"],
+                "environment.external.planning_artifact_root",
+                root,
+            ),
+            coordinate_frame=coordinate_frame,
+            mission_epoch=mission_epoch,
+            altitude_convention=altitude_convention,
+            max_retries=_positive_integer(
+                external_values["max_retries"],
+                "environment.external.max_retries",
+            ),
+            update_stale_after_seconds=_positive_duration(
+                external_values["update_stale_after_seconds"],
+                "environment.external.update_stale_after_seconds",
+            ),
+        )
     return EnvironmentProfile(
         adapter_kind=adapter_kind,
         protocols=protocols,
@@ -432,6 +558,7 @@ def load_environment_profile(
         topics=topics,
         supported_actions=supported_actions,
         fake=fake,
+        external=external,
         source_path=selected,
     )
 

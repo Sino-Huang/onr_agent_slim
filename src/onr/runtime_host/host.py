@@ -743,7 +743,7 @@ class RuntimeHost:
                 run=run,
                 observations=log.entries,
                 storage_root=self.config.storage.root,
-                environment_root=self.config.environment_profile.fake.artifact_root,
+                environment_root=self.config.environment_profile.artifact_root,
                 planner_root=self._planner_root(mission_run_id),
                 artifact_inbox=self._artifact_inbox,
                 narrative=narrative,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -626,11 +627,43 @@ class RuntimeComposition:
         """Compose the configured environment-side consumer and update owner."""
 
         if not isinstance(self.transport, FileTransport):
-            raise TypeError("the fake environment requires file transport")
+            raise TypeError("the configured environment requires file transport")
         profile = self.config.environment_profile
-        if profile.adapter_kind != "fake":
-            raise ValueError("unsupported environment adapter kind")
         topics = profile.topics
+        selected = EnvironmentUpdateOwnership(ownership or profile.updates.ownership)
+        if profile.adapter_kind == "external_transport":
+            external = profile.external
+            if external is None:
+                raise RuntimeError("external environment configuration is missing")
+            if selected is not EnvironmentUpdateOwnership.ENVIRONMENT_DRIVEN:
+                raise ValueError(
+                    "external transport environment must own its update cadence"
+                )
+            runtime_source = str(external.runtime_repository / "src")
+            if runtime_source not in sys.path:
+                sys.path.insert(0, runtime_source)
+            from onr_physical_runtime.agent import (
+                TransportBackedEnvironmentUpdateSource,
+            )
+
+            return TransportBackedEnvironmentUpdateSource(
+                self.transport,
+                mission_id,
+                feedback_topic=topics.feedback,
+                perception_topic=topics.perception,
+                environment_topic=topics.environment_data,
+                planning_topic=external.planning_topic,
+                update_topic=external.update_topic,
+                control_topic=external.control_topic,
+                context_topic=context_topic or topics.context,
+                cadence_seconds=float(profile.updates.cadence_seconds),
+                artifact_root=output_root or external.planning_artifact_root,
+                stale_after_seconds=float(external.update_stale_after_seconds),
+                max_retries=external.max_retries,
+                coordinate_frame=external.coordinate_frame,
+            )
+        if profile.adapter_kind != "fake" or profile.fake is None:
+            raise ValueError("unsupported environment adapter kind")
         fake = profile.fake
         environment = FakeEnvironment(
             self.transport,
@@ -654,7 +687,6 @@ class RuntimeComposition:
             perception_protocol_version=profile.protocols.perception,
             supported_actions=profile.supported_actions,
         )
-        selected = EnvironmentUpdateOwnership(ownership or profile.updates.ownership)
         source_type = (
             CoordinatorDrivenFakeEnvironment
             if selected is EnvironmentUpdateOwnership.COORDINATOR_DRIVEN

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -38,9 +37,6 @@ class EnvironmentUpdateSource(Protocol):
 
     @property
     def has_current_maneuver(self) -> bool: ...
-
-    @property
-    def event_report(self) -> tuple[Mapping[str, object], ...]: ...
 
     @property
     def is_alive(self) -> bool: ...

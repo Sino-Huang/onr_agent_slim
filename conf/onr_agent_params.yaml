@@ -1,6 +1,6 @@
 agent_name: drone-1
 debug: true
-environment_profile: conf/environment_params.yaml
+environment_profile: conf/environment_physical.yaml
 llm:
   provider: vllm
   base_url: http://127.0.0.1:11411/v1

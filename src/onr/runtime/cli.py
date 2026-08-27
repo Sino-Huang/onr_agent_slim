@@ -231,10 +231,15 @@ def run_closed_loop_demo(
     )
     environment = runtime.create_environment_update_source(
         mission_id=mission_input.mission_id,
-        output_root=runtime.config.environment_profile.fake.artifact_root,
+        output_root=runtime.config.environment_profile.artifact_root,
         context_topic="planning-evidence",
     )
     planning_view = environment.planning_view()
+    event_report = planning_view.environment_event.payload.get("static_info")
+    if not isinstance(event_report, (list, tuple)) or not all(
+        isinstance(item, Mapping) for item in event_report
+    ):
+        raise TypeError("environment planning view has no static_info evidence")
     planning_backend_root = Path(
         os.path.commonpath(
             (
@@ -254,7 +259,7 @@ def run_closed_loop_demo(
         context_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",
     )
-    belief = seed_event_risk_beliefs(belief_service, environment.event_report)
+    belief = seed_event_risk_beliefs(belief_service, tuple(event_report))
     with runtime.transport.open_consumer(
         context_coordination.subscription
     ) as context_consumer:
@@ -381,7 +386,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(runtime.transport, FileTransport):
             raise RuntimeError("demo mission requires transport.backend=file")
 
-        if prior_var_exists:
+        if (
+            prior_var_exists
+            and runtime.config.environment_profile.adapter_kind != "external_transport"
+        ):
             stage = "demo artifact rollover"
             lease = runtime.lease
             if lease is None:
