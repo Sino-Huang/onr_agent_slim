@@ -19,6 +19,12 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 from urllib.parse import quote
 
+from onr.contracts.environment import (
+    environment_controlled_vehicle,
+    environment_maneuver_lifecycle,
+    environment_mission_time,
+    environment_world_model_info,
+)
 from onr.runtime_host.artifacts import (
     ARTIFACT_SCHEMA_VERSION,
     ArtifactNotFoundError,
@@ -432,10 +438,17 @@ def _current_environment(
     environment: Mapping[str, object] | None,
     observations: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
-    scene = environment.get("scene_graph") if isinstance(environment, Mapping) else None
-    scene = scene if isinstance(scene, Mapping) else {}
-    drone = scene.get("drone")
-    drone = drone if isinstance(drone, Mapping) else {}
+    evidence = environment if isinstance(environment, Mapping) else {}
+    try:
+        controlled_vehicle = environment_controlled_vehicle(evidence)
+        mission_time = environment_mission_time(evidence)
+        maneuver_lifecycle = environment_maneuver_lifecycle(evidence)
+        world_model_info = environment_world_model_info(evidence)
+    except (TypeError, ValueError):
+        controlled_vehicle = {}
+        mission_time = None
+        maneuver_lifecycle = None
+        world_model_info = {}
     fsm = _latest_item(observations, {"fsm-status", "fsm-execution-record"})
     fsm_payload = fsm.get("payload") if isinstance(fsm, Mapping) else None
     fsm_payload = fsm_payload if isinstance(fsm_payload, Mapping) else {}
@@ -458,16 +471,19 @@ def _current_environment(
             warnings.extend(str(value) for value in missing)
     return {
         "authority": "Runtime Host Mission Run state and environment evidence",
-        "position": _plain(drone.get("position")),
-        "velocity": _plain(drone.get("velocity")),
-        "mission_time_seconds": scene.get("mission_time_seconds"),
+        "position": _plain(controlled_vehicle.get("position")),
+        "velocity": _plain(
+            controlled_vehicle.get(
+                "velocity", controlled_vehicle.get("speed_mps")
+            )
+        ),
+        "mission_time_seconds": mission_time,
         "fsm_state": fsm_payload.get("active_state", fsm_payload.get("state")),
         "fsm_status": fsm.get("status") if fsm is not None else None,
-        "active_maneuver": _plain(scene.get("current_maneuver")),
+        "active_maneuver": _plain(maneuver_lifecycle),
         "maneuver_feedback": _plain(feedback_payload),
-        "perceptions": _plain(environment.get("perceptions", []))
-        if isinstance(environment, Mapping)
-        else [],
+        "world_model_info": _plain(world_model_info),
+        "perceptions": _plain(evidence.get("perceptions", [])),
         "belief_changes": [_plain(item) for item in beliefs[-10:]],
         "warnings": list(dict.fromkeys(warnings))[-20:],
     }

@@ -7,14 +7,25 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TypeAlias
 
 from onr.contracts.transport import TransportEvent
+
+EntityId: TypeAlias = str | int
 
 
 def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
+    return value
+
+
+def _entity_id(value: object, label: str) -> EntityId:
+    if isinstance(value, bool) or not (
+        (isinstance(value, int) and value > 0)
+        or (isinstance(value, str) and bool(value.strip()))
+    ):
+        raise ValueError(f"{label} must be a positive integer or non-empty string")
     return value
 
 
@@ -80,14 +91,14 @@ class EntityObservation:
     """One current, bounded entity perception."""
 
     observation_id: str
-    entity_id: str
+    entity_id: EntityId
     position: tuple[float, float, float]
     observed_time: float
     uncertainty_score: float
 
     def __post_init__(self) -> None:
         _text(self.observation_id, "observation ID")
-        _text(self.entity_id, "observation entity ID")
+        _entity_id(self.entity_id, "observation entity ID")
         object.__setattr__(self, "position", _position(self.position))
         object.__setattr__(
             self, "observed_time", _time(self.observed_time, "observed time")
@@ -116,7 +127,7 @@ class EventObservation:
     """One report event captured by the sensor within its field of view."""
 
     observation_id: str
-    entity_id: str
+    entity_id: EntityId
     position: tuple[float, float, float]
     observed_time: float
     uncertainty_score: float
@@ -127,7 +138,7 @@ class EventObservation:
 
     def __post_init__(self) -> None:
         _text(self.observation_id, "observation ID")
-        _text(self.entity_id, "observation entity ID")
+        _entity_id(self.entity_id, "observation entity ID")
         object.__setattr__(self, "position", _position(self.position))
         object.__setattr__(
             self, "observed_time", _time(self.observed_time, "observed time")
@@ -246,11 +257,74 @@ class EnvironmentTickResult:
         )
 
 
+def environment_mission_time(environment_data: Mapping[str, object]) -> float:
+    """Read Mission time from physical v2 or the retained fake shape."""
+
+    value = environment_data.get("mission_time_seconds")
+    if value is None:
+        scene = environment_data.get("scene_graph")
+        value = (
+            scene.get("mission_time_seconds") if isinstance(scene, Mapping) else None
+        )
+    return _time(value, "environment Mission time")
+
+
+def environment_controlled_vehicle(
+    environment_data: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Read controlled-vehicle telemetry from physical v2 or fake evidence."""
+
+    vehicle = environment_data.get("controlled_vehicle")
+    if vehicle is None:
+        scene = environment_data.get("scene_graph")
+        vehicle = scene.get("drone") if isinstance(scene, Mapping) else None
+    if not isinstance(vehicle, Mapping):
+        raise TypeError("environment controlled vehicle must be an object")
+    return vehicle
+
+
+def environment_maneuver_lifecycle(
+    environment_data: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    """Read the separate physical lifecycle or fake current maneuver."""
+
+    if "maneuver_lifecycle" in environment_data:
+        lifecycle = environment_data["maneuver_lifecycle"]
+    else:
+        scene = environment_data.get("scene_graph")
+        lifecycle = (
+            scene.get("current_maneuver") if isinstance(scene, Mapping) else None
+        )
+    if lifecycle is None:
+        return None
+    if not isinstance(lifecycle, Mapping):
+        raise TypeError("environment maneuver lifecycle must be an object or null")
+    return lifecycle
+
+
+def environment_world_model_info(
+    environment_data: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Return raw physical info[0], retaining fake scene graphs behind this seam."""
+
+    world_model = environment_data.get("world_model_info")
+    if world_model is None:
+        world_model = environment_data.get("scene_graph")
+    if not isinstance(world_model, Mapping):
+        raise TypeError("environment world-model info must be an object")
+    return world_model
+
+
 __all__ = [
+    "EntityId",
     "EntityObservation",
     "EnvironmentTickResult",
     "EventObservation",
     "Perception",
+    "environment_controlled_vehicle",
+    "environment_maneuver_lifecycle",
+    "environment_mission_time",
+    "environment_world_model_info",
     "perception_from_dict",
     "perception_to_transport_event",
 ]

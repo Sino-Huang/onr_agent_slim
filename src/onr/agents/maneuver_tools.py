@@ -16,7 +16,11 @@ from typing_extensions import TypedDict
 
 from onr.contracts.bayesian_belief import EntityAssociation, RiskObservation
 from onr.contracts.communication import AgentMessage, AgentMessageKind
-from onr.contracts.environment import EventObservation
+from onr.contracts.environment import (
+    EntityId,
+    EventObservation,
+    environment_mission_time,
+)
 from onr.contracts.fsm import FSMStatus, ManeuverDecision
 from onr.contracts.hyper_agent import ReplanRequest
 from onr.contracts.maneuver_control import (
@@ -297,13 +301,7 @@ def _set_transition_target(
         )
         return _canonical_json(result)
     before = journal.current(status, invalidate_stale=True)
-    selected_at = context.invocation.environment_data.get("mission_time_seconds")
-    if selected_at is None:
-        scene_graph = context.invocation.environment_data.get("scene_graph", {})
-        if isinstance(scene_graph, Mapping):
-            selected_at = scene_graph.get("mission_time_seconds")
-    if selected_at is None:
-        selected_at = 0.0
+    selected_at = environment_mission_time(context.invocation.environment_data)
     intent = journal.select(
         status,
         target_state,
@@ -787,7 +785,7 @@ def search_area(
 @tool(parse_docstring=True)
 def pursue(
     maneuver_id: str,
-    entity_id: str,
+    entity_id: EntityId,
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
     standoff_distance: float | None = None,
@@ -824,7 +822,7 @@ def pursue(
 @tool(parse_docstring=True)
 def investigate(
     maneuver_id: str,
-    entity_id: str,
+    entity_id: EntityId,
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
     standoff_distance: float | None = None,

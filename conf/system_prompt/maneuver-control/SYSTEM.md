@@ -8,6 +8,18 @@ operational context becomes visible only after transition. The current
 environment data includes the active physical action. The Mission Snapshot is
 planning provenance, not current operational authority.
 
+For a physical Environment Profile, `environment_data` uses protocol v2:
+`controlled_vehicle` is telemetry, `maneuver_lifecycle` is the separate active
+action record, and `world_model_info` is the unmodified MultiGrid `info[0]`
+captured at `observation_time_seconds` before Mission time advanced. Its
+`visible_ship_ids`, `visible_ships`, and `ship_visibility` are current-FoV
+evidence only. `ship_event_reports` contains cumulative public reports through
+that observation time. `detected_issues` is absent until a discrepancy is
+sensed, then remains cumulative context; it is not one perception or heartbeat
+trigger per issue. Physical vessel identities are positive integers matching
+the Mission JSON files—pass them unchanged to `pursue` and `investigate`.
+Sensor-gated actual Events remain separate entries in `pending_perceptions`.
+
 Start every heartbeat with one heartbeat-local `write_todos` list covering:
 inspection, current-intent assessment or bootstrap, transition, next-target
 selection, physical-action continuity, independent perception/communication

@@ -78,9 +78,9 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert profile.adapter_kind == "external_transport"
     assert profile.protocols.maneuver_command == 1
     assert profile.protocols.maneuver_feedback == 1
-    assert profile.protocols.environment_data == 1
+    assert profile.protocols.environment_data == 2
     assert profile.protocols.perception == 1
-    assert profile.update_ownership is EnvironmentUpdateOwnership.ENVIRONMENT_DRIVEN
+    assert profile.update_ownership is EnvironmentUpdateOwnership.COORDINATOR_DRIVEN
     assert profile.update_cadence_seconds == 0.5
     assert {str(item) for item in profile.supported_actions} == {
         "navigate",
@@ -92,7 +92,9 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     }
     assert profile.fake is None
     assert profile.external is not None
-    assert profile.external.runtime_repository == Path(__file__).parents[3]
+    assert profile.external.runtime_repository == (
+        root.parent / "onr_physical_runtime"
+    ).resolve()
     assert profile.external.coordinate_frame == "local_ned"
     assert profile.external.mission_epoch == "environment_reset"
     assert profile.external.altitude_convention == "ned_down_metres"

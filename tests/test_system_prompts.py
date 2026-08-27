@@ -76,6 +76,10 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
     assert "to_entries" in prompt
     assert "tool `reflection` arguments" in prompt
     assert "Statechart/FSM is the execution semantics" in prompt
+    assert "world_model_info" in prompt
+    assert "current-FoV" in prompt
+    assert "Numeric\nvessel IDs are canonical" in prompt
+    assert "complete report schedule" in prompt
     for supervisory_instruction in (
         "HyperHeartbeatInvocation",
         "HyperHeartbeatDecisionCandidate",
@@ -121,6 +125,9 @@ def test_hyper_supervisor_prompt_is_heartbeat_only() -> None:
     assert "HyperHeartbeatDecisionCandidate" in prompt
     for disposition in ("`no_change`", "`replan`", "`decline`"):
         assert disposition in prompt
+    assert "world_model_info" in prompt
+    assert "current-FoV" in prompt
+    assert "Positive integer vessel IDs" in prompt
     for planning_instruction in (
         "todo list with exactly these eight items",
         "Generate planner files",
@@ -154,4 +161,9 @@ def test_maneuver_prompt_enforces_assess_first_single_snapshot_ordering() -> Non
     assert "ManeuverHeartbeatCompletion" in prompt
     assert "do not submit a hold" in prompt
     assert "Terminal lifecycle alone does not require replacement" in prompt
+    assert "world_model_info" in prompt
+    assert "current-FoV" in prompt
+    assert "detected_issues" in prompt
+    assert "positive integers" in prompt
+    assert "Sensor-gated actual Events" in prompt
     assert "no_change Maneuver heartbeat requires no tool executions" not in prompt

@@ -10,10 +10,21 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from onr.contracts.environment import EntityId
+
 
 def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
+    return value
+
+
+def _entity_id(value: object, label: str) -> EntityId:
+    if isinstance(value, bool) or not (
+        (isinstance(value, int) and value > 0)
+        or (isinstance(value, str) and bool(value.strip()))
+    ):
+        raise ValueError(f"{label} must be a positive integer or non-empty string")
     return value
 
 
@@ -61,14 +72,14 @@ def canonical_sha256(value: object) -> str:
 class BeliefKey:
     """Identity of one generic binary belief variable."""
 
-    entity_id: str
+    entity_id: EntityId
     risk_type: str
 
     def __post_init__(self) -> None:
-        _text(self.entity_id, "entity ID")
+        _entity_id(self.entity_id, "entity ID")
         _text(self.risk_type, "risk type")
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {"entity_id": self.entity_id, "risk_type": self.risk_type}
 
     @classmethod
@@ -81,11 +92,11 @@ class BeliefKey:
 class EntityAssociation:
     """Probability that an uncertain observation belongs to one entity."""
 
-    entity_id: str
+    entity_id: EntityId
     weight: float
 
     def __post_init__(self) -> None:
-        _text(self.entity_id, "association entity ID")
+        _entity_id(self.entity_id, "association entity ID")
         object.__setattr__(self, "weight", _probability(self.weight, "association weight"))
 
     def to_dict(self) -> dict[str, object]:

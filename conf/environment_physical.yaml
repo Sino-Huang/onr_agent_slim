@@ -2,10 +2,10 @@ adapter_kind: external_transport
 protocols:
   maneuver_command: 1
   maneuver_feedback: 1
-  environment_data: 1
+  environment_data: 2
   perception: 1
 updates:
-  ownership: environment_driven
+  ownership: coordinator_driven
   cadence_seconds: 0.5
 topics:
   command_target: maneuver-adapter

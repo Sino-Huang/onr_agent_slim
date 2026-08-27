@@ -15,14 +15,17 @@ pytestmark = pytest.mark.live
 _REPO_ROOT = Path(__file__).parents[1]
 
 
-def test_environment_driven_profile_advances_during_live_inference(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "update_ownership", ["environment_driven", "coordinator_driven"]
+)
+def test_update_profile_respects_ownership_during_live_inference(
+    tmp_path: Path, update_ownership: str
 ) -> None:
     environment_values = yaml.safe_load(
         (_REPO_ROOT / "conf/environment_params.yaml").read_text(encoding="utf-8")
     )
     environment_values["updates"] = {
-        "ownership": "environment_driven",
+        "ownership": update_ownership,
         "cadence_seconds": 0.5,
     }
     environment_values["fake"]["artifact_root"] = str(tmp_path / "environment")
@@ -48,12 +51,12 @@ def test_environment_driven_profile_advances_during_live_inference(
     )
     runtime.verify_llm_reachability()
     mission = MissionInput(
-        mission_id=f"live-environment-driven-{uuid4().hex}",
+        mission_id=f"live-{update_ownership}-{uuid4().hex}",
         mission_text=(
             "Patrol the environment and begin accounting for the events in the "
             "event report."
         ),
-        source_authority="live-environment-driven-test",
+        source_authority=f"live-{update_ownership}-test",
     )
 
     result = run_closed_loop_demo(
@@ -66,16 +69,25 @@ def test_environment_driven_profile_advances_during_live_inference(
     )
 
     assert result.simulated_duration_seconds == 15
-    assert result.maximum_update_batch > 1
-    assert result.coalesced_update_count >= 2
-    assert any(
-        window.completion_time_seconds > window.evidence_time_seconds
-        for window in result.inference_windows
-    )
-    assert all(
-        window.completion_time_seconds >= window.evidence_time_seconds
-        for window in result.inference_windows
-    )
+    assert result.inference_windows
+    if update_ownership == "environment_driven":
+        assert result.maximum_update_batch > 1
+        assert result.coalesced_update_count >= 2
+        assert any(
+            window.completion_time_seconds > window.evidence_time_seconds
+            for window in result.inference_windows
+        )
+        assert all(
+            window.completion_time_seconds >= window.evidence_time_seconds
+            for window in result.inference_windows
+        )
+    else:
+        assert result.maximum_update_batch == 1
+        assert result.coalesced_update_count == 0
+        assert all(
+            window.completion_time_seconds == window.evidence_time_seconds
+            for window in result.inference_windows
+        )
 
     command_directory = (
         tmp_path / "transport" / "commands" / "maneuver-adapter" / mission.mission_id

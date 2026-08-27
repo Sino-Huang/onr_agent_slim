@@ -635,10 +635,6 @@ class RuntimeComposition:
             external = profile.external
             if external is None:
                 raise RuntimeError("external environment configuration is missing")
-            if selected is not EnvironmentUpdateOwnership.ENVIRONMENT_DRIVEN:
-                raise ValueError(
-                    "external transport environment must own its update cadence"
-                )
             runtime_source = str(external.runtime_repository / "src")
             if runtime_source not in sys.path:
                 sys.path.insert(0, runtime_source)
@@ -661,6 +657,7 @@ class RuntimeComposition:
                 stale_after_seconds=float(external.update_stale_after_seconds),
                 max_retries=external.max_retries,
                 coordinate_frame=external.coordinate_frame,
+                update_ownership=selected.value,
             )
         if profile.adapter_kind != "fake" or profile.fake is None:
             raise ValueError("unsupported environment adapter kind")

@@ -21,7 +21,11 @@ from onr.contracts.context_coordination import (
     mission_snapshot_to_transport_event,
     normalize_source_name,
 )
-from onr.contracts.environment import Perception, perception_from_dict
+from onr.contracts.environment import (
+    Perception,
+    environment_mission_time,
+    perception_from_dict,
+)
 from onr.contracts.fsm import FSMStatus, Statechart
 from onr.contracts.hyper_agent import (
     HyperHeartbeatDecision,
@@ -424,18 +428,7 @@ class ContextCoordination:
 
     @staticmethod
     def _environment_time(environment_data: Mapping[str, object]) -> float:
-        scene = environment_data.get("scene_graph")
-        raw = (
-            scene.get("mission_time_seconds")
-            if isinstance(scene, Mapping)
-            else environment_data.get("mission_time_seconds")
-        )
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-            raise TypeError("environment evidence has no finite Mission time")
-        result = float(raw)
-        if not math.isfinite(result) or result < 0:
-            raise ValueError("environment evidence has no finite Mission time")
-        return result
+        return environment_mission_time(environment_data)
 
     def run(self, active_revision: ActivePlanRevision) -> ClosedLoopRunResult:
         """Run the serialized closed loop from one accepted planner revision."""

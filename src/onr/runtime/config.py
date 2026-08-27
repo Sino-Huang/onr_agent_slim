@@ -398,14 +398,6 @@ def load_environment_profile(
             "environment.updates.cadence_seconds",
         ),
     )
-    if (
-        adapter_kind == "external_transport"
-        and updates.ownership is not EnvironmentUpdateOwnership.ENVIRONMENT_DRIVEN
-    ):
-        raise ValueError(
-            "external_transport requires environment-driven update ownership"
-        )
-
     topic_values = _exact(
         top["topics"],
         {

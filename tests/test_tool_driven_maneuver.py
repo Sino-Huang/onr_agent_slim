@@ -29,6 +29,7 @@ from onr.agents.maneuver_tools import (
     investigate,
     land,
     navigate,
+    pursue,
     search_area,
     set_transition_target,
     transition_fsm,
@@ -1401,6 +1402,57 @@ def test_parallel_physical_calls_share_one_heartbeat_status_gate() -> None:
         "queued",
         "already_queued",
     }
+
+
+@pytest.mark.parametrize("physical_tool", [pursue, investigate])
+def test_numeric_physical_entity_ids_dispatch_unchanged(physical_tool: object) -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the entity action target.",
+        selected_at=10,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-numeric-entity",
+        "numeric-entity-correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {
+            "schema_version": 2,
+            "mission_time_seconds": 10,
+            "controlled_vehicle": {"position": {"x": 0, "y": 0, "z": 0}},
+            "maneuver_lifecycle": None,
+            "world_model_info": {"visible_ship_ids": [7]},
+        },
+    )
+    control = ManeuverControl(cast(Any, transport), object())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        control,
+        transition_intents=journal,
+    )
+
+    result = json.loads(
+        cast(Any, physical_tool).func(
+            maneuver_id="numeric-entity-action",
+            entity_id=7,
+            reflection="Use the exact physical vessel identity.",
+            runtime=_runtime(context),
+        )
+    )
+
+    assert result["status"] == "queued"
+    queued = transport.state.commands[("maneuver-adapter", plan.mission_id)][0][1]
+    command = ManeuverCommand.from_command(queued, "maneuver")
+    assert command.intent.to_dict()["parameters"]["entity_id"] == 7
 
 
 def test_parallel_target_selection_and_physical_action_share_fsm_gate() -> None:

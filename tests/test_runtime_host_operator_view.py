@@ -472,6 +472,47 @@ def test_environment_filters_noise_raw_toggle_and_preserves_latest_state(
     assert "hyper-heartbeat" in {item["event_kind"] for item in raw["timeline"]}
 
 
+def test_environment_projection_renders_physical_v2_shape(tmp_path: Path) -> None:
+    client, _, _, config = _client(tmp_path)
+    environment_file = (
+        config.environment_profile.fake.artifact_root / "mission-1" / "environment.json"
+    )
+    environment_file.parent.mkdir(parents=True)
+    environment_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "mission_time_seconds": 7.5,
+                "observation_time_seconds": 7.0,
+                "controlled_vehicle": {
+                    "entity_id": "drone-1",
+                    "position": {"x": 4, "y": 5, "z": -6},
+                    "speed_mps": 3.0,
+                },
+                "maneuver_lifecycle": {
+                    "maneuver_id": "physical-pursuit",
+                    "action": "pursue",
+                    "parameters": {"entity_id": 7},
+                    "lifecycle": "active",
+                },
+                "world_model_info": {
+                    "visible_ship_ids": [7],
+                    "ship_event_reports": {"7": []},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    projected = _view(client, "environment").json()["environment"]
+
+    assert projected["position"] == {"x": 4, "y": 5, "z": -6}
+    assert projected["velocity"] == 3.0
+    assert projected["mission_time_seconds"] == 7.5
+    assert projected["active_maneuver"]["parameters"]["entity_id"] == 7
+    assert projected["world_model_info"]["visible_ship_ids"] == [7]
+
+
 def test_artifacts_merge_public_and_allowlisted_planner_files_with_bounded_content(
     tmp_path: Path,
 ) -> None:
