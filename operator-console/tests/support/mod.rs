@@ -99,6 +99,18 @@ const ARTIFACT_ENTRIES_EMPTY_RESPONSE: &str = include_str!(
 const ARTIFACT_NOT_FOUND_RESPONSE: &str = include_str!(
     "../../../docs/design/operator-console/contract/v1/mission-run-artifact.not-found.response.json"
 );
+const OPERATOR_OVERVIEW_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1.1/mission-run-operator-overview.response.json"
+);
+const OPERATOR_AGENTS_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1.1/mission-run-operator-agents.response.json"
+);
+const OPERATOR_ENVIRONMENT_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1.1/mission-run-operator-environment.response.json"
+);
+const OPERATOR_ARTIFACTS_RESPONSE: &str = include_str!(
+    "../../../docs/design/operator-console/contract/v1.1/mission-run-operator-artifacts.response.json"
+);
 
 /// Build a dynamic body by substituting fixture values into a committed
 /// contract example; panics if a substituted key is missing from the example.
@@ -330,6 +342,7 @@ fn route(
             state,
         ),
         ("GET", path) if path.ends_with("/narrative") => narrative(path, state),
+        ("GET", path) if path.ends_with("/operator-view") => operator_view(path, query, state),
         ("GET", path) if path.ends_with("/artifacts") => evidence_page(
             path,
             query,
@@ -352,6 +365,40 @@ fn route(
             json!({"error": {"code": "not_found", "message": "unknown route"}}).to_string(),
         ),
     }
+}
+
+fn operator_view(
+    path: &str,
+    query: Option<&str>,
+    state: &Arc<Mutex<State>>,
+) -> (&'static str, String) {
+    let mission_run_id = path
+        .trim_start_matches("/api/v1/mission-runs/")
+        .trim_end_matches("/operator-view");
+    let state = state.lock().unwrap();
+    if state
+        .run
+        .as_ref()
+        .is_none_or(|run| run.mission_run_id != mission_run_id)
+    {
+        return (
+            "404 Not Found",
+            RUN_NOT_FOUND_RESPONSE.trim_end().to_string(),
+        );
+    }
+    let payload = match query_value(query, "section") {
+        Some("overview") => OPERATOR_OVERVIEW_RESPONSE,
+        Some("agents") => OPERATOR_AGENTS_RESPONSE,
+        Some("environment") => OPERATOR_ENVIRONMENT_RESPONSE,
+        Some("artifacts") => OPERATOR_ARTIFACTS_RESPONSE,
+        _ => {
+            return (
+                "422 Unprocessable Entity",
+                INVALID_RESPONSE.trim_end().to_string(),
+            );
+        }
+    };
+    ("200 OK", payload.trim_end().to_string())
 }
 
 fn narrative(path: &str, state: &Arc<Mutex<State>>) -> (&'static str, String) {

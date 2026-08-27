@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, Query, Request
@@ -29,6 +29,13 @@ from onr.runtime_host.host import (
     RuntimeWorkerOptions,
 )
 from onr.runtime_host.observations import InvalidCursorError
+from onr.runtime_host.operator_projection import (
+    OPERATOR_DEFAULT_LIMIT,
+    OPERATOR_MAX_LIMIT,
+    OperatorSection,
+)
+
+_OPERATOR_SECTIONS = {"overview", "agents", "environment", "artifacts"}
 
 
 class ActivationRequest(BaseModel):
@@ -100,7 +107,7 @@ def create_app(
 
     @app.get("/api/v1/health")
     def health() -> dict[str, object]:
-        return {"status": "ok", "api_version": {"major": 1, "minor": 0}}
+        return {"status": "ok", "api_version": {"major": 1, "minor": 1}}
 
     @app.post("/api/v1/mission-activations", status_code=202)
     def activate(
@@ -153,6 +160,25 @@ def create_app(
             return selected.activities(mission_run_id, cursor=cursor, limit=limit)
         except (HostNotFoundError, InvalidCursorError) as exc:
             return _evidence_error(exc)
+
+    @app.get("/api/v1/mission-runs/{mission_run_id}/operator-view")
+    def operator_view(mission_run_id: str, request: Request) -> Any:
+        try:
+            section, limit, cursor, before, raw = _operator_view_query(request)
+            return selected.operator_view(
+                mission_run_id,
+                section=section,
+                limit=limit,
+                cursor=cursor,
+                before=before,
+                raw=raw,
+            )
+        except HostNotFoundError as exc:
+            return _evidence_error(exc)
+        except InvalidCursorError as exc:
+            return _evidence_error(exc)
+        except ValueError:
+            return _operator_invalid_request()
 
     @app.get("/api/v1/mission-runs/{mission_run_id}/artifacts")
     def artifacts(
@@ -253,6 +279,47 @@ def _bearer_credential(value: str | None) -> str | None:
     return credential.strip()
 
 
+def _operator_view_query(
+    request: Request,
+) -> tuple[OperatorSection, int, str | None, str | None, bool]:
+    items = list(request.query_params.multi_items())
+    allowed = {"section", "limit", "cursor", "before", "raw"}
+    if any(key not in allowed for key, _ in items):
+        raise ValueError("unknown operator-view query parameter")
+    values: dict[str, str] = {}
+    for key, value in items:
+        if key in values:
+            raise ValueError("repeated operator-view query parameter")
+        values[key] = value
+    section = values.get("section")
+    if section not in _OPERATOR_SECTIONS:
+        raise ValueError("invalid operator-view section")
+    limit_text = values.get("limit")
+    if limit_text is None:
+        limit = OPERATOR_DEFAULT_LIMIT
+    elif (
+        not limit_text.isascii()
+        or not limit_text.isdecimal()
+        or limit_text.startswith("0")
+    ):
+        raise ValueError("invalid operator-view limit")
+    else:
+        limit = int(limit_text)
+    if not 1 <= limit <= OPERATOR_MAX_LIMIT:
+        raise ValueError("invalid operator-view limit")
+    cursor = values.get("cursor")
+    before = values.get("before")
+    if cursor == "" or before == "" or (cursor is not None and before is not None):
+        raise ValueError("invalid operator-view paging query")
+    if "raw" in values:
+        if section != "environment" or values["raw"] not in {"true", "false"}:
+            raise ValueError("invalid operator-view raw query")
+        raw = values["raw"] == "true"
+    else:
+        raw = False
+    return cast(OperatorSection, section), limit, cursor, before, raw
+
+
 def _error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status, content={"error": {"code": code, "message": message}}
@@ -261,6 +328,10 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 def _invalid_request() -> JSONResponse:
     return _error(422, "invalid_request", "request body or authorization is invalid")
+
+
+def _operator_invalid_request() -> JSONResponse:
+    return _error(422, "invalid_request", "operator-view query is invalid")
 
 
 def _evidence_error(exc: HostNotFoundError | InvalidCursorError) -> JSONResponse:

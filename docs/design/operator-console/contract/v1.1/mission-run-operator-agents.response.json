@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "agents",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "agents-cursor-2",
+  "before_cursor": null,
+  "has_more": false,
+  "agents": [
+    {
+      "stable_id": "hyper-agent:invocation-1",
+      "invocation_id": "invocation-1",
+      "parent_id": null,
+      "role": "hyper-agent",
+      "phase": "planner-execution",
+      "kind": "llm",
+      "name": "planner_executor",
+      "status": "ok",
+      "completion_state": "complete",
+      "started_at": "2026-08-27T12:00:00Z",
+      "updated_at": "2026-08-27T12:00:02Z",
+      "finished_at": "2026-08-27T12:00:02Z",
+      "duration_ms": 2000,
+      "revision": 2,
+      "outcome": "completed",
+      "content": "Planner attempt completed.",
+      "decision": null,
+      "recorded_debug_reasoning": {
+        "label": "Recorded Debug Reasoning",
+        "authority": "non-authoritative",
+        "disposition": "available",
+        "content": "Compare the candidate routes."
+      },
+      "tool_calls": [
+        {
+          "name": "planner_executor",
+          "args": {"attempt": 2},
+          "arguments_text": null,
+          "partial": false,
+          "result": {"status": "accepted"},
+          "error": null,
+          "duration_ms": 900
+        }
+      ],
+      "debug_payload_disposition": "available"
+    }
+  ]
+}

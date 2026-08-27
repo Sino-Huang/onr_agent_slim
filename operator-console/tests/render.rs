@@ -20,7 +20,8 @@ use operator_console::app::{
 use operator_console::host::{
     ActivationAccepted, ActivitiesPage, ArtifactContentPage, ArtifactsPage, CancellationAccepted,
     CancellationOutcome, ConversationEntriesPage, CurrentRun, EvidencePage, NarrativeResponse,
-    ObservationsPage, RunRecord,
+    ObservationsPage, OperatorAgentsPage, OperatorArtifactsPage, OperatorEnvironmentPage,
+    OperatorOverviewPage, OperatorSection, OperatorViewPage, RunRecord,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -307,6 +308,77 @@ fn running_record() -> RunRecord {
     }
 }
 
+fn operator_page(section: OperatorSection) -> OperatorViewPage {
+    match section {
+        OperatorSection::Overview => OperatorViewPage::Overview(Box::new(
+            serde_json::from_str::<OperatorOverviewPage>(include_str!(
+                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-overview.response.json"
+            ))
+            .unwrap(),
+        )),
+        OperatorSection::Agents => OperatorViewPage::Agents(Box::new(
+            serde_json::from_str::<OperatorAgentsPage>(include_str!(
+                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-agents.response.json"
+            ))
+            .unwrap(),
+        )),
+        OperatorSection::Environment => OperatorViewPage::Environment(Box::new(
+            serde_json::from_str::<OperatorEnvironmentPage>(include_str!(
+                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-environment.response.json"
+            ))
+            .unwrap(),
+        )),
+        OperatorSection::Artifacts => OperatorViewPage::Artifacts(Box::new(
+            serde_json::from_str::<OperatorArtifactsPage>(include_str!(
+                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-artifacts.response.json"
+            ))
+            .unwrap(),
+        )),
+    }
+}
+
+fn operator_app(section: OperatorSection) -> App {
+    let mut app = run_app(RunRecord {
+        mission_id: "mission-fixture-001".to_string(),
+        mission_run_id: "run-fixture-001".to_string(),
+        ..running_record()
+    });
+    app.health.as_mut().unwrap().api_version.minor = 1;
+    let key = match section {
+        OperatorSection::Overview => None,
+        OperatorSection::Agents => Some('2'),
+        OperatorSection::Environment => Some('3'),
+        OperatorSection::Artifacts => Some('4'),
+    };
+    if let Some(key) = key {
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(key),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    } else {
+        app.request_poll();
+    }
+    let commands = app.take_commands();
+    let request_id = commands
+        .iter()
+        .find_map(|command| match command {
+            HostCommand::FetchOperatorView {
+                request_id,
+                section: requested,
+                ..
+            } if *requested == section => Some(*request_id),
+            _ => None,
+        })
+        .unwrap();
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-fixture-001".to_string(),
+        section,
+        request_id,
+        result: Ok(operator_page(section)),
+    });
+    app
+}
+
 #[test]
 fn editing_frame_matches_committed_capture() {
     let app = editing_app("Hold the ridge line.\nReport obstacles by grid square.");
@@ -328,6 +400,38 @@ fn run_dashboard_frame_matches_committed_capture() {
     assert_frame(
         "run-dashboard-100x30.txt",
         render(&app, MIN_WIDTH, MIN_HEIGHT),
+    );
+}
+
+#[test]
+fn operator_overview_frame_matches_committed_capture() {
+    assert_frame(
+        "operator-overview-100x30.txt",
+        render(&operator_app(OperatorSection::Overview), 100, 30),
+    );
+}
+
+#[test]
+fn operator_agents_frame_matches_committed_capture() {
+    assert_frame(
+        "operator-agents-100x30.txt",
+        render(&operator_app(OperatorSection::Agents), 100, 30),
+    );
+}
+
+#[test]
+fn operator_environment_frame_matches_committed_capture() {
+    assert_frame(
+        "operator-environment-100x30.txt",
+        render(&operator_app(OperatorSection::Environment), 100, 30),
+    );
+}
+
+#[test]
+fn operator_artifacts_frame_matches_committed_capture() {
+    assert_frame(
+        "operator-artifacts-100x30.txt",
+        render(&operator_app(OperatorSection::Artifacts), 100, 30),
     );
 }
 

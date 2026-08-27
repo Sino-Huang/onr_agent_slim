@@ -40,6 +40,14 @@ _Avoid_: Runtime Host, agent process
 The local operator interface that activates a Mission, observes its Mission Run, cancels it, and in the future submits requested Human Decisions.
 _Avoid_: Runtime Host, agent authority
 
+**Operator Debug View**:
+A loopback-only Mission Run view that combines authoritative current state with non-authoritative operational and recorded debug evidence for a local operator. It is not a public evidence feed or a source of Mission authority.
+_Avoid_: Run Observation feed, agent authority, public dashboard
+
+**Recorded Debug Reasoning**:
+Experimental model reasoning captured for local diagnosis when debug recording is enabled. It is non-authoritative, never a Run Observation, and never determines Mission Run, FSM, environment, or planner state.
+_Avoid_: Mission rationale, Run Narrative, mission authority
+
 **Console Session**:
 An operator console's authenticated local session that owns the Mission Run it activated. Its opaque credential permits owner-scoped Mission Intent readback, cancellation, and recovery after an ungraceful console loss; a clean console exit cancels its owned Run.
 _Avoid_: Runtime Host session, observer session

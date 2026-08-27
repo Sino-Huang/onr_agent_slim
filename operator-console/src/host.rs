@@ -224,6 +224,10 @@ pub struct ArtifactDescriptor {
     pub display: ArtifactDisplay,
     pub published_at: String,
     pub classification: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +289,217 @@ pub struct ConversationEntriesPage {
 pub struct EvidencePage<T> {
     pub items: Vec<T>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperatorSection {
+    Overview,
+    Agents,
+    Environment,
+    Artifacts,
+}
+
+impl OperatorSection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Agents => "agents",
+            Self::Environment => "environment",
+            Self::Artifacts => "artifacts",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorDebugDisposition {
+    pub enabled: bool,
+    pub reasoning_label: String,
+    pub reasoning_authority: String,
+    pub disposition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorPageMeta {
+    pub schema_version: u32,
+    pub mission_id: String,
+    pub mission_run_id: String,
+    pub run_status: String,
+    pub section: OperatorSection,
+    pub debug: OperatorDebugDisposition,
+    pub next_cursor: String,
+    pub before_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedDebugReasoning {
+    pub label: String,
+    pub authority: String,
+    pub disposition: String,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorToolCall {
+    pub name: String,
+    pub args: serde_json::Value,
+    pub arguments_text: Option<String>,
+    pub partial: bool,
+    pub result: serde_json::Value,
+    pub error: serde_json::Value,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorAgentInvocation {
+    pub stable_id: String,
+    pub invocation_id: String,
+    pub parent_id: Option<String>,
+    pub role: String,
+    pub phase: String,
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    pub completion_state: String,
+    pub started_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub revision: u64,
+    pub outcome: Option<String>,
+    pub content: Option<String>,
+    pub decision: serde_json::Value,
+    pub recorded_debug_reasoning: RecordedDebugReasoning,
+    pub tool_calls: Vec<OperatorToolCall>,
+    pub debug_payload_disposition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorTimelineEntry {
+    pub stable_id: String,
+    pub observation_sequence: u64,
+    pub event_id: String,
+    pub occurred_at: Option<String>,
+    pub component: Option<String>,
+    pub authority: Option<String>,
+    pub event_kind: String,
+    pub status: Option<String>,
+    pub outcome: Option<String>,
+    pub correlation_id: Option<String>,
+    pub replay_disposition: String,
+    pub payload: serde_json::Value,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorEnvironment {
+    pub authority: String,
+    pub position: serde_json::Value,
+    pub velocity: serde_json::Value,
+    pub mission_time_seconds: Option<serde_json::Number>,
+    pub fsm_state: Option<String>,
+    pub fsm_status: Option<String>,
+    pub active_maneuver: serde_json::Value,
+    pub maneuver_feedback: serde_json::Value,
+    pub perceptions: serde_json::Value,
+    pub belief_changes: Vec<serde_json::Value>,
+    pub warnings: Vec<String>,
+    pub raw: bool,
+    pub timeline: Vec<OperatorTimelineEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorLatestAgents {
+    pub hyper_agent: Option<OperatorAgentInvocation>,
+    pub maneuver_control: Option<OperatorAgentInvocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorFsmSummary {
+    pub state: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorEnvironmentSummary {
+    pub position: serde_json::Value,
+    pub velocity: serde_json::Value,
+    pub mission_time_seconds: Option<serde_json::Number>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorCounts {
+    pub agents: u64,
+    pub environment_events: u64,
+    pub artifacts: u64,
+    pub warnings: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorHitlStatus {
+    pub status: String,
+    pub requires_action: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorOverview {
+    pub authority: String,
+    pub latest_agents: OperatorLatestAgents,
+    pub fsm: OperatorFsmSummary,
+    pub environment: OperatorEnvironmentSummary,
+    pub active_maneuver: serde_json::Value,
+    pub recent_events: Vec<OperatorTimelineEntry>,
+    pub counts: OperatorCounts,
+    pub narrative: RunNarrative,
+    pub hitl: OperatorHitlStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorOverviewPage {
+    #[serde(flatten)]
+    pub meta: OperatorPageMeta,
+    pub overview: OperatorOverview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorAgentsPage {
+    #[serde(flatten)]
+    pub meta: OperatorPageMeta,
+    pub agents: Vec<OperatorAgentInvocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorEnvironmentPage {
+    #[serde(flatten)]
+    pub meta: OperatorPageMeta,
+    pub environment: OperatorEnvironment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorArtifactsPage {
+    #[serde(flatten)]
+    pub meta: OperatorPageMeta,
+    pub artifacts: Vec<ArtifactDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorViewPage {
+    Overview(Box<OperatorOverviewPage>),
+    Agents(Box<OperatorAgentsPage>),
+    Environment(Box<OperatorEnvironmentPage>),
+    Artifacts(Box<OperatorArtifactsPage>),
+}
+
+impl OperatorViewPage {
+    pub fn meta(&self) -> &OperatorPageMeta {
+        match self {
+            Self::Overview(page) => &page.meta,
+            Self::Agents(page) => &page.meta,
+            Self::Environment(page) => &page.meta,
+            Self::Artifacts(page) => &page.meta,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,6 +688,18 @@ pub fn spawn_worker(
                 HostCommand::FetchArtifacts { mission_run_id } => {
                     HostMessage::Artifacts(client.all_artifacts(&mission_run_id))
                 }
+                HostCommand::FetchOperatorView {
+                    mission_run_id,
+                    section,
+                    cursor,
+                    raw,
+                    request_id,
+                } => HostMessage::OperatorView {
+                    mission_run_id: mission_run_id.clone(),
+                    section,
+                    request_id,
+                    result: client.operator_view(&mission_run_id, section, cursor.as_deref(), raw),
+                },
                 HostCommand::FetchArtifactContent {
                     mission_run_id,
                     artifact_id,
@@ -565,6 +792,14 @@ pub trait HostClient: Send {
         artifact_id: &str,
         cursor: Option<&str>,
     ) -> Result<ConversationEntriesPage, HostError>;
+    /// `GET /api/v1/mission-runs/{id}/operator-view` (Runtime Host v1.1+).
+    fn operator_view(
+        &self,
+        mission_run_id: &str,
+        section: OperatorSection,
+        cursor: Option<&str>,
+        raw: bool,
+    ) -> Result<OperatorViewPage, HostError>;
     /// Collect at most 100 observation pages for one Mission Run.
     fn all_observations(
         &self,
@@ -931,5 +1166,73 @@ impl HostClient for UreqHostClient {
             .call()
             .map_err(|e| HostError::Transport(e.to_string()))?;
         Self::artifact_response(response, "conversation entries", false)
+    }
+
+    fn operator_view(
+        &self,
+        mission_run_id: &str,
+        section: OperatorSection,
+        cursor: Option<&str>,
+        raw: bool,
+    ) -> Result<OperatorViewPage, HostError> {
+        let url = format!(
+            "{}/api/v1/mission-runs/{mission_run_id}/operator-view",
+            self.base_url
+        );
+        let mut request = self
+            .agent
+            .get(&url)
+            .query("section", section.as_str())
+            .query("limit", "100");
+        if let Some(cursor) = cursor {
+            request = request.query("cursor", cursor);
+        }
+        if section == OperatorSection::Environment {
+            request = request.query("raw", if raw { "true" } else { "false" });
+        }
+        let response = request
+            .call()
+            .map_err(|error| HostError::Transport(error.to_string()))?;
+        match response.status().as_u16() {
+            200 => match section {
+                OperatorSection::Overview => Self::read_json(response)
+                    .map(Box::new)
+                    .map(OperatorViewPage::Overview),
+                OperatorSection::Agents => Self::read_json(response)
+                    .map(Box::new)
+                    .map(OperatorViewPage::Agents),
+                OperatorSection::Environment => Self::read_json(response)
+                    .map(Box::new)
+                    .map(OperatorViewPage::Environment),
+                OperatorSection::Artifacts => Self::read_json(response)
+                    .map(Box::new)
+                    .map(OperatorViewPage::Artifacts),
+            },
+            404 => {
+                let detail = Self::error_detail(response)?;
+                Err(HostError::NotFound {
+                    code: detail.code,
+                    message: detail.message,
+                })
+            }
+            422 => {
+                let detail = Self::error_detail(response)?;
+                if detail.code == "invalid_cursor" {
+                    Err(HostError::InvalidCursor {
+                        code: detail.code,
+                        message: detail.message,
+                    })
+                } else {
+                    Err(HostError::InvalidRequest {
+                        code: detail.code,
+                        message: detail.message,
+                    })
+                }
+            }
+            status => Err(HostError::UnexpectedStatus(
+                status,
+                "operator view expects 200, 404, or 422".to_string(),
+            )),
+        }
     }
 }

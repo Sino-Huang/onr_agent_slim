@@ -1,0 +1,30 @@
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ onr operator console  host http://127.0.0.1:8787 · api v1.1 · session c0ns01e0                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Operator View ───────────────────────────────────────────────────────────────────────────────────┐
+│  1 Overview   2 Agents   3 Environment   4 Artifacts                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Invocations · following ───────────┐┌ Invocation Detail ─────────────────────────────────────────┐
+│ hyper-agent planner-execution [co… ││ ID:       invocation-1                                     │
+│                                    ││ Role:     hyper-agent                                      │
+│                                    ││ Phase:    planner-execution                                │
+│                                    ││ Status:   ok / complete                                    │
+│                                    ││ Timing:   2026-08-27T12:00:00Z → 2026-08-27T12:00:02Z ·    │
+│                                    ││2000 ms                                                     │
+│                                    ││                                                            │
+│                                    ││ Recorded Debug Reasoning (non-authoritative) · available   │
+│                                    ││ Compare the candidate routes.                              │
+│                                    ││                                                            │
+│                                    ││ Response Content                                           │
+│                                    ││ Planner attempt completed.                                 │
+│                                    ││                                                            │
+│                                    ││ Tool 1: planner_executor                                   │
+│                                    ││ Args:     {"attempt":2}                                    │
+│                                    ││ Result:   {"status":"accepted"}                            │
+│                                    ││ Error:    -                                                │
+│                                    ││                                                            │
+│                                    ││                                                            │
+└────────────────────────────────────┘└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1-4/Tab: switch · Up/k Down/j: select · f: follow · PgUp/PgDn: detail · c/q                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

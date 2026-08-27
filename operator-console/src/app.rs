@@ -15,8 +15,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::host::{
     ActivationOutcome, ActivationRequest, ArtifactContentPage, ArtifactDescriptor,
     CancellationOutcome, CancellationRequest, ConversationEntry, CurrentRun, EvidencePage, Health,
-    HostError, MissionIntent, NarrativeResponse, ObservationEnvelope, RunActivity, RunNarrative,
-    RunRecord,
+    HostError, MissionIntent, NarrativeResponse, ObservationEnvelope, OperatorAgentInvocation,
+    OperatorEnvironment, OperatorOverview, OperatorSection, OperatorTimelineEntry,
+    OperatorViewPage, RunActivity, RunNarrative, RunRecord,
 };
 
 const CANCELLATION_POLL_LIMIT: Duration = Duration::from_secs(10);
@@ -245,6 +246,14 @@ pub enum HostCommand {
     FetchNarrative { mission_run_id: String },
     /// Fetch all public Artifact descriptors for the current Mission Run.
     FetchArtifacts { mission_run_id: String },
+    /// Fetch one incremental v1.1 operator-view section.
+    FetchOperatorView {
+        mission_run_id: String,
+        section: OperatorSection,
+        cursor: Option<String>,
+        raw: bool,
+        request_id: u64,
+    },
     FetchArtifactContent {
         mission_run_id: String,
         artifact_id: String,
@@ -275,6 +284,12 @@ pub enum HostMessage {
         result: Result<NarrativeResponse, HostError>,
     },
     Artifacts(Result<EvidencePage<ArtifactDescriptor>, HostError>),
+    OperatorView {
+        mission_run_id: String,
+        section: OperatorSection,
+        request_id: u64,
+        result: Result<OperatorViewPage, HostError>,
+    },
     ArtifactContent(Result<ArtifactContentPage, HostError>),
     ConversationEntries {
         mission_run_id: String,
@@ -289,6 +304,50 @@ pub enum PaneFocus {
     #[default]
     Activities,
     Artifacts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OperatorTab {
+    #[default]
+    Overview,
+    Agents,
+    Environment,
+    Artifacts,
+}
+
+impl OperatorTab {
+    pub const ALL: [Self; 4] = [
+        Self::Overview,
+        Self::Agents,
+        Self::Environment,
+        Self::Artifacts,
+    ];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Overview => 0,
+            Self::Agents => 1,
+            Self::Environment => 2,
+            Self::Artifacts => 3,
+        }
+    }
+
+    pub fn section(self) -> OperatorSection {
+        match self {
+            Self::Overview => OperatorSection::Overview,
+            Self::Agents => OperatorSection::Agents,
+            Self::Environment => OperatorSection::Environment,
+            Self::Artifacts => OperatorSection::Artifacts,
+        }
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    fn previous(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,6 +424,18 @@ pub struct App {
     pub conversation_entries_truncated: bool,
     pub pane_focus: PaneFocus,
     pub inspector: Option<ArtifactInspector>,
+    /// Active v1.1 operator-view tab.
+    pub active_tab: OperatorTab,
+    pub operator_overview: Option<OperatorOverview>,
+    pub agent_invocations: Vec<OperatorAgentInvocation>,
+    pub selected_invocation: Option<String>,
+    pub agent_following: bool,
+    pub newer_invocations: usize,
+    pub agent_detail_scroll: u16,
+    pub operator_environment: Option<OperatorEnvironment>,
+    pub environment_timeline: Vec<OperatorTimelineEntry>,
+    pub environment_raw: bool,
+    pub environment_scroll: u16,
     /// Last definitive Runtime Host HTTP response receipt.
     pub last_host_response: Option<Instant>,
     /// Thresholds used to derive Runtime Host liveness.
@@ -384,6 +455,9 @@ pub struct App {
     cancellation_submitting: bool,
     cancellation_request_id: Option<String>,
     clean_exit_action: Option<CleanExitAction>,
+    operator_cursors: [Option<String>; 4],
+    operator_request_sequence: u64,
+    operator_latest_requests: [u64; 4],
     clock: Arc<dyn Clock>,
 }
 
@@ -437,6 +511,17 @@ impl App {
             conversation_entries_truncated: false,
             pane_focus: PaneFocus::default(),
             inspector: None,
+            active_tab: OperatorTab::default(),
+            operator_overview: None,
+            agent_invocations: Vec::new(),
+            selected_invocation: None,
+            agent_following: true,
+            newer_invocations: 0,
+            agent_detail_scroll: 0,
+            operator_environment: None,
+            environment_timeline: Vec::new(),
+            environment_raw: false,
+            environment_scroll: 0,
             last_host_response: None,
             liveness_thresholds: LivenessThresholds::default(),
             cancellation: CancellationState::Idle,
@@ -453,6 +538,9 @@ impl App {
             cancellation_submitting: false,
             cancellation_request_id: None,
             clean_exit_action: None,
+            operator_cursors: [None, None, None, None],
+            operator_request_sequence: 0,
+            operator_latest_requests: [0, 0, 0, 0],
             clock,
         }
     }
@@ -501,6 +589,20 @@ impl App {
         self.liveness() == Liveness::Live && self.ownership_available()
     }
 
+    /// Whether the connected Runtime Host advertises the v1.1 operator view.
+    pub fn operator_view_available(&self) -> bool {
+        self.health
+            .as_ref()
+            .is_some_and(|health| health.api_version.major == 1 && health.api_version.minor >= 1)
+    }
+
+    /// Whether the console is deliberately retaining the v1.0 dashboard.
+    pub fn legacy_view(&self) -> bool {
+        self.health
+            .as_ref()
+            .is_some_and(|health| health.api_version.major == 1 && health.api_version.minor < 1)
+    }
+
     /// Resolve the stable activity id selection to its current index and item.
     pub fn selected_activity(&self) -> Option<(usize, &RunActivity)> {
         let selected = self.selected_activity.as_deref()?;
@@ -517,6 +619,14 @@ impl App {
             .iter()
             .enumerate()
             .find(|(_, artifact)| artifact.artifact_id == selected)
+    }
+
+    pub fn selected_invocation(&self) -> Option<(usize, &OperatorAgentInvocation)> {
+        let selected = self.selected_invocation.as_deref()?;
+        self.agent_invocations
+            .iter()
+            .enumerate()
+            .find(|(_, invocation)| invocation.stable_id == selected)
     }
 
     /// Return observations linked by the selected activity projection.
@@ -653,6 +763,12 @@ impl App {
             }
             return;
         }
+        if self.cancellation == CancellationState::Idle
+            && self.operator_view_available()
+            && self.handle_operator_key(key)
+        {
+            return;
+        }
         match (&self.cancellation, key.code) {
             (CancellationState::Idle, KeyCode::Tab | KeyCode::BackTab) => {
                 self.pane_focus = match self.pane_focus {
@@ -726,6 +842,100 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_operator_key(&mut self, key: KeyEvent) -> bool {
+        let tab = match key.code {
+            KeyCode::Char('1') => Some(OperatorTab::Overview),
+            KeyCode::Char('2') => Some(OperatorTab::Agents),
+            KeyCode::Char('3') => Some(OperatorTab::Environment),
+            KeyCode::Char('4') => Some(OperatorTab::Artifacts),
+            KeyCode::Tab => Some(self.active_tab.next()),
+            KeyCode::BackTab => Some(self.active_tab.previous()),
+            _ => None,
+        };
+        if let Some(tab) = tab {
+            self.active_tab = tab;
+            self.request_operator_section();
+            return true;
+        }
+        match (self.active_tab, key.code) {
+            (OperatorTab::Agents, KeyCode::Up | KeyCode::Char('k')) => {
+                self.move_invocation_selection(-1);
+                true
+            }
+            (OperatorTab::Agents, KeyCode::Down | KeyCode::Char('j')) => {
+                self.move_invocation_selection(1);
+                true
+            }
+            (OperatorTab::Agents, KeyCode::PageUp) => {
+                self.agent_detail_scroll = self.agent_detail_scroll.saturating_sub(5);
+                true
+            }
+            (OperatorTab::Agents, KeyCode::PageDown) => {
+                self.agent_detail_scroll = self.agent_detail_scroll.saturating_add(5);
+                true
+            }
+            (OperatorTab::Agents, KeyCode::Char('f')) => {
+                self.agent_following = true;
+                self.newer_invocations = 0;
+                self.selected_invocation = self
+                    .agent_invocations
+                    .last()
+                    .map(|invocation| invocation.stable_id.clone());
+                self.agent_detail_scroll = 0;
+                true
+            }
+            (OperatorTab::Environment, KeyCode::Up | KeyCode::Char('k')) => {
+                self.environment_scroll = self
+                    .environment_scroll
+                    .saturating_add(1)
+                    .min(self.environment_timeline.len().saturating_sub(1) as u16);
+                true
+            }
+            (OperatorTab::Environment, KeyCode::Down | KeyCode::Char('j')) => {
+                self.environment_scroll = self.environment_scroll.saturating_sub(1);
+                true
+            }
+            (OperatorTab::Environment, KeyCode::Char('r')) => {
+                self.environment_raw = !self.environment_raw;
+                self.environment_timeline.clear();
+                self.environment_scroll = 0;
+                self.operator_cursors[OperatorTab::Environment.index()] = None;
+                self.request_operator_section();
+                true
+            }
+            (OperatorTab::Artifacts, KeyCode::Up | KeyCode::Char('k')) => {
+                self.move_artifact_selection(-1);
+                true
+            }
+            (OperatorTab::Artifacts, KeyCode::Down | KeyCode::Char('j')) => {
+                self.move_artifact_selection(1);
+                true
+            }
+            (OperatorTab::Artifacts, KeyCode::Enter) => {
+                self.open_artifact_inspector();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn move_invocation_selection(&mut self, delta: isize) {
+        if self.agent_invocations.is_empty() {
+            return;
+        }
+        self.agent_following = false;
+        let current = self.selected_invocation().map_or(0, |(index, _)| index);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current
+                .saturating_add(delta as usize)
+                .min(self.agent_invocations.len() - 1)
+        };
+        self.selected_invocation = Some(self.agent_invocations[next].stable_id.clone());
+        self.agent_detail_scroll = 0;
     }
 
     fn require_mutations_enabled(&mut self) -> bool {
@@ -1026,35 +1236,58 @@ impl App {
                 credential: self.session.credential.clone(),
             });
             if let Some(run) = self.run.as_ref() {
-                self.outbox.push(HostCommand::FetchActivities {
-                    mission_run_id: run.mission_run_id.clone(),
-                });
-                self.outbox.push(HostCommand::FetchObservations {
-                    mission_run_id: run.mission_run_id.clone(),
-                });
-                self.outbox.push(HostCommand::FetchNarrative {
-                    mission_run_id: run.mission_run_id.clone(),
-                });
-                self.outbox.push(HostCommand::FetchArtifacts {
-                    mission_run_id: run.mission_run_id.clone(),
-                });
-                if let Some((_, artifact)) = self.selected_artifact()
+                let mission_run_id = run.mission_run_id.clone();
+                if self.operator_view_available() {
+                    self.request_operator_section();
+                } else {
+                    self.outbox.push(HostCommand::FetchActivities {
+                        mission_run_id: mission_run_id.clone(),
+                    });
+                    self.outbox.push(HostCommand::FetchObservations {
+                        mission_run_id: mission_run_id.clone(),
+                    });
+                    self.outbox.push(HostCommand::FetchNarrative {
+                        mission_run_id: mission_run_id.clone(),
+                    });
+                    self.outbox.push(HostCommand::FetchArtifacts {
+                        mission_run_id: mission_run_id.clone(),
+                    });
+                }
+                if self.active_tab == OperatorTab::Artifacts
+                    && let Some((_, artifact)) = self.selected_artifact()
                     && artifact.classification == "conversation"
                 {
                     self.outbox.push(HostCommand::FetchConversationEntries {
-                        mission_run_id: run.mission_run_id.clone(),
+                        mission_run_id: mission_run_id.clone(),
                         artifact_id: artifact.artifact_id.clone(),
                     });
                 }
                 if let Some(inspector) = self.inspector.as_ref() {
                     self.outbox.push(HostCommand::FetchArtifactContent {
-                        mission_run_id: run.mission_run_id.clone(),
+                        mission_run_id,
                         artifact_id: inspector.artifact_id.clone(),
                         offset: inspector.offset,
                     });
                 }
             }
         }
+    }
+
+    fn request_operator_section(&mut self) {
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        let index = self.active_tab.index();
+        self.operator_request_sequence = self.operator_request_sequence.saturating_add(1);
+        let request_id = self.operator_request_sequence;
+        self.operator_latest_requests[index] = request_id;
+        self.outbox.push(HostCommand::FetchOperatorView {
+            mission_run_id: run.mission_run_id.clone(),
+            section: self.active_tab.section(),
+            cursor: self.operator_cursors[index].clone(),
+            raw: self.environment_raw,
+            request_id,
+        });
     }
 
     /// Handle a response from the host worker thread.
@@ -1150,6 +1383,7 @@ impl App {
                         .map(|run| run.mission_run_id.as_str());
                 if run_changed {
                     self.narrative = None;
+                    self.reset_operator_view();
                 }
                 self.run = current.mission_run;
                 self.update_evidence_notice();
@@ -1277,6 +1511,14 @@ impl App {
                     "Host evidence poll failed ({error}); showing last known state"
                 ));
             }
+            HostMessage::OperatorView {
+                mission_run_id,
+                section,
+                request_id,
+                result,
+            } => {
+                self.reduce_operator_view(mission_run_id, section, request_id, result);
+            }
             HostMessage::ArtifactContent(Ok(page)) => {
                 if let Some(inspector) = self.inspector.as_mut()
                     && inspector.artifact_id == page.artifact_id
@@ -1401,6 +1643,170 @@ impl App {
             .as_ref()
             .is_some_and(|run| run.mission_run_id == mission_run_id)
     }
+
+    fn reset_operator_view(&mut self) {
+        self.operator_overview = None;
+        self.agent_invocations.clear();
+        self.selected_invocation = None;
+        self.agent_following = true;
+        self.newer_invocations = 0;
+        self.agent_detail_scroll = 0;
+        self.operator_environment = None;
+        self.environment_timeline.clear();
+        self.environment_scroll = 0;
+        self.artifacts.clear();
+        self.selected_artifact = None;
+        self.operator_cursors = [None, None, None, None];
+        self.operator_latest_requests = [0, 0, 0, 0];
+    }
+
+    fn reduce_operator_view(
+        &mut self,
+        mission_run_id: String,
+        section: OperatorSection,
+        request_id: u64,
+        result: Result<OperatorViewPage, HostError>,
+    ) {
+        let tab = match section {
+            OperatorSection::Overview => OperatorTab::Overview,
+            OperatorSection::Agents => OperatorTab::Agents,
+            OperatorSection::Environment => OperatorTab::Environment,
+            OperatorSection::Artifacts => OperatorTab::Artifacts,
+        };
+        let index = tab.index();
+        if self.operator_latest_requests[index] != request_id
+            || self
+                .run
+                .as_ref()
+                .is_none_or(|run| run.mission_run_id != mission_run_id)
+        {
+            return;
+        }
+        let page = match result {
+            Ok(page)
+                if page.meta().mission_run_id == mission_run_id
+                    && page.meta().section == section =>
+            {
+                page
+            }
+            Ok(_) => return,
+            Err(error) => {
+                self.notice = Some(format!(
+                    "Host operator-view poll failed ({error}); showing last known state"
+                ));
+                return;
+            }
+        };
+        self.operator_cursors[index] = Some(page.meta().next_cursor.clone());
+        match page {
+            OperatorViewPage::Overview(page) => {
+                let mut page = *page;
+                let mut retained = self
+                    .operator_overview
+                    .as_ref()
+                    .map_or_else(Vec::new, |overview| overview.recent_events.clone());
+                merge_timeline(&mut retained, page.overview.recent_events);
+                page.overview.recent_events = retained;
+                self.operator_overview = Some(page.overview);
+            }
+            OperatorViewPage::Agents(page) => self.merge_agent_invocations(page.agents),
+            OperatorViewPage::Environment(page) => {
+                let mut page = *page;
+                if page.environment.raw != self.environment_raw {
+                    return;
+                }
+                merge_timeline(&mut self.environment_timeline, page.environment.timeline);
+                page.environment.timeline = self.environment_timeline.clone();
+                self.operator_environment = Some(page.environment);
+            }
+            OperatorViewPage::Artifacts(page) => self.merge_operator_artifacts(page.artifacts),
+        }
+    }
+
+    fn merge_agent_invocations(&mut self, incoming: Vec<OperatorAgentInvocation>) {
+        let mut added = 0usize;
+        for invocation in incoming {
+            if let Some(existing) = self
+                .agent_invocations
+                .iter_mut()
+                .find(|item| item.stable_id == invocation.stable_id)
+            {
+                *existing = invocation;
+            } else {
+                self.agent_invocations.push(invocation);
+                added += 1;
+            }
+        }
+        self.agent_invocations.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.updated_at.cmp(&right.updated_at))
+                .then_with(|| left.stable_id.cmp(&right.stable_id))
+        });
+        if self.agent_following {
+            self.selected_invocation = self
+                .agent_invocations
+                .last()
+                .map(|invocation| invocation.stable_id.clone());
+            self.newer_invocations = 0;
+        } else {
+            self.newer_invocations = self.newer_invocations.saturating_add(added);
+            if !self.agent_invocations.iter().any(|invocation| {
+                self.selected_invocation.as_deref() == Some(invocation.stable_id.as_str())
+            }) {
+                self.selected_invocation = self
+                    .agent_invocations
+                    .first()
+                    .map(|invocation| invocation.stable_id.clone());
+            }
+        }
+    }
+
+    fn merge_operator_artifacts(&mut self, incoming: Vec<ArtifactDescriptor>) {
+        let selected = self.selected_artifact.clone();
+        for artifact in incoming {
+            if let Some(existing) = self
+                .artifacts
+                .iter_mut()
+                .find(|item| item.artifact_id == artifact.artifact_id)
+            {
+                *existing = artifact;
+            } else {
+                self.artifacts.push(artifact);
+            }
+        }
+        self.artifacts
+            .sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+        self.selected_artifact = selected
+            .filter(|id| {
+                self.artifacts
+                    .iter()
+                    .any(|artifact| &artifact.artifact_id == id)
+            })
+            .or_else(|| {
+                self.artifacts
+                    .first()
+                    .map(|artifact| artifact.artifact_id.clone())
+            });
+    }
+}
+
+fn merge_timeline(retained: &mut Vec<OperatorTimelineEntry>, incoming: Vec<OperatorTimelineEntry>) {
+    for entry in incoming {
+        if let Some(existing) = retained
+            .iter_mut()
+            .find(|item| item.stable_id == entry.stable_id)
+        {
+            *existing = entry;
+        } else {
+            retained.push(entry);
+        }
+    }
+    retained.sort_by(|left, right| {
+        left.observation_sequence
+            .cmp(&right.observation_sequence)
+            .then_with(|| left.stable_id.cmp(&right.stable_id))
+    });
 }
 
 fn result_proves_response<T>(result: &Result<T, HostError>) -> bool {
@@ -1419,6 +1825,7 @@ fn host_message_proves_response(message: &HostMessage) -> bool {
         HostMessage::Observations(result) => result_proves_response(result),
         HostMessage::Narrative { result, .. } => result_proves_response(result),
         HostMessage::Artifacts(result) => result_proves_response(result),
+        HostMessage::OperatorView { result, .. } => result_proves_response(result),
         HostMessage::ArtifactContent(result) => result_proves_response(result),
         HostMessage::ConversationEntries { result, .. } => result_proves_response(result),
         HostMessage::Cancelled(result) => result_proves_response(result),

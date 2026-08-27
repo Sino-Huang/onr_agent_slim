@@ -10,7 +10,8 @@ use operator_console::host::{
     ActivationOutcome, ActivationRequest, ActivitiesPage, ApiVersion, ArtifactContentPage,
     ArtifactsPage, CancellationAccepted, CancellationOutcome, CancellationRequest,
     ConversationEntriesPage, CurrentRun, Health, HostClient, HostError, MissionIntent,
-    NarrativeResponse, ObservationsPage, RunNarrative, RunRecord, spawn_worker,
+    NarrativeResponse, ObservationsPage, OperatorSection, OperatorViewPage, RunNarrative,
+    RunRecord, spawn_worker,
 };
 
 #[derive(Default)]
@@ -190,6 +191,17 @@ impl HostClient for ScriptedClient {
             entries: Vec::new(),
             next_cursor: None,
         })
+    }
+
+    fn operator_view(
+        &self,
+        _mission_run_id: &str,
+        _section: OperatorSection,
+        _cursor: Option<&str>,
+        _raw: bool,
+    ) -> Result<OperatorViewPage, HostError> {
+        self.calls.lock().unwrap().push("operator-view".to_string());
+        Err(HostError::Transport("not scripted".to_string()))
     }
 }
 

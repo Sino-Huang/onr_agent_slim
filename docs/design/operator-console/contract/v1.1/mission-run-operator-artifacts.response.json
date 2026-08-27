@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "artifacts",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "artifacts-cursor-2",
+  "before_cursor": null,
+  "has_more": false,
+  "artifacts": [
+    {
+      "schema_version": 1,
+      "artifact_id": "report",
+      "kind": "report",
+      "media_type": "text/plain",
+      "byte_size": 14,
+      "content_digest": "sha256:9018fbb24b616b683277071f3e28306a9f240176849e880181d8f9e71ec65832",
+      "display": {"title": "Public report", "summary": "Published"},
+      "published_at": "2026-08-27T12:00:05Z",
+      "classification": "text",
+      "source": "public_inbox"
+    },
+    {
+      "schema_version": 1,
+      "artifact_id": "planner-c3RhdGVjaGFydC1hdHRlbXB0cy8wMDEvYWNjZXB0ZWQtc3RhdGVjaGFydC5qc29u",
+      "kind": "accepted-statechart.json",
+      "media_type": "application/json",
+      "byte_size": 18,
+      "content_digest": null,
+      "display": {
+        "title": "Accepted Statechart (attempt 1)",
+        "summary": "statechart-attempts/001/accepted-statechart.json"
+      },
+      "published_at": "2026-08-27T12:00:06Z",
+      "classification": "text",
+      "source": "planner",
+      "ref": "statechart-attempts/001/accepted-statechart.json"
+    }
+  ]
+}

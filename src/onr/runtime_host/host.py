@@ -25,7 +25,7 @@ from onr.contracts.hyper_agent import MissionInput
 from onr.runtime.cli import run_closed_loop_demo
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.config import RuntimeConfig
-from onr.runtime_host.artifacts import PublicArtifactInbox
+from onr.runtime_host.artifacts import ArtifactNotFoundError, PublicArtifactInbox
 from onr.runtime_host.narrative import (
     RunNarrativeRecord,
     RunNarrativeSummarizer,
@@ -42,6 +42,11 @@ from onr.runtime_host.observations import (
     encode_cursor,
     map_activities,
     page_entries,
+)
+from onr.runtime_host.operator_projection import (
+    OPERATOR_DEFAULT_LIMIT,
+    OperatorRunProjection,
+    OperatorSection,
 )
 from onr.viewer.trace import TraceProjection, TraceViewItem
 
@@ -319,6 +324,7 @@ class RuntimeHost:
         self._artifact_inbox = PublicArtifactInbox(
             artifact_inbox_root or config.storage.root / "artifact-inbox"
         )
+        self._operator_projection = OperatorRunProjection()
         self._narrative_summarizer = narrative_summarizer
         self._narrative_interval_seconds = narrative_interval_seconds
         self._lock = RLock()
@@ -676,13 +682,24 @@ class RuntimeHost:
             run = state["runs"].get(mission_run_id)
             if not isinstance(run, dict):
                 raise HostNotFoundError
-            return self._artifact_inbox.artifact_content(
-                str(run["mission_id"]),
-                mission_run_id,
-                artifact_id,
-                offset=offset,
-                limit=limit,
-            )
+            mission_id = str(run["mission_id"])
+            try:
+                return self._artifact_inbox.artifact_content(
+                    mission_id,
+                    mission_run_id,
+                    artifact_id,
+                    offset=offset,
+                    limit=limit,
+                )
+            except ArtifactNotFoundError:
+                return self._operator_projection.planner_artifact_content(
+                    mission_id=mission_id,
+                    mission_run_id=mission_run_id,
+                    planner_root=self._planner_root(mission_run_id),
+                    artifact_id=artifact_id,
+                    offset=offset,
+                    limit=limit,
+                )
 
     def conversation_entries(
         self,
@@ -706,6 +723,45 @@ class RuntimeHost:
                 cursor=cursor,
                 limit=limit,
             )
+
+    def operator_view(
+        self,
+        mission_run_id: str,
+        *,
+        section: OperatorSection,
+        limit: int = OPERATOR_DEFAULT_LIMIT,
+        cursor: str | None = None,
+        before: str | None = None,
+        raw: bool = False,
+    ) -> dict[str, object]:
+        """Return one incremental operator-facing section for a Mission Run."""
+
+        with self._state_guard():
+            run, log = self._refresh_observations(mission_run_id)
+            narrative = self._narrative_record(mission_run_id).public_narrative()
+            return self._operator_projection.view(
+                run=run,
+                observations=log.entries,
+                storage_root=self.config.storage.root,
+                environment_root=self.config.environment_profile.fake.artifact_root,
+                planner_root=self._planner_root(mission_run_id),
+                artifact_inbox=self._artifact_inbox,
+                narrative=narrative,
+                debug=self.config.debug,
+                section=section,
+                limit=limit,
+                cursor=cursor,
+                before=before,
+                raw=raw,
+            )
+
+    def _planner_root(self, mission_run_id: str) -> Path:
+        configured = self._worker_options.planner_artifacts
+        return (
+            configured
+            if configured is not None
+            else self.root / "planner-artifacts" / mission_run_id
+        )
 
     def mission_intent(self, mission_run_id: str, credential: str) -> dict[str, object]:
         with self._state_guard():

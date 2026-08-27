@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "overview",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "overview-cursor-3",
+  "before_cursor": null,
+  "has_more": false,
+  "overview": {
+    "authority": "Runtime Host Mission Run Record",
+    "latest_agents": {
+      "hyper_agent": null,
+      "maneuver_control": null
+    },
+    "fsm": {
+      "state": "navigate",
+      "status": "active"
+    },
+    "environment": {
+      "position": {"x": 10, "y": 20, "z": -30},
+      "velocity": {"x": 1, "y": 0, "z": 0},
+      "mission_time_seconds": 12.5
+    },
+    "active_maneuver": {"maneuver_id": "maneuver-7", "lifecycle": "active"},
+    "recent_events": [
+      {
+        "stable_id": "observation:3:event-3",
+        "observation_sequence": 3,
+        "event_id": "event-3",
+        "occurred_at": "2026-08-27T12:00:03Z",
+        "component": "maneuver-control",
+        "authority": "operational-log",
+        "event_kind": "maneuver-handoff",
+        "status": null,
+        "outcome": "completed",
+        "correlation_id": null,
+        "replay_disposition": "normal",
+        "payload": {},
+        "warnings": []
+      }
+    ],
+    "counts": {
+      "agents": 2,
+      "environment_events": 3,
+      "artifacts": 2,
+      "warnings": 0
+    },
+    "narrative": {
+      "status": "none",
+      "text": null,
+      "generated_at": null,
+      "source_watermark": 0,
+      "terminal": false,
+      "evidence": null
+    },
+    "hitl": {
+      "status": "none",
+      "requires_action": false
+    }
+  }
+}

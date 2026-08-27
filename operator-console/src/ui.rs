@@ -10,7 +10,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::app::{App, AppState, CancellationState, Liveness, MIN_HEIGHT, MIN_WIDTH, PaneFocus};
+use crate::app::{
+    App, AppState, CancellationState, Liveness, MIN_HEIGHT, MIN_WIDTH, OperatorTab, PaneFocus,
+};
 
 const HEADER_ROWS: u16 = 3;
 const FOOTER_ROWS: u16 = 3;
@@ -67,6 +69,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
             CancellationState::Idle if app.inspector.is_some() => {
                 draw_artifact_inspector(frame, rows[1], app)
             }
+            CancellationState::Idle if app.operator_view_available() => {
+                draw_operator_dashboard(frame, rows[1], app)
+            }
             CancellationState::Idle => draw_run_dashboard(frame, rows[1], app),
             CancellationState::Confirming => draw_cancellation_confirmation(frame, rows[1], app),
             CancellationState::Requested { .. } => draw_cancellation_requested(frame, rows[1], app),
@@ -90,6 +95,11 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             format!("host {} · {api} · session {session_short}", app.host_addr),
             dim(),
         ),
+        if app.legacy_view() {
+            Span::styled(" · LEGACY VIEW", hint())
+        } else {
+            Span::raw("")
+        },
     ]);
     let block = Block::default().borders(Borders::ALL);
     frame.render_widget(Paragraph::new(line).block(block), area);
@@ -105,7 +115,24 @@ fn footer_lines(app: &App) -> (String, Option<String>) {
                 "Left/p Right/n: page preview · Esc: close"
             }
             CancellationState::Idle => {
-                "Tab: focus pane · Up/k Down/j: select · Enter: inspect Artifact · c: request cancellation ·\n Ctrl+C: quit"
+                if app.operator_view_available() {
+                    match app.active_tab {
+                        OperatorTab::Overview => {
+                            "1-4/Tab: switch view · c: request cancellation · q: managed exit"
+                        }
+                        OperatorTab::Agents => {
+                            "1-4/Tab: switch · Up/k Down/j: select · f: follow · PgUp/PgDn: detail · c/q"
+                        }
+                        OperatorTab::Environment => {
+                            "1-4/Tab: switch · Up/k Down/j: browse · r: raw evidence · c/q"
+                        }
+                        OperatorTab::Artifacts => {
+                            "1-4/Tab: switch · Up/k Down/j: select · Enter: inspect Artifact · c/q"
+                        }
+                    }
+                } else {
+                    "Legacy Host v1.0 · Tab: focus pane · Up/k Down/j: select · Enter: inspect Artifact · c/q"
+                }
             }
             CancellationState::Confirming => "Enter: confirm cancellation · Esc: keep running",
             CancellationState::Requested { .. } => {
@@ -221,6 +248,430 @@ fn field(label: &str, value: &str) -> Line<'static> {
         Span::styled(format!(" {label:<10}"), dim()),
         Span::raw(value.to_string()),
     ])
+}
+
+fn json_text(value: &serde_json::Value) -> String {
+    if value.is_null() {
+        "-".to_string()
+    } else {
+        serde_json::to_string(value).unwrap_or_else(|_| "-".to_string())
+    }
+}
+
+fn draw_operator_dashboard(frame: &mut Frame, area: Rect, app: &App) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+    draw_operator_tabs(frame, rows[0], app);
+    match app.active_tab {
+        OperatorTab::Overview => draw_operator_overview(frame, rows[1], app),
+        OperatorTab::Agents => draw_operator_agents(frame, rows[1], app),
+        OperatorTab::Environment => draw_operator_environment(frame, rows[1], app),
+        OperatorTab::Artifacts => draw_operator_artifacts(frame, rows[1], app),
+    }
+}
+
+fn draw_operator_tabs(frame: &mut Frame, area: Rect, app: &App) {
+    let labels = [
+        (OperatorTab::Overview, "1 Overview"),
+        (OperatorTab::Agents, "2 Agents"),
+        (OperatorTab::Environment, "3 Environment"),
+        (OperatorTab::Artifacts, "4 Artifacts"),
+    ];
+    let mut spans = vec![Span::raw(" ")];
+    for (tab, label) in labels {
+        let style = if app.active_tab == tab {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            dim()
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+        spans.push(Span::raw(" "));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Operator View "),
+        ),
+        area,
+    );
+}
+
+fn draw_operator_overview(frame: &mut Frame, area: Rect, app: &App) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(9), Constraint::Min(0)])
+        .split(area);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(45), Constraint::Min(0)])
+        .split(rows[0]);
+    draw_run_panel(frame, top[0], app);
+    draw_operator_phase_cards(frame, top[1], app);
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(rows[1]);
+    draw_significant_activity(frame, bottom[0], app);
+    draw_human_decisions(frame, bottom[1], app);
+}
+
+fn draw_operator_phase_cards(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Current Progress ");
+    let lines = if let Some(overview) = app.operator_overview.as_ref() {
+        let hyper = overview.latest_agents.hyper_agent.as_ref().map_or_else(
+            || "no evidence".to_string(),
+            |agent| format!("{} · {}", agent.phase, agent.completion_state),
+        );
+        let maneuver = overview
+            .latest_agents
+            .maneuver_control
+            .as_ref()
+            .map_or_else(
+                || "no evidence".to_string(),
+                |agent| format!("{} · {}", agent.phase, agent.completion_state),
+            );
+        let narrative = if overview.narrative.status == "unavailable" {
+            "unavailable (run state unaffected)"
+        } else {
+            overview.narrative.status.as_str()
+        };
+        vec![
+            field("Hyper:", &hyper),
+            field("Maneuver:", &maneuver),
+            field("FSM:", overview.fsm.state.as_deref().unwrap_or("-")),
+            field(
+                "Mission t:",
+                &overview
+                    .environment
+                    .mission_time_seconds
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), ToString::to_string),
+            ),
+            field(
+                "Evidence:",
+                &format!(
+                    "{} agent · {} event · {} artifact",
+                    overview.counts.agents,
+                    overview.counts.environment_events,
+                    overview.counts.artifacts
+                ),
+            ),
+            field("Narrative:", narrative),
+        ]
+    } else {
+        vec![Line::from(Span::styled(
+            " Waiting for operator-view evidence…",
+            dim(),
+        ))]
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_significant_activity(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Significant Activity ");
+    let width = block.inner(area).width.saturating_sub(1) as usize;
+    let lines = app.operator_overview.as_ref().map_or_else(
+        || vec![Line::from(Span::styled(" No activity received.", dim()))],
+        |overview| {
+            if overview.recent_events.is_empty() {
+                vec![Line::from(Span::styled(
+                    " No significant activity recorded.",
+                    dim(),
+                ))]
+            } else {
+                overview
+                    .recent_events
+                    .iter()
+                    .rev()
+                    .map(|entry| {
+                        Line::from(truncate(
+                            &format!(
+                                " #{} {} · {} · {}",
+                                entry.observation_sequence,
+                                entry.event_kind,
+                                entry.component.as_deref().unwrap_or("unknown"),
+                                entry.outcome.as_deref().unwrap_or("recorded")
+                            ),
+                            width,
+                        ))
+                    })
+                    .collect()
+            }
+        },
+    );
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_operator_agents(frame: &mut Frame, area: Rect, app: &App) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(38), Constraint::Min(0)])
+        .split(area);
+    let follow = if app.agent_following {
+        "following".to_string()
+    } else {
+        format!("paused · {} newer", app.newer_invocations)
+    };
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Invocations · {follow} "));
+    let width = list_block.inner(columns[0]).width.saturating_sub(1) as usize;
+    let selected = app.selected_invocation().map(|(index, _)| index);
+    let lines = if app.agent_invocations.is_empty() {
+        vec![Line::from(Span::styled(
+            " No Hyper or Maneuver invocations.",
+            dim(),
+        ))]
+    } else {
+        app.agent_invocations
+            .iter()
+            .enumerate()
+            .map(|(index, invocation)| {
+                let style = if selected == Some(index) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                Line::from(Span::styled(
+                    truncate(
+                        &format!(
+                            " {} {} [{}] {}",
+                            invocation.role,
+                            invocation.phase,
+                            invocation.completion_state,
+                            invocation.name
+                        ),
+                        width,
+                    ),
+                    style,
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).block(list_block), columns[0]);
+    draw_invocation_detail(frame, columns[1], app);
+}
+
+fn draw_invocation_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Invocation Detail ");
+    let Some((_, invocation)) = app.selected_invocation() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Select an invocation to inspect.",
+                dim(),
+            )))
+            .block(block),
+            area,
+        );
+        return;
+    };
+    let reasoning = &invocation.recorded_debug_reasoning;
+    let mut lines = vec![
+        field("ID:", &invocation.invocation_id),
+        field("Role:", &invocation.role),
+        field("Phase:", &invocation.phase),
+        field(
+            "Status:",
+            &format!("{} / {}", invocation.status, invocation.completion_state),
+        ),
+        field(
+            "Timing:",
+            &format!(
+                "{} → {} · {} ms",
+                invocation.started_at.as_deref().unwrap_or("-"),
+                invocation.finished_at.as_deref().unwrap_or("live"),
+                invocation
+                    .duration_ms
+                    .map_or_else(|| "-".to_string(), |value| value.to_string())
+            ),
+        ),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(
+                " {} (non-authoritative) · {}",
+                reasoning.label, reasoning.disposition
+            ),
+            hint(),
+        )),
+    ];
+    lines.extend(
+        reasoning
+            .content
+            .as_deref()
+            .unwrap_or("Debug evidence unavailable.")
+            .lines()
+            .map(|line| Line::from(format!(" {line}"))),
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(" Response Content", hint())));
+    lines.extend(
+        invocation
+            .content
+            .as_deref()
+            .unwrap_or("-")
+            .lines()
+            .map(|line| Line::from(format!(" {line}"))),
+    );
+    for (index, call) in invocation.tool_calls.iter().enumerate() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" Tool {}: {}", index + 1, call.name),
+            hint(),
+        )));
+        lines.push(field("Args:", &json_text(&call.args)));
+        lines.push(field("Result:", &json_text(&call.result)));
+        lines.push(field("Error:", &json_text(&call.error)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((app.agent_detail_scroll, 0)),
+        area,
+    );
+}
+
+fn draw_operator_environment(frame: &mut Frame, area: Rect, app: &App) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(9), Constraint::Min(0)])
+        .split(area);
+    let current_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Latest Authoritative State ");
+    let current_lines = app.operator_environment.as_ref().map_or_else(
+        || {
+            vec![Line::from(Span::styled(
+                " Waiting for environment evidence…",
+                dim(),
+            ))]
+        },
+        |environment| {
+            vec![
+                field("Position:", &json_text(&environment.position)),
+                field("Velocity:", &json_text(&environment.velocity)),
+                field(
+                    "Mission t:",
+                    &environment
+                        .mission_time_seconds
+                        .as_ref()
+                        .map_or_else(|| "-".to_string(), ToString::to_string),
+                ),
+                field("FSM:", environment.fsm_state.as_deref().unwrap_or("-")),
+                field("Maneuver:", &json_text(&environment.active_maneuver)),
+                field("Feedback:", &json_text(&environment.maneuver_feedback)),
+                field("Percepts:", &json_text(&environment.perceptions)),
+            ]
+        },
+    );
+    frame.render_widget(Paragraph::new(current_lines).block(current_block), rows[0]);
+
+    let mode = if app.environment_raw {
+        "raw"
+    } else {
+        "filtered"
+    };
+    let timeline_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Operational Timeline · {mode} "));
+    let width = timeline_block.inner(rows[1]).width.saturating_sub(1) as usize;
+    let selected = app
+        .environment_timeline
+        .len()
+        .checked_sub(1 + usize::from(app.environment_scroll));
+    let lines = if app.environment_timeline.is_empty() {
+        vec![Line::from(Span::styled(
+            " No environment events recorded.",
+            dim(),
+        ))]
+    } else {
+        app.environment_timeline
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, entry)| {
+                let style = if selected == Some(index) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                Line::from(Span::styled(
+                    truncate(
+                        &format!(
+                            " #{} {} · {} · {}",
+                            entry.observation_sequence,
+                            entry.event_kind,
+                            entry.component.as_deref().unwrap_or("unknown"),
+                            entry.outcome.as_deref().unwrap_or("recorded")
+                        ),
+                        width,
+                    ),
+                    style,
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).block(timeline_block), rows[1]);
+}
+
+fn draw_operator_artifacts(frame: &mut Frame, area: Rect, app: &App) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
+        .split(area);
+    draw_artifacts(frame, columns[0], app);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Artifact Preview ");
+    let lines = match app.selected_artifact() {
+        None => vec![Line::from(Span::styled(" No Artifact selected.", dim()))],
+        Some((_, artifact)) => vec![
+            field("Title:", &artifact.display.title),
+            field(
+                "Source:",
+                artifact.source.as_deref().unwrap_or("public_inbox"),
+            ),
+            field("Kind:", &artifact.kind),
+            field("Media:", &artifact.media_type),
+            field(
+                "Size:",
+                &artifact
+                    .byte_size
+                    .map(human_bytes)
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            field("Ref:", artifact.r#ref.as_deref().unwrap_or("-")),
+            field("Published:", &artifact.published_at),
+            Line::from(""),
+            Line::from(Span::styled(
+                artifact.display.summary.as_deref().unwrap_or("No summary."),
+                dim(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                " Press Enter to open the paged inspector.",
+                hint(),
+            )),
+        ],
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        columns[1],
+    );
 }
 
 fn draw_run_dashboard(frame: &mut Frame, area: Rect, app: &App) {
@@ -427,7 +878,12 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 fn draw_artifacts(frame: &mut Frame, area: Rect, app: &App) {
-    let title = if app.pane_focus == PaneFocus::Artifacts {
+    let focused = if app.operator_view_available() {
+        app.active_tab == OperatorTab::Artifacts
+    } else {
+        app.pane_focus == PaneFocus::Artifacts
+    };
+    let title = if focused {
         " * Artifacts "
     } else {
         " Artifacts "
@@ -449,7 +905,7 @@ fn draw_artifacts(frame: &mut Frame, area: Rect, app: &App) {
                     .byte_size
                     .map_or_else(|| artifact.classification.clone(), human_bytes);
                 let text = format!(" {} {} ({size})", artifact.kind, artifact.display.title);
-                let style = if app.pane_focus == PaneFocus::Artifacts && selected == Some(index) {
+                let style = if focused && selected == Some(index) {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
                     Style::default()

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "environment",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "environment-cursor-4",
+  "before_cursor": null,
+  "has_more": false,
+  "environment": {
+    "authority": "Runtime Host Mission Run state and environment evidence",
+    "position": {"x": 10, "y": 20, "z": -30},
+    "velocity": {"x": 1, "y": 0, "z": 0},
+    "mission_time_seconds": 12.5,
+    "fsm_state": "navigate",
+    "fsm_status": "active",
+    "active_maneuver": {"maneuver_id": "maneuver-7", "lifecycle": "active"},
+    "maneuver_feedback": null,
+    "perceptions": [{"event_id": "perception-1"}],
+    "belief_changes": [],
+    "warnings": [],
+    "raw": false,
+    "timeline": [
+      {
+        "stable_id": "observation:4:belief-4",
+        "observation_sequence": 4,
+        "event_id": "belief-4",
+        "occurred_at": "2026-08-27T12:00:04Z",
+        "component": "bayesian-belief",
+        "authority": "bayesian-belief-source",
+        "event_kind": "belief.updated",
+        "status": null,
+        "outcome": "completed",
+        "correlation_id": null,
+        "replay_disposition": "normal",
+        "payload": {"revision": 2},
+        "warnings": []
+      }
+    ]
+  }
+}

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use operator_console::host::{
     ActivationOutcome, ActivationRequest, CancellationOutcome, CancellationRequest, HostClient,
-    HostError, UreqHostClient,
+    HostError, OperatorSection, OperatorViewPage, UreqHostClient,
 };
 use support::FixtureHost;
 
@@ -519,5 +519,33 @@ fn conversation_entries_support_paging_gaps_refs_and_stable_errors() {
     assert!(matches!(
         client.conversation_entries(&run_id, "operator-conversation", Some("bogus")),
         Err(HostError::InvalidCursor { ref code, .. }) if code == "invalid_cursor"
+    ));
+}
+
+#[test]
+fn operator_view_v1_1_client_interoperates_for_every_section() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let run_id = activate_fixture_run(&client);
+
+    let overview = client
+        .operator_view(&run_id, OperatorSection::Overview, None, false)
+        .unwrap();
+    assert!(matches!(overview, OperatorViewPage::Overview(_)));
+    let agents = client
+        .operator_view(&run_id, OperatorSection::Agents, None, false)
+        .unwrap();
+    assert!(matches!(agents, OperatorViewPage::Agents(_)));
+    let environment = client
+        .operator_view(&run_id, OperatorSection::Environment, None, false)
+        .unwrap();
+    assert!(matches!(environment, OperatorViewPage::Environment(_)));
+    let artifacts = client
+        .operator_view(&run_id, OperatorSection::Artifacts, None, false)
+        .unwrap();
+    assert!(matches!(artifacts, OperatorViewPage::Artifacts(_)));
+    assert!(matches!(
+        client.operator_view("run-unknown", OperatorSection::Overview, None, false),
+        Err(HostError::NotFound { ref code, .. }) if code == "mission_run_not_found"
     ));
 }

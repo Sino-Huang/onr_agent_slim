@@ -159,7 +159,7 @@ def test_health_and_empty_current_run_contract(tmp_path: Path) -> None:
 
     assert client.get("/api/v1/health").json() == {
         "status": "ok",
-        "api_version": {"major": 1, "minor": 0},
+        "api_version": {"major": 1, "minor": 1},
     }
     response = client.get("/api/v1/mission-runs/current")
     assert response.status_code == 200
@@ -1284,7 +1284,7 @@ def test_ephemeral_loopback_server_exercises_real_http_and_durable_lifecycle(
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2) as client:
             assert client.get("/api/v1/health").json() == {
                 "status": "ok",
-                "api_version": {"major": 1, "minor": 0},
+                "api_version": {"major": 1, "minor": 1},
             }
             accepted = client.post(
                 "/api/v1/mission-activations",

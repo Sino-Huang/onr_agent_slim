@@ -9,7 +9,8 @@ use operator_console::host::{
     ActivationAccepted, ActivationOutcome, ActivitiesPage, ArtifactContentPage, ArtifactDescriptor,
     ArtifactsPage, CancellationAccepted, CancellationOutcome, ConversationEntriesPage,
     ConversationEntry, CurrentRun, EvidencePage, Health, HostError, MissionIntent,
-    NarrativeResponse, ObservationEnvelope, ObservationsPage, RunActivity, RunRecord,
+    NarrativeResponse, ObservationEnvelope, ObservationsPage, OperatorAgentsPage,
+    OperatorEnvironmentPage, OperatorSection, OperatorViewPage, RunActivity, RunRecord,
 };
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -43,6 +44,13 @@ fn health() -> Health {
     Health {
         status: "ok".to_string(),
         api_version: operator_console::host::ApiVersion { major: 1, minor: 0 },
+    }
+}
+
+fn operator_health() -> Health {
+    Health {
+        status: "ok".to_string(),
+        api_version: operator_console::host::ApiVersion { major: 1, minor: 1 },
     }
 }
 
@@ -191,6 +199,131 @@ fn active_run_app_with_clock(clock: Arc<ManualClock>) -> App {
     ))));
     app.take_commands();
     app
+}
+
+fn active_operator_app() -> App {
+    let mut app = App::new_with_session_file(
+        "http://127.0.0.1:8787".to_string(),
+        temp_state_file("operator-view"),
+    );
+    app.take_commands();
+    app.handle_host_message(HostMessage::Connected(Ok(operator_health())));
+    app.intent = "survey the ridge".to_string();
+    app.cursor = app.intent.len();
+    app.handle_key(alt_enter());
+    app.handle_key(key(KeyCode::Enter));
+    app.take_commands();
+    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
+        accepted(),
+    ))));
+    app
+}
+
+fn operator_agents_page(cursor: &str, ids: &[(&str, &str)]) -> OperatorViewPage {
+    let agents = ids
+        .iter()
+        .enumerate()
+        .map(|(index, (stable_id, invocation_id))| {
+            serde_json::json!({
+                "stable_id": stable_id,
+                "invocation_id": invocation_id,
+                "parent_id": null,
+                "role": if index % 2 == 0 { "hyper-agent" } else { "maneuver-control" },
+                "phase": if index % 2 == 0 { "planner-execution" } else { "maneuver-handoff" },
+                "kind": "llm",
+                "name": "reason",
+                "status": "ok",
+                "completion_state": "complete",
+                "started_at": format!("2026-08-27T12:00:0{index}Z"),
+                "updated_at": format!("2026-08-27T12:00:0{index}Z"),
+                "finished_at": format!("2026-08-27T12:00:0{index}Z"),
+                "duration_ms": 100,
+                "revision": 2,
+                "outcome": "completed",
+                "content": "response content",
+                "decision": null,
+                "recorded_debug_reasoning": {
+                    "label": "Recorded Debug Reasoning",
+                    "authority": "non-authoritative",
+                    "disposition": "available",
+                    "content": "reasoning"
+                },
+                "tool_calls": [],
+                "debug_payload_disposition": "available"
+            })
+        })
+        .collect::<Vec<_>>();
+    OperatorViewPage::Agents(Box::new(
+        serde_json::from_value::<OperatorAgentsPage>(serde_json::json!({
+            "schema_version": 1,
+            "mission_id": "mission-1",
+            "mission_run_id": "run-1",
+            "run_status": "running",
+            "section": "agents",
+            "debug": {
+                "enabled": true,
+                "reasoning_label": "Recorded Debug Reasoning",
+                "reasoning_authority": "non-authoritative",
+                "disposition": "available"
+            },
+            "next_cursor": cursor,
+            "before_cursor": null,
+            "has_more": false,
+            "agents": agents
+        }))
+        .unwrap(),
+    ))
+}
+
+fn operator_environment_page(raw: bool, cursor: &str) -> OperatorViewPage {
+    OperatorViewPage::Environment(Box::new(
+        serde_json::from_value::<OperatorEnvironmentPage>(serde_json::json!({
+            "schema_version": 1,
+            "mission_id": "mission-1",
+            "mission_run_id": "run-1",
+            "run_status": "running",
+            "section": "environment",
+            "debug": {
+                "enabled": true,
+                "reasoning_label": "Recorded Debug Reasoning",
+                "reasoning_authority": "non-authoritative",
+                "disposition": "available"
+            },
+            "next_cursor": cursor,
+            "before_cursor": null,
+            "has_more": false,
+            "environment": {
+                "authority": "environment",
+                "position": {"x": 1, "y": 2, "z": -3},
+                "velocity": {"x": 0, "y": 1, "z": 0},
+                "mission_time_seconds": 12.5,
+                "fsm_state": "navigate",
+                "fsm_status": "active",
+                "active_maneuver": {"maneuver_id": "m-1"},
+                "maneuver_feedback": null,
+                "perceptions": [],
+                "belief_changes": [],
+                "warnings": [],
+                "raw": raw,
+                "timeline": [{
+                    "stable_id": if raw { "raw-1" } else { "filtered-1" },
+                    "observation_sequence": 1,
+                    "event_id": "event-1",
+                    "occurred_at": "2026-08-27T12:00:00Z",
+                    "component": "environment",
+                    "authority": "environment",
+                    "event_kind": if raw { "hyper-heartbeat" } else { "belief.updated" },
+                    "status": null,
+                    "outcome": "completed",
+                    "correlation_id": null,
+                    "replay_disposition": "normal",
+                    "payload": {},
+                    "warnings": []
+                }]
+            }
+        }))
+        .unwrap(),
+    ))
 }
 
 fn temp_state_file(name: &str) -> SessionStateFile {
@@ -1398,6 +1531,190 @@ fn definitive_host_errors_refresh_liveness_but_transport_does_not() {
     ))));
     clock.advance(Duration::from_secs(5));
     assert_eq!(app.liveness(), Liveness::Stale);
+}
+
+#[test]
+fn v1_1_poll_fetches_only_active_operator_tab_and_tabs_have_direct_keys() {
+    let mut app = active_operator_app();
+    let commands = app.take_commands();
+    assert_eq!(commands.len(), 2);
+    assert!(matches!(commands[0], HostCommand::PollCurrent { .. }));
+    assert!(matches!(
+        &commands[1],
+        HostCommand::FetchOperatorView {
+            section: OperatorSection::Overview,
+            cursor: None,
+            raw: false,
+            request_id: 1,
+            ..
+        }
+    ));
+
+    app.handle_key(key(KeyCode::Char('3')));
+    assert_eq!(
+        app.active_tab,
+        operator_console::app::OperatorTab::Environment
+    );
+    assert!(matches!(
+        app.take_commands().as_slice(),
+        [HostCommand::FetchOperatorView {
+            section: OperatorSection::Environment,
+            raw: false,
+            request_id: 2,
+            ..
+        }]
+    ));
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(
+        app.active_tab,
+        operator_console::app::OperatorTab::Artifacts
+    );
+    app.take_commands();
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(
+        app.active_tab,
+        operator_console::app::OperatorTab::Environment
+    );
+}
+
+#[test]
+fn agent_auto_follow_pause_newer_count_stable_update_and_stale_response_handling() {
+    let mut app = active_operator_app();
+    app.take_commands();
+    app.handle_key(key(KeyCode::Char('2')));
+    let requested = app.take_commands();
+    let [HostCommand::FetchOperatorView { request_id, .. }] = requested.as_slice() else {
+        panic!("expected agents request");
+    };
+    let first_request = *request_id;
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Agents,
+        request_id: first_request,
+        result: Ok(operator_agents_page(
+            "agents-cursor-1",
+            &[("stable-1", "inv-1")],
+        )),
+    });
+    assert_eq!(app.selected_invocation().unwrap().1.invocation_id, "inv-1");
+    assert!(app.agent_following);
+
+    app.handle_key(key(KeyCode::Up));
+    assert!(!app.agent_following);
+    app.request_poll();
+    let commands = app.take_commands();
+    let next_request = commands
+        .iter()
+        .find_map(|command| match command {
+            HostCommand::FetchOperatorView {
+                request_id,
+                cursor,
+                section: OperatorSection::Agents,
+                ..
+            } => {
+                assert_eq!(cursor.as_deref(), Some("agents-cursor-1"));
+                Some(*request_id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Agents,
+        request_id: next_request,
+        result: Ok(operator_agents_page(
+            "agents-cursor-2",
+            &[("stable-2", "inv-2")],
+        )),
+    });
+    assert_eq!(app.newer_invocations, 1);
+    assert_eq!(app.selected_invocation().unwrap().1.invocation_id, "inv-1");
+
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Agents,
+        request_id: first_request,
+        result: Ok(operator_agents_page("stale", &[("stable-3", "inv-stale")])),
+    });
+    assert_eq!(app.agent_invocations.len(), 2);
+    assert!(
+        !app.agent_invocations
+            .iter()
+            .any(|invocation| invocation.invocation_id == "inv-stale")
+    );
+
+    app.handle_key(key(KeyCode::Char('f')));
+    assert!(app.agent_following);
+    assert_eq!(app.newer_invocations, 0);
+    assert_eq!(app.selected_invocation().unwrap().1.invocation_id, "inv-2");
+
+    app.request_poll();
+    let update_request = app
+        .take_commands()
+        .into_iter()
+        .find_map(|command| match command {
+            HostCommand::FetchOperatorView { request_id, .. } => Some(request_id),
+            _ => None,
+        })
+        .unwrap();
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Agents,
+        request_id: update_request,
+        result: Ok(operator_agents_page(
+            "agents-cursor-3",
+            &[("stable-2", "inv-2")],
+        )),
+    });
+    assert_eq!(
+        app.agent_invocations.len(),
+        2,
+        "stable identity updates in place"
+    );
+}
+
+#[test]
+fn environment_raw_toggle_resets_only_environment_cursor_and_retains_current_until_reply() {
+    let mut app = active_operator_app();
+    app.take_commands();
+    app.handle_key(key(KeyCode::Char('3')));
+    let request = match app.take_commands().remove(0) {
+        HostCommand::FetchOperatorView { request_id, .. } => request_id,
+        other => panic!("expected environment request, got {other:?}"),
+    };
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Environment,
+        request_id: request,
+        result: Ok(operator_environment_page(false, "filtered-cursor")),
+    });
+    assert_eq!(app.environment_timeline[0].event_kind, "belief.updated");
+    assert!(app.operator_environment.is_some());
+
+    app.handle_key(key(KeyCode::Char('r')));
+    assert!(app.environment_raw);
+    assert!(app.environment_timeline.is_empty());
+    assert!(app.operator_environment.is_some());
+    let raw_request = match app.take_commands().remove(0) {
+        HostCommand::FetchOperatorView {
+            request_id,
+            cursor,
+            raw,
+            ..
+        } => {
+            assert!(cursor.is_none());
+            assert!(raw);
+            request_id
+        }
+        other => panic!("expected raw environment request, got {other:?}"),
+    };
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Environment,
+        request_id: raw_request,
+        result: Ok(operator_environment_page(true, "raw-cursor")),
+    });
+    assert_eq!(app.environment_timeline[0].event_kind, "hyper-heartbeat");
 }
 
 #[test]

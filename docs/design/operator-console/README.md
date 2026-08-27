@@ -1,11 +1,13 @@
-# Operator Console Design (issues #27-#32 contract slices)
+# Operator Console Design
 
 Rust 2024 Ratatui 0.30 Operator Console: a peer client of the loopback Python
 Runtime Host (ADR 0001). The committed contract covers Mission Intent editing,
 reviewed Mission Activation, observation of one current Mission Run, owner-only
 Mission Intent readback, idempotent Mission Run Cancellation, redacted Run
 Activities/Observations, public Artifact/Conversation browsing, and optional
-non-authoritative Run Narratives. Issue #32 delivers the status-only HITL view:
+non-authoritative Run Narratives. Runtime Host v1.1 adds the Operator Debug View
+from issue #56: four operator-centric tabs backed by an incremental shared
+projection. Issue #32 delivers the status-only HITL view:
 the permanent Human Decisions pane truthfully represents the empty and
 awaiting-human-decision Mission Run states without decision-submission
 controls.
@@ -33,22 +35,31 @@ Connecting ──health ok──> Editing ──Alt+Enter──> ReviewActivatio
 ## Fixed 100x30 layout
 
 Header (3 rows: console, host, API version, short session id), footer (3 rows:
-key hints plus transient hint/notice), and per-state body. The Run dashboard
-presents Mission Run identity/status/timestamps/terminal classification next to
-selectable Run Activities and the selected activity's linked Observations.
-Artifacts and Conversation are live evidence panes. Narrative presents available
-and unavailable Run Narrative states as non-authoritative. A recovered owner's
-Mission Intent occupies the bottom-left slot in place of Narrative. The
-bottom-right Human Decisions pane is the permanent HITL tab (issue #32),
-specified below. Below 100x30 only the
-resize-required state is drawn (also enforced as a draw-time guard, not only via
-resize events).
+key hints plus transient hint/notice), and per-state body. A v1.1 Run body has a
+persistent tab bar and one active section:
 
-In Run state, Tab and Shift+Tab switch focus between Activities and Artifacts;
-Up/k and Down/j move the focused selection. Enter on a text or binary Artifact
-opens its inspector; conversation Artifacts stay in the dashboard and load the
-Conversation pane. In the inspector, Right/n fetches the next 4096-byte page,
-Left/p returns to the previous offset, and Esc closes the inspector.
+1. **Overview** shows the authoritative Mission Run Record, latest Hyper and
+   Maneuver progress, FSM/environment state, active maneuver, compact narrative
+   disposition, evidence counts, significant activity, and HITL status.
+2. **Agents** shows Hyper and Maneuver invocations with Recorded Debug Reasoning,
+   response content, decisions, tool arguments/results/errors, and timing.
+3. **Environment** keeps the latest authoritative state visible above an
+   operational timeline. Heartbeats, snapshots, source facts, duplicates, and
+   replay markers are filtered by default.
+4. **Artifacts** merges Public Artifact Inbox descriptors with allowlisted,
+   run-scoped planner outputs and opens both through the paged inspector.
+
+Keys `1`-`4` select tabs directly; Tab and Shift+Tab cycle. Agents follows the
+newest invocation until Up/k or Down/j moves selection; `f` resumes following
+and PgUp/PgDn scroll detail. Environment Up/k and Down/j browse history while
+`r` toggles raw evidence. Artifacts uses Up/k, Down/j, and Enter. In the
+inspector, Right/n fetches the next 4096-byte page, Left/p returns to the
+previous offset, and Esc closes it. `c` requests cancellation and `q` performs
+the managed exit flow from every tab.
+
+A v1.0 Host retains the transport-oriented Activities/Observations dashboard
+and displays a `LEGACY VIEW` banner instead of treating the missing v1.1 route
+as a failure. Below 100x30 only the resize-required state is drawn.
 
 ### HITL status view (issue #32)
 
@@ -93,8 +104,8 @@ bounded per-request timeouts; results return as `HostMessage` values. Mission
 Run polling (400 ms cadence, Run state only) is enqueued from the run loop, not
 from drawing.
 
-Bounded v1 surface exercised by the fixture contract tests (Rust fixture
-server in `operator-console/tests/support/`, no Python process):
+Bounded v1.0 compatibility surface exercised by the fixture contract tests
+(Rust fixture server in `operator-console/tests/support/`):
 
 - `GET /api/v1/health` -> `200 {"status":"ok","api_version":{"major":1,"minor":0}}`
 - `POST /api/v1/mission-activations` (`Authorization: Bearer <credential>`) ->
@@ -152,6 +163,43 @@ server in `operator-console/tests/support/`, no Python process):
 - Missing, stale, or non-owner credentials on either owner endpoint -> the same
   fixed `403 authorization_failed` response, without Mission Intent or
   credential/verifier data.
+
+### Operator Debug View (Runtime Host v1.1)
+
+`GET /api/v1/mission-runs/{mission_run_id}/operator-view` requires exactly one
+`section=overview|agents|environment|artifacts`. `limit` defaults to 50 and is
+bounded to 1..100. `cursor` requests changes newer than a section high-water
+mark; `before` pages bounded history, and the two are mutually exclusive.
+`raw=true|false` is accepted only for Environment. Unknown or repeated query
+parameters, invalid bounds, and invalid combinations return `422
+invalid_request`; malformed, foreign, future, or cross-section cursors return
+`422 invalid_cursor`.
+
+Every response carries schema version, Mission/Mission Run identity, current
+Mission Run Status, section, debug disposition, `next_cursor`, optional
+`before_cursor`, and `has_more`. Section payloads are `overview`, `agents`,
+`environment`, or `artifacts`. Stable invocation, timeline, and Artifact
+identities let the console merge incremental changes in place. The console
+polls `/current` plus only its active section, rejects stale request generations,
+and retains all previously received tab evidence across transport failures.
+
+The endpoint requires no Console Session credential because it is available
+only through the loopback Runtime Host boundary. With `debug: true`, agent
+records may include detailed tool arguments/results/errors and explicitly
+labeled **Recorded Debug Reasoning**. With debug disabled, high-level agent
+progress remains visible and both response and invocation records say
+`debug_evidence_unavailable`. Recorded Debug Reasoning is experimental,
+non-authoritative evidence: it never enters public Run Observations and cannot
+determine Mission Run, planner, FSM, or environment state.
+
+Artifacts combines Public Artifact Inbox items with allowlisted planner names:
+`model.mzn`, `data.dzn`, `domain.pddl`, `problem.pddl`, `minizinc.plan`,
+`sas_plan`, `generate_statechart.py`, `statechart.json`,
+`accepted-statechart.json`, and `statechart-error.txt`. Planner files must be
+regular, non-symlink files beneath the Mission Run planner root and no larger
+than 1 MiB. Their content uses the existing Artifact content response with a
+maximum 4096-byte page. Traversal, symlink, outside-root, non-allowlisted, and
+oversized files are unavailable.
 
 The public evidence endpoints require no Authorization header. Their default
 limit is 100 and maximum limit is 500. A cursor is opaque base64url and belongs
@@ -224,6 +272,12 @@ current-Mission-Run example carrying the `awaiting_human_decision` status. No
 runtime transition into that status is implemented; the example exists so the
 console client and reducer are tested against the versioned status.
 
+`contract/v1.1/*.json` pins the exact Overview, Agents, Environment, and
+Artifacts Operator Debug View responses from issue #56. The Rust fixture serves
+all four, and `operator-console/tests/python_interop.rs` also starts a real
+Python Runtime Host and decodes every section through the production Rust HTTP
+client.
+
 Existing #27 fixture consumers:
 
 - `operator-console/tests/support/` serves these bytes (static bodies:
@@ -235,11 +289,12 @@ Existing #27 fixture consumers:
   or extra fields - and that the health body matches the issue text byte for
   byte.
 
-Real interoperability against the Python Runtime Host process is validated at
-parent level by the Python Host tests (subprocess fixture); this lane does not
-spawn a Python process. The exact v1 schema both sides implement:
+Real interoperability against the Python Runtime Host process is validated by
+the Rust subprocess test as well as the Python Host contract tests. The current
+Host advertises API v1.1; the committed v1.0 health fixture remains intentionally
+available to verify legacy fallback. Existing v1.0 endpoints are unchanged.
 
-- `GET /api/v1/health` -> `200 {"status":"ok","api_version":{"major":1,"minor":0}}`.
+- `GET /api/v1/health` -> `200 {"status":"ok","api_version":{"major":1,"minor":1}}`.
 - `POST /api/v1/mission-activations` with `Authorization: Bearer ...` and body
   `activation_request_id`, `console_session_id`, `mission_intent`,
   `source_authority` -> `202` with `activation_request_id`, `mission_id`,
@@ -286,6 +341,10 @@ spawn a Python process. The exact v1 schema both sides implement:
 - `conversation-entries-100x30.txt` - Artifact selection and Conversation entries
 - `hitl-empty-100x30.txt` - HITL pane empty state: no Human Decision Requests require action
 - `hitl-awaiting-100x30.txt` - HITL pane awaiting-human-decision status placeholder
+- `operator-overview-100x30.txt` - authoritative status and significant progress
+- `operator-agents-100x30.txt` - invocation selection and Recorded Debug Reasoning detail
+- `operator-environment-100x30.txt` - latest environment state and filtered timeline
+- `operator-artifacts-100x30.txt` - merged Public Inbox and planner Artifact view
 
 Regenerate after an intentional layout change:
 

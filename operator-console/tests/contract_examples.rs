@@ -11,13 +11,18 @@
 use operator_console::host::{
     ActivationAccepted, ActivationRequest, ActivitiesPage, ArtifactContentPage, ArtifactsPage,
     CancellationAccepted, CancellationRequest, ConversationEntriesPage, CurrentRun, ErrorBody,
-    Health, MissionIntent, NarrativeResponse, ObservationsPage,
+    Health, MissionIntent, NarrativeResponse, ObservationsPage, OperatorAgentsPage,
+    OperatorArtifactsPage, OperatorEnvironmentPage, OperatorOverviewPage,
 };
 use serde_json::Value;
 
 const DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../docs/design/operator-console/contract/v1/"
+);
+const V1_1_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../docs/design/operator-console/contract/v1.1/"
 );
 
 fn example(name: &str) -> Value {
@@ -40,6 +45,20 @@ where
         back, value,
         "{name} must round-trip exactly through the DTO"
     );
+    dto
+}
+
+fn exact_v1_1_roundtrip<T>(name: &str) -> T
+where
+    T: serde::de::DeserializeOwned + serde::Serialize + std::fmt::Debug,
+{
+    let path = format!("{V1_1_DIR}{name}");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let value: Value = serde_json::from_str(raw.trim_end())
+        .unwrap_or_else(|error| panic!("parse {path}: {error}"));
+    let dto: T = serde_json::from_value(value.clone())
+        .unwrap_or_else(|error| panic!("decode {name}: {error}"));
+    assert_eq!(serde_json::to_value(&dto).unwrap(), value);
     dto
 }
 
@@ -243,4 +262,34 @@ fn artifact_error_examples_round_trip_exactly() {
     assert_eq!(missing.error.code, "artifact_not_found");
     let unavailable: ErrorBody = exact_roundtrip("mission-run-artifact.unavailable.response.json");
     assert_eq!(unavailable.error.code, "artifact_unavailable");
+}
+
+#[test]
+fn operator_view_v1_1_examples_round_trip_exactly() {
+    let overview: OperatorOverviewPage =
+        exact_v1_1_roundtrip("mission-run-operator-overview.response.json");
+    assert_eq!(overview.overview.fsm.state.as_deref(), Some("navigate"));
+    assert_eq!(overview.overview.recent_events.len(), 1);
+
+    let agents: OperatorAgentsPage =
+        exact_v1_1_roundtrip("mission-run-operator-agents.response.json");
+    assert_eq!(agents.agents[0].invocation_id, "invocation-1");
+    assert_eq!(agents.agents[0].tool_calls[0].args["attempt"], 2);
+    assert_eq!(
+        agents.agents[0].recorded_debug_reasoning.label,
+        "Recorded Debug Reasoning"
+    );
+
+    let environment: OperatorEnvironmentPage =
+        exact_v1_1_roundtrip("mission-run-operator-environment.response.json");
+    assert!(!environment.environment.raw);
+    assert_eq!(
+        environment.environment.timeline[0].event_kind,
+        "belief.updated"
+    );
+
+    let artifacts: OperatorArtifactsPage =
+        exact_v1_1_roundtrip("mission-run-operator-artifacts.response.json");
+    assert_eq!(artifacts.artifacts.len(), 2);
+    assert_eq!(artifacts.artifacts[1].source.as_deref(), Some("planner"));
 }

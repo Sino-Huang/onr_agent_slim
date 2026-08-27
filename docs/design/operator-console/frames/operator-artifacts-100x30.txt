@@ -1,0 +1,30 @@
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ onr operator console  host http://127.0.0.1:8787 · api v1.1 · session c0ns01e0                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Operator View ───────────────────────────────────────────────────────────────────────────────────┐
+│  1 Overview   2 Agents   3 Environment   4 Artifacts                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ * Artifacts ───────────────────────────────┐┌ Artifact Preview ──────────────────────────────────┐
+│ accepted-statechart.json Accepted Statech… ││ Title:    Accepted Statechart (attempt 1)          │
+│ report Public report (14 B)                ││ Source:   planner                                  │
+│                                            ││ Kind:     accepted-statechart.json                 │
+│                                            ││ Media:    application/json                         │
+│                                            ││ Size:     18 B                                     │
+│                                            ││ Ref:                                               │
+│                                            ││statechart-attempts/001/accepted-statechart.json    │
+│                                            ││ Published:2026-08-27T12:00:06Z                     │
+│                                            ││                                                    │
+│                                            ││statechart-attempts/001/accepted-statechart.json    │
+│                                            ││                                                    │
+│                                            ││ Press Enter to open the paged inspector.           │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1-4/Tab: switch · Up/k Down/j: select · Enter: inspect Artifact · c/q                            │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
