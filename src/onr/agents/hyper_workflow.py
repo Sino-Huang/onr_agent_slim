@@ -1047,7 +1047,8 @@ def materialize_event_information_data(
 @tool(parse_docstring=True)
 def submit_planner_attempt(
     planner_choice: Literal["minizinc", "fast-downward"],
-    planner_model_file_locations: list[str],
+    model_path: str,
+    data_path: str,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
@@ -1055,8 +1056,8 @@ def submit_planner_attempt(
 
     Args:
         planner_choice: Selected external planner.
-        planner_model_file_locations: Exact two sandbox paths returned after planner
-            choice was recorded.
+        model_path: Exact model/domain sandbox path returned after planner choice.
+        data_path: Exact data/problem sandbox path returned after planner choice.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
 
@@ -1086,13 +1087,14 @@ def submit_planner_attempt(
     attempt_number = context.current_attempt_number + 1
     if attempt_number > context.max_planner_attempts:
         raise ValueError("planner asset attempt is outside the workflow retry sequence")
+    file_locations = [model_path, data_path]
     assets, sandbox_by_name, host_by_name = _resolve_planner_files(
-        context, planner_choice, planner_model_file_locations
+        context, planner_choice, file_locations
     )
     context.current_attempt_number = attempt_number
     _snapshot_submission(context, assets)
     context.submitted_planner_choice = planner_choice
-    context.submitted_file_locations = tuple(planner_model_file_locations)
+    context.submitted_file_locations = tuple(file_locations)
     context.submitted_assets = assets
     context.submitted_sandbox_paths = sandbox_by_name
     context.submitted_host_paths = host_by_name
@@ -1114,13 +1116,13 @@ def submit_planner_attempt(
     if static_check.accepted:
         instruction = (
             "Call planner_executor with the same planner_choice and "
-            "planner_model_file_locations. For MiniZinc, select coin-bc for "
+            "model_path and data_path. For MiniZinc, select coin-bc for "
             "linear/integer-flow models, highs as the secondary linear-MIP "
             "solver, or gecode for CP models; Fast Downward requires "
             "minizinc_solver: null."
         )
     else:
-        paths = ", ".join(planner_model_file_locations)
+        paths = ", ".join(file_locations)
         instruction = (
             f"Call edit_file on the same submitted files ({paths}), then resubmit "
             "them with the same planner choice and paths."
@@ -1196,7 +1198,8 @@ def _fast_downward_plan(evidence: PlannerExecutionEvidence | None) -> Path | Non
 @tool(parse_docstring=True)
 def planner_executor(
     planner_choice: Literal["minizinc", "fast-downward"],
-    planner_model_file_locations: list[str],
+    model_path: str,
+    data_path: str,
     minizinc_solver: Literal["coin-bc", "highs", "gecode"] | None,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
@@ -1205,7 +1208,8 @@ def planner_executor(
 
     Args:
         planner_choice: Selected external planner.
-        planner_model_file_locations: Exact two sandbox paths used for submission.
+        model_path: Exact accepted model/domain sandbox path.
+        data_path: Exact accepted data/problem sandbox path.
         minizinc_solver: Selected MiniZinc backend, or null for Fast Downward.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
@@ -1225,8 +1229,9 @@ def planner_executor(
         raise ValueError("MiniZinc execution requires minizinc_solver")
     if planner_choice == "fast-downward" and minizinc_solver is not None:
         raise ValueError("Fast Downward execution requires minizinc_solver to be null")
+    file_locations = [model_path, data_path]
     assets, sandbox_by_name, host_by_name = _resolve_planner_files(
-        context, planner_choice, planner_model_file_locations
+        context, planner_choice, file_locations
     )
     if not context.static_accepted or context.static_check_result is None:
         return _prerequisite_missing(
@@ -1235,7 +1240,7 @@ def planner_executor(
         )
     if (
         planner_choice != context.submitted_planner_choice
-        or tuple(planner_model_file_locations) != context.submitted_file_locations
+        or tuple(file_locations) != context.submitted_file_locations
         or assets != context.submitted_assets
     ):
         raise ValueError("planner execution files do not match the accepted submission")

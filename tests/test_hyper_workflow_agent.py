@@ -286,7 +286,8 @@ def _write(context: HyperWorkflowContext, planner: str) -> list[str]:
 def _submit(context: HyperWorkflowContext, planner: str, paths: list[str]) -> str:
     return cast(Any, submit_planner_attempt).func(
         planner_choice=planner,
-        planner_model_file_locations=paths,
+        model_path=paths[0],
+        data_path=paths[1],
         reflection="Submitting exact planner files.",
         runtime=_runtime(context),
     )
@@ -295,7 +296,8 @@ def _submit(context: HyperWorkflowContext, planner: str, paths: list[str]) -> st
 def _execute(context: HyperWorkflowContext, planner: str, paths: list[str]) -> str:
     return cast(Any, planner_executor).func(
         planner_choice=planner,
-        planner_model_file_locations=paths,
+        model_path=paths[0],
+        data_path=paths[1],
         minizinc_solver="coin-bc" if planner == "minizinc" else None,
         reflection="Executing exact accepted planner files.",
         runtime=_runtime(context),
@@ -394,9 +396,12 @@ def test_tool_interfaces_are_identical_and_planner_neutral(monkeypatch: Any) -> 
     )
     create_hyper_workflow_agent(model=object(), system_prompt="test", mission_id="m")
     assert type(cast(list[Any], captured["middleware"])[0]) is TodoListMiddleware
-    expected = {"planner_choice", "planner_model_file_locations", "reflection"}
+    expected = {"planner_choice", "model_path", "data_path", "reflection"}
     assert set(cast(Any, submit_planner_attempt).args) == expected
     assert set(cast(Any, planner_executor).args) == expected | {"minizinc_solver"}
+    schema = cast(Any, submit_planner_attempt).tool_call_schema.model_json_schema()
+    assert schema["properties"]["model_path"]["type"] == "string"
+    assert schema["properties"]["data_path"]["type"] == "string"
     assert set(cast(Any, initialize_event_data_materialization).args) == {
         "total_event_count",
         "fields",
@@ -863,8 +868,6 @@ def test_environment_file_validation_rejects_missing_outside_stale_and_mismatch(
 @pytest.mark.parametrize(
     "locations",
     [
-        [],
-        ["artifacts/workspace/001/model.mzn"],
         ["artifacts/workspace/001/model.mzn"] * 2,
         ["/foreign/model.mzn", "/foreign/data.dzn"],
         [
@@ -873,7 +876,7 @@ def test_environment_file_validation_rejects_missing_outside_stale_and_mismatch(
         ],
     ],
 )
-def test_submission_rejects_missing_duplicate_foreign_and_wrong_planner_paths(
+def test_submission_rejects_duplicate_foreign_and_wrong_planner_paths(
     tmp_path: Path, locations: list[str]
 ) -> None:
     context = _context(tmp_path)
@@ -950,7 +953,8 @@ def test_planner_executor_requires_solver_only_for_minizinc(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="requires minizinc_solver"):
         cast(Any, planner_executor).func(
             planner_choice="minizinc",
-            planner_model_file_locations=minizinc_paths,
+            model_path=minizinc_paths[0],
+            data_path=minizinc_paths[1],
             minizinc_solver=None,
             reflection="Missing solver.",
             runtime=_runtime(minizinc_context),
@@ -963,7 +967,8 @@ def test_planner_executor_requires_solver_only_for_minizinc(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="requires minizinc_solver to be null"):
         cast(Any, planner_executor).func(
             planner_choice="fast-downward",
-            planner_model_file_locations=downward_paths,
+            model_path=downward_paths[0],
+            data_path=downward_paths[1],
             minizinc_solver="coin-bc",
             reflection="Wrong solver.",
             runtime=_runtime(downward_context),

@@ -67,6 +67,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     }
     workflow_prompts: list[str] = []
     supervisor_prompts: list[str] = []
+    belief_requests: list[dict[str, object]] = []
     planning_snapshot = MissionSnapshot(
         "mission:demo",
         1,
@@ -142,7 +143,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
             return FakeEnvironmentSource()
 
         def create_bayesian_belief_service(self, **kwargs: object) -> object:
-            _ = kwargs
+            belief_requests.append(dict(kwargs))
             return belief_service
 
         def create_chat_model(self, **kwargs: object) -> object:
@@ -190,6 +191,10 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     assert result is closed_loop_result
     assert workflow_prompts == [prompts["hyper-agent"], prompts["hyper-agent"]]
     assert supervisor_prompts == [prompts["hyper-supervisor"]]
+    assert belief_requests[0].get("seed") is None
+    assert tuple(key.entity_id for key in belief_requests[0]["keys"]) == tuple(
+        range(1, 21)
+    )
 
 
 def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
@@ -222,15 +227,26 @@ def test_example_mission_requests_event_accounting_patrol() -> None:
     )
 
 
-def test_demo_environment_flag_is_explicitly_required(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit) as exc:
-        runtime_cli.main(
-            [
-                "--mission-file",
-                str(_mission_file(tmp_path)),
-            ]
-        )
-    assert exc.value.code == 2
+def test_demo_environment_flag_is_required_only_for_fake_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(environment_profile=SimpleNamespace(adapter_kind="fake"))
+    )
+    monkeypatch.setattr(runtime_cli, "_create_runtime", lambda **kwargs: runtime)
+
+    result = runtime_cli.main(
+        [
+            "--mission-file",
+            str(_mission_file(tmp_path)),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "runtime configuration" in captured.err
 
 
 def test_installed_cli_help_works_outside_checkout(tmp_path: Path) -> None:
@@ -343,12 +359,10 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         def __init__(self) -> None:
             self.transport = FileTransport(tmp_path / "transport")
             self.config = SimpleNamespace(
-                environment_profile=SimpleNamespace(
-                    adapter_kind="external_transport"
-                ),
+                environment_profile=SimpleNamespace(adapter_kind="external_transport"),
                 storage=SimpleNamespace(
                     planner_artifacts=tmp_path / "configured-planner-artifacts"
-                )
+                ),
             )
 
         def verify_llm_reachability(self) -> None:
@@ -408,7 +422,6 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         "runtime.yaml",
         "--simulation-limit-seconds",
         "30",
-        "--demo-environment",
     ]
     if planner_override is not None:
         arguments.extend(("--planner-artifacts", planner_override))
@@ -438,7 +451,7 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         else tmp_path / "configured-planner-artifacts"
     )
     assert closed_loop[3]["planner_artifacts"] == expected_artifacts.resolve()
-    assert closed_loop[3]["recursion_limit"] == 120
+    assert closed_loop[3]["recursion_limit"] == 240
     assert closed_loop[3]["simulation_limit_seconds"] == 30.0
 
 
@@ -476,9 +489,10 @@ def test_cli_reports_system_prompt_loading_failure(
     runtime = SimpleNamespace(
         transport=FileTransport(tmp_path / "transport"),
         config=SimpleNamespace(
+            environment_profile=SimpleNamespace(adapter_kind="fake"),
             storage=SimpleNamespace(
                 planner_artifacts=tmp_path / "configured-planner-artifacts"
-            )
+            ),
         ),
         verify_llm_reachability=lambda: None,
     )

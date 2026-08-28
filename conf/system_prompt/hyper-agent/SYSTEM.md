@@ -55,13 +55,17 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 
 ### 4. Submit and statically verify
 
-- Call `submit_planner_attempt` with the recorded Planner Choice, the exact two returned sandbox paths, and reflection.
+- Call `submit_planner_attempt` with the recorded Planner Choice, `model_path`
+  set to the exact model/domain sandbox path, `data_path` set to the exact
+  data/problem sandbox path, and reflection. These are two scalar string
+  arguments, not an array or a string containing an array.
 - MiniZinc submission runs only MiniZinc instance checking. Fast Downward submission runs only VAL domain/problem checking.
 - On failure, preserve the todo rollback above, repair the same paths using the exact stdout/stderr, and resubmit. Static acceptance completes this stage.
 
 ### 5. Execute
 
-- Call `planner_executor` with the same Planner Choice and exact two sandbox paths.
+- Call `planner_executor` with the same Planner Choice and identical scalar
+  `model_path` and `data_path` values.
 - MiniZinc returns its successful solver-native output. Fast Downward returns the exact `sas_plan` only after VAL accepts that domain/problem/plan set.
 - The returned planner-native plan and artifact reference are planning evidence; no normalized maneuver schema is introduced.
 - On failure, follow the tool's todo rollback instruction and repair the same planner files. A terminal failure returns `planner_rejected`.

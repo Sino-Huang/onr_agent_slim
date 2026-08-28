@@ -104,11 +104,7 @@ def _positive_number(value: str) -> float:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run one configured ONR mission with the deterministic demo environment"
-        )
-    )
+    parser = argparse.ArgumentParser(description="Run one configured ONR mission")
     parser.add_argument("--mission-file", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--config-path", type=Path)
@@ -123,7 +119,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recursion-limit",
         type=_positive_integer,
-        default=120,
+        default=240,
         help="maximum Deep Agent graph steps for the Hyper planning episode",
     )
     parser.add_argument(
@@ -135,10 +131,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--demo-environment",
         action="store_true",
-        required=True,
         help=(
-            "acknowledge use of the installed deterministic demo environment, "
-            "not production authority"
+            "acknowledge the deterministic fake adapter when that adapter is "
+            "selected; unnecessary for external physical profiles"
         ),
     )
     return parser
@@ -251,11 +246,8 @@ def run_closed_loop_demo(
     )
     belief_service = runtime.create_bayesian_belief_service(
         mission_id=mission_input.mission_id,
-        keys=tuple(
-            BeliefKey(str(entity_id), "event-risk") for entity_id in range(1, 21)
-        ),
+        keys=tuple(BeliefKey(entity_id, "event-risk") for entity_id in range(1, 21)),
         particle_count=2048,
-        seed=23,
         context_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",
     )
@@ -375,6 +367,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stage = "runtime configuration"
         runtime = _create_runtime(repo_root=repo_root, config_path=config_path)
+        if (
+            runtime.config.environment_profile.adapter_kind == "fake"
+            and not args.demo_environment
+        ):
+            raise RuntimeError(
+                "the fake environment profile requires --demo-environment"
+            )
         planner_artifacts = (
             Path(args.planner_artifacts)
             if args.planner_artifacts is not None

@@ -78,6 +78,8 @@ def extract_risk_by_entity(marginals: list[dict[str, Any]]) -> dict[str, float]:
 TIME_SCALE = 2
 RISK_SCALE = 1000
 INTERSECTION_EVENT_TYPE = "intersection decision"
+PLANNING_FOV_CAP_M = 30.0
+PLANNING_SPEED_CAP_MPS = 20.0
 
 
 @dataclass(frozen=True)
@@ -328,13 +330,20 @@ def build_instance(document: dict[str, Any]) -> tuple[str, dict[str, int]]:
     events = event_rows(document, risk_by_entity)
     candidates = intersection_candidates(document, events)
     mission_time, drone_x, drone_y, max_velocity, fov_radius = extract_drone(document)
-    actions, raw_action_count = observation_actions(candidates, events, fov_radius)
+    # A conservative cap keeps the action graph bounded while preserving plan
+    # validity: every planned observation and transit remains feasible for a
+    # vehicle whose real FoV or maximum speed is greater than the cap.
+    planning_fov_radius = min(fov_radius, PLANNING_FOV_CAP_M)
+    planning_max_velocity = min(max_velocity, PLANNING_SPEED_CAP_MPS)
+    actions, raw_action_count = observation_actions(
+        candidates, events, planning_fov_radius
+    )
     drone_start = (
         minizinc_round(mission_time * TIME_SCALE),
         minizinc_round(drone_x),
         minizinc_round(drone_y),
     )
-    full_arcs, source, sink = full_graph(actions, drone_start, max_velocity)
+    full_arcs, source, sink = full_graph(actions, drone_start, planning_max_velocity)
     reduced_arcs = transitive_reduction(full_arcs, sink, source, sink)
     optimum_gain, optimum_stops, route = longest_path_oracle(
         actions, full_arcs, source, sink
@@ -349,6 +358,8 @@ def build_instance(document: dict[str, Any]) -> tuple[str, dict[str, int]]:
         "longest_route": len(route),
         "optimum_gain": optimum_gain,
         "optimum_stops": optimum_stops,
+        "planning_fov_radius_m": planning_fov_radius,
+        "planning_max_velocity_mps": planning_max_velocity,
     }
     return serialize_dzn(
         events, candidates, actions, reduced_arcs, source, sink

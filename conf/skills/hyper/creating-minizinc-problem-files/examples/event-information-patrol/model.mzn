@@ -39,13 +39,14 @@ var -sum(action in ACTIONS)(action_gain[action] * objective_scale)..0:
 
 constraint network_flow_cost(arcs, node_balance, arc_cost, flow, total_cost);
 
-array[ACTIONS] of var 0..1: selected = [
-  sum(edge in ARCS where arc_to[edge] = action + 1)(flow[edge])
-  | action in ACTIONS
-];
 var int: information_gain =
-  sum(action in ACTIONS)(action_gain[action] * selected[action]);
-var 0..intersection_count: stop_count = sum(selected);
+  sum(edge in ARCS where arc_to[edge] > source_node /\ arc_to[edge] < sink_node)(
+    action_gain[arc_to[edge] - 1] * flow[edge]
+  );
+var 0..intersection_count: stop_count =
+  sum(edge in ARCS where arc_to[edge] > source_node /\ arc_to[edge] < sink_node)(
+    flow[edge]
+  );
 
 constraint -total_cost = information_gain * objective_scale - stop_count;
 
@@ -56,17 +57,19 @@ output [
   ++ ",\"stop_count\":" ++ show(fix(stop_count))
   ++ ",\"assignments\":["
   ++ join(",", [
-    "{\"maneuver_id\":\"patrol-action-" ++ show(action) ++ "\","
-    ++ "\"start\":" ++ show(action_start[action]) ++ ","
-    ++ "\"duration\":" ++ show(action_end[action] - action_start[action]) ++ ","
+    "{\"maneuver_id\":\"patrol-action-" ++ show(arc_to[edge] - 1) ++ "\","
+    ++ "\"start\":" ++ show(action_start[arc_to[edge] - 1]) ++ ","
+    ++ "\"duration\":" ++ show(action_end[arc_to[edge] - 1] - action_start[arc_to[edge] - 1]) ++ ","
     ++ "\"parameters\":{"
-    ++ "\"x\":" ++ show(action_x[action]) ++ ","
-    ++ "\"y\":" ++ show(action_y[action]) ++ ","
-    ++ "\"source_event_index\":" ++ show(action_anchor_event[action]) ++ ","
-    ++ "\"captured_event_count\":" ++ show(action_capture_count[action])
+    ++ "\"x\":" ++ show(action_x[arc_to[edge] - 1]) ++ ","
+    ++ "\"y\":" ++ show(action_y[arc_to[edge] - 1]) ++ ","
+    ++ "\"source_event_index\":" ++ show(action_anchor_event[arc_to[edge] - 1]) ++ ","
+    ++ "\"captured_event_count\":" ++ show(action_capture_count[arc_to[edge] - 1])
     ++ ",\"time_scale\":" ++ show(time_scale)
     ++ "}}"
-    | action in ACTIONS where fix(selected[action]) = 1
+    | edge in ARCS
+      where arc_to[edge] > source_node /\ arc_to[edge] < sink_node
+        /\ fix(flow[edge]) = 1
   ])
   ++ "]}"
 ];

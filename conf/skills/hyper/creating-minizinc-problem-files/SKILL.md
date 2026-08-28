@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.3.0'
+version: '2.4.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -35,7 +35,10 @@ order, units, and scales.
    DZN section stable: MiniZinc rounding and risk scaling, intersection
    discovery, observation-interval enumeration, equivalent-action
    deduplication, source/action/sink reachability, transitive reduction, the
-   independent longest-path oracle, and DZN serialization.
+   independent longest-path oracle, conservative 30 m planning-FoV and 20 m/s
+   planning-speed caps, and DZN serialization. The caps are validity-preserving
+   under-approximations when the controlled vehicle advertises greater
+   capabilities and keep the solver instance bounded.
 3. Run the workspace script with the minimal shell Python:
    `/usr/bin/python3 <workspace>/generate_data.py <environment-file> <workspace>/data.dzn`.
    Python is one-run preprocessing because DZN cannot calculate and reduce this
@@ -43,13 +46,16 @@ order, units, and scales.
    production compiler; leave it in the numbered workspace.
 4. Inspect the script's JSON manifest before submission. It must report
    source-event, intersection, raw-action, unique-action, full-arc,
-   reduced-arc, longest-route, optimum-gain, and optimum-stop counts. Confirm
+   reduced-arc, longest-route, optimum-gain, optimum-stop, planning-FoV, and
+   planning-speed values. Confirm
    that `data.dzn` has aligned action and arc arrays, forward topological arcs,
    a source-to-sink route, and manifest-consistent counts. Generation is
    complete only when `model.mzn`, `generate_data.py`, and `data.dzn` all exist
    and the manifest is coherent.
-5. Call `submit_planner_attempt` with `planner_choice: "minizinc"` and exactly
-   `model.mzn` and `data.dzn`. After static acceptance, call
+5. Call `submit_planner_attempt` with `planner_choice: "minizinc"`, the exact
+   `model.mzn` path as scalar `model_path`, and the exact `data.dzn` path as
+   scalar `data_path`. Do not put the paths in an array or a quoted array.
+   After static acceptance, call
    `planner_executor` with `minizinc_solver: "coin-bc"`. This
    `network_flow_cost` model is linear integer flow; `highs` is the secondary
    linear-MIP choice. Reserve `gecode` for CP-oriented models.
@@ -75,7 +81,8 @@ complete schema adaptation and DAG construction.
 4. After materialization completes, add planner-authored and belief-derived
    non-event assignments to `data.dzn`. For models without event-indexed
    arrays, write `data.dzn` directly.
-5. Submit the exact returned model/data paths. After static acceptance, call
+5. Submit the exact returned model/data paths as scalar `model_path` and
+   `data_path`. After static acceptance, call
    `planner_executor` with a solver: `coin-bc` for linear/integer-flow models,
    `highs` as the secondary linear-MIP option, or `gecode` for CP models.
 

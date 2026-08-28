@@ -59,3 +59,33 @@ def test_initial_event_risks_replay_through_transport_and_durable_service(
     assert transport.next_event_sequence("belief-observations", mission_id) == 20
     assert transport.next_event_sequence("normalized-plans", mission_id) == 20
     assert transport.get_cursor(subscription)["sequence"] == 19
+
+
+def test_initial_event_risks_preserve_numeric_physical_entity_ids(
+    tmp_path: Path,
+) -> None:
+    mission_id = "mission:physical-seeded"
+    subscription = Subscription(
+        "bayesian-belief-manager", mission_id, "belief-observations"
+    )
+    transport = FileTransport(tmp_path / "transport", (subscription,))
+    source = FakeEnvironment(transport, mission_id).event_report
+    numeric_report = tuple(
+        {**record, "entity_id": int(record["entity_id"])} for record in source
+    )
+    service = BayesianBeliefService(
+        BayesianBeliefManager(
+            mission_id,
+            tuple(BeliefKey(entity_id, "event-risk") for entity_id in range(1, 21)),
+            particle_count=256,
+            seed=23,
+        ),
+        FileBayesianBeliefStore(tmp_path / "belief"),
+        transport,
+        subscription=subscription,
+        clock=lambda: "2026-08-23T00:00:00+10:00",
+    )
+
+    snapshot = seed_event_risk_beliefs(service, numeric_report)
+
+    assert {item.key.entity_id for item in snapshot.marginals} == set(range(1, 21))

@@ -316,6 +316,8 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     data_text = assets["data.dzn"].decode()
     assert 'include "network_flow.mzn"' in model_text
     assert "network_flow_cost" in model_text
+    assert "array[ACTIONS] of var 0..1: selected" not in model_text
+    assert "action_gain[arc_to[edge] - 1] * flow[edge]" in model_text
     assert "action_count = 786;" in data_text
     assert "arc_count = 14423;" in data_text
     assert result.evidence is not None
@@ -378,6 +380,8 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
         "longest_route": 15,
         "optimum_gain": 15_221,
         "optimum_stops": 15,
+        "planning_fov_radius_m": 30.0,
+        "planning_max_velocity_mps": 20.0,
         "raw_actions": 895,
         "reduced_arcs": 14_423,
         "source_events": 253,
@@ -433,3 +437,11 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
         )
         == action_count
     )
+
+    document["scene_graph"]["drone"]["fov_radius"] = 100.0
+    document["scene_graph"]["drone"]["max_velocity"] = 30.0
+    _, oversized_vehicle_manifest = namespace["build_instance"](document)
+    assert oversized_vehicle_manifest["actions"] == action_count
+    assert oversized_vehicle_manifest["reduced_arcs"] == arc_count
+    assert oversized_vehicle_manifest["planning_fov_radius_m"] == 30.0
+    assert oversized_vehicle_manifest["planning_max_velocity_mps"] == 20.0

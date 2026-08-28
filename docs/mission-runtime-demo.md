@@ -1,11 +1,12 @@
 # Mission runtime demo
 
 This command runs one configured mission through the real ONR runtime and keeps
-the operator console as a separate read-only process. The external maneuver
-environment is the installed `onr.demo.fake_environment.FakeEnvironment`, a
-deterministic demo fixture. It is not production environment authority and must
-be acknowledged with `--demo-environment`. The legacy
-`harness.fake_environment` path is only a compatibility re-export.
+the operator console as a separate read-only process. The environment adapter
+comes from the selected environment profile. A fake profile uses the installed
+`onr.demo.fake_environment.FakeEnvironment`, a deterministic fixture that must
+be acknowledged with `--demo-environment`; an external physical profile does
+not require that flag. The legacy `harness.fake_environment` path is only a
+compatibility re-export.
 
 ## Prerequisites
 
@@ -42,7 +43,7 @@ Open `http://127.0.0.1:14398`, then run the mission in terminal 2:
 
 ```bash
 conda activate onr
-python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml --demo-environment
+python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml
 ```
 
 The runtime reads the planner artifact directory from
@@ -99,7 +100,7 @@ supersedes the FSM. Failed replacement planning leaves the prior revision and
 any active physical action authoritative. The loop stops at a terminal FSM
 state or `--simulation-limit-seconds`.
 
-Each full Hyper planning episode uses a recursion limit of 120 by default. For bounded
+Each full Hyper planning episode uses a recursion limit of 240 by default. For bounded
 debugging, add a smaller value such as `--recursion-limit 5`; reaching the limit
 stops the episode with a nonzero CLI result instead of continuing an agent loop.
 

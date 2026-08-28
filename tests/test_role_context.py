@@ -70,7 +70,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.3.0",
+        "2.4.0",
         "2.0.0",
         "1.1.0",
         "3.1.0",
@@ -191,9 +191,7 @@ def test_maneuver_debug_profile_contains_operational_and_todo_tools(
         def callback_for(self, _role: str) -> object:
             return object()
 
-    monkeypatch.setattr(
-        deepagents, "create_deep_agent", lambda **_: SimpleNamespace()
-    )
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **_: SimpleNamespace())
     create_maneuver_control_agent(
         model=SimpleNamespace(_agent_debug_recorder=Recorder())
     )

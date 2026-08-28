@@ -57,13 +57,18 @@ def seed_event_risk_beliefs(
 
     if not isinstance(service, BayesianBeliefService):
         raise TypeError("belief seeding requires BayesianBeliefService")
-    first_by_entity: dict[str, tuple[int, Mapping[str, object]]] = {}
-    for source_index, record in enumerate(report, start=1):
-        entity_id = str(record.get("entity_id"))
-        if not entity_id or entity_id == "None":
-            raise ValueError("event report entity ID is missing")
-        first_by_entity.setdefault(entity_id, (source_index, record))
     expected = {item.entity_id for item in service.manager.keys}
+    first_by_entity: dict[str | int, tuple[int, Mapping[str, object]]] = {}
+    for source_index, record in enumerate(report, start=1):
+        entity_id = record.get("entity_id")
+        if isinstance(entity_id, bool) or not (
+            (isinstance(entity_id, int) and entity_id > 0)
+            or (isinstance(entity_id, str) and bool(entity_id.strip()))
+        ):
+            raise ValueError("event report entity ID is missing")
+        if entity_id not in expected and str(entity_id) in expected:
+            entity_id = str(entity_id)
+        first_by_entity.setdefault(entity_id, (source_index, record))
     if set(first_by_entity) != expected:
         raise ValueError("event report entities do not match event-risk belief keys")
 
