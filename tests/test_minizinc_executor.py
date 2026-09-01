@@ -314,8 +314,11 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     assert all(item["parameters"]["time_scale"] == 2 for item in assignments)
     model_text = assets["model.mzn"].decode()
     data_text = assets["data.dzn"].decode()
-    assert 'include "network_flow.mzn"' in model_text
-    assert "network_flow_cost" in model_text
+    assert 'include "network_flow.mzn"' not in model_text
+    assert "network_flow_cost" not in model_text
+    assert "outgoing_start[node]..outgoing_start[node + 1] - 1" in model_text
+    assert "incoming_start[node]..incoming_start[node + 1] - 1" in model_text
+    assert "flow[incoming_edge[position]]" in model_text
     assert "array[ACTIONS] of var 0..1: selected" not in model_text
     assert "action_gain[arc_to[edge] - 1] * flow[edge]" in model_text
     assert "action_count = 786;" in data_text
@@ -407,8 +410,24 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
     arc_from = _dzn_array(data, "arc_from")
     arc_to = _dzn_array(data, "arc_to")
     arc_cost = _dzn_array(data, "arc_cost")
+    outgoing_start = _dzn_array(data, "outgoing_start")
+    incoming_start = _dzn_array(data, "incoming_start")
+    incoming_edge = _dzn_array(data, "incoming_edge")
     assert all(len(values) == action_count for values in action_arrays)
     assert len(arc_from) == len(arc_to) == len(arc_cost) == arc_count
+    assert len(outgoing_start) == len(incoming_start) == node_count + 1
+    assert outgoing_start[0] == incoming_start[0] == 1
+    assert outgoing_start[-1] == incoming_start[-1] == arc_count + 1
+    assert sorted(incoming_edge) == list(range(1, arc_count + 1))
+    for node in range(1, node_count + 1):
+        assert all(
+            arc_from[edge - 1] == node
+            for edge in range(outgoing_start[node - 1], outgoing_start[node])
+        )
+        assert all(
+            arc_to[incoming_edge[position - 1] - 1] == node
+            for position in range(incoming_start[node - 1], incoming_start[node])
+        )
     assert all(start < end for start, end in zip(arc_from, arc_to, strict=True))
     assert _dzn_array(data, "node_balance") == [1] + [0] * action_count + [-1]
     assert (source, sink) in set(zip(arc_from, arc_to, strict=True))
@@ -438,10 +457,87 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
         == action_count
     )
 
-    document["scene_graph"]["drone"]["fov_radius"] = 100.0
-    document["scene_graph"]["drone"]["max_velocity"] = 30.0
-    _, oversized_vehicle_manifest = namespace["build_instance"](document)
-    assert oversized_vehicle_manifest["actions"] == action_count
-    assert oversized_vehicle_manifest["reduced_arcs"] == arc_count
-    assert oversized_vehicle_manifest["planning_fov_radius_m"] == 30.0
-    assert oversized_vehicle_manifest["planning_max_velocity_mps"] == 20.0
+    drone = next(
+        entity
+        for entity in document["scene_graph"]["entities"]
+        if entity["type"] == "drone"
+    )
+    drone["fov_radius"] = 100.0
+    drone["max_velocity"] = 30.0
+    _, full_vehicle_manifest = namespace["build_instance"](document)
+    assert full_vehicle_manifest == {
+        "actions": 3_089,
+        "full_arcs": 1_661_195,
+        "intersections": 105,
+        "longest_route": 16,
+        "optimum_gain": 21_572,
+        "optimum_stops": 16,
+        "planning_fov_radius_m": 100.0,
+        "planning_max_velocity_mps": 30.0,
+        "raw_actions": 3_349,
+        "reduced_arcs": 145_400,
+        "source_events": 253,
+    }
+
+
+def test_full_physical_vehicle_patrol_solves_within_executor_limit(
+    tmp_path: Path,
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    example = (
+        repository_root
+        / "conf/skills/hyper/creating-minizinc-problem-files/examples"
+        / "event-information-patrol"
+    )
+    report = json.loads(
+        (
+            repository_root
+            / "data/ships_report_and_trajectory_example/ships/events_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    environment = tmp_path / "environment.json"
+    environment.write_text(
+        json.dumps(
+            {
+                "static_info": report,
+                "scene_graph": {
+                    "mission_time_seconds": 0.0,
+                    "entities": [
+                        {
+                            "type": "drone",
+                            "location": {"x": 0.0, "y": 0.0},
+                            "max_velocity": 30.0,
+                            "fov_radius": 100.0,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    generated = tmp_path / "data.dzn"
+    subprocess.run(
+        [sys.executable, str(example / "generate_data.py"), environment, generated],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    executor = MiniZincExecutor(
+        repository_root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc",
+        tmp_path / "planner-artifacts",
+        timeout_seconds=30,
+    )
+    assets = {
+        "model.mzn": (example / "model.mzn").read_bytes(),
+        "data.dzn": generated.read_bytes(),
+    }
+
+    assert executor.check(assets).accepted is True
+    result = executor.execute(assets, "coin-bc")
+
+    assert result.outcome is PlanningOutcome.SOLVED
+    stream = [json.loads(line) for line in result.stdout.splitlines()]
+    solution = next(item for item in stream if item["type"] == "solution")
+    native = json.loads(solution["output"]["default"])
+    assert native["information_gain"] == 21_572
+    assert native["stop_count"] == len(native["assignments"]) == 16

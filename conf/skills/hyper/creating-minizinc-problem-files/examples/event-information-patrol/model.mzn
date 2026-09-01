@@ -1,5 +1,3 @@
-include "network_flow.mzn";
-
 int: source_event_count;
 int: intersection_count;
 int: action_count;
@@ -13,11 +11,15 @@ int: time_scale;
 set of int: ACTIONS = 1..action_count;
 set of int: NODES = 1..node_count;
 set of int: ARCS = 1..arc_count;
+set of int: OFFSETS = 1..node_count + 1;
 
 array[ARCS] of NODES: arc_from;
 array[ARCS] of NODES: arc_to;
 array[ARCS] of int: arc_cost;
 array[NODES] of int: node_balance;
+array[OFFSETS] of 1..arc_count + 1: outgoing_start;
+array[OFFSETS] of 1..arc_count + 1: incoming_start;
+array[ARCS] of ARCS: incoming_edge;
 
 array[ACTIONS] of int: action_x;
 array[ACTIONS] of int: action_y;
@@ -27,17 +29,19 @@ array[ACTIONS] of int: action_gain;
 array[ACTIONS] of int: action_anchor_event;
 array[ACTIONS] of int: action_capture_count;
 
-array[ARCS, 1..2] of NODES: arcs =
-  array2d(ARCS, 1..2, [
-    if endpoint = 1 then arc_from[edge] else arc_to[edge] endif
-    | edge in ARCS, endpoint in 1..2
-  ]);
-
 array[ARCS] of var 0..1: flow;
 var -sum(action in ACTIONS)(action_gain[action] * objective_scale)..0:
   total_cost;
 
-constraint network_flow_cost(arcs, node_balance, arc_cost, flow, total_cost);
+constraint forall(node in NODES)(
+  sum(edge in outgoing_start[node]..outgoing_start[node + 1] - 1)(flow[edge])
+    - sum(position in incoming_start[node]..incoming_start[node + 1] - 1)(
+        flow[incoming_edge[position]]
+      )
+    = node_balance[node]
+);
+
+constraint total_cost = sum(edge in ARCS)(arc_cost[edge] * flow[edge]);
 
 var int: information_gain =
   sum(edge in ARCS where arc_to[edge] > source_node /\ arc_to[edge] < sink_node)(

@@ -1,0 +1,40 @@
+agent_name: drone-1
+debug: true
+environment_profile: .live-sparse-environment.yaml
+llm:
+  provider: vllm
+  base_url: http://127.0.0.1:11411/v1
+  model: Qwen/Qwen3.8-27B-FP8
+  api_key: EMPTY
+  temperature: 1.0
+planners:
+  temporal:
+    entrypoint: modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc
+    timeout_seconds: 30
+  symbolic:
+    entrypoint: modules/downward/fast-downward.py
+    validator_entrypoint: modules/VAL/build/linux64/Release/bin/Validate
+    timeout_seconds: 30
+heartbeats:
+  hyper_seconds: 10
+  maneuver_seconds: 5
+  summary_seconds: 30
+transport:
+  backend: file
+  root: /mnt/array/sukaih/Project/onr_agent_slim/var/live-sparse-20260828/transport
+storage:
+  root: /mnt/array/sukaih/Project/onr_agent_slim/var/live-sparse-20260828/storage
+  planner_artifacts: /mnt/array/sukaih/Project/onr_agent_slim/var/live-sparse-20260828/planner-artifacts
+services:
+  hyper_agent: hyper-agent
+  maneuver_control: maneuver-control
+  context_coordination: context-coordination
+  fsm_runner: fsm-runner
+  planner: planner
+agents:
+  hyper_agent:
+    output_structure_retry:
+      max_retries: 2
+  maneuver_control:
+    output_structure_retry:
+      max_retries: 1

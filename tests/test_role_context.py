@@ -70,7 +70,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.4.0",
+        "2.5.0",
         "2.0.0",
         "1.1.0",
         "3.1.0",
@@ -513,6 +513,8 @@ def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
     assert "jq 'keys'" in minizinc_skill
     assert "schema-extraction functions" in minizinc_skill
     assert "JSON manifest" in minizinc_skill
+    assert "sparse incoming/outgoing" in minizinc_skill
+    assert "without capability caps" in minizinc_skill
     assert "bypasses `initialize_event_data_materialization`" in minizinc_skill
     assert 'minizinc_solver: "coin-bc"' in minizinc_skill
 
