@@ -20,6 +20,7 @@ from onr.agents.maneuver_tools import (
 from onr.agents.structured_output import (
     StructuralIssue,
     StructuredOutputFailure,
+    StructuredOutputRetriesExhausted,
     invoke_with_structured_output_recovery,
 )
 from onr.contracts.context_coordination import MissionSnapshot
@@ -212,7 +213,22 @@ class DeepAgentsHeartbeatProvider:
         if config is not None:
             kwargs["config"] = config
         response = invoke({"messages": messages}, **kwargs)
-        summary = _parse_heartbeat_summary(response)
+        for attempt in range(self.max_retries + 1):
+            try:
+                summary = _parse_heartbeat_summary(response)
+                break
+            except StructuredOutputFailure as error:
+                if attempt >= self.max_retries:
+                    primary = sorted(set(error.issues))[0]
+                    raise StructuredOutputRetriesExhausted(primary.code) from None
+                correction_state = _heartbeat_summary_correction_state(
+                    response,
+                    original_messages=messages,
+                    error=error,
+                )
+                response = invoke(correction_state, **kwargs)
+        else:
+            raise AssertionError("unreachable")
         try:
             _require_final_transition_intent(tool_context)
         except ManeuverHeartbeatOrderingError as exc:
@@ -257,6 +273,53 @@ def _parse_heartbeat_summary(response: object) -> str:
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("Maneuver heartbeat response summary must be non-empty")
     return summary
+
+
+def _heartbeat_summary_correction_state(
+    response: object,
+    *,
+    original_messages: Sequence[object],
+    error: StructuredOutputFailure,
+) -> dict[str, object]:
+    if not isinstance(response, Mapping):
+        primary = sorted(set(error.issues))[0]
+        raise StructuredOutputRetriesExhausted(primary.code) from None
+    state = dict(response)
+    state.pop("structured_response", None)
+    response_messages = state.get("messages")
+    messages = (
+        list(response_messages)
+        if isinstance(response_messages, Sequence)
+        and not isinstance(response_messages, (str, bytes))
+        else list(original_messages)
+    )
+    messages.append(
+        HumanMessage(
+            content=json.dumps(
+                {
+                    "errors": [
+                        {
+                            "code": issue.code,
+                            "path": issue.path,
+                            "expected": issue.expected,
+                        }
+                        for issue in sorted(set(error.issues))
+                    ],
+                    "completion_correction": (
+                        "Return a JSON object with exactly one non-empty summary "
+                        "field as the final response."
+                    ),
+                    "prohibition": "Do not call any tools again in this heartbeat.",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        )
+    )
+    state["messages"] = messages
+    return state
 
 
 def _current_focused_fsm_context(

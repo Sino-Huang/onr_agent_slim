@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -77,6 +78,7 @@ class MiniZincExecutor:
                     capture_output=True,
                     check=False,
                     cwd=str(directory),
+                    env={**os.environ, "TMPDIR": str(directory)},
                     text=True,
                     timeout=self.timeout_seconds,
                 )
@@ -131,6 +133,7 @@ class MiniZincExecutor:
                 capture_output=True,
                 check=False,
                 cwd=str(run_directory),
+                env={**os.environ, "TMPDIR": str(run_directory)},
                 text=True,
                 timeout=self.timeout_seconds,
             )

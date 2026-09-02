@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -218,6 +219,10 @@ def test_only_hyper_workflow_receives_minimal_local_shell_backend(
         return PublicFakeDeepAgent()
 
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
+    local_jq = tmp_path / "modules/jq/jq"
+    local_jq.parent.mkdir(parents=True)
+    local_jq.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    local_jq.chmod(0o755)
     skills = _install_skills(tmp_path / "skills")
     create_planning_intent_agent(
         model=object(),
@@ -246,10 +251,15 @@ def test_only_hyper_workflow_receives_minimal_local_shell_backend(
     assert shell.virtual_mode is True
     environment = shell.execute("env")
     assert environment.exit_code == 0
-    assert environment.output.splitlines() == [
-        "PATH=/usr/bin:/bin",
-        f"PWD={tmp_path.resolve()}",
-    ]
+    environment_values = dict(
+        line.split("=", 1) for line in environment.output.splitlines() if "=" in line
+    )
+    assert environment_values["PATH"] == (
+        f"{tmp_path.resolve() / 'modules/jq'}:"
+        f"{Path(sys.executable).resolve().parent}:/usr/bin:/bin"
+    )
+    assert environment_values["PWD"] == str(tmp_path.resolve())
+    assert shell.execute("python --version").exit_code == 0
 
 
 def test_hyper_workflow_fails_clearly_when_jq_is_unavailable(
@@ -262,6 +272,26 @@ def test_hyper_workflow_fails_clearly_when_jq_is_unavailable(
     )
 
     with pytest.raises(RuntimeError, match="requires jq"):
+        create_hyper_workflow_agent(
+            model=object(),
+            system_prompt="Workflow.",
+            mission_id="mission-1",
+            backend_root=tmp_path,
+        )
+
+
+def test_hyper_workflow_fails_clearly_when_python_is_unavailable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import onr.agents.hyper_agent as hyper_agent_module
+
+    monkeypatch.setattr(
+        hyper_agent_module.shutil,
+        "which",
+        lambda name, **_kwargs: "/local/jq" if name == "jq" else None,
+    )
+
+    with pytest.raises(RuntimeError, match="requires Python"):
         create_hyper_workflow_agent(
             model=object(),
             system_prompt="Workflow.",
@@ -476,6 +506,10 @@ def test_hyper_workflow_local_shell_does_not_claim_scoped_permissions(
         return PublicFakeDeepAgent(kwargs.get("skills", ()))
 
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
+    local_jq = tmp_path / "modules/jq/jq"
+    local_jq.parent.mkdir(parents=True)
+    local_jq.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    local_jq.chmod(0o755)
     create_hyper_workflow_agent(
         model=object(),
         system_prompt="Hyper workflow prompt.",

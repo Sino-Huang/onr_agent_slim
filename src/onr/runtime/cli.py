@@ -246,7 +246,9 @@ def run_closed_loop_demo(
     )
     belief_service = runtime.create_bayesian_belief_service(
         mission_id=mission_input.mission_id,
-        keys=tuple(BeliefKey(entity_id, "event-risk") for entity_id in range(1, 21)),
+        keys=tuple(
+            BeliefKey(str(entity_id), "event-risk") for entity_id in range(1, 21)
+        ),
         particle_count=2048,
         context_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",

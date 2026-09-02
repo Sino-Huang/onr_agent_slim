@@ -55,7 +55,7 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.llm.api_key == "EMPTY"
     assert (
         config.planners.temporal.entrypoint
-        == root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc"
+        == root / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc"
     )
     assert (
         config.planners.symbolic.entrypoint
@@ -74,11 +74,11 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
     profile = config.environment_profile
-    assert profile.source_path == (root / "conf/environment_physical.yaml").resolve()
-    assert profile.adapter_kind == "external_transport"
+    assert profile.source_path == (root / "conf/environment_params.yaml").resolve()
+    assert profile.adapter_kind == "fake"
     assert profile.protocols.maneuver_command == 1
     assert profile.protocols.maneuver_feedback == 1
-    assert profile.protocols.environment_data == 2
+    assert profile.protocols.environment_data == 1
     assert profile.protocols.perception == 1
     assert profile.update_ownership is EnvironmentUpdateOwnership.COORDINATOR_DRIVEN
     assert profile.update_cadence_seconds == 0.5
@@ -90,14 +90,12 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
         "pursue",
         "investigate",
     }
-    assert profile.fake is None
-    assert profile.external is not None
-    assert profile.external.runtime_repository == (
-        root.parent / "onr_physical_runtime"
+    assert profile.fake is not None
+    assert profile.fake.scenario_path == (
+        root / "data/ships_report_and_trajectory_example/ships/events_report.json"
     ).resolve()
-    assert profile.external.coordinate_frame == "local_ned"
-    assert profile.external.mission_epoch == "environment_reset"
-    assert profile.external.altitude_convention == "ned_down_metres"
+    assert profile.fake.initial_position == (0.0, 0.0, -250.0)
+    assert profile.external is None
     assert profile.artifact_root == (root / "var/environment").resolve()
     assert HeartbeatsConfig(1, 2).summary_seconds == 30
     for invalid in (0, -1, True):

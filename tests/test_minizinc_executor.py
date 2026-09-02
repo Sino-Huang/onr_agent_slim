@@ -186,9 +186,13 @@ def test_minizinc_executor_passes_only_the_validated_solver_argument(
     import onr.adapters.minizinc as module
 
     observed: list[str] = []
+    observed_environment: dict[str, str] = {}
 
-    def run(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         observed.extend(arguments)
+        environment = kwargs.get("env")
+        assert isinstance(environment, dict)
+        observed_environment.update(cast(dict[str, str], environment))
         return subprocess.CompletedProcess(
             arguments,
             0,
@@ -209,6 +213,8 @@ def test_minizinc_executor_passes_only_the_validated_solver_argument(
         "--json-stream",
     ]
     assert observed.count("--solver") == 1
+    assert result.evidence is not None
+    assert observed_environment["TMPDIR"] == str(result.evidence.artifact_directory)
     with pytest.raises(ValueError, match="unsupported MiniZinc solver"):
         executor.execute(_PLANNER_ASSETS, cast(Any, "highs --output-to-file plan"))
 
@@ -220,7 +226,8 @@ def test_minizinc_executor_static_check_uses_real_model_and_data_parser(
     minizinc = (
         repository_root
         / "modules"
-        / "MiniZincIDE-2.9.7-bundle-linux-x86_64"
+        / "MiniZincIDE-2.10.1-appimage"
+        / "usr"
         / "bin"
         / "minizinc"
     )
@@ -262,7 +269,8 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     minizinc = (
         repository_root
         / "modules"
-        / "MiniZincIDE-2.9.7-bundle-linux-x86_64"
+        / "MiniZincIDE-2.10.1-appimage"
+        / "usr"
         / "bin"
         / "minizinc"
     )
@@ -523,7 +531,8 @@ def test_full_physical_vehicle_patrol_solves_within_executor_limit(
         text=True,
     )
     executor = MiniZincExecutor(
-        repository_root / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc",
+        repository_root
+        / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
         tmp_path / "planner-artifacts",
         timeout_seconds=30,
     )

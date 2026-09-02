@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal, NoReturn, TypeVar, cast
@@ -256,10 +257,22 @@ def _create_deep_agent(
         if backend_kind == "local-shell":
             from deepagents.backends import LocalShellBackend
 
-            shell_path = "/usr/bin:/bin"
+            shell_root = (
+                Path(backend_root).resolve()
+                if backend_root is not None
+                else Path.cwd().resolve()
+            )
+            python_directory = Path(sys.executable).resolve().parent
+            shell_path = (
+                f"{shell_root / 'modules/jq'}:{python_directory}:/usr/bin:/bin"
+            )
             if shutil.which("jq", path=shell_path) is None:
                 raise RuntimeError(
                     f"Hyper workflow requires jq on its configured PATH ({shell_path})"
+                )
+            if shutil.which("python", path=shell_path) is None:
+                raise RuntimeError(
+                    f"Hyper workflow requires Python on its configured PATH ({shell_path})"
                 )
             kwargs["backend"] = LocalShellBackend(
                 root_dir=backend_root,

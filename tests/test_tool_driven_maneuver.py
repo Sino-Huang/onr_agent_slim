@@ -2010,6 +2010,77 @@ def test_todo_only_heartbeat_retains_intent_and_returns_typed_completion() -> No
     assert context.execution_record.executions == []
 
 
+def test_prose_only_heartbeat_resumes_same_episode_for_structured_summary() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Retain this unsatisfied intent.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-prose-summary",
+        "correlation-prose-summary",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 0},
+    )
+    todo_state = [{"content": "one heartbeat-local cycle", "status": "completed"}]
+
+    class Agent:
+        def __init__(self) -> None:
+            self.states: list[dict[str, object]] = []
+
+        def invoke(self, state: dict[str, object], **_: object) -> dict[str, object]:
+            self.states.append(state)
+            if len(self.states) == 1:
+                return {
+                    "messages": [
+                        *cast(list[object], state["messages"]),
+                        HumanMessage(content="Prose-only heartbeat completion."),
+                    ],
+                    "todos": todo_state,
+                }
+
+            assert state["todos"] is todo_state
+            messages = cast(list[HumanMessage], state["messages"])
+            assert messages[-2].content == "Prose-only heartbeat completion."
+            correction = json.loads(cast(str, messages[-1].content))
+            assert correction["prohibition"] == (
+                "Do not call any tools again in this heartbeat."
+            )
+            assert correction["errors"] == [
+                {
+                    "code": "malformed_structured_output",
+                    "expected": "valid structured output",
+                    "path": "$",
+                }
+            ]
+            return {
+                **state,
+                "structured_response": {"summary": "Retained the current intent."},
+            }
+
+    agent = Agent()
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    completion = DeepAgentsHeartbeatProvider(agent).heartbeat(invocation, context)
+
+    assert completion.summary == "Retained the current intent."
+    assert len(agent.states) == 2
+    assert context.execution_record.executions == []
+
+
 def test_rejected_tool_heartbeat_returns_normal_typed_completion() -> None:
     plan = _plan()
     transport = InProcessTransport()

@@ -254,7 +254,7 @@ def _event_information_context(
     )
     planner = RecordingMiniZinc(
         MiniZincExecutor(
-            _REPO_ROOT / "modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc",
+            _REPO_ROOT / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
             tmp_path / "minizinc-runs",
             timeout_seconds=30,
         )

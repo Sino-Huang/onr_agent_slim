@@ -193,7 +193,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     assert supervisor_prompts == [prompts["hyper-supervisor"]]
     assert belief_requests[0].get("seed") is None
     assert tuple(key.entity_id for key in belief_requests[0]["keys"]) == tuple(
-        range(1, 21)
+        str(entity_id) for entity_id in range(1, 21)
     )
 
 

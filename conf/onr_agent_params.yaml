@@ -1,6 +1,6 @@
 agent_name: drone-1
 debug: true
-environment_profile: conf/environment_physical.yaml
+environment_profile: conf/environment_params.yaml
 llm:
   provider: vllm
   base_url: http://127.0.0.1:11411/v1
@@ -9,7 +9,7 @@ llm:
   temperature: 1.0
 planners:
   temporal:
-    entrypoint: modules/MiniZincIDE-2.9.7-bundle-linux-x86_64/bin/minizinc
+    entrypoint: modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc
     timeout_seconds: 30
   symbolic:
     entrypoint: modules/downward/fast-downward.py
