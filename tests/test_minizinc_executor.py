@@ -393,9 +393,11 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
         "advisory_score",
         "advisory_maneuvers",
         "advisory_duration_s",
+        "covered_report_count",
         "covered_report_ids",
     }
     assert manifest["candidates"] > 0
+    assert manifest["covered_report_count"] == len(manifest["covered_report_ids"])
     assert len(manifest["covered_report_ids"]) == len(set(manifest["covered_report_ids"]))
     data = generated.read_text(encoding="utf-8")
     action_count = _dzn_int(data, "candidate_count")

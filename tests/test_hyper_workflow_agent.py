@@ -1120,6 +1120,7 @@ def test_statechart_binds_planner_plan_without_direct_agent_handoff(
     feedback = json.loads(accepted)
     assert feedback["status"] == "accepted"
     assert feedback["graph_counts"] == {"states": 2, "transitions": 1}
+    assert feedback["required_next_action"] == "Return HyperWorkflowResultCandidate."
     assert context.statechart.plan_revision == context.planner_plan.plan_revision
     accepted_document = context.statechart.to_dict()
     assert accepted_document["schema_version"] == 2
@@ -1182,4 +1183,5 @@ def test_statechart_submission_accepts_only_returned_path_and_repairs_same_files
     repaired = json.loads(repaired_text)
     assert repaired["status"] == "accepted"
     assert repaired["attempt_number"] == 3
+    assert repaired["required_next_action"] == "Return HyperWorkflowResultCandidate."
     assert (context.artifact_root / "statechart-attempts/003/statechart.json").is_file()

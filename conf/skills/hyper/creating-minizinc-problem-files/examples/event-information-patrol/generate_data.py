@@ -64,6 +64,7 @@ def build_instance(
         "advisory_score": route.score,
         "advisory_maneuvers": len(route.candidates),
         "advisory_duration_s": route.duration_s,
+        "covered_report_count": len(route.covered_report_ids),
         "covered_report_ids": list(route.covered_report_ids),
     }
     return serialize_minizinc_data(graph), manifest

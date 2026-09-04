@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.8.0'
+version: '2.8.1'
 ---
 
 # Creating MiniZinc Problem Files
@@ -22,8 +22,14 @@ order, units, and scales.
 
 ## Mission 1 reliability candidate DAG
 
-1. Read `examples/event-information-patrol/model.mzn` and
-   `examples/event-information-patrol/generate_data.py` completely. The
+1. Read
+   `/conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`
+   and
+   `/conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/generate_data.py`
+   completely; these stable reference locations replace filesystem discovery.
+   The corresponding relative paths are
+   `examples/event-information-patrol/model.mzn` and
+   `examples/event-information-patrol/generate_data.py`. The
    checked-in `examples/event-information-patrol/data.dzn` is its current demo
    result. `replan-environment.json`, `replan-belief.json`, and
    `replan-data.dzn` show the same formulation rematerialized after Mission
@@ -51,15 +57,17 @@ order, units, and scales.
    Run the workspace script with the activated `onr` Python:
    `python <workspace>/generate_data.py <environment-file> <workspace>/belief.json <workspace>/data.dzn`.
    Build this command from the labeled shell workspace and execute environment
-   path returned by `record_planning_intent`. Keep the repository root as the
-   working directory while running it; every returned shell path is relative to
-   that root.
+   path returned by `record_planning_intent`. The working directory remains the repository root
+   for generation and DZN inspection, and every returned shell path is passed
+   unchanged relative to that root.
    Python is one-run preprocessing because DZN cannot calculate and reduce this
    action graph. The script is an agent-authored planning artifact, not a
    production compiler; leave it in the numbered workspace.
 4. Inspect the script's JSON manifest before submission. It must report
-   candidate and arc counts, advisory score, maneuver count, duration, and
-   unique covered report IDs. Confirm that `data.dzn` has aligned candidate and arc
+   candidate and arc counts, advisory score, maneuver count, duration,
+   `covered_report_count`, and unique covered report IDs. Copy its scalar values
+   verbatim into the submission reflection; `covered_report_count` is the
+   authoritative array count. Confirm that `data.dzn` has aligned candidate and arc
    arrays, forward topological arcs, a source-to-sink route, monotonic
    `outgoing_start` and `incoming_start` offsets ending at `arc_count + 1`, an
    `incoming_edge` permutation of every arc, and manifest-consistent counts.

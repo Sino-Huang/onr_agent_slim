@@ -1607,7 +1607,7 @@ def submit_statechart_draft(
                 "transitions": len(chart.transitions),
             },
             "remaining_attempts": context.max_statechart_attempts - attempt_number,
-            "required_next_action": "Call handoff_execution.",
+            "required_next_action": "Return HyperWorkflowResultCandidate.",
         }
     )
 
