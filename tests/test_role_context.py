@@ -71,7 +71,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.9.0",
+        "2.9.1",
         "2.0.0",
         "1.2.0",
         "3.2.0",
@@ -545,9 +545,12 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "examples/event-information-patrol/generate_data.py" in minizinc_skill
     assert "event-information-patrol/inspect_inputs.py" in minizinc_skill
     assert "event-information-patrol/prepare_problem.py" in minizinc_skill
+    assert "event-information-patrol/inspect_problem.py" in minizinc_skill
     assert "parameterized helpers" in minizinc_skill
     assert "Do not copy, rewrite, or transcribe" in minizinc_skill
     assert "substituting the two labeled execute paths verbatim" in minizinc_skill
+    assert "Do not author an ad-hoc inspection script" in minizinc_skill
+    assert "DZN into model context" in minizinc_skill
     assert "example values are teaching values only" in minizinc_skill
     assert "replan-environment.json" in minizinc_skill
     assert "replan-belief.json" in minizinc_skill

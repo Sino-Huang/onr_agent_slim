@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.9.0'
+version: '2.9.1'
 ---
 
 # Creating MiniZinc Problem Files
@@ -31,9 +31,10 @@ and read spaced keys with
 
 1. Use the checked-in, parameterized helpers at these stable repository-relative
    execute paths:
-   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py`
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py`,
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py`,
    and
-   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py`.
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_problem.py`.
    `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/generate_data.py`
    contains the shared data-building implementation and
    `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`
@@ -63,9 +64,12 @@ and read spaced keys with
    `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py <environment-file> <belief-file>`.
    Then create both returned planner files in one command:
    `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py <environment-file> <belief-file> <shell-workspace>/model.mzn <shell-workspace>/data.dzn`.
+   Finally validate the generated DZN through its compact inspector:
+   `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_problem.py <shell-workspace>/data.dzn`.
    Shell-quote a substituted path if it contains whitespace. The working directory remains the repository root. Do not `cd`, embed
    either JSON document in a tool call, or replace a returned input path with an
-   example path. `prepare_problem.py` creates the numbered directory, copies the
+   example path. Do not author an ad-hoc inspection script or read the generated
+   DZN into model context. `prepare_problem.py` creates the numbered directory, copies the
    paired model, and invokes `generate_data.py`; the same commands apply to
    initial planning and every replacement revision.
 4. Inspect `prepare_problem.py`'s JSON manifest before submission. It must report
@@ -77,7 +81,9 @@ and read spaced keys with
    `outgoing_start` and `incoming_start` offsets ending at `arc_count + 1`, an
    `incoming_edge` permutation of every arc, and manifest-consistent counts.
    Repeated offsets are valid empty adjacency windows; validate incoming
-   windows through the `incoming_edge` indirection.
+   windows through the `incoming_edge` indirection. The compact
+   `inspect_problem.py` result is authoritative for these structural checks and
+   must report `valid: true`.
    For a replacement revision, also confirm the environment Mission time and
    belief input revision are newer than the prior plan inputs and that expired
    and checked report IDs are absent from every candidate report array.

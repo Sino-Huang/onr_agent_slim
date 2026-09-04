@@ -506,6 +506,43 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
     assert model.read_bytes() == (example / "model.mzn").read_bytes()
     assert data.read_bytes() == (example / "replan-data.dzn").read_bytes()
 
+    inspected_problem = subprocess.run(
+        [sys.executable, str(example / "inspect_problem.py"), data],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    assert json.loads(inspected_problem.stdout) == {
+        "arc_count": 9,
+        "candidate_arrays_aligned": True,
+        "candidate_count": 4,
+        "forward_arcs": True,
+        "incoming_index_valid": True,
+        "node_count": 6,
+        "outgoing_index_valid": True,
+        "report_arrays_aligned": True,
+        "report_id_count": 6,
+        "source_to_sink": True,
+        "valid": True,
+    }
+
+    broken = tmp_path / "broken.dzn"
+    broken.write_text(
+        data.read_text(encoding="utf-8").replace(
+            "outgoing_start = [1, 6, 7, 8, 9, 10, 10];",
+            "outgoing_start = [1, 6, 7, 8, 9, 9, 10];",
+        ),
+        encoding="utf-8",
+    )
+    rejected = subprocess.run(
+        [sys.executable, str(example / "inspect_problem.py"), broken],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert "outgoing index does not match arc_from" in rejected.stderr
+
 
 def test_full_physical_vehicle_patrol_solves_within_executor_limit(
     tmp_path: Path,

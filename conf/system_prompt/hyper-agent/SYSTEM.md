@@ -59,7 +59,8 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 - For Mission 1 MiniZinc, read `creating-minizinc-problem-files`, pass the
   returned current environment and reliability-snapshot paths directly to its
   checked-in helpers, and use the code-owned candidate/DAG generator for both
-  the advisory oracle and DZN. Never copy or transcribe the belief document.
+  the advisory oracle and DZN. Use its compact DZN inspector; do not author an
+  inspection script or read the generated DZN into model context. Never copy or transcribe the belief document.
   For other MiniZinc models, use generic event materialization when required.
 - For Fast Downward, read `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
 - For planner files not produced by a checked-in helper, create an absent file

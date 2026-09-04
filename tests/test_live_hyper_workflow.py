@@ -501,6 +501,24 @@ def test_live_hyper_workflow_regenerates_mission1_minizinc_for_replan(
     assert set(assets) == {"model.mzn", "data.dzn"}
     workspace = context.artifact_root / "workspace/001"
     assert {path.name for path in workspace.iterdir()} == {"model.mzn", "data.dzn"}
+    debug_directory = tmp_path / "debug/agent/hyper-agent/mission-1"
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(debug_directory.glob("*.json"))
+    ]
+    tool_records = [item for item in records if item.get("kind") == "tool"]
+    execute_commands = [
+        item["input"]["command"]
+        for item in tool_records
+        if item.get("name") == "execute"
+    ]
+    assert any("inspect_problem.py" in command for command in execute_commands)
+    assert not any("<<" in command for command in execute_commands)
+    assert not any(
+        item.get("name") == "read_file"
+        and str(item["input"].get("file_path", "")).endswith("data.dzn")
+        for item in tool_records
+    )
     example_root = (
         _REPO_ROOT
         / "conf/skills/hyper/creating-minizinc-problem-files/examples/"
