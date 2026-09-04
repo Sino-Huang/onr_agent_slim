@@ -1,79 +1,97 @@
-int: source_event_count;
-int: intersection_count;
-int: action_count;
+int: candidate_count;
 int: node_count;
 int: arc_count;
 int: source_node;
 int: sink_node;
-int: objective_scale;
 int: time_scale;
+int: score_scale;
+int: duration_bound;
+int: maneuver_bound;
+int: report_id_count;
 
-set of int: ACTIONS = 1..action_count;
+set of int: CANDIDATES = 1..candidate_count;
 set of int: NODES = 1..node_count;
 set of int: ARCS = 1..arc_count;
-set of int: OFFSETS = 1..node_count + 1;
+set of int: NODE_OFFSETS = 1..node_count + 1;
+set of int: CANDIDATE_OFFSETS = 1..candidate_count + 1;
+set of int: REPORT_IDS = 1..report_id_count;
 
 array[ARCS] of NODES: arc_from;
 array[ARCS] of NODES: arc_to;
-array[ARCS] of int: arc_cost;
-array[NODES] of int: node_balance;
-array[OFFSETS] of 1..arc_count + 1: outgoing_start;
-array[OFFSETS] of 1..arc_count + 1: incoming_start;
+array[NODE_OFFSETS] of 1..arc_count + 1: outgoing_start;
+array[NODE_OFFSETS] of 1..arc_count + 1: incoming_start;
 array[ARCS] of ARCS: incoming_edge;
-
-array[ACTIONS] of int: action_x;
-array[ACTIONS] of int: action_y;
-array[ACTIONS] of int: action_start;
-array[ACTIONS] of int: action_end;
-array[ACTIONS] of int: action_gain;
-array[ACTIONS] of int: action_anchor_event;
-array[ACTIONS] of int: action_capture_count;
+array[CANDIDATES] of 1..2: candidate_mode;
+array[CANDIDATES] of int: candidate_entity_id;
+array[CANDIDATES] of int: candidate_start;
+array[CANDIDATES] of int: candidate_duration;
+array[CANDIDATES] of int: candidate_x;
+array[CANDIDATES] of int: candidate_y;
+array[CANDIDATES] of int: candidate_score;
+array[CANDIDATES] of int: candidate_recall;
+array[CANDIDATES] of int: candidate_estimation;
+array[CANDIDATES] of int: candidate_omission;
+array[CANDIDATE_OFFSETS] of 1..report_id_count + 1: candidate_report_start;
+array[CANDIDATES] of string: candidate_id;
+array[REPORT_IDS] of string: candidate_report_id;
 
 array[ARCS] of var 0..1: flow;
-var -sum(action in ACTIONS)(action_gain[action] * objective_scale)..0:
-  total_cost;
+array[CANDIDATES] of var 0..1: selected;
 
 constraint forall(node in NODES)(
   sum(edge in outgoing_start[node]..outgoing_start[node + 1] - 1)(flow[edge])
-    - sum(position in incoming_start[node]..incoming_start[node + 1] - 1)(
-        flow[incoming_edge[position]]
-      )
-    = node_balance[node]
+  - sum(position in incoming_start[node]..incoming_start[node + 1] - 1)(
+      flow[incoming_edge[position]]
+    )
+  = if node = source_node then 1 elseif node = sink_node then -1 else 0 endif
 );
 
-constraint total_cost = sum(edge in ARCS)(arc_cost[edge] * flow[edge]);
+constraint forall(candidate in CANDIDATES)(
+  selected[candidate] = sum(edge in ARCS where arc_to[edge] = candidate + 1)(flow[edge])
+);
 
-var int: information_gain =
-  sum(edge in ARCS where arc_to[edge] > source_node /\ arc_to[edge] < sink_node)(
-    action_gain[arc_to[edge] - 1] * flow[edge]
-  );
-var 0..intersection_count: stop_count =
-  sum(edge in ARCS where arc_to[edge] > source_node /\ arc_to[edge] < sink_node)(
-    flow[edge]
-  );
+var int: combined_score = sum(candidate in CANDIDATES)(
+  candidate_score[candidate] * selected[candidate]
+);
+var int: maneuver_count = sum(candidate in CANDIDATES)(selected[candidate]);
+var int: surveillance_duration = sum(candidate in CANDIDATES)(
+  candidate_duration[candidate] * selected[candidate]
+);
+var int: objective =
+  combined_score * maneuver_bound * duration_bound
+  - maneuver_count * duration_bound
+  - surveillance_duration;
 
-constraint -total_cost = information_gain * objective_scale - stop_count;
-
-solve minimize total_cost;
+solve maximize objective;
 
 output [
-  "{\"information_gain\":" ++ show(fix(information_gain))
-  ++ ",\"stop_count\":" ++ show(fix(stop_count))
+  "{\"combined_score\":" ++ show(fix(combined_score))
+  ++ ",\"score_scale\":" ++ show(score_scale)
+  ++ ",\"maneuver_count\":" ++ show(fix(maneuver_count))
+  ++ ",\"surveillance_duration\":" ++ show(fix(surveillance_duration))
   ++ ",\"assignments\":["
   ++ join(",", [
-    "{\"maneuver_id\":\"patrol-action-" ++ show(arc_to[edge] - 1) ++ "\","
-    ++ "\"start\":" ++ show(action_start[arc_to[edge] - 1]) ++ ","
-    ++ "\"duration\":" ++ show(action_end[arc_to[edge] - 1] - action_start[arc_to[edge] - 1]) ++ ","
-    ++ "\"parameters\":{"
-    ++ "\"x\":" ++ show(action_x[arc_to[edge] - 1]) ++ ","
-    ++ "\"y\":" ++ show(action_y[arc_to[edge] - 1]) ++ ","
-    ++ "\"source_event_index\":" ++ show(action_anchor_event[arc_to[edge] - 1]) ++ ","
-    ++ "\"captured_event_count\":" ++ show(action_capture_count[arc_to[edge] - 1])
+    "{\"candidate_id\":\"" ++ candidate_id[candidate] ++ "\","
+    ++ "\"surveillance_mode\":\""
+    ++ (if candidate_mode[candidate] = 1 then "fixed_view" else "pursue_ship" endif)
+    ++ "\",\"entity_id\":"
+    ++ (if candidate_entity_id[candidate] = 0 then "null" else show(candidate_entity_id[candidate]) endif)
+    ++ ",\"start\":" ++ show(candidate_start[candidate])
+    ++ ",\"duration\":" ++ show(candidate_duration[candidate])
     ++ ",\"time_scale\":" ++ show(time_scale)
-    ++ "}}"
-    | edge in ARCS
-      where arc_to[edge] > source_node /\ arc_to[edge] < sink_node
-        /\ fix(flow[edge]) = 1
+    ++ ",\"parameters\":{\"x\":" ++ show(candidate_x[candidate])
+    ++ ",\"y\":" ++ show(candidate_y[candidate])
+    ++ ",\"report_ids\":["
+    ++ join(",", [
+      "\"" ++ candidate_report_id[position] ++ "\""
+      | position in candidate_report_start[candidate]..candidate_report_start[candidate + 1] - 1
+    ])
+    ++ "],\"utility\":{\"recall\":" ++ show(candidate_recall[candidate])
+    ++ ",\"estimation\":" ++ show(candidate_estimation[candidate])
+    ++ ",\"omission_yield\":" ++ show(candidate_omission[candidate])
+    ++ ",\"combined\":" ++ show(candidate_score[candidate])
+    ++ ",\"scale\":" ++ show(score_scale) ++ "}}}"
+    | candidate in CANDIDATES where fix(selected[candidate]) = 1
   ])
   ++ "]}"
 ];

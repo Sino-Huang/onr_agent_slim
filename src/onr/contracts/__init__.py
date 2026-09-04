@@ -48,6 +48,11 @@ from onr.contracts.role_context import (
     MANEUVER_CONTROL_ROLE,
     RoleSkill,
 )
+from onr.contracts.reporting_reliability import (
+    ReportingReliabilitySnapshot,
+    SharedOmissionReliability,
+    ShipReportingReliability,
+)
 from onr.contracts.transition_intent import (
     ManeuverFSMContext,
     ManeuverTransitionCandidate,
@@ -91,7 +96,10 @@ __all__ = [
     "PlannerRevisionEvidence",
     "PlanningIntent",
     "ReplanRequest",
+    "ReportingReliabilitySnapshot",
     "RoleSkill",
+    "SharedOmissionReliability",
+    "ShipReportingReliability",
     "Statechart",
     "StatechartTransition",
     "TransitionAssessment",

@@ -23,6 +23,7 @@ from onr.agents.hyper_agent import (
     _parse_planning_intent_response,
 )
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
@@ -90,6 +91,12 @@ def _statechart_asset_locations(context: HyperWorkflowContext) -> dict[str, str]
         "generate_statechart.py": f"{workspace}/001/generate_statechart.py",
         "statechart.json": f"{workspace}/001/statechart.json",
     }
+
+
+def _shell_location(location: str) -> str:
+    """Return the repository-relative form used by LocalShellBackend.execute."""
+
+    return location.removeprefix("/")
 
 
 def _host_path(context: HyperWorkflowContext, location: str) -> Path:
@@ -250,6 +257,8 @@ class HyperWorkflowContext:
     backend_root: Path | None = None
     planner_workspace_location: str | None = None
     environment_file_location: str = field(default="", init=False)
+    environment_shell_location: str = field(default="", init=False)
+    planner_shell_workspace_location: str = field(default="", init=False)
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
     submitted_planner_choice: str | None = field(default=None, init=False)
@@ -288,10 +297,11 @@ class HyperWorkflowContext:
         if not isinstance(self.environment_event, TransportEvent):
             raise TypeError("Hyper workflow requires an environment event")
         if self.belief_snapshot is not None and not isinstance(
-            self.belief_snapshot, BayesianBeliefSnapshot
+            self.belief_snapshot,
+            (BayesianBeliefSnapshot, ReportingReliabilitySnapshot),
         ):
             raise TypeError(
-                "Hyper workflow belief evidence must be a BayesianBeliefSnapshot"
+                "Hyper workflow belief evidence must be a typed Bayesian snapshot"
             )
         if not callable(getattr(self.minizinc_planner, "check", None)) or not callable(
             getattr(self.minizinc_planner, "execute", None)
@@ -366,17 +376,26 @@ class HyperWorkflowContext:
                 "environment event and may be stale"
             )
         self.environment_file = environment_file
-        self.environment_file_location = relative_environment_file.as_posix()
-        if self.planner_workspace_location is None:
-            try:
-                relative_workspace = (self.artifact_root / "workspace").relative_to(
-                    self.backend_root
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    "Hyper workflow planner workspace is outside the backend root"
-                ) from exc
-            self.planner_workspace_location = relative_workspace.as_posix()
+        self.environment_shell_location = relative_environment_file.as_posix()
+        self.environment_file_location = f"/{self.environment_shell_location}"
+        try:
+            relative_workspace = (self.artifact_root / "workspace").relative_to(
+                self.backend_root
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Hyper workflow planner workspace is outside the backend root"
+            ) from exc
+        expected_workspace = relative_workspace.as_posix()
+        if (
+            self.planner_workspace_location is not None
+            and self.planner_workspace_location.removeprefix("/") != expected_workspace
+        ):
+            raise ValueError(
+                "Hyper workflow planner workspace does not match the artifact root"
+            )
+        self.planner_shell_workspace_location = expected_workspace
+        self.planner_workspace_location = f"/{expected_workspace}"
 
     @property
     def handoff_required(self) -> bool:
@@ -613,21 +632,29 @@ def record_planning_intent(
     if selected_planner is None:
         raise ValueError("recorded Planner Choice has no executable planner")
     locations = _planner_asset_locations(context, selected_planner)
-    marginals = (
-        [item.to_dict() for item in context.belief_snapshot.marginals]
+    belief_evidence = (
+        context.belief_snapshot.to_dict()
         if context.belief_snapshot is not None
         else None
     )
     planner_label = "MiniZinc" if selected_planner == "minizinc" else "PDDL"
     file_lines = "\n".join(f"{name}: {path}" for name, path in locations.items())
+    shell_workspace = f"{context.planner_shell_workspace_location}/001"
     return (
-        f"{accepted} Generate {planner_label} files at:\n"
+        f"{accepted} Generate {planner_label} files at these absolute virtual "
+        "file-tool paths:\n"
         f"{file_lines}\n"
-        f"Environment file: {context.environment_file_location}\n"
-        "Inspect it with execute and jq. Start with `jq 'keys' <file>` and use "
+        f"Shell workspace: {shell_workspace}\n"
+        "Run execute commands from the repository root; do not cd before using "
+        "the returned shell paths.\n"
+        "Environment file for file tools: "
+        f"{context.environment_file_location}\n"
+        "Environment file for execute: "
+        f"{context.environment_shell_location}\n"
+        "Inspect the execute path with jq. Start with `jq 'keys' <file>` and use "
         "`jq '.static_info | length' <file>` for the exact event count; never "
         "manually count an inline event list.\n"
-        f"Belief marginals:\n{_canonical_json(marginals)}"
+        f"Belief evidence:\n{_canonical_json(belief_evidence)}"
     )
 
 
@@ -1333,9 +1360,11 @@ def planner_executor(
             f"{context.statechart_generator_location}\n"
             "statechart_file_location: "
             f"{context.statechart_file_location}\n"
+            "statechart_shell_workspace: "
+            f"{context.planner_shell_workspace_location}/001\n"
             "instruction: Inspect the planner artifact, author the generator at the "
-            "exact returned location, run and inspect it, then submit the exact "
-            "statechart_file_location."
+            "exact virtual location, run and inspect it from the returned shell "
+            "workspace, then submit the exact statechart_file_location."
         )
     context.planner_plan = None
     return _tool_result(

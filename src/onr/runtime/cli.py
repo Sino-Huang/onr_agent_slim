@@ -18,12 +18,12 @@ from onr.application.context_coordination import (
     ClosedLoopRunResult,
 )
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot, BeliefKey
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import HyperHeartbeatInvocation, MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planning import PlannerPlan
 from onr.contracts.transport import TransportEvent
-from onr.demo.fake_belief import seed_event_risk_beliefs
 from onr.ports.environment import EnvironmentPlanningView
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.lease import RuntimeLeaseStore
@@ -71,7 +71,7 @@ def _utc_archive_timestamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
 
 
-def _rollover_demo_artifacts(
+def _rollover_runtime_artifacts(
     *, repo_root: Path, lease: RuntimeLeaseStore
 ) -> Path | None:
     source = repo_root / "var"
@@ -136,6 +136,14 @@ def _parser() -> argparse.ArgumentParser:
             "selected; unnecessary for external physical profiles"
         ),
     )
+    parser.add_argument(
+        "--skip-runtime-artifact-rollover",
+        action="store_true",
+        help=(
+            "keep repo-root/var in place when this run already uses isolated "
+            "artifact paths"
+        ),
+    )
     return parser
 
 
@@ -151,7 +159,7 @@ def _run_hyper_revision(
     planning_snapshot: MissionSnapshot,
     environment_event: TransportEvent,
     environment_file: Path,
-    belief_snapshot: BayesianBeliefSnapshot | None,
+    belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None,
     revision: int,
     recursion_limit: int,
 ) -> ActivePlanRevision | None:
@@ -235,6 +243,15 @@ def run_closed_loop_demo(
         isinstance(item, Mapping) for item in event_report
     ):
         raise TypeError("environment planning view has no static_info evidence")
+    world_model_info = planning_view.environment_event.payload.get("world_model_info")
+    report_streams = (
+        world_model_info.get("ship_event_reports")
+        if isinstance(world_model_info, Mapping)
+        else None
+    )
+    if not isinstance(report_streams, Mapping):
+        raise TypeError("environment planning view has no ship roster")
+    ship_ids = tuple(sorted(int(entity_id) for entity_id in report_streams))
     planning_backend_root = Path(
         os.path.commonpath(
             (
@@ -247,13 +264,14 @@ def run_closed_loop_demo(
     belief_service = runtime.create_bayesian_belief_service(
         mission_id=mission_input.mission_id,
         keys=tuple(
-            BeliefKey(str(entity_id), "event-risk") for entity_id in range(1, 21)
+            BeliefKey(entity_id, "reporting-corruption")
+            for entity_id in ship_ids
         ),
-        particle_count=2048,
+        belief_kind="reporting_reliability",
         context_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",
     )
-    belief = seed_event_risk_beliefs(belief_service, tuple(event_report))
+    belief = belief_service.load_current_snapshot()
     with runtime.transport.open_consumer(
         context_coordination.subscription
     ) as context_consumer:
@@ -387,15 +405,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(runtime.transport, FileTransport):
             raise RuntimeError("demo mission requires transport.backend=file")
 
-        if (
-            prior_var_exists
-            and runtime.config.environment_profile.adapter_kind != "external_transport"
-        ):
-            stage = "demo artifact rollover"
+        if prior_var_exists and not args.skip_runtime_artifact_rollover:
+            stage = "runtime artifact rollover"
             lease = runtime.lease
             if lease is None:
                 raise RuntimeError("runtime lease was not initialized")
-            archived = _rollover_demo_artifacts(repo_root=repo_root, lease=lease)
+            archived = _rollover_runtime_artifacts(repo_root=repo_root, lease=lease)
             if archived is not None:
                 # Runtime composition creates the transport root. Recreate it only
                 # after the wholesale move so this run cannot write into the archive.

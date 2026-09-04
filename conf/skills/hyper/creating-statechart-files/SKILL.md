@@ -1,7 +1,7 @@
 ---
 name: creating-statechart-files
 description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
-version: '3.1.0'
+version: '3.2.0'
 ---
 
 # Creating Statechart Files
@@ -9,7 +9,7 @@ version: '3.1.0'
 ## Procedure
 
 1. Inspect and decode the exact `planner_native_plan_artifact_reference` with `jq` or standard-library Python. Treat the artifact, not the tool-call transcript, as the input.
-2. Read `examples/event-information-patrol/generate_statechart.py` as a few-shot. Author a mission-specific `generate_statechart.py` at the exact location returned by `planner_executor`.
+2. Read `examples/event-information-patrol/generate_statechart.py` as a few-shot. Author a mission-specific `generate_statechart.py` at the exact leading-`/` virtual location returned by `planner_executor`. Use the separately returned repository-relative shell workspace when running it with `execute`.
 3. Keep two sections obvious in the generator: planner-output extraction and semantic-topology construction. Adapt extraction to the observed artifact schema; do not introduce a production-owned planner schema.
 4. Preserve every planner-selected item’s order, dependencies, parameters, timing, units, and identifiers in self-explanatory state or transition contexts. Describe desired operational outcomes and evidence; Maneuver Control chooses physical tools.
    Initial travel may be authorized at Mission time zero. Later travel becomes
@@ -17,9 +17,10 @@ version: '3.1.0'
    lifecycle feedback triggers Maneuver Control immediately, without rounding
    planner timing to the periodic heartbeat cadence. Keep observation start and
    duration distinct from travel timing.
-   Record planner-derived outcome facts such as location, arrival timing,
-   source-event identity, expected evidence, and observation timing. Maneuver
-   Control chooses the physical action and its adapter parameters at runtime.
+   Record candidate identity, `fixed_view` or `pursue_ship` mode, numeric target
+   entity where applicable, opaque report identities, observation window, and
+   the recall/estimation/omission utility breakdown. Maneuver Control chooses
+   `navigate` or `pursue` and its adapter parameters at runtime.
    Continuous sensing needs no maneuver-owned sensing state; represent a
    planner assignment with movement followed by its evidence-ready outcome.
 5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.

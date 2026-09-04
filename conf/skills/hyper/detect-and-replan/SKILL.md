@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
 description: Apply when observed execution facts may invalidate the current plan and an evidence-based replan decision is required.
-version: '1.1.0'
+version: '1.2.0'
 ---
 
 # Detect And Replan
@@ -14,6 +14,23 @@ version: '1.1.0'
 4. Preserve Mission Input authority and the current plan while replanning is evaluated.
 5. Accept a replacement only after a validated durable replan result is published through the authoritative path; that result then supersedes the prior plan according to its revision contract.
 6. Communicate and record the outcome as a new plan reference, no-change result, or decline with the relevant request and observed artifact references.
+
+## Mission 1 reliability replans
+
+Treat a Mission 1 gate trigger as advisory evidence for the heartbeat decision.
+When the disposition is `replan`, the replacement Hyper Workflow runs all
+planning stages against the latest Mission Snapshot, physical planning view,
+and reporting-reliability snapshot. A snapshot that already names an active
+positive plan revision requires fresh planner files and a fresh Statechart in
+the next revision workspace; the prior revision remains authoritative until
+that replacement passes MiniZinc and Statechart validation.
+
+Use the current Mission time, vehicle pose, cumulative `event_report_checks`,
+future public schedule, and posterior revision. The replacement DZN therefore
+removes expired and checked opportunities and recomputes reachability and
+utility. The flow formulation may remain unchanged, but `model.mzn`,
+`generate_data.py`, `belief.json`, and `data.dzn` are newly written artifacts
+for the replacement revision.
 
 ## Authority Boundaries
 

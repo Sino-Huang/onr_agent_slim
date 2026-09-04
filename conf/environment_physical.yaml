@@ -22,7 +22,7 @@ supported_actions:
   - pursue
   - investigate
 external:
-  runtime_repository: /mnt/array/sukaih/Project/onr_physical_runtime
+  runtime_repository: /data/ccu/sukaih/ONR/onr_physical_runtime
   planning_topic: environment-planning
   update_topic: environment-updates
   control_topic: environment-control

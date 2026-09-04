@@ -12,7 +12,9 @@ from typing import Any, cast
 
 from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
 from onr.application.transition_intents import TransitionIntentJournal
+from onr.application.mission1_planning import Mission1ReplanGate
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import (
     MISSION_SNAPSHOT_SOURCES,
     MissionSnapshot,
@@ -417,6 +419,9 @@ class ContextCoordination:
     ) -> tuple[MissionSnapshot, int]:
         updates = environment.drain_updates()
         for update in updates:
+            ingest_tick = getattr(self._belief_service, "ingest_environment_tick", None)
+            if callable(ingest_tick):
+                ingest_tick(update)
             self._pending_perceptions.extend(
                 perception_from_dict(event.payload)
                 for event in update.perception_events
@@ -453,6 +458,13 @@ class ContextCoordination:
         inference_windows: list[InferenceWindow] = []
         last_maneuver_periodic = -self._maneuver_seconds
         last_hyper_periodic = 0.0
+        mission1_gate = (
+            Mission1ReplanGate()
+            if getattr(self._belief_service, "belief_kind", None)
+            == "reporting_reliability"
+            else None
+        )
+        last_gate_signature: tuple[object, ...] | None = None
 
         environment_started = False
         try:
@@ -503,20 +515,52 @@ class ContextCoordination:
                         maneuver_count += 1
 
                     now = environment.current_time
-                    periodic_hyper, last_hyper_periodic, coalesced = (
-                        self._next_periodic(
-                            now,
-                            self._hyper_seconds,
-                            last_hyper_periodic,
-                            include_zero=False,
-                        )
-                    )
-                    coalesced_update_count += coalesced
                     requested_hyper = bool(hyper.has_pending(mission_id))
-                    if periodic_hyper is not None or requested_hyper:
+                    gate_trigger: str | None = None
+                    periodic_hyper: str | None = None
+                    if mission1_gate is not None:
+                        planning_environment = environment.planning_view().environment_event.payload
+                        reliability = self._resolve_belief(snapshot)
+                        if not isinstance(reliability, ReportingReliabilitySnapshot):
+                            raise TypeError("Mission 1 requires reporting reliability")
+                        gate_decision, advisory = mission1_gate.assess(
+                            planning_environment,
+                            reliability,
+                            active_revision.statechart,
+                            status,
+                            explicit_request=requested_hyper,
+                        )
+                        gate_signature = (
+                            active_revision.planner_plan.plan_revision,
+                            reliability.input_revision,
+                            status.active_state,
+                            tuple(item.candidate_id for item in advisory.candidates),
+                            gate_decision.reason,
+                        )
+                        if gate_decision.trigger and (
+                            requested_hyper or gate_signature != last_gate_signature
+                        ):
+                            gate_trigger = (
+                                f"mission1-gate:{gate_decision.reason}:"
+                                f"belief-{reliability.input_revision}"
+                            )
+                            last_gate_signature = gate_signature
+                    else:
+                        periodic_hyper, last_hyper_periodic, coalesced = (
+                            self._next_periodic(
+                                now,
+                                self._hyper_seconds,
+                                last_hyper_periodic,
+                                include_zero=False,
+                            )
+                        )
+                        coalesced_update_count += coalesced
+                    if periodic_hyper is not None or gate_trigger is not None or requested_hyper:
                         hyper_triggers = []
                         if periodic_hyper is not None:
                             hyper_triggers.append(periodic_hyper)
+                        if gate_trigger is not None:
+                            hyper_triggers.append(gate_trigger)
                         hyper_triggers.extend(
                             hyper.pending_request_identities(mission_id)
                         )
@@ -591,6 +635,7 @@ class ContextCoordination:
                                 status = self._activate(replacement.statechart)
                                 self._transition_intents.invalidate_latest(mission_id)
                                 active_revision = replacement
+                                last_gate_signature = None
                                 plan_revisions.append(next_revision)
                                 periodic, last_maneuver_periodic, coalesced = (
                                     self._next_periodic(
@@ -857,7 +902,7 @@ class ContextCoordination:
 
     def _resolve_belief(
         self, snapshot: MissionSnapshot
-    ) -> BayesianBeliefSnapshot | None:
+    ) -> BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None:
         reference = snapshot.bayesian_belief_snapshot
         if reference is None:
             return None
@@ -869,7 +914,7 @@ class ContextCoordination:
             != snapshot.source_revisions["bayesian_belief_snapshot"]
         ):
             raise ValueError("resolved belief revision does not match snapshot")
-        return cast(BayesianBeliefSnapshot, belief)
+        return cast(BayesianBeliefSnapshot | ReportingReliabilitySnapshot, belief)
 
     def _maneuver_invocation(
         self,

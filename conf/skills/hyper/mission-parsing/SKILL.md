@@ -21,7 +21,8 @@ version: '1.7.0'
 
 When `mission_text` asks to patrol the environment and confirm that events in the
 report are accounted for, derive a temporal MiniZinc intent to choose a route and
-dwell schedule that maximizes captured information gain.
+surveillance route that balances issue-discovery recall with corruption-rate
+estimation quality.
 
 Record the operational sources by logical role, without predicting their field names or nesting before `record_planning_intent` returns the current payload:
 
@@ -35,10 +36,11 @@ Resolve those logical roles against the returned environment and belief structur
 Do not put example JSON paths in
 `PlanningIntent.details` as if they were a stable environment interface.
 
-An event is captured only when its time lies in a selected dwell interval and its
-position is within the FoV radius of that stop. Its scaled value is
-`1 - probability_risk`; maximize the sum over captured events. Put the capture
-rule, value rule, mission pattern, and three logical source roles in
+An opportunity is covered only once when its time and position are feasible for
+a selected fixed view or its vessel is pursued through the evidence window.
+Use the code-owned utility: half posterior corruption mean and half normalized
+expected posterior variance reduction, plus expected hidden-omission yield for
+pursuit. Put the coverage rule, utility rule, mission pattern, and three logical source roles in
 `PlanningIntent.details`; keep the objective only in the top-level `objective`
 field. Use current values only after the intent is accepted.
 
@@ -54,3 +56,5 @@ invent them.
 - Never use placeholders such as `MISSION_INPUT_ID` or `SOURCE_AUTHORITY_ID`.
 - Keep `schema_version`, `mission_id`, `source_authority`, `objective`, `rationale`, `planner_choice`, and `details` out of `PlanningIntent.details`; these names are reserved top-level fields.
 - Do not infer hidden ground truth or carry transient observations forward as durable facts.
+- Use `event_report_checks` once as reliability evidence; never double-count
+  its correlated `detected_issues` entries or raw Event Observations.

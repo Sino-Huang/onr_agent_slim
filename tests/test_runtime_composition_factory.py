@@ -312,8 +312,10 @@ def test_runtime_builds_direct_external_planner_context(
     assert isinstance(context.val_validator, VALPlanValidator)
     assert context.max_planner_attempts == 8
     assert context.artifact_root == (tmp_path / "planner-artifacts").resolve()
-    assert context.planner_workspace_location == "planner-artifacts/workspace"
-    assert context.environment_file_location == "environment.json"
+    assert context.planner_workspace_location == "/planner-artifacts/workspace"
+    assert context.planner_shell_workspace_location == "planner-artifacts/workspace"
+    assert context.environment_file_location == "/environment.json"
+    assert context.environment_shell_location == "environment.json"
 
     backend = LocalShellBackend(
         root_dir=context.backend_root,
@@ -321,11 +323,15 @@ def test_runtime_builds_direct_external_planner_context(
         inherit_env=False,
         env={"PATH": "/usr/bin:/bin"},
     )
-    generator_location = (
-        f"{context.planner_workspace_location}/001/generate_statechart.py"
-    )
+    generator_location = f"{context.planner_workspace_location}/001/generate_statechart.py"
     assert backend.write(generator_location, "print('statechart')\n").error is None
-    assert backend.execute(f"test -f {generator_location}").exit_code == 0
+    assert (
+        backend.execute(
+            "test -f "
+            f"{context.planner_shell_workspace_location}/001/generate_statechart.py"
+        ).exit_code
+        == 0
+    )
 
 
 def test_default_maneuver_control_uses_configured_provider_retry_limit(

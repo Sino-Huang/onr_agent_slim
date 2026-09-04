@@ -19,26 +19,30 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
         {
             "assignments": [
                 {
-                    "maneuver_id": "first",
+                    "candidate_id": "first",
+                    "surveillance_mode": "fixed_view",
+                    "entity_id": None,
                     "start": 20,
                     "duration": 4,
                     "parameters": {
                         "x": 10,
                         "y": 20,
-                        "source_event_index": 3,
-                        "captured_event_count": 2,
+                        "report_ids": ["report-3", "report-4"],
+                        "utility": {"recall": 3, "estimation": 4, "combined": 7},
                         "time_scale": 2,
                     },
                 },
                 {
-                    "maneuver_id": "second",
+                    "candidate_id": "second",
+                    "surveillance_mode": "pursue_ship",
+                    "entity_id": 7,
                     "start": 60,
                     "duration": 2,
                     "parameters": {
                         "x": 30,
                         "y": 40,
-                        "source_event_index": 7,
-                        "captured_event_count": 1,
+                        "report_ids": ["report-7"],
+                        "utility": {"recall": 5, "estimation": 2, "combined": 7},
                         "time_scale": 2,
                     },
                 },
@@ -63,30 +67,29 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
     first_confirm = transitions["assignment-1-outcome-confirmed"]
     assert first_confirm["context"]["readiness"]["not_before"]["seconds"] == 12
     assert first_confirm["context"]["readiness"]["sensed_evidence"] == {
-        "source_event_index": 3,
-        "expected_observation_count": 2,
+        "report_ids": ["report-3", "report-4"],
+        "report_check_ledger": "world_model_info.event_report_checks",
     }
     moving = draft["state_context"]["assignment-1-in-progress"]
     assert "navigation_adapter_parameters" not in moving
     assert moving["desired_outcome"] == {
-        "kind": "arrive_at_planner_selected_location",
+        "kind": "arrive_and_observe_fixed_view",
         "location": {"x": 10, "y": 20},
         "arrival_deadline": {
             "tick": 20,
             "ticks_per_second": 2,
             "seconds": 10.0,
         },
+        "visibility_outcome": "target reports are checked from the fixed FoV",
     }
-    assert draft["state_context"]["assignment-1-outcome-achieved"][
-        "hyper_evaluation"
-    ] == {
-        "evaluation_id": "first-evidence-interval-replan",
-        "kind": "replan",
-        "reason": (
-            "Evaluate whether the first completed planner evidence interval "
-            "materially changes the active plan."
-        ),
-        "delivery_policy": "once_per_state_entry",
+    pursuing = draft["state_context"]["assignment-2-in-progress"]
+    assert pursuing["surveillance_mode"] == "pursue_ship"
+    assert pursuing["target_entity_id"] == 7
+    assert pursuing["desired_outcome"] == {
+        "kind": "maintain_moving_entity_visibility",
+        "entity_id": 7,
+        "evidence_window": pursuing["observation_window"],
+        "physical_action": "pursue",
     }
     assert len(draft["states"]) == 6
     assert len(draft["transitions"]) == 5

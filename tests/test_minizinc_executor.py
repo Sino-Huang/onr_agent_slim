@@ -63,6 +63,23 @@ def _emit(*events: object) -> str:
             (),
         ),
         (
+            _emit(
+                {
+                    "type": "solution",
+                    "output": {
+                        "default": (
+                            '{"assignments":[{"surveillance_mode":fixed_view"}]}'
+                        )
+                    },
+                    "sections": ["default"],
+                },
+                {"type": "status", "status": "OPTIMAL_SOLUTION"},
+            ),
+            0.5,
+            PlanningOutcome.ERROR,
+            (),
+        ),
+        (
             _emit({"type": "status", "status": "UNSATISFIABLE"}),
             0.5,
             PlanningOutcome.UNSOLVABLE,
@@ -96,6 +113,7 @@ def _emit(*events: object) -> str:
     ids=(
         "optimal",
         "satisfied",
+        "malformed-json-native-plan",
         "unsolvable",
         "incomplete",
         "timeout",
@@ -300,26 +318,11 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     solution = next(item for item in stream if item["type"] == "solution")
     native = json.loads(solution["output"]["default"])
     assignments = native["assignments"]
-    assert native["information_gain"] == 15_221
-    assert native["stop_count"] == len(assignments) == 15
-    assert [item["start"] for item in assignments] == [
-        42,
-        71,
-        113,
-        162,
-        205,
-        246,
-        278,
-        329,
-        353,
-        438,
-        494,
-        528,
-        554,
-        591,
-        598,
-    ]
-    assert all(item["parameters"]["time_scale"] == 2 for item in assignments)
+    assert native["combined_score"] == 632_918
+    assert native["maneuver_count"] == len(assignments) == 1
+    assert assignments[0]["surveillance_mode"] == "pursue_ship"
+    assert assignments[0]["entity_id"] == 1
+    assert assignments[0]["parameters"]["report_ids"] == ["report-demo"]
     model_text = assets["model.mzn"].decode()
     data_text = assets["data.dzn"].decode()
     assert 'include "network_flow.mzn"' not in model_text
@@ -327,10 +330,10 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     assert "outgoing_start[node]..outgoing_start[node + 1] - 1" in model_text
     assert "incoming_start[node]..incoming_start[node + 1] - 1" in model_text
     assert "flow[incoming_edge[position]]" in model_text
-    assert "array[ACTIONS] of var 0..1: selected" not in model_text
-    assert "action_gain[arc_to[edge] - 1] * flow[edge]" in model_text
-    assert "action_count = 786;" in data_text
-    assert "arc_count = 14423;" in data_text
+    assert "array[CANDIDATES] of var 0..1: selected" in model_text
+    assert "candidate_score[candidate] * selected[candidate]" in model_text
+    assert "candidate_count = 2;" in data_text
+    assert "arc_count = 5;" in data_text
     assert result.evidence is not None
     assert result.evidence.minizinc_solver == "coin-bc"
     assert '"status": "OPTIMAL_SOLUTION"' in result.stdout
@@ -384,21 +387,18 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
     )
 
     manifest = json.loads(completed.stdout)
-    assert manifest == {
-        "actions": 786,
-        "full_arcs": 127_455,
-        "intersections": 105,
-        "longest_route": 15,
-        "optimum_gain": 15_221,
-        "optimum_stops": 15,
-        "planning_fov_radius_m": 30.0,
-        "planning_max_velocity_mps": 20.0,
-        "raw_actions": 895,
-        "reduced_arcs": 14_423,
-        "source_events": 253,
+    assert set(manifest) == {
+        "candidates",
+        "arcs",
+        "advisory_score",
+        "advisory_maneuvers",
+        "advisory_duration_s",
+        "covered_report_ids",
     }
+    assert manifest["candidates"] > 0
+    assert len(manifest["covered_report_ids"]) == len(set(manifest["covered_report_ids"]))
     data = generated.read_text(encoding="utf-8")
-    action_count = _dzn_int(data, "action_count")
+    action_count = _dzn_int(data, "candidate_count")
     arc_count = _dzn_int(data, "arc_count")
     node_count = _dzn_int(data, "node_count")
     source = _dzn_int(data, "source_node")
@@ -406,23 +406,23 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
     action_arrays = [
         _dzn_array(data, name)
         for name in (
-            "action_x",
-            "action_y",
-            "action_start",
-            "action_end",
-            "action_gain",
-            "action_anchor_event",
-            "action_capture_count",
+            "candidate_x",
+            "candidate_y",
+            "candidate_start",
+            "candidate_duration",
+            "candidate_score",
+            "candidate_recall",
+            "candidate_estimation",
+            "candidate_omission",
         )
     ]
     arc_from = _dzn_array(data, "arc_from")
     arc_to = _dzn_array(data, "arc_to")
-    arc_cost = _dzn_array(data, "arc_cost")
     outgoing_start = _dzn_array(data, "outgoing_start")
     incoming_start = _dzn_array(data, "incoming_start")
     incoming_edge = _dzn_array(data, "incoming_edge")
     assert all(len(values) == action_count for values in action_arrays)
-    assert len(arc_from) == len(arc_to) == len(arc_cost) == arc_count
+    assert len(arc_from) == len(arc_to) == arc_count
     assert len(outgoing_start) == len(incoming_start) == node_count + 1
     assert outgoing_start[0] == incoming_start[0] == 1
     assert outgoing_start[-1] == incoming_start[-1] == arc_count + 1
@@ -437,7 +437,6 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
             for position in range(incoming_start[node - 1], incoming_start[node])
         )
     assert all(start < end for start, end in zip(arc_from, arc_to, strict=True))
-    assert _dzn_array(data, "node_balance") == [1] + [0] * action_count + [-1]
     assert (source, sink) in set(zip(arc_from, arc_to, strict=True))
     reachable = {source}
     for node in range(source, node_count + 1):
@@ -449,43 +448,7 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
             )
     assert sink in reachable
 
-    namespace = runpy.run_path(str(example / "generate_data.py"))
-    document = json.loads(environment.read_text(encoding="utf-8"))
-    risks = namespace["extract_risk_by_entity"](namespace["BELIEF_MARGINALS"])
-    events = namespace["event_rows"](document, risks)
-    candidates = namespace["intersection_candidates"](document, events)
-    actions, _ = namespace["observation_actions"](candidates, events, 30)
-    assert (
-        len(
-            {
-                (action.x, action.y, action.start, action.end, action.captured)
-                for action in actions
-            }
-        )
-        == action_count
-    )
-
-    drone = next(
-        entity
-        for entity in document["scene_graph"]["entities"]
-        if entity["type"] == "drone"
-    )
-    drone["fov_radius"] = 100.0
-    drone["max_velocity"] = 30.0
-    _, full_vehicle_manifest = namespace["build_instance"](document)
-    assert full_vehicle_manifest == {
-        "actions": 3_089,
-        "full_arcs": 1_661_195,
-        "intersections": 105,
-        "longest_route": 16,
-        "optimum_gain": 21_572,
-        "optimum_stops": 16,
-        "planning_fov_radius_m": 100.0,
-        "planning_max_velocity_mps": 30.0,
-        "raw_actions": 3_349,
-        "reduced_arcs": 145_400,
-        "source_events": 253,
-    }
+    assert action_count == manifest["candidates"]
 
 
 def test_full_physical_vehicle_patrol_solves_within_executor_limit(
@@ -548,5 +511,9 @@ def test_full_physical_vehicle_patrol_solves_within_executor_limit(
     stream = [json.loads(line) for line in result.stdout.splitlines()]
     solution = next(item for item in stream if item["type"] == "solution")
     native = json.loads(solution["output"]["default"])
-    assert native["information_gain"] == 21_572
-    assert native["stop_count"] == len(native["assignments"]) == 16
+    assert native["combined_score"] > 0
+    assert native["maneuver_count"] == len(native["assignments"])
+    assert all(
+        item["surveillance_mode"] in {"fixed_view", "pursue_ship"}
+        for item in native["assignments"]
+    )

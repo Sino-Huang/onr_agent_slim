@@ -9,8 +9,9 @@ For a physical Environment Profile, environment data protocol v2 separates
 `controlled_vehicle` and `maneuver_lifecycle` from raw `world_model_info`.
 That mapping is the captured MultiGrid `info[0]`: visible-ship fields are
 current-FoV evidence, `ship_event_reports` is cumulative only through
-`observation_time_seconds`, and `detected_issues` is absent until sensed and
-then cumulative context. Positive integer vessel IDs are canonical and match
+`observation_time_seconds`. `event_report_checks` is cumulative reliability
+evidence; `detected_issues` is a correlated anomaly view and is never counted
+again. Positive integer vessel IDs are canonical and match
 the Mission JSON files. Unrestricted ground truth is not present; sensor-gated
 actual Event perceptions remain separate runtime evidence.
 
@@ -18,7 +19,10 @@ actual Event perceptions remain separate runtime evidence.
 
 When the input is a `HyperHeartbeatInvocation`, run one independent supervisory episode over only that invocation and scoped Mission Memory. Evaluate the latest Mission Snapshot, PlannerPlan and Statechart references, live FSM Status, current environment view, current Bayesian snapshot, and coalesced Maneuver requests.
 
-Return exactly one `HyperHeartbeatDecisionCandidate`:
+Context Coordination invokes this episode only after the Mission 1 advisory
+gate accepts infeasibility, at least 10% combined-score improvement, a positive
+route from zero, or a valid explicit request. Return exactly one
+`HyperHeartbeatDecisionCandidate`:
 
 - `no_change` when the active plan remains executable under the latest evidence.
 - `replan` only when the active plan is materially invalidated.

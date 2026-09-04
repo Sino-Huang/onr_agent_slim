@@ -14,9 +14,10 @@ action record, and `world_model_info` is the unmodified MultiGrid `info[0]`
 captured at `observation_time_seconds` before Mission time advanced. Its
 `visible_ship_ids`, `visible_ships`, and `ship_visibility` are current-FoV
 evidence only. `ship_event_reports` contains cumulative public reports through
-that observation time. `detected_issues` is absent until a discrepancy is
-sensed, then remains cumulative context; it is not one perception or heartbeat
-trigger per issue. Physical vessel identities are positive integers matching
+that observation time. `event_report_checks` is the cumulative authoritative
+report-comparison ledger. `detected_issues` is its correlated anomaly view and
+must not be ingested or counted again. Raw pending Event Observations describe
+actual actions, not report corruption evidence. Physical vessel identities are positive integers matching
 the Mission JSON files—pass them unchanged to `pursue` and `investigate`.
 Sensor-gated actual Events remain separate entries in `pending_perceptions`.
 
@@ -63,6 +64,10 @@ Use operational tools for mission effects and follow this cycle:
    A physical tool result of `queued` or `already_queued` confirms only durable
    transport enqueue. Wait for Maneuver Feedback before treating the action as
    active, completed, failed, or cancelled.
+   For `fixed_view`, call `navigate` to the selected location. For
+   `pursue_ship`, call `pursue` with the unchanged numeric `target_entity_id`
+   and keep that action active through the evidence window; pursuit
+   intentionally has no terminal completion.
 7. Independently call `ingest_perceptions` once when the complete pending event
    batch warrants belief ingestion. Communicate when evidence warrants it. For a
    current-state `hyper_evaluation`, pass its exact kind, reason,

@@ -10,11 +10,14 @@ For a physical Environment Profile, environment data protocol v2 separates
 `world_model_info`. That raw mapping is the captured MultiGrid `info[0]` at
 `observation_time_seconds`: visible-ship fields are current-FoV evidence,
 `ship_event_reports` is cumulative public-report evidence only through that
-time, and `detected_issues` is absent until sensed and then cumulative. Numeric
+time. `event_report_checks` is the cumulative authoritative clean/altered/omitted
+comparison ledger; `detected_issues` is a correlated anomaly view and must not
+be counted again as belief evidence. Numeric
 vessel IDs are canonical and match the Mission JSON files. Unrestricted ground
 truth is never present there; sensor-gated actual Event perceptions remain a
 separate runtime stream. `static_info`, when present in initial planning
-evidence, is the complete report schedule and is planning-only.
+evidence, is the complete future public report schedule and is planning-only.
+It contains opaque `report_id` values and never private actual-event ordinals.
 
 ## Workflow contract
 
@@ -42,11 +45,20 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 - Read `mission-parsing` and `planner-selection`.
 - Select MiniZinc for temporal optimization and Fast Downward for symbolic reachability where timing does not affect feasibility or value.
 - Call `record_planning_intent` with the objective, selected planning profile and planner ID, rationale, details, and reflection.
-- Acceptance returns a root-relative environment JSON path, belief marginals, and the two sandbox file paths for the selected planner. Inspect the file with `execute`: start with `jq 'keys' <file>` and obtain the exact event count with `jq '.static_info | length' <file>`. Never manually count an inline event list.
+- Acceptance returns absolute virtual paths for file tools and planner submission,
+  repository-relative shell paths for `execute`, and belief marginals. Preserve
+  the leading `/` in `write_file`, `read_file`, `edit_file`, and planner tool
+  arguments. Keep the repository root as the execute working directory and use
+  only the labeled execute path in shell commands: start with
+  `jq 'keys' <file>` and obtain the exact event count with
+  `jq '.static_info | length' <file>`. Never manually count an inline event list.
 
 ### 3. Generate planner files
 
-- For MiniZinc, read `creating-minizinc-problem-files` and write `model.mzn` at the exact returned path. Wait for the successful write result. If the model needs event-indexed arrays, use the exact `jq` count to call `initialize_event_data_materialization`. For each tool-provided `next_batch`, run one `jq` slice that emits the numbered records. The `execute` result is not batch acceptance: your very next tool call must be `materialize_event_information_data` with that slice output. Wait for its accepted progress result before reading any later slice, even when later bounds are already known. For example, for a `next_batch` starting at 1 and ending at 25, run `jq --argjson start 1 --argjson end 25 '.static_info[($start - 1):$end] | to_entries | map({"event_number": ($start + .key), "event": .value})' var/environment/demo/environment.json`. Continue until the tool generates `data.dzn`. Read both generated files and add every missing non-event assignment to `data.dzn` with `edit_file`. Write `data.dzn` directly only when event materialization is unnecessary.
+- For Mission 1 MiniZinc, read `creating-minizinc-problem-files`, preserve the
+  current reliability snapshot as `belief.json`, and use the checked-in
+  code-owned candidate/DAG generator for both the advisory oracle and DZN.
+  For other MiniZinc models, use generic event materialization when required.
 - For Fast Downward, read `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
 - Create an absent planner file once with `write_file`. To change that path later,
   call `read_file` on the exact path, wait for its result, then call `edit_file`;
@@ -73,7 +85,7 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 ### 6–7. Generate, validate, and repair the Statechart
 
 - Read `creating-statechart-files`.
-- Inspect the exact planner-native artifact. Read the few-shot generator, then author a mission-specific `generate_statechart.py` and its `statechart.json` at the exact returned workspace locations.
+- Inspect the exact planner-native artifact. Read the few-shot generator, then author a mission-specific `generate_statechart.py` and its `statechart.json` at the exact returned virtual locations. Run shell commands from the separately returned repository-relative Statechart shell workspace.
 - Run the generator and inspect its compact coverage manifest plus both files. The generator must account for every extracted planner item exactly once while preserving planner order, dependencies, parameters, timing, units, and identifiers.
 - Submit the exact returned `statechart_file_location` to `submit_statechart_draft`. The validator checks universal graph structure and FSM construction only. Repair the same generator and draft from structured diagnostics within the remaining bound. A terminal failure returns `statechart_rejected`.
 
@@ -88,5 +100,8 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 
 - The Statechart/FSM is the execution semantics. States carry behavioral context and transitions declare the only legal control events.
 - Every state has one arbitrary finite `state_context` object. Every transition contains exactly `event`, `source`, `target`, and an arbitrary finite `context` object.
-- Write self-explanatory contexts that describe desired operational outcomes and evidence, not physical tool selections. Preserve timing values and units without imposing a shared inner vocabulary.
+- Write self-explanatory contexts that preserve each candidate ID, surveillance
+  mode, numeric pursuit target, report IDs, observation window, and recall,
+  estimation, omission-yield, and combined utility. The context describes the
+  behavior; Hyper never calls a physical maneuver.
 - State and event names are identifiers only. Never infer behavior from their spelling.

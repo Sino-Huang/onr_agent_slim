@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
 
@@ -221,7 +222,7 @@ class HyperHeartbeatInvocation:
     statechart_reference: str
     fsm_status: FSMStatus
     environment_data: Mapping[str, object]
-    belief_snapshot: BayesianBeliefSnapshot | None = None
+    belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None = None
     maneuver_requests: tuple[ReplanRequest, ...] = ()
 
     def __post_init__(self) -> None:
@@ -252,7 +253,10 @@ class HyperHeartbeatInvocation:
             raise TypeError("Hyper environment data must be an object")
         object.__setattr__(self, "environment_data", environment)
         if self.belief_snapshot is not None:
-            if not isinstance(self.belief_snapshot, BayesianBeliefSnapshot):
+            if not isinstance(
+                self.belief_snapshot,
+                (BayesianBeliefSnapshot, ReportingReliabilitySnapshot),
+            ):
                 raise TypeError("Hyper invocation belief must be a Bayesian snapshot")
             if self.belief_snapshot.mission_id != self.mission_id:
                 raise ValueError("Hyper invocation belief Mission ID does not match")

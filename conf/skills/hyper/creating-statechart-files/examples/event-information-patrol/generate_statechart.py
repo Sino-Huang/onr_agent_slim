@@ -65,6 +65,7 @@ def extract_assignments(values: list[object]) -> list[dict[str, Any]]:
             for order, raw in enumerate(array, start=1):
                 identifier = first(
                     raw,
+                    ("candidate_id",),
                     ("maneuver_id",),
                     ("assignment_id",),
                     ("id",),
@@ -80,14 +81,24 @@ def extract_assignments(values: list[object]) -> list[dict[str, Any]]:
                 )
                 x = first(raw, ("x",), ("target", "x"), ("parameters", "x"))
                 y = first(raw, ("y",), ("target", "y"), ("parameters", "y"))
-                source_event_index = first(
-                    raw, ("source_event_index",), ("parameters", "source_event_index")
+                surveillance_mode = first(
+                    raw, ("surveillance_mode",), ("parameters", "surveillance_mode")
                 )
-                expected_count = first(
+                report_ids = first(
                     raw,
-                    ("captured_event_count",),
-                    ("parameters", "captured_event_count"),
+                    ("report_ids",),
+                    ("parameters", "report_ids"),
                 )
+                entity_id = raw.get("entity_id", raw.get("parameters", {}).get("entity_id"))
+                utility = raw.get("utility", raw.get("parameters", {}).get("utility"))
+                if surveillance_mode not in {"fixed_view", "pursue_ship"}:
+                    raise ValueError("unsupported surveillance mode")
+                if not isinstance(report_ids, list) or not all(isinstance(value, str) for value in report_ids):
+                    raise ValueError("report IDs must be strings")
+                if surveillance_mode == "pursue_ship" and (
+                    isinstance(entity_id, bool) or not isinstance(entity_id, int)
+                ):
+                    raise ValueError("pursuit requires a numeric entity ID")
                 dependencies = raw.get("dependencies", raw.get("depends_on", []))
                 extracted.append(
                     {
@@ -98,8 +109,10 @@ def extract_assignments(values: list[object]) -> list[dict[str, Any]]:
                         "time_scale": int(time_scale),
                         "x": x,
                         "y": y,
-                        "source_event_index": int(source_event_index),
-                        "expected_observation_count": int(expected_count),
+                        "surveillance_mode": surveillance_mode,
+                        "entity_id": entity_id,
+                        "report_ids": list(report_ids),
+                        "utility": utility,
                         "dependencies": dependencies,
                         "planner_item": dict(raw),
                     }
@@ -137,41 +150,43 @@ def build_statechart(
         achieved = f"assignment-{item['order']}-outcome-achieved"
         states.extend((moving, achieved))
         shared = {
-            "planner_identity": identifier,
+            "candidate_id": identifier,
             "planner_order": item["order"],
+            "surveillance_mode": item["surveillance_mode"],
+            "target_entity_id": item["entity_id"],
+            "target_report_ids": item["report_ids"],
+            "observation_window": {
+                "start": scaled_time(item["start_tick"], item["time_scale"]),
+                "duration": scaled_time(item["duration_tick"], item["time_scale"]),
+            },
+            "utility": item["utility"],
             "dependencies": item["dependencies"],
             "planner_item": item["planner_item"],
         }
-        state_context[moving] = {
-            **shared,
-            "desired_outcome": {
-                "kind": "arrive_at_planner_selected_location",
+        if item["surveillance_mode"] == "fixed_view":
+            desired_outcome = {
+                "kind": "arrive_and_observe_fixed_view",
                 "location": {"x": item["x"], "y": item["y"]},
-                "arrival_deadline": scaled_time(
-                    item["start_tick"], item["time_scale"]
-                ),
-            },
-        }
+                "arrival_deadline": scaled_time(item["start_tick"], item["time_scale"]),
+                "visibility_outcome": "target reports are checked from the fixed FoV",
+            }
+        else:
+            desired_outcome = {
+                "kind": "maintain_moving_entity_visibility",
+                "entity_id": item["entity_id"],
+                "evidence_window": shared["observation_window"],
+                "physical_action": "pursue",
+            }
+        state_context[moving] = {**shared, "desired_outcome": desired_outcome}
         state_context[achieved] = {
             **shared,
             "desired_outcome": "the planner-selected evidence interval is complete",
             "planner_evidence_interval": {
                 "start": scaled_time(item["start_tick"], item["time_scale"]),
                 "duration": scaled_time(item["duration_tick"], item["time_scale"]),
-                "source_event_index": item["source_event_index"],
-                "expected_observation_count": item["expected_observation_count"],
+                "report_ids": item["report_ids"],
             },
         }
-        if item["order"] == 1:
-            state_context[achieved]["hyper_evaluation"] = {
-                "evaluation_id": "first-evidence-interval-replan",
-                "kind": "replan",
-                "reason": (
-                    "Evaluate whether the first completed planner evidence interval "
-                    "materially changes the active plan."
-                ),
-                "delivery_policy": "once_per_state_entry",
-            }
         departure_tick = 0 if previous_end_tick is None else previous_end_tick
         observation_end_tick = item["start_tick"] + item["duration_tick"]
         transitions.extend(
@@ -201,10 +216,8 @@ def build_statechart(
                                 observation_end_tick, item["time_scale"]
                             ),
                             "sensed_evidence": {
-                                "source_event_index": item["source_event_index"],
-                                "expected_observation_count": item[
-                                    "expected_observation_count"
-                                ],
+                                "report_ids": item["report_ids"],
+                                "report_check_ledger": "world_model_info.event_report_checks",
                             },
                         },
                     },

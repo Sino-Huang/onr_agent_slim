@@ -39,6 +39,10 @@ Copy target facts from the active semantic state and current environment data. E
 3. Prefer no physical request while a suitable action remains nonterminal.
 4. A new physical tool call always submits and overrides the active action. Use this for inappropriate actions or emergencies, not as routine polling.
 5. Inspect normalized lifecycle feedback in the next injected environment payload; do not wait for a refreshed planning Mission Snapshot.
+6. A `fixed_view` assignment selects `navigate`. A `pursue_ship` assignment
+   selects `pursue(entity_id=target_entity_id)` with the numeric ID copied from
+   Statechart context. Keep suitable pursuit active; a later assignment or
+   replacement Statechart overrides it through the normal command lifecycle.
 
 The Mission Snapshot avoids known duplicate actions, but only the environment has final authority over what was accepted or executed. Preserve the action ID on retries or correlation; do not create a second action to work around uncertain feedback.
 

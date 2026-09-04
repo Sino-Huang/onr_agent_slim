@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any, cast
@@ -51,6 +52,10 @@ from onr.application.bayesian_belief import (
     BayesianBeliefManager,
     BayesianBeliefService,
 )
+from onr.application.reporting_reliability import (
+    FileReportingReliabilityStore,
+    ReportingReliabilityService,
+)
 from onr.application.communication import TransportCommunicationPort
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
@@ -67,6 +72,7 @@ from onr.contracts.bayesian_belief import (
     BeliefKey,
     ForbiddenBeliefCombination,
 )
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverFeedback
 from onr.contracts.human_decision import (
@@ -475,10 +481,31 @@ class RuntimeComposition:
         observation_topic: str = "belief-observations",
         context_topic: str = "normalized-plans",
         clock: Callable[[], str] | None = None,
-    ) -> BayesianBeliefService:
+        belief_kind: str = "binary",
+    ) -> BayesianBeliefService | ReportingReliabilityService:
         """Compose the durable event-driven Bayesian belief application service."""
 
         selected_keys = None if keys is None else tuple(keys)
+        if belief_kind == "reporting_reliability":
+            if selected_keys is None:
+                raise ValueError("reporting reliability ship keys are required")
+            entity_ids = tuple(key.entity_id for key in selected_keys)
+            if not all(
+                isinstance(entity_id, int) and not isinstance(entity_id, bool)
+                for entity_id in entity_ids
+            ):
+                raise ValueError("reporting reliability requires numeric ship IDs")
+            return ReportingReliabilityService.create(
+                mission_id,
+                cast(tuple[int, ...], entity_ids),
+                FileReportingReliabilityStore(self.config.storage.root),
+                self.transport,
+                observation_topic=observation_topic,
+                context_topic=context_topic,
+                clock=clock or (lambda: datetime.now(UTC).isoformat()),
+            )
+        if belief_kind != "binary":
+            raise ValueError("unsupported Bayesian belief kind")
         selected_constraints = None if constraints is None else tuple(constraints)
         store = FileBayesianBeliefStore(self.config.storage.root)
         checkpoint = store.load_checkpoint(mission_id)
@@ -881,11 +908,11 @@ class RuntimeComposition:
         environment_file: Path,
         *,
         artifact_root: Path,
-        belief_snapshot: BayesianBeliefSnapshot | None = None,
+        belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None = None,
         backend_root: Path | None = None,
         fsm_runner: FSMRunner | None = None,
         environment_authority: object | None = None,
-        belief_service: BayesianBeliefService | None = None,
+        belief_service: BayesianBeliefService | ReportingReliabilityService | None = None,
         communication_port: object | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""

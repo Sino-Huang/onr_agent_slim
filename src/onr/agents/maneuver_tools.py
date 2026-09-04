@@ -884,6 +884,16 @@ def ingest_perceptions(
     )
     if not perceptions:
         raise RuntimeError("Maneuver heartbeat has no pending event perceptions")
+    if getattr(context.belief_service, "belief_kind", None) == "reporting_reliability":
+        context.perception_batch_ingested = True
+        result = {
+            "status": "ignored_actual_event_observations",
+            "event_count": len(perceptions),
+            "belief_revisions": [],
+            "reflection": reflection,
+        }
+        context.execution_record.append("ingest_perceptions", result, successful=True)
+        return _canonical_json(result)
     revisions: list[int] = []
     for perception in perceptions:
         event_id = f"risk.observed:{perception.observation_id}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,6 +21,7 @@ from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planning import PlannerExecutionResult, PlannerStaticCheckResult
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.transport import TransportEvent
 from onr.demo.fake_belief import create_fake_entity_risk_snapshot
 from onr.runtime import RuntimeComposition
@@ -45,6 +47,25 @@ class RejectingPlanner:
     ) -> PlannerExecutionResult:
         _ = assets, solver
         raise AssertionError("static rejection must stop before solver execution")
+
+
+class PlannerAssetsCaptured(BaseException):
+    """Terminate the live agent test at the planner verification boundary."""
+
+
+class CapturingPlanner:
+    def __init__(self) -> None:
+        self.checked_assets: list[dict[str, bytes]] = []
+
+    def check(self, assets: Mapping[str, bytes]) -> PlannerStaticCheckResult:
+        self.checked_assets.append(dict(assets))
+        raise PlannerAssetsCaptured
+
+    def execute(
+        self, assets: Mapping[str, bytes], solver: str
+    ) -> PlannerExecutionResult:
+        _ = assets, solver
+        raise AssertionError("capture must stop before solver execution")
 
 
 class RecordingMiniZinc:
@@ -281,6 +302,86 @@ def _event_information_context(
     )
 
 
+def _mission1_replan_context(
+    tmp_path: Path,
+) -> tuple[HyperWorkflowContext, CapturingPlanner]:
+    example_root = (
+        _REPO_ROOT
+        / "conf/skills/hyper/creating-minizinc-problem-files/examples/"
+        "event-information-patrol"
+    )
+    environment = json.loads(
+        (example_root / "replan-environment.json").read_text(encoding="utf-8")
+    )
+    belief = ReportingReliabilitySnapshot.from_dict(
+        json.loads((example_root / "replan-belief.json").read_text(encoding="utf-8"))
+    )
+    mission = MissionInput(
+        mission_id="mission-1",
+        mission_text=(
+            "Replan the reliability-aware event patrol from the current Mission "
+            "time and vehicle pose. Generate a fresh MiniZinc candidate-DAG model "
+            "and data file for revision 2, excluding checked and expired reports."
+        ),
+        source_authority="live-replan-test",
+    )
+    event = TransportEvent(
+        schema_version=2,
+        event_id="environment-data:mission-1:replan",
+        mission_id=mission.mission_id,
+        sequence=16,
+        event_kind="environment_data",
+        payload=environment,
+    )
+    snapshot = MissionSnapshot(
+        mission_id=mission.mission_id,
+        version=16,
+        created_at="2026-09-03T00:00:08+10:00",
+        environment_data=event.event_id,
+        bayesian_belief_snapshot="belief:mission-1:revision-2",
+        plan_reference="planner-artifacts/revision-001/planner-plan.json",
+        plan_revision=1,
+        source_revisions={
+            "environment_data": 16,
+            "bayesian_belief_snapshot": 2,
+            "plan": 1,
+        },
+        source_references={
+            "environment_data": event.event_id,
+            "bayesian_belief_snapshot": "belief:mission-1:revision-2",
+            "plan": "planner-artifacts/revision-001/planner-plan.json",
+        },
+        source_health={
+            "environment_data": "healthy",
+            "bayesian_belief_snapshot": "healthy",
+            "plan": "healthy",
+        },
+        source_freshness={
+            "environment_data": True,
+            "bayesian_belief_snapshot": True,
+            "plan": True,
+        },
+    )
+    planner = CapturingPlanner()
+    environment_file = _persist_environment(tmp_path, mission.mission_id, event)
+    return (
+        HyperWorkflowContext(
+            mission_input=mission,
+            mission_snapshot=snapshot,
+            environment_event=event,
+            environment_file=environment_file,
+            artifact_root=tmp_path / "planner-artifacts/revision-002",
+            backend_root=_REPO_ROOT,
+            minizinc_planner=planner,
+            fast_downward_planner=UnusedFastDownward(),
+            val_validator=UnusedVAL(),
+            max_planner_attempts=1,
+            belief_snapshot=belief,
+        ),
+        planner,
+    )
+
+
 def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
     tmp_path: Path,
 ) -> None:
@@ -355,6 +456,71 @@ def test_live_hyper_workflow_generates_minizinc_and_receives_rejection(
         in {"record_planning_intent", "submit_planner_attempt", "planner_executor"}
     ]
     assert "sha256" not in json.dumps(controlled_records).casefold()
+
+
+def test_live_hyper_workflow_regenerates_mission1_minizinc_for_replan(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.verify_llm_reachability()
+    context, planner = _mission1_replan_context(tmp_path)
+    model = runtime.create_chat_model(
+        mission_id=context.mission_input.mission_id,
+        debug_scope="hyper-agent",
+    )
+    prompt = load_system_prompt(_REPO_ROOT / "conf/system_prompt", "hyper-agent")
+    graph = create_hyper_workflow_agent(
+        model=model,
+        system_prompt=f"You are agent {runtime.config.agent_name}. {prompt}",
+        mission_id=context.mission_input.mission_id,
+        skill_catalog=FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills"),
+        backend_root=context.backend_root,
+        planner_workspace_location=context.planner_workspace_location,
+        checkpointer=InMemorySaver(),
+    )
+
+    with pytest.raises(PlannerAssetsCaptured):
+        DeepAgentsHyperWorkflow(graph).run(
+            context,
+            thread_id="planning-run:mission-1:2",
+            recursion_limit=160,
+        )
+
+    assert planner.checked_assets
+    assets = planner.checked_assets[-1]
+    assert set(assets) == {"model.mzn", "data.dzn"}
+    example_root = (
+        _REPO_ROOT
+        / "conf/skills/hyper/creating-minizinc-problem-files/examples/"
+        "event-information-patrol"
+    )
+    assert assets["model.mzn"] == (example_root / "model.mzn").read_bytes()
+    assert assets["data.dzn"] == (example_root / "replan-data.dzn").read_bytes()
+
+    solved = subprocess.run(
+        [
+            str(_REPO_ROOT / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc"),
+            "--solver",
+            "coin-bc",
+            str(context.artifact_root / "workspace/001/model.mzn"),
+            str(context.artifact_root / "workspace/001/data.dzn"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output = json.loads(solved.stdout.splitlines()[0])
+    assert output["assignments"][0]["surveillance_mode"] == "pursue_ship"
+    assert output["assignments"][0]["entity_id"] == 7
+    assert set(output["assignments"][0]["parameters"]["report_ids"]) == {
+        "report-future-a",
+        "report-future-b",
+    }
+    assert not {
+        "report-past-altered",
+        "report-past-clean",
+        "report-checked",
+    } & set(assets["data.dzn"].decode().split('"'))
 
 
 @pytest.mark.parametrize(

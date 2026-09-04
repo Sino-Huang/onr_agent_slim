@@ -315,6 +315,77 @@ def test_nested_polygon_round_trips_through_decisions_and_commands() -> None:
     assert ManeuverCommand.from_json(command.to_canonical_json()) == command
 
 
+def test_pursuit_state_context_dispatches_real_pursue_with_numeric_ship_id() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    chart = Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="pursuing",
+        terminal_states=("pursuing",),
+        states=("pursuing",),
+        state_context={
+            "pursuing": {
+                "candidate_id": "candidate-7",
+                "surveillance_mode": "pursue_ship",
+                "target_entity_id": 7,
+                "target_report_ids": ["report-7"],
+            }
+        },
+        transitions=(),
+    )
+    status = asyncio.run(runner.activate(chart))
+    invocation = ManeuverInvocation(
+        "heartbeat-pursue",
+        "correlation-pursue",
+        plan.mission_id,
+        plan.plan_revision,
+        "pursuit-statechart.json",
+        _focused(status),
+        {"mission_time_seconds": 0},
+    )
+
+    class Dispatcher:
+        command: ManeuverCommand | None = None
+
+        def dispatch_physical(
+            self,
+            invocation: ManeuverInvocation,
+            decision: ManeuverControlDecision,
+            *,
+            sequence: int,
+        ) -> tuple[ManeuverCommand, bool]:
+            self.command = ManeuverCommand(
+                f"command-{sequence}",
+                invocation.correlation_id,
+                invocation.mission_id,
+                invocation.plan_revision,
+                decision.maneuver_id or "pursuit",
+                decision.physical_intent,
+            )
+            return self.command, True
+
+    dispatcher = Dispatcher()
+    context = ManeuverToolContext(invocation, runner, dispatcher)
+    result = json.loads(
+        cast(Any, pursue).func(
+            maneuver_id="pursue-candidate-7",
+            entity_id=invocation.fsm_context.current_state_context["target_entity_id"],
+            reflection="Maintain visibility through the evidence window.",
+            runtime=_runtime(context),
+        )
+    )
+
+    assert result["action"] == "pursue"
+    assert dispatcher.command is not None
+    entity_id = dispatcher.command.to_dict()["intent"]["parameters"]["entity_id"]
+    assert entity_id == 7
+    assert isinstance(entity_id, int)
+
+
 @pytest.mark.parametrize(
     "polygon",
     [

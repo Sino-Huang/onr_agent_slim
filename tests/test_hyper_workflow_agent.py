@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -271,7 +273,45 @@ def _paths(context: HyperWorkflowContext, planner: str) -> list[str]:
         if planner == "minizinc"
         else ("domain.pddl", "problem.pddl")
     )
-    return [f"artifacts/workspace/001/{name}" for name in names]
+    return [f"/artifacts/workspace/001/{name}" for name in names]
+
+
+def test_recorded_choice_distinguishes_virtual_file_paths_from_shell_paths(
+    tmp_path: Path,
+) -> None:
+    from deepagents.backends import LocalShellBackend
+
+    context = _context(tmp_path)
+    result = _record(context, "minizinc")
+
+    assert "model.mzn: /artifacts/workspace/001/model.mzn" in result
+    assert "data.dzn: /artifacts/workspace/001/data.dzn" in result
+    assert "Shell workspace: artifacts/workspace/001" in result
+    assert "Run execute commands from the repository root; do not cd" in result
+    assert (
+        "Environment file for file tools: /var/environment/mission-1/environment.json"
+        in result
+    )
+    assert (
+        "Environment file for execute: var/environment/mission-1/environment.json"
+        in result
+    )
+
+    backend = LocalShellBackend(
+        root_dir=context.backend_root,
+        virtual_mode=True,
+        inherit_env=False,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    write_result = backend.write(
+        "/artifacts/workspace/001/model.mzn", "int: candidate_count;\n"
+    )
+
+    assert write_result.error is None
+    assert (
+        cast(Path, context.backend_root)
+        / "artifacts/workspace/001/model.mzn"
+    ).is_file()
 
 
 def _write(context: HyperWorkflowContext, planner: str) -> list[str]:
@@ -590,7 +630,7 @@ def test_event_materialization_tracks_progress_changes_mapping_and_writes_aligne
         },
     )
     assert completed["status"] == "complete"
-    assert completed["data_file_path"] == "artifacts/workspace/001/data.dzn"
+    assert completed["data_file_path"] == "/artifacts/workspace/001/data.dzn"
     assert completed["entity_index_maps"] == {
         "event_entity": {"ship-a": 1, "ship-b": 2}
     }
@@ -786,8 +826,15 @@ def test_recorded_choice_returns_matching_native_paths_and_reaches_verifier(
 ) -> None:
     context = _context(tmp_path)
     result = _record(context, planner)
-    assert all(f"artifacts/workspace/001/{name}" in result for name in expected_names)
-    assert "Environment file: var/environment/mission-1/environment.json" in result
+    assert all(f"/artifacts/workspace/001/{name}" in result for name in expected_names)
+    assert (
+        "Environment file for file tools: /var/environment/mission-1/environment.json"
+        in result
+    )
+    assert (
+        "Environment file for execute: var/environment/mission-1/environment.json"
+        in result
+    )
     assert "jq '.static_info | length'" in result
     assert '"static_info":' not in result
     assert '"scene_graph":' not in result
@@ -812,7 +859,11 @@ def test_root_relative_environment_path_works_with_file_read_and_jq(
         root_dir=context.backend_root,
         virtual_mode=True,
         inherit_env=False,
-        env={"PATH": "/usr/bin:/bin"},
+        env={
+            "PATH": os.pathsep.join(
+                (str(Path(shutil.which("jq") or "/usr/bin/jq").parent), "/usr/bin", "/bin")
+            )
+        },
     )
 
     read_result = backend.read(context.environment_file_location)
@@ -821,7 +872,7 @@ def test_root_relative_environment_path_works_with_file_read_and_jq(
         json.loads(cast(dict[str, str], read_result.file_data)["content"])
         == (context.environment_event.to_dict()["payload"])
     )
-    jq_result = backend.execute(f"jq 'keys' {context.environment_file_location}")
+    jq_result = backend.execute(f"jq 'keys' {context.environment_shell_location}")
     assert jq_result.exit_code == 0
     assert json.loads(jq_result.output) == ["drone"]
 
@@ -940,9 +991,12 @@ def test_minizinc_success_persists_and_returns_exact_native_output(
     assert cast(_MiniZinc, context.minizinc_planner).executed[-1][1] == "coin-bc"
     assert (
         "statechart_generator_file_location: "
-        "artifacts/workspace/001/generate_statechart.py" in result
+        "/artifacts/workspace/001/generate_statechart.py" in result
     )
-    assert "statechart_file_location: artifacts/workspace/001/statechart.json" in result
+    assert (
+        "statechart_file_location: /artifacts/workspace/001/statechart.json" in result
+    )
+    assert "statechart_shell_workspace: artifacts/workspace/001" in result
 
 
 def test_planner_executor_requires_solver_only_for_minizinc(tmp_path: Path) -> None:

@@ -71,10 +71,10 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.5.0",
+        "2.8.0",
         "2.0.0",
-        "1.1.0",
-        "3.1.0",
+        "1.2.0",
+        "3.2.0",
         "2.1.0",
         "1.1.0",
         "1.1.0",
@@ -523,31 +523,45 @@ def test_hyper_workflow_local_shell_does_not_claim_scoped_permissions(
     assert "permissions" not in captured
 
 
-def test_event_accounting_patrol_routes_to_information_gain_example() -> None:
+def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> None:
     mission_skill = (
         _REPO_ROOT / "conf/skills/hyper/mission-parsing/SKILL.md"
     ).read_text(encoding="utf-8")
     minizinc_skill = (
         _REPO_ROOT / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
     ).read_text(encoding="utf-8")
+    replan_skill = (
+        _REPO_ROOT / "conf/skills/hyper/detect-and-replan/SKILL.md"
+    ).read_text(encoding="utf-8")
 
     assert "logical role" in mission_skill
     assert "without predicting their" in mission_skill
     assert "field names or nesting" in mission_skill
     assert "Do not put example JSON paths" in mission_skill
-    assert "1 - probability_risk" in mission_skill
+    assert "expected posterior variance reduction" in mission_skill
+    assert "event_report_checks" in mission_skill
     assert "examples/event-information-patrol/model.mzn" in minizinc_skill
     assert "examples/event-information-patrol/data.dzn" in minizinc_skill
     assert "examples/event-information-patrol/generate_data.py" in minizinc_skill
     assert "Read `examples/event-information-patrol/model.mzn`" in minizinc_skill
     assert "call `write_file` with its contents" in minizinc_skill
     assert "example values are teaching values only" in minizinc_skill
+    assert "replan-environment.json" in minizinc_skill
+    assert "replan-belief.json" in minizinc_skill
+    assert "replan-data.dzn" in minizinc_skill
+    assert "write a fresh copy of every planner file" in minizinc_skill
+    assert "activated `onr` Python" in minizinc_skill
+    assert "leading-`/` virtual paths" in minizinc_skill
+    assert "repository-relative execute paths" in minizinc_skill
+    assert "/usr/bin/python3" not in minizinc_skill
+    assert "Mission 1 reliability replans" in replan_skill
+    assert "fresh planner files and a fresh Statechart" in replan_skill
     assert "current evidence" in minizinc_skill
     assert "solver-native plan text" in minizinc_skill
     assert "jq 'keys'" in minizinc_skill
-    assert "schema-extraction functions" in minizinc_skill
+    assert "code-owned builder" in minizinc_skill
     assert "JSON manifest" in minizinc_skill
-    assert "sparse incoming/outgoing" in minizinc_skill
+    assert "source-to-sink route" in minizinc_skill
     assert "without capability caps" in minizinc_skill
     assert "bypasses `initialize_event_data_materialization`" in minizinc_skill
     assert 'minizinc_solver: "coin-bc"' in minizinc_skill

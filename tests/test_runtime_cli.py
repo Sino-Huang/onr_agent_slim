@@ -66,6 +66,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         "maneuver-control": "Maneuver prompt.",
     }
     workflow_prompts: list[str] = []
+    workflow_revisions: list[int] = []
     supervisor_prompts: list[str] = []
     belief_requests: list[dict[str, object]] = []
     planning_snapshot = MissionSnapshot(
@@ -79,7 +80,12 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         source_freshness={"environment_data": True},
     )
     planning_view = SimpleNamespace(
-        environment_event=SimpleNamespace(payload={"static_info": []}),
+        environment_event=SimpleNamespace(
+            payload={
+                "static_info": [],
+                "world_model_info": {"ship_event_reports": {"1": []}},
+            }
+        ),
         environment_file=tmp_path / "environment.json",
     )
     closed_loop_result = object()
@@ -168,6 +174,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     def run_revision(*args: object, **kwargs: object) -> object:
         _ = args
         workflow_prompts.append(str(kwargs["system_prompt"]))
+        workflow_revisions.append(int(kwargs["revision"]))
         return object()
 
     monkeypatch.setattr(runtime_cli, "FileTransport", FakeTransport)
@@ -176,7 +183,6 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         "load_system_prompt",
         lambda prompt_root, role: prompts[role],
     )
-    monkeypatch.setattr(runtime_cli, "seed_event_risk_beliefs", lambda *args: object())
     monkeypatch.setattr(runtime_cli, "_run_hyper_revision", run_revision)
 
     result = runtime_cli.run_closed_loop_demo(
@@ -190,10 +196,11 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
 
     assert result is closed_loop_result
     assert workflow_prompts == [prompts["hyper-agent"], prompts["hyper-agent"]]
+    assert workflow_revisions == [1, 2]
     assert supervisor_prompts == [prompts["hyper-supervisor"]]
-    assert belief_requests[0].get("seed") is None
+    assert belief_requests[0]["belief_kind"] == "reporting_reliability"
     assert tuple(key.entity_id for key in belief_requests[0]["keys"]) == tuple(
-        str(entity_id) for entity_id in range(1, 21)
+        [1]
     )
 
 
@@ -267,7 +274,7 @@ def test_installed_cli_help_works_outside_checkout(tmp_path: Path) -> None:
     assert "ModuleNotFoundError" not in result.stderr
 
 
-def test_demo_artifact_rollover_moves_prior_var_wholesale(
+def test_runtime_artifact_rollover_moves_prior_var_wholesale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prior_files = {
@@ -285,7 +292,7 @@ def test_demo_artifact_rollover_moves_prior_var_wholesale(
         runtime_cli, "_utc_archive_timestamp", lambda: "20260819T123456.123456Z"
     )
 
-    destination = runtime_cli._rollover_demo_artifacts(
+    destination = runtime_cli._rollover_runtime_artifacts(
         repo_root=tmp_path,
         lease=RuntimeLeaseStore(tmp_path / "var/storage/runtime"),
     )
@@ -300,14 +307,14 @@ def test_demo_artifact_rollover_moves_prior_var_wholesale(
     } == prior_files
 
 
-def test_demo_artifact_rollover_is_noop_without_var(
+def test_runtime_artifact_rollover_is_noop_without_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         runtime_cli, "_utc_archive_timestamp", lambda: "20260819T123456.123456Z"
     )
 
-    destination = runtime_cli._rollover_demo_artifacts(
+    destination = runtime_cli._rollover_runtime_artifacts(
         repo_root=tmp_path,
         lease=RuntimeLeaseStore(tmp_path / "var/storage/runtime"),
     )
@@ -317,7 +324,7 @@ def test_demo_artifact_rollover_is_noop_without_var(
     assert not (tmp_path / "data").exists()
 
 
-def test_demo_artifact_rollover_refuses_an_active_lease_without_moving_var(
+def test_runtime_artifact_rollover_refuses_an_active_lease_without_moving_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prior = tmp_path / "var/debug/prior.json"
@@ -332,7 +339,7 @@ def test_demo_artifact_rollover_refuses_an_active_lease_without_moving_var(
 
     try:
         with pytest.raises(RuntimeError, match="another runtime session is active"):
-            runtime_cli._rollover_demo_artifacts(
+            runtime_cli._rollover_runtime_artifacts(
                 repo_root=tmp_path,
                 lease=RuntimeLeaseStore(lease_root),
             )
@@ -357,7 +364,8 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
 
     class FakeRuntime:
         def __init__(self) -> None:
-            self.transport = FileTransport(tmp_path / "transport")
+            self.transport = FileTransport(tmp_path / "var/transport")
+            self.lease = RuntimeLeaseStore(tmp_path / "var/storage/runtime")
             self.config = SimpleNamespace(
                 environment_profile=SimpleNamespace(adapter_kind="external_transport"),
                 storage=SimpleNamespace(
@@ -374,7 +382,7 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
     runtime = FakeRuntime()
     _role_prompt_files(tmp_path)
     shared_transport = tmp_path / "var/transport/initial-environment.json"
-    shared_transport.parent.mkdir(parents=True)
+    shared_transport.parent.mkdir(parents=True, exist_ok=True)
     shared_transport.write_text("initial", encoding="utf-8")
     expected = ClosedLoopRunResult(
         mission_id="mission:demo",
@@ -406,6 +414,9 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         lambda **kwargs: calls.append(("runtime", kwargs)) or runtime,
     )
     monkeypatch.setattr(
+        runtime_cli, "_utc_archive_timestamp", lambda: "20260819T123456.123456Z"
+    )
+    monkeypatch.setattr(
         runtime_cli,
         "run_closed_loop_demo",
         lambda selected_runtime, mission, **kwargs: (
@@ -430,7 +441,14 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
 
     captured = capsys.readouterr()
     assert result == 0 and captured.err == ""
-    assert shared_transport.read_text(encoding="utf-8") == "initial"
+    assert not shared_transport.exists()
+    archived_transport = (
+        tmp_path
+        / "data/past_debug_rounds/20260819T123456.123456Z/var/transport/initial-environment.json"
+    )
+    assert archived_transport.read_text(encoding="utf-8") == "initial"
+    assert runtime.transport.root.is_dir()
+    assert not any(runtime.transport.root.iterdir())
     assert json.loads(captured.out) == expected.to_dict()
     assert calls[0] == (
         "runtime",

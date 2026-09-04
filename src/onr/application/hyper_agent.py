@@ -14,7 +14,9 @@ from threading import RLock
 from typing import Any, Callable, cast
 
 from onr.application.bayesian_belief import belief_artifact_reference
+from onr.application.reporting_reliability import reporting_reliability_reference
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import (
     HumanQuestion,
@@ -48,7 +50,7 @@ class HyperPlanningHeartbeatResult:
     mission_snapshot_id: str
     planner_choice: PlannerChoiceRecord | None = None
     attempt: PlannerGenerationAttempt | None = None
-    belief_snapshot: BayesianBeliefSnapshot | None = None
+    belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None = None
 
 
 class HyperAgent:
@@ -152,7 +154,7 @@ class HyperAgent:
             [PlannerChoiceRecord, MissionSnapshot, TransportEvent],
             PlannerGenerationAttempt,
         ],
-        belief_snapshot: BayesianBeliefSnapshot | None = None,
+        belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None = None,
     ) -> HyperPlanningHeartbeatResult:
         """Select and generate from snapshot-authorized environment data."""
 
@@ -226,8 +228,8 @@ class HyperAgent:
     @staticmethod
     def validate_belief_provenance(
         snapshot: MissionSnapshot,
-        belief: BayesianBeliefSnapshot | None,
-    ) -> BayesianBeliefSnapshot | None:
+        belief: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None,
+    ) -> BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None:
         source = "bayesian_belief_snapshot"
         revision = snapshot.source_revisions[source]
         reference = snapshot.source_references[source]
@@ -246,7 +248,9 @@ class HyperAgent:
             raise ValueError(
                 "MissionSnapshot belief provenance is not healthy and fresh"
             )
-        if not isinstance(belief, BayesianBeliefSnapshot):
+        if not isinstance(
+            belief, (BayesianBeliefSnapshot, ReportingReliabilitySnapshot)
+        ):
             raise ValueError(
                 "MissionSnapshot belief reference requires a typed artifact"
             )
@@ -254,9 +258,12 @@ class HyperAgent:
             raise ValueError("belief artifact mission does not match MissionSnapshot")
         if belief.belief_revision != revision:
             raise ValueError("belief artifact revision does not match MissionSnapshot")
-        if reference != belief_artifact_reference(
-            belief.mission_id, belief.content_sha256
-        ):
+        expected_reference = (
+            reporting_reliability_reference(belief)
+            if isinstance(belief, ReportingReliabilitySnapshot)
+            else belief_artifact_reference(belief.mission_id, belief.content_sha256)
+        )
+        if reference != expected_reference:
             raise ValueError("belief artifact reference does not match MissionSnapshot")
         return belief
 

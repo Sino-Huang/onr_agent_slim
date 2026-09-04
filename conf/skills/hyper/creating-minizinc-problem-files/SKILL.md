@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.5.0'
+version: '2.8.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -16,40 +16,56 @@ and their nesting are explicit. Inspect the event-type distribution and match
 each event entity to the supplied belief marginals. Preserve identifiers,
 order, units, and scales.
 
-- An event-information patrol that maximizes risk-weighted FoV observations
-  uses the action-DAG route below.
+- A Mission 1 reliability patrol that chooses fixed views and ship pursuit
+  uses the code-owned candidate-DAG route below.
 - Any other MiniZinc formulation uses the generic route.
 
-## Event-information action DAG
+## Mission 1 reliability candidate DAG
 
 1. Read `examples/event-information-patrol/model.mzn` and
    `examples/event-information-patrol/generate_data.py` completely. The
    checked-in `examples/event-information-patrol/data.dzn` is its current demo
-   result; example values are teaching values only and current evidence owns
-   every mission-specific value. For each source file, call `write_file` with its contents and the
+   result. `replan-environment.json`, `replan-belief.json`, and
+   `replan-data.dzn` show the same formulation rematerialized after Mission
+   time advances and report checks update the posterior; example values are teaching values only.
+   The current evidence owns every mission-specific value. For each source file,
+   call `write_file` with its contents and the
    corresponding `model.mzn` or `generate_data.py` path in the returned
    numbered workspace.
-2. In the workspace generator, replace the example belief marginals with the
-   current supplied marginals and adapt the schema-extraction functions to the
-   paths proved by the current `jq` output. Keep the schema-neutral graph and
-   DZN section stable: MiniZinc rounding and risk scaling, intersection
-   discovery, observation-interval enumeration, equivalent-action
-   deduplication, source/action/sink reachability, transitive reduction, the
-   independent longest-path oracle, one-based sparse incoming/outgoing
-   incidence indexes, and DZN serialization. Use the controlled vehicle's
-   current FoV radius and maximum velocity without capability caps.
-3. Run the workspace script with the minimal shell Python:
-   `/usr/bin/python3 <workspace>/generate_data.py <environment-file> <workspace>/data.dzn`.
+   When the Mission Snapshot already names an active positive plan revision,
+   write a fresh copy of every planner file in the newly returned revision
+   workspace. The previous revision's files are immutable evidence, never a
+   repair workspace. Begin with the `write_file` calls: the first call creates
+   the numbered workspace and its parent directories.
+2. Preserve the current reporting-reliability snapshot as `belief.json` in the
+   workspace. Do not reinterpret `detected_issues` or raw Event Observations as
+   updates. The example generator calls the installed code-owned builder used
+   by Context Coordination's advisory oracle. It excludes expired, checked,
+   duplicated, unreachable opportunities and emits both `fixed_view` and
+   `pursue_ship` candidates with opaque report IDs, numeric ship IDs, timing,
+   and recall/estimation/omission utility components.
+   It uses the current vehicle FoV and maximum velocity without capability caps.
+3. Keep the returned path forms distinct: leading-`/` virtual paths belong in
+   `write_file`, `read_file`, `edit_file`, `submit_planner_attempt`, and
+   `planner_executor`; repository-relative execute paths belong in shell commands.
+   Run the workspace script with the activated `onr` Python:
+   `python <workspace>/generate_data.py <environment-file> <workspace>/belief.json <workspace>/data.dzn`.
+   Build this command from the labeled shell workspace and execute environment
+   path returned by `record_planning_intent`. Keep the repository root as the
+   working directory while running it; every returned shell path is relative to
+   that root.
    Python is one-run preprocessing because DZN cannot calculate and reduce this
    action graph. The script is an agent-authored planning artifact, not a
    production compiler; leave it in the numbered workspace.
 4. Inspect the script's JSON manifest before submission. It must report
-   source-event, intersection, raw-action, unique-action, full-arc,
-   reduced-arc, longest-route, optimum-gain, optimum-stop, planning-FoV, and
-   planning-speed values. Confirm that `data.dzn` has aligned action and arc
+   candidate and arc counts, advisory score, maneuver count, duration, and
+   unique covered report IDs. Confirm that `data.dzn` has aligned candidate and arc
    arrays, forward topological arcs, a source-to-sink route, monotonic
    `outgoing_start` and `incoming_start` offsets ending at `arc_count + 1`, an
    `incoming_edge` permutation of every arc, and manifest-consistent counts.
+   For a replacement revision, also confirm the environment Mission time and
+   belief input revision are newer than the prior plan inputs and that expired
+   and checked report IDs are absent from every candidate report array.
    Generation is complete only when `model.mzn`, `generate_data.py`, and
    `data.dzn` all exist and the manifest is coherent.
 5. Call `submit_planner_attempt` with `planner_choice: "minizinc"`, the exact
@@ -60,7 +76,8 @@ order, units, and scales.
    model is linear integer flow and its incidence indexes prevent MiniZinc from
    scanning every arc separately for every node during flattening.
 
-This route bypasses `initialize_event_data_materialization` and
+MiniZinc maximizes combined utility, then minimizes maneuver count and total
+surveillance duration. This route bypasses `initialize_event_data_materialization` and
 `materialize_event_information_data`; the mission-specific generator owns the
 complete schema adaptation and DAG construction.
 

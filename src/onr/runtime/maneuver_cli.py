@@ -31,7 +31,7 @@ from onr.demo.maneuver_patrol import (
     DemoEnvironmentAuthority,
     create_demo_patrol,
 )
-from onr.runtime.cli import _rollover_demo_artifacts, load_mission_file
+from onr.runtime.cli import _rollover_runtime_artifacts, load_mission_file
 from onr.runtime.composition import RuntimeComposition
 from onr.runtime.config import EnvironmentUpdateOwnership
 
@@ -315,11 +315,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_root = repo_root / artifact_root
         artifact_root = artifact_root.resolve()
         if prior_var_exists:
-            stage = "demo artifact rollover"
+            stage = "runtime artifact rollover"
             lease = runtime.lease
             if lease is None:
                 raise RuntimeError("runtime lease was not initialized")
-            archived = _rollover_demo_artifacts(repo_root=repo_root, lease=lease)
+            archived = _rollover_runtime_artifacts(repo_root=repo_root, lease=lease)
             if archived is not None and isinstance(runtime.transport, FileTransport):
                 runtime.transport.root.mkdir(parents=True, exist_ok=True)
         stage = "configured LLM endpoint check"

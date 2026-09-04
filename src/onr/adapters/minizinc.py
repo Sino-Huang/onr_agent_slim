@@ -261,6 +261,13 @@ def _parse_json_stream(stream: str) -> PlannerExecutionResult:
             return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
 
         if event["type"] == "solution":
+            output = event.get("output")
+            default = output.get("default") if isinstance(output, Mapping) else None
+            if isinstance(default, str) and default.lstrip().startswith(("{", "[")):
+                try:
+                    json.loads(default)
+                except json.JSONDecodeError:
+                    return PlannerExecutionResult(outcome=PlanningOutcome.ERROR)
             saw_solution = True
         elif event["type"] == "status":
             status = event.get("status")
