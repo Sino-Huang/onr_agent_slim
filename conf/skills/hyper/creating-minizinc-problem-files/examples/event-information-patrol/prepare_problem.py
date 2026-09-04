@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from generate_data import build_instance
+
 from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 
 

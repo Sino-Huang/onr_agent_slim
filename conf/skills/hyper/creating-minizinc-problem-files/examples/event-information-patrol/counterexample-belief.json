@@ -1,0 +1,47 @@
+{
+  "belief_kind": "reporting_reliability",
+  "belief_revision": 2,
+  "content_sha256": "f60f5359427386ef465a68c2be93bd20cd417389d241d5680fde98ed2f411823",
+  "created_at": "2026-09-03T00:00:02.5+10:00",
+  "input_event_id": "environment-update:mission-1:5",
+  "input_revision": 5,
+  "mission_id": "mission-1",
+  "omission": {
+    "credible_interval": [0.01485148514851485, 0.8465346534653465],
+    "mean": 0.33334967160082346,
+    "variance": 0.05555283224403489
+  },
+  "schema_version": 1,
+  "ships": [
+    {
+      "credible_interval": [0.0, 0.8283582089552238],
+      "entity_id": 1,
+      "expected_omission_probability": 0.04430814521681788,
+      "expected_variance_reduction": 0.036833354643680774,
+      "honest_probability": 0.7500000000000001,
+      "mean": 0.13291792070482555,
+      "outcome_counts": {"altered": 0, "clean": 0, "omitted": 0},
+      "variance": 0.06515421428750663
+    },
+    {
+      "credible_interval": [0.21641791044776118, 0.9427860696517413],
+      "entity_id": 7,
+      "expected_omission_probability": 0.20771076106409925,
+      "expected_variance_reduction": 0.0062658406951034765,
+      "honest_probability": 0.0,
+      "mean": 0.6231017419834954,
+      "outcome_counts": {"altered": 1, "clean": 0, "omitted": 0},
+      "variance": 0.0383602317546529
+    },
+    {
+      "credible_interval": [0.0, 0.8283582089552238],
+      "entity_id": 8,
+      "expected_omission_probability": 0.04430814521681788,
+      "expected_variance_reduction": 0.036833354643680774,
+      "honest_probability": 0.7500000000000001,
+      "mean": 0.13291792070482555,
+      "outcome_counts": {"altered": 0, "clean": 0, "omitted": 0},
+      "variance": 0.06515421428750663
+    }
+  ]
+}

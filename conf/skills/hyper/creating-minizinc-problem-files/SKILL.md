@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.9.1'
+version: '2.10.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -29,33 +29,25 @@ and read spaced keys with
 
 ## Mission 1 reliability candidate DAG
 
-1. Use the checked-in, parameterized helpers at these stable repository-relative
-   execute paths:
+Read [Mission 1 mixed-action reference](references/mission1-mixed-action.md)
+before generating or interpreting this planner shape. Then:
+
+1. Use these checked-in, parameterized helpers at their stable
+   repository-relative execute paths:
    `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py`,
    `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py`,
    and
    `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_problem.py`.
-   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/generate_data.py`
-   contains the shared data-building implementation and
-   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`
-   is the paired model asset; neither contains a Mission ID, runtime
-   directory, vehicle pose, report set, ship ID, or belief value. The checked-in
-   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/data.dzn`
-   is the current demo result. `replan-environment.json`,
-   `replan-belief.json`, and `replan-data.dzn` are a few-shot example of the same
-   helpers run after Mission time advances and report checks update the
-   posterior; example values are teaching values only. The current evidence
-   input paths own every mission-specific value.
+   The paired assets are
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`,
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/data.dzn`,
+   and
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/generate_data.py`.
 2. Use the environment and belief execute paths returned by
    `record_planning_intent` directly. Do not copy, rewrite, or transcribe the
    reporting-reliability JSON into the numbered workspace. Do not reinterpret
-   `detected_issues` or raw Event Observations as updates. The example generator
-   calls the installed code-owned builder used
-   by Context Coordination's advisory oracle. It excludes expired, checked,
-   duplicated, unreachable opportunities and emits both `fixed_view` and
-   `pursue_ship` candidates with opaque report IDs, numeric ship IDs, timing,
-   and recall/estimation/omission utility components.
-   It uses the current vehicle FoV and maximum velocity without capability caps.
+   `detected_issues` or raw Event Observations as updates. The current evidence
+   paths own every mission-specific value.
 3. Keep the returned path forms distinct: leading-`/` virtual paths belong in
    `write_file`, `read_file`, `edit_file`, `submit_planner_attempt`, and
    `planner_executor`; repository-relative execute paths belong in shell commands.
@@ -64,44 +56,28 @@ and read spaced keys with
    `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py <environment-file> <belief-file>`.
    Then create both returned planner files in one command:
    `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py <environment-file> <belief-file> <shell-workspace>/model.mzn <shell-workspace>/data.dzn`.
-   Finally validate the generated DZN through its compact inspector:
+   Validate the generated DZN through its compact inspector:
    `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_problem.py <shell-workspace>/data.dzn`.
-   Shell-quote a substituted path if it contains whitespace. The working directory remains the repository root. Do not `cd`, embed
-   either JSON document in a tool call, or replace a returned input path with an
-   example path. Do not author an ad-hoc inspection script or read the generated
-   DZN into model context. `prepare_problem.py` creates the numbered directory, copies the
-   paired model, and invokes `generate_data.py`; the same commands apply to
-   initial planning and every replacement revision.
-4. Inspect `prepare_problem.py`'s JSON manifest before submission. It must report
-   candidate and arc counts, advisory score, maneuver count, duration,
-   `covered_report_count`, and unique covered report IDs. Copy its scalar values
-   verbatim into the submission reflection; `covered_report_count` is the
-   authoritative array count. Confirm that `data.dzn` has aligned candidate and arc
-   arrays, forward topological arcs, a source-to-sink route, nondecreasing
-   `outgoing_start` and `incoming_start` offsets ending at `arc_count + 1`, an
-   `incoming_edge` permutation of every arc, and manifest-consistent counts.
-   Repeated offsets are valid empty adjacency windows; validate incoming
-   windows through the `incoming_edge` indirection. The compact
-   `inspect_problem.py` result is authoritative for these structural checks and
-   must report `valid: true`.
-   For a replacement revision, also confirm the environment Mission time and
-   belief input revision are newer than the prior plan inputs and that expired
-   and checked report IDs are absent from every candidate report array.
-   Generation is complete only when `model.mzn` and `data.dzn` exist at the
-   returned paths and the manifest is coherent. The helpers remain reusable
-   checked-in skill assets rather than copied planner artifacts.
+   Shell-quote paths containing whitespace. The execute backend starts at the
+   repository root with the `onr` Python activated; the working directory remains the repository root.
+   Use one independent inspection per `execute` call. Do not author an ad-hoc inspection script. Do not read the generated
+   DZN into model context. The same commands apply to initial planning and
+   every replacement revision.
+4. Require `valid: true` from `inspect_problem.py`. Inspect the preparation JSON manifest
+   for candidate counts by mode, pursuit ship IDs and risk/rate inputs,
+   selected advisory modes, component-score consistency, arc count, advisory
+   score/maneuvers/duration, `covered_report_count`, and unique covered report
+   IDs. Copy its scalar values into the submission reflection. On a replacement,
+   also confirm newer Mission time and belief input revision and the absence of
+   expired or checked report IDs.
 5. Call `submit_planner_attempt` with `planner_choice: "minizinc"`, the exact
    `model.mzn` path as scalar `model_path`, and the exact `data.dzn` path as
    scalar `data_path`. Do not put the paths in an array or a quoted array.
    After static acceptance, call
-   `planner_executor` with `minizinc_solver: "coin-bc"`. This sparse unit-flow
-   model is linear integer flow and its incidence indexes prevent MiniZinc from
-   scanning every arc separately for every node during flattening.
+   `planner_executor` with `minizinc_solver: "coin-bc"`.
 
-MiniZinc maximizes combined utility, then minimizes maneuver count and total
-surveillance duration. This route bypasses `initialize_event_data_materialization` and
-`materialize_event_information_data`; the mission-specific generator owns the
-complete schema adaptation and DAG construction.
+This route bypasses `initialize_event_data_materialization` and
+`materialize_event_information_data`.
 
 ## Generic MiniZinc route
 

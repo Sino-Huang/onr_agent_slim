@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 from onr.application.mission1_planning import (
+    SCORE_SCALE,
     build_candidate_dag,
     longest_path_oracle,
     serialize_minizinc_data,
@@ -17,7 +19,7 @@ from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 
 
 def _adapt_environment(document: dict[str, object]) -> dict[str, object]:
-    reports = document.get("static_info", [])
+    reports = cast(list[dict[str, Any]], document.get("static_info", []))
     for order, report in enumerate(reports, start=1):
         if "report_id" not in report:
             digest = hashlib.sha256(
@@ -29,8 +31,10 @@ def _adapt_environment(document: dict[str, object]) -> dict[str, object]:
             ).hexdigest()[:24]
             report["report_id"] = f"report-{digest}"
     if "controlled_vehicle" not in document:
-        scene = document["scene_graph"]
-        drone = next(entity for entity in scene["entities"] if entity["type"] == "drone")
+        scene = cast(dict[str, Any], document["scene_graph"])
+        drone = next(
+            entity for entity in scene["entities"] if entity["type"] == "drone"
+        )
         document["mission_time_seconds"] = scene["mission_time_seconds"]
         document["controlled_vehicle"] = {
             "position": drone["location"],
@@ -48,7 +52,12 @@ def build_instance(
 ) -> tuple[str, dict[str, object]]:
     environment = _adapt_environment(document)
     if belief is None:
-        entity_ids = sorted({int(report["entity_id"]) for report in environment["static_info"]})
+        entity_ids = sorted(
+            {
+                int(report["entity_id"])
+                for report in cast(list[dict[str, Any]], environment["static_info"])
+            }
+        )
         belief = ReportingReliabilityManager(
             str(environment["mission_id"]), entity_ids
         ).snapshot(
@@ -58,12 +67,64 @@ def build_instance(
         )
     graph = build_candidate_dag(environment, belief)
     route = longest_path_oracle(graph)
+    candidate_counts_by_mode = {
+        mode: sum(candidate.mode == mode for candidate in graph.candidates)
+        for mode in ("fixed_view", "pursue_ship")
+    }
+    pursuit_inputs = {
+        candidate.entity_id: {
+            "entity_id": candidate.entity_id,
+            "target_posterior_risk": candidate.target_posterior_risk,
+            "expected_omission_probability": (candidate.expected_omission_probability),
+            "public_report_rate": candidate.public_report_rate,
+        }
+        for candidate in graph.candidates
+        if candidate.mode == "pursue_ship" and candidate.entity_id is not None
+    }
+    component_score = sum(
+        sum(
+            round(value * SCORE_SCALE)
+            for value in (
+                candidate.recall_utility,
+                candidate.estimation_utility,
+                candidate.omission_yield,
+            )
+        )
+        for candidate in route.candidates
+    )
     manifest = {
         "candidates": len(graph.candidates),
+        "candidate_counts_by_mode": candidate_counts_by_mode,
+        "pursuit_ship_ids": sorted(pursuit_inputs),
+        "pursuit_risk_rate_inputs": [
+            pursuit_inputs[entity_id] for entity_id in sorted(pursuit_inputs)
+        ],
         "arcs": len(graph.arcs),
         "advisory_score": route.score,
+        "advisory_modes": [candidate.mode for candidate in route.candidates],
         "advisory_maneuvers": len(route.candidates),
         "advisory_duration_s": route.duration_s,
+        "component_score_consistent": (
+            component_score == round(route.score * SCORE_SCALE)
+        ),
+        "advisory_utility": {
+            "recall": sum(
+                round(candidate.recall_utility * SCORE_SCALE)
+                for candidate in route.candidates
+            )
+            / SCORE_SCALE,
+            "estimation": sum(
+                round(candidate.estimation_utility * SCORE_SCALE)
+                for candidate in route.candidates
+            )
+            / SCORE_SCALE,
+            "omission_yield": sum(
+                round(candidate.omission_yield * SCORE_SCALE)
+                for candidate in route.candidates
+            )
+            / SCORE_SCALE,
+            "combined": route.score,
+        },
         "covered_report_count": len(route.covered_report_ids),
         "covered_report_ids": list(route.covered_report_ids),
     }

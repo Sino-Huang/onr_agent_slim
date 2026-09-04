@@ -1,6 +1,5 @@
 import json
 import re
-import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -318,11 +317,24 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     solution = next(item for item in stream if item["type"] == "solution")
     native = json.loads(solution["output"]["default"])
     assignments = native["assignments"]
-    assert native["combined_score"] == 632_918
-    assert native["maneuver_count"] == len(assignments) == 1
-    assert assignments[0]["surveillance_mode"] == "pursue_ship"
-    assert assignments[0]["entity_id"] == 1
-    assert assignments[0]["parameters"]["report_ids"] == ["report-demo"]
+    assert native["combined_score"] == 1_728_914
+    assert native["maneuver_count"] == len(assignments) == 2
+    assert assignments[0]["surveillance_mode"] == "fixed_view"
+    assert assignments[0]["entity_id"] is None
+    assert assignments[0]["parameters"]["report_ids"] == ["report-checked"]
+    assert assignments[1]["surveillance_mode"] == "pursue_ship"
+    assert assignments[1]["entity_id"] == 7
+    assert assignments[1]["parameters"]["report_ids"] == [
+        "report-future-a",
+        "report-future-b",
+    ]
+    assert assignments[1]["parameters"]["target_posterior_risk"] == 132_918
+    assert assignments[1]["parameters"]["public_report_rate"] == 222_222
+    assert assignments[1]["observation_window"] == {
+        "start": 24,
+        "duration": 5,
+        "time_scale": 2,
+    }
     model_text = assets["model.mzn"].decode()
     data_text = assets["data.dzn"].decode()
     assert 'include "network_flow.mzn"' not in model_text
@@ -330,10 +342,14 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     assert "outgoing_start[node]..outgoing_start[node + 1] - 1" in model_text
     assert "incoming_start[node]..incoming_start[node + 1] - 1" in model_text
     assert "flow[incoming_edge[position]]" in model_text
-    assert "array[CANDIDATES] of var 0..1: selected" in model_text
-    assert "candidate_score[candidate] * selected[candidate]" in model_text
-    assert "candidate_count = 2;" in data_text
-    assert "arc_count = 5;" in data_text
+    assert "array[CANDIDATES] of var 0.0..1.0: selected" in model_text
+    assert "candidate_combined_score[candidate] * selected[candidate]" in model_text
+    assert "candidate_recall[candidate]" in model_text
+    assert "+ candidate_estimation[candidate]" in model_text
+    assert "+ candidate_omission[candidate]" in model_text
+    assert "candidate_score" not in data_text
+    assert "candidate_count = 4;" in data_text
+    assert "arc_count = 7;" in data_text
     assert result.evidence is not None
     assert result.evidence.minizinc_solver == "coin-bc"
     assert '"status": "OPTIMAL_SOLUTION"' in result.stdout
@@ -389,16 +405,24 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
     manifest = json.loads(completed.stdout)
     assert set(manifest) == {
         "candidates",
+        "candidate_counts_by_mode",
+        "pursuit_ship_ids",
+        "pursuit_risk_rate_inputs",
         "arcs",
         "advisory_score",
+        "advisory_modes",
         "advisory_maneuvers",
         "advisory_duration_s",
+        "component_score_consistent",
+        "advisory_utility",
         "covered_report_count",
         "covered_report_ids",
     }
     assert manifest["candidates"] > 0
     assert manifest["covered_report_count"] == len(manifest["covered_report_ids"])
-    assert len(manifest["covered_report_ids"]) == len(set(manifest["covered_report_ids"]))
+    assert len(manifest["covered_report_ids"]) == len(
+        set(manifest["covered_report_ids"])
+    )
     data = generated.read_text(encoding="utf-8")
     action_count = _dzn_int(data, "candidate_count")
     arc_count = _dzn_int(data, "arc_count")
@@ -412,10 +436,13 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
             "candidate_y",
             "candidate_start",
             "candidate_duration",
-            "candidate_score",
             "candidate_recall",
             "candidate_estimation",
             "candidate_omission",
+            "candidate_target_risk",
+            "candidate_omission_probability",
+            "candidate_public_report_rate",
+            "candidate_report_span",
         )
     ]
     arc_from = _dzn_array(data, "arc_from")
@@ -439,7 +466,6 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
             for position in range(incoming_start[node - 1], incoming_start[node])
         )
     assert all(start < end for start, end in zip(arc_from, arc_to, strict=True))
-    assert (source, sink) in set(zip(arc_from, arc_to, strict=True))
     reachable = {source}
     for node in range(source, node_count + 1):
         if node in reachable:
@@ -472,6 +498,7 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         text=True,
     )
     summary = json.loads(inspected.stdout)
+    risk_rate_inputs = summary.pop("risk_rate_inputs")
     assert summary == {
         "belief_input_revision": 16,
         "belief_kind": "reporting_reliability",
@@ -482,6 +509,15 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         "public_report_count": 6,
         "report_check_count": 3,
     }
+    assert [item["entity_id"] for item in risk_rate_inputs] == [1, 7, 8]
+    assert [item["public_report_rate"] for item in risk_rate_inputs] == [
+        0.0,
+        pytest.approx(2.0 / 9.0),
+        pytest.approx(1.0 / 6.0),
+    ]
+    assert risk_rate_inputs[1]["target_posterior_risk"] == pytest.approx(
+        0.6231017419834954
+    )
 
     model = tmp_path / "arbitrary revision/model.mzn"
     data = tmp_path / "arbitrary revision/data.dzn"
@@ -513,15 +549,28 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         text=True,
     )
     assert json.loads(inspected_problem.stdout) == {
-        "arc_count": 9,
+        "advisory_modes": ["pursue_ship"],
+        "arc_count": 6,
         "candidate_arrays_aligned": True,
-        "candidate_count": 4,
+        "candidate_count": 3,
+        "candidate_counts_by_mode": {"fixed_view": 2, "pursue_ship": 1},
+        "component_score_consistent": True,
         "forward_arcs": True,
         "incoming_index_valid": True,
-        "node_count": 6,
+        "node_count": 5,
         "outgoing_index_valid": True,
+        "pursuit_risk_rate_inputs": [
+            {
+                "entity_id": 7,
+                "expected_omission_probability": 207711,
+                "public_report_rate": 222222,
+                "score_scale": 1000000,
+                "target_posterior_risk": 623102,
+            }
+        ],
+        "pursuit_ship_ids": [7],
         "report_arrays_aligned": True,
-        "report_id_count": 6,
+        "report_id_count": 5,
         "source_to_sink": True,
         "valid": True,
     }
@@ -529,8 +578,8 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
     broken = tmp_path / "broken.dzn"
     broken.write_text(
         data.read_text(encoding="utf-8").replace(
-            "outgoing_start = [1, 6, 7, 8, 9, 10, 10];",
-            "outgoing_start = [1, 6, 7, 8, 9, 9, 10];",
+            "outgoing_start = [1, 4, 5, 6, 7, 7];",
+            "outgoing_start = [1, 4, 5, 6, 6, 7];",
         ),
         encoding="utf-8",
     )
@@ -587,8 +636,7 @@ def test_full_physical_vehicle_patrol_solves_within_executor_limit(
         text=True,
     )
     executor = MiniZincExecutor(
-        repository_root
-        / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+        repository_root / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
         tmp_path / "planner-artifacts",
         timeout_seconds=30,
     )

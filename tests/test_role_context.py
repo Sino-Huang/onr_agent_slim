@@ -71,7 +71,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.9.1",
+        "2.10.0",
         "2.0.0",
         "1.2.0",
         "3.3.0",
@@ -530,6 +530,11 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     minizinc_skill = (
         _REPO_ROOT / "conf/skills/hyper/creating-minizinc-problem-files/SKILL.md"
     ).read_text(encoding="utf-8")
+    mission1_reference = (
+        _REPO_ROOT / "conf/skills/hyper/creating-minizinc-problem-files/references/"
+        "mission1-mixed-action.md"
+    ).read_text(encoding="utf-8")
+    mission1_guidance = minizinc_skill + mission1_reference
     replan_skill = (
         _REPO_ROOT / "conf/skills/hyper/detect-and-replan/SKILL.md"
     ).read_text(encoding="utf-8")
@@ -551,10 +556,13 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "substituting the two labeled execute paths verbatim" in minizinc_skill
     assert "Do not author an ad-hoc inspection script" in minizinc_skill
     assert "DZN into model context" in minizinc_skill
-    assert "example values are teaching values only" in minizinc_skill
-    assert "replan-environment.json" in minizinc_skill
-    assert "replan-belief.json" in minizinc_skill
-    assert "replan-data.dzn" in minizinc_skill
+    assert "version: '2.10.0'" in minizinc_skill
+    assert "references/mission1-mixed-action.md" in minizinc_skill
+    assert "example values are teaching values only" in mission1_guidance
+    assert "replan-environment.json" in mission1_reference
+    assert "replan-belief.json" in mission1_reference
+    assert "replan-data.dzn" in mission1_reference
+    assert "counterexample-data.dzn" in mission1_reference
     assert "same commands apply to" in minizinc_skill
     assert "every replacement revision" in minizinc_skill
     assert "activated `onr` Python" in minizinc_skill
@@ -562,7 +570,7 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "repository-relative execute paths" in minizinc_skill
     assert "working directory remains the repository root" in minizinc_skill
     assert "one independent inspection per `execute` call" in minizinc_skill
-    assert 'ship_event_reports | to_entries' in minizinc_skill
+    assert "ship_event_reports | to_entries" in minizinc_skill
     assert '["event type"]' in minizinc_skill
     assert "/usr/bin/python3" not in minizinc_skill
     assert "Mission 1 reliability replans" in replan_skill
@@ -570,13 +578,15 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "current evidence" in minizinc_skill
     assert "solver-native plan text" in minizinc_skill
     assert "jq 'keys'" in minizinc_skill
-    assert "code-owned builder" in minizinc_skill
+    assert "code-owned builder" in mission1_reference
     assert "JSON manifest" in minizinc_skill
     assert "covered_report_count" in minizinc_skill
-    assert "source-to-sink route" in minizinc_skill
-    assert "nondecreasing" in minizinc_skill
-    assert "empty adjacency windows" in minizinc_skill
-    assert "without capability caps" in minizinc_skill
+    assert "source-to-sink route" in mission1_reference
+    assert "nondecreasing" in mission1_reference
+    assert "empty adjacency windows" in mission1_reference
+    assert "without capability caps" in mission1_reference
+    assert "E[p_i q] * rate_i * (t_last - t_first)" in mission1_reference
+    assert "no risk threshold or pursuit bonus" in mission1_reference
     assert "bypasses `initialize_event_data_materialization`" in minizinc_skill
     assert 'minizinc_solver: "coin-bc"' in minizinc_skill
 

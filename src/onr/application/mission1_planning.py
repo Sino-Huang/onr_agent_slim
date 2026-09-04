@@ -7,12 +7,23 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any, cast
 
-from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.fsm import FSMStatus, Statechart
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 
 TIME_SCALE = 2
 SCORE_SCALE = 1_000_000
+OBSERVATION_DWELL_SECONDS = 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicReport:
+    report_id: str
+    entity_id: int
+    time_s: float
+    x: float
+    y: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +39,17 @@ class ObservationOpportunity:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateUtility:
+    recall: float
+    estimation: float
+    omission_yield: float
+
+    @property
+    def combined(self) -> float:
+        return self.recall + self.estimation + self.omission_yield
+
+
+@dataclass(frozen=True, slots=True)
 class SurveillanceCandidate:
     candidate_id: str
     mode: str
@@ -39,6 +61,10 @@ class SurveillanceCandidate:
     end_x: float
     end_y: float
     report_ids: tuple[str, ...]
+    target_posterior_risk: float
+    expected_omission_probability: float
+    public_report_rate: float
+    report_span_s: float
     recall_utility: float
     estimation_utility: float
     omission_yield: float
@@ -87,26 +113,14 @@ def _travel_time(ax: float, ay: float, bx: float, by: float, speed: float) -> fl
     return math.hypot(bx - ax, by - ay) / speed
 
 
-def _opportunities(
+def _public_reports(
     environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
-) -> tuple[ObservationOpportunity, ...]:
+) -> tuple[_PublicReport, ...]:
     reports = environment.get("static_info")
     if not isinstance(reports, (list, tuple)):
         raise ValueError("Mission 1 planning requires static_info reports")
-    world = environment.get("world_model_info")
-    checks = world.get("event_report_checks", ()) if isinstance(world, Mapping) else ()
-    checked = {
-        check.get("report_id")
-        for check in checks
-        if isinstance(check, Mapping) and isinstance(check.get("report_id"), str)
-    }
     by_ship = {ship.entity_id: ship for ship in belief.ships}
-    now = float(environment["mission_time_seconds"])
-    vehicle = environment["controlled_vehicle"]
-    position = vehicle["position"]
-    start_x, start_y = float(position["x"]), float(position["y"])
-    speed = float(vehicle["max_velocity"])
-    raw: list[tuple[str, int, float, float, float, float, float]] = []
+    valid: list[_PublicReport] = []
     seen: set[str] = set()
     for report in reports:
         if not isinstance(report, Mapping):
@@ -118,7 +132,6 @@ def _opportunities(
             not isinstance(report_id, str)
             or not report_id
             or report_id in seen
-            or report_id in checked
             or entity_id not in by_ship
             or not isinstance(entity_id, int)
             or isinstance(entity_id, bool)
@@ -126,19 +139,72 @@ def _opportunities(
             or len(position) < 2
         ):
             continue
+        seen.add(report_id)
         time_s = float(report["time"])
         x, y = float(position[0]), float(position[1])
-        if time_s < now or now + _travel_time(start_x, start_y, x, y, speed) > time_s + 1e-9:
+        valid.append(
+            _PublicReport(
+                report_id=report_id,
+                entity_id=entity_id,
+                time_s=time_s,
+                x=x,
+                y=y,
+            )
+        )
+    return tuple(valid)
+
+
+def public_report_rates(
+    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
+) -> dict[int, float]:
+    """Return report rates from each ship's complete valid public schedule."""
+
+    schedules: dict[int, list[float]] = {ship.entity_id: [] for ship in belief.ships}
+    for report in _public_reports(environment, belief):
+        schedules[report.entity_id].append(report.time_s)
+    return {
+        entity_id: (
+            (len(schedule) - 1) / (max(schedule) - min(schedule))
+            if len(set(schedule)) >= 2
+            else 0.0
+        )
+        for entity_id, schedule in schedules.items()
+    }
+
+
+def _opportunities(
+    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
+) -> tuple[ObservationOpportunity, ...]:
+    world = environment.get("world_model_info")
+    checks = world.get("event_report_checks", ()) if isinstance(world, Mapping) else ()
+    checked = {
+        check.get("report_id")
+        for check in checks
+        if isinstance(check, Mapping) and isinstance(check.get("report_id"), str)
+    }
+    by_ship = {ship.entity_id: ship for ship in belief.ships}
+    now = float(cast(Any, environment["mission_time_seconds"]))
+    vehicle = cast(Mapping[str, object], environment["controlled_vehicle"])
+    position = cast(Mapping[str, object], vehicle["position"])
+    start_x, start_y = float(cast(Any, position["x"])), float(cast(Any, position["y"]))
+    speed = float(cast(Any, vehicle["max_velocity"]))
+    raw: list[tuple[str, int, float, float, float, float, float]] = []
+    for report in _public_reports(environment, belief):
+        if (
+            report.report_id in checked
+            or report.time_s < now
+            or now + _travel_time(start_x, start_y, report.x, report.y, speed)
+            > report.time_s + 1e-9
+        ):
             continue
-        ship = by_ship[entity_id]
-        seen.add(report_id)
+        ship = by_ship[report.entity_id]
         raw.append(
             (
-                report_id,
-                entity_id,
-                time_s,
-                x,
-                y,
+                report.report_id,
+                report.entity_id,
+                report.time_s,
+                report.x,
+                report.y,
                 ship.mean,
                 ship.expected_variance_reduction,
             )
@@ -160,6 +226,67 @@ def _opportunities(
     )
 
 
+def score_candidate_opportunities(
+    covered: Sequence[ObservationOpportunity],
+    *,
+    expected_omission_probability: float = 0.0,
+    public_report_rate: float = 0.0,
+) -> CandidateUtility:
+    """Score public reports and one pursuit interval's expected hidden yield."""
+
+    ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
+    recall = math.fsum(0.5 * item.recall for item in ordered)
+    estimation = math.fsum(item.utility - 0.5 * item.recall for item in ordered)
+    report_span = ordered[-1].time_s - ordered[0].time_s if len(ordered) >= 2 else 0.0
+    return CandidateUtility(
+        recall=recall,
+        estimation=estimation,
+        omission_yield=(
+            expected_omission_probability * public_report_rate * report_span
+        ),
+    )
+
+
+def _score_units(utility: CandidateUtility) -> int:
+    return sum(
+        round(component * SCORE_SCALE)
+        for component in (utility.recall, utility.estimation, utility.omission_yield)
+    )
+
+
+def _candidate_utility(candidate: SurveillanceCandidate) -> CandidateUtility:
+    return CandidateUtility(
+        candidate.recall_utility,
+        candidate.estimation_utility,
+        candidate.omission_yield,
+    )
+
+
+def _prune_dominated_arcs(
+    arcs: set[tuple[int, int]],
+    candidates: Sequence[SurveillanceCandidate],
+    sink: int,
+) -> tuple[tuple[int, int], ...]:
+    """Drop arcs whose route can always gain a positive compatible candidate."""
+
+    outgoing = [0] * (sink + 1)
+    incoming = [0] * (sink + 1)
+    for source, target in arcs:
+        outgoing[source] |= 1 << target
+        incoming[target] |= 1 << source
+    positive_candidates = 0
+    for node, candidate in enumerate(candidates, start=1):
+        if _score_units(_candidate_utility(candidate)) > 0:
+            positive_candidates |= 1 << node
+    return tuple(
+        sorted(
+            (source, target)
+            for source, target in arcs
+            if not outgoing[source] & incoming[target] & positive_candidates
+        )
+    )
+
+
 def _candidate(
     mode: str,
     covered: Sequence[ObservationOpportunity],
@@ -169,27 +296,37 @@ def _candidate(
     end_x: float,
     end_y: float,
     entity_id: int | None,
-    omission_yield: float = 0.0,
+    target_posterior_risk: float = 0.0,
+    expected_omission_probability: float = 0.0,
+    public_report_rate: float = 0.0,
 ) -> SurveillanceCandidate:
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     report_ids = tuple(item.report_id for item in ordered)
-    recall = math.fsum(0.5 * item.recall for item in ordered)
-    estimation = math.fsum(0.5 * (item.utility * 2.0 - item.recall) for item in ordered)
+    utility = score_candidate_opportunities(
+        ordered,
+        expected_omission_probability=expected_omission_probability,
+        public_report_rate=public_report_rate,
+    )
+    report_span = ordered[-1].time_s - ordered[0].time_s
     return SurveillanceCandidate(
         candidate_id=_candidate_id(mode, report_ids),
         mode=mode,
         entity_id=entity_id,
         start_s=ordered[0].time_s,
-        end_s=ordered[-1].time_s + 0.5,
+        end_s=ordered[-1].time_s + OBSERVATION_DWELL_SECONDS,
         x=x,
         y=y,
         end_x=end_x,
         end_y=end_y,
         report_ids=report_ids,
-        recall_utility=recall,
-        estimation_utility=estimation,
-        omission_yield=omission_yield,
-        combined_score=recall + estimation + omission_yield,
+        target_posterior_risk=target_posterior_risk,
+        expected_omission_probability=expected_omission_probability,
+        public_report_rate=public_report_rate,
+        report_span_s=report_span,
+        recall_utility=utility.recall,
+        estimation_utility=utility.estimation,
+        omission_yield=utility.omission_yield,
+        combined_score=utility.combined,
     )
 
 
@@ -201,14 +338,17 @@ def build_candidate_dag(
     if belief.belief_kind != "reporting_reliability":
         raise ValueError("Mission 1 planning requires a reporting reliability belief")
     vehicle = environment.get("controlled_vehicle")
-    if not isinstance(vehicle, Mapping) or not isinstance(vehicle.get("position"), Mapping):
+    if not isinstance(vehicle, Mapping) or not isinstance(
+        vehicle.get("position"), Mapping
+    ):
         raise ValueError("Mission 1 planning requires controlled vehicle state")
     position = vehicle["position"]
     speed = float(vehicle["max_velocity"])
     fov = float(vehicle["fov_radius"])
-    now = float(environment["mission_time_seconds"])
+    now = float(cast(Any, environment["mission_time_seconds"]))
     start_x, start_y = float(position["x"]), float(position["y"])
     opportunities = _opportunities(environment, belief)
+    report_rates = public_report_rates(environment, belief)
     candidates: dict[tuple[str, tuple[str, ...]], SurveillanceCandidate] = {}
 
     for anchor in opportunities:
@@ -227,35 +367,52 @@ def build_candidate_dag(
             end_y=anchor.y,
             entity_id=None,
         )
-        if now + _travel_time(start_x, start_y, item.x, item.y, speed) <= item.start_s + 1e-9:
+        if (
+            now + _travel_time(start_x, start_y, item.x, item.y, speed)
+            <= item.start_s + 1e-9
+        ):
             candidates[(item.mode, item.report_ids)] = item
 
     by_ship = {ship.entity_id: ship for ship in belief.ships}
     for entity_id in sorted(by_ship):
-        covered = tuple(item for item in opportunities if item.entity_id == entity_id)
-        if not covered:
-            continue
-        ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
-        internally_reachable = all(
-            _travel_time(previous.x, previous.y, following.x, following.y, speed)
-            <= following.time_s - previous.time_s + 1e-9
-            for previous, following in zip(ordered, ordered[1:])
+        ordered = tuple(
+            sorted(
+                (item for item in opportunities if item.entity_id == entity_id),
+                key=lambda item: (item.time_s, item.report_id),
+            )
         )
-        if not internally_reachable:
-            continue
-        omission_yield = by_ship[entity_id].expected_omission_probability * len(ordered)
-        item = _candidate(
-            "pursue_ship",
-            ordered,
-            x=ordered[0].x,
-            y=ordered[0].y,
-            end_x=ordered[-1].x,
-            end_y=ordered[-1].y,
-            entity_id=entity_id,
-            omission_yield=omission_yield,
-        )
-        if now + _travel_time(start_x, start_y, item.x, item.y, speed) <= item.start_s + 1e-9:
-            candidates[(item.mode, item.report_ids)] = item
+        ship = by_ship[entity_id]
+        for start_index in range(len(ordered) - 1):
+            first = ordered[start_index]
+            if (
+                now + _travel_time(start_x, start_y, first.x, first.y, speed)
+                > first.time_s + 1e-9
+            ):
+                continue
+            for end_index in range(start_index + 1, len(ordered)):
+                previous = ordered[end_index - 1]
+                following = ordered[end_index]
+                if (
+                    _travel_time(
+                        previous.x, previous.y, following.x, following.y, speed
+                    )
+                    > following.time_s - previous.time_s + 1e-9
+                ):
+                    break
+                window = ordered[start_index : end_index + 1]
+                item = _candidate(
+                    "pursue_ship",
+                    window,
+                    x=first.x,
+                    y=first.y,
+                    end_x=following.x,
+                    end_y=following.y,
+                    entity_id=entity_id,
+                    target_posterior_risk=ship.mean,
+                    expected_omission_probability=(ship.expected_omission_probability),
+                    public_report_rate=report_rates[entity_id],
+                )
+                candidates[(item.mode, item.report_ids)] = item
 
     ordered_candidates = tuple(
         sorted(
@@ -265,27 +422,34 @@ def build_candidate_dag(
     )
     source = 0
     sink = len(ordered_candidates) + 1
-    arcs: list[tuple[int, int]] = [(source, sink)]
+    arcs: set[tuple[int, int]] = {(source, sink)}
     for index, candidate in enumerate(ordered_candidates, start=1):
-        arcs.append((source, index))
-        arcs.append((index, sink))
+        arcs.add((source, index))
+        arcs.add((index, sink))
     for left_index, left in enumerate(ordered_candidates, start=1):
         for right_index, right in enumerate(ordered_candidates, start=1):
-            if left_index == right_index or set(left.report_ids) & set(right.report_ids):
+            if left_index == right_index or set(left.report_ids) & set(
+                right.report_ids
+            ):
                 continue
             if right.start_s + 1e-9 >= left.end_s + _travel_time(
                 left.end_x, left.end_y, right.x, right.y, speed
             ):
-                arcs.append((left_index, right_index))
-    return CandidateDAG(ordered_candidates, tuple(sorted(set(arcs))), source, sink)
+                arcs.add((left_index, right_index))
+    return CandidateDAG(
+        ordered_candidates,
+        _prune_dominated_arcs(arcs, ordered_candidates, sink),
+        source,
+        sink,
+    )
 
 
 def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
     for source, target in graph.arcs:
         incoming[target].append(source)
-    best: list[tuple[float, int, float, tuple[int, ...]] | None] = [None] * (graph.sink + 1)
-    best[graph.source] = (0.0, 0, 0.0, ())
+    best: list[tuple[int, int, int, tuple[int, ...]] | None] = [None] * (graph.sink + 1)
+    best[graph.source] = (0, 0, 0, ())
     for node in range(graph.source + 1, graph.sink + 1):
         for previous in incoming[node]:
             prior = best[previous]
@@ -296,22 +460,43 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
             else:
                 item = graph.candidates[node - 1]
                 candidate = (
-                    prior[0] + item.combined_score,
+                    prior[0] + _score_units(_candidate_utility(item)),
                     prior[1] + 1,
-                    prior[2] + item.duration_s,
+                    prior[2] + round(item.duration_s * TIME_SCALE),
                     prior[3] + (node - 1,),
                 )
             current = best[node]
-            candidate_key = (candidate[0], -candidate[1], -candidate[2], tuple(-value for value in candidate[3]))
-            current_key = None if current is None else (current[0], -current[1], -current[2], tuple(-value for value in current[3]))
+            candidate_key = (
+                candidate[0],
+                -candidate[1],
+                -candidate[2],
+                tuple(-value for value in candidate[3]),
+            )
+            current_key = (
+                None
+                if current is None
+                else (
+                    current[0],
+                    -current[1],
+                    -current[2],
+                    tuple(-value for value in current[3]),
+                )
+            )
             if current_key is None or candidate_key > current_key:
                 best[node] = candidate
     result = best[graph.sink]
     if result is None:
         raise ValueError("Mission 1 candidate graph has no route")
     selected = tuple(graph.candidates[index] for index in result[3])
-    covered = tuple(report_id for candidate in selected for report_id in candidate.report_ids)
-    return AdvisoryRoute(selected, result[0], result[2], covered)
+    covered = tuple(
+        report_id for candidate in selected for report_id in candidate.report_ids
+    )
+    return AdvisoryRoute(
+        selected,
+        result[0] / SCORE_SCALE,
+        result[2] / TIME_SCALE,
+        covered,
+    )
 
 
 class Mission1ReplanGate:
@@ -330,17 +515,27 @@ class Mission1ReplanGate:
     ) -> ReplanGateDecision:
         current = float(current_score)
         advisory = float(advisory_score)
-        relative = math.inf if current == 0.0 and advisory > 0.0 else (
-            0.0 if current == 0.0 else (advisory - current) / current
+        relative = (
+            math.inf
+            if current == 0.0 and advisory > 0.0
+            else (0.0 if current == 0.0 else (advisory - current) / current)
         )
         if explicit_request:
-            return ReplanGateDecision(True, current, advisory, relative, "explicit_replan_request")
+            return ReplanGateDecision(
+                True, current, advisory, relative, "explicit_replan_request"
+            )
         if not next_assignment_feasible:
-            return ReplanGateDecision(True, current, advisory, relative, "next_assignment_infeasible")
+            return ReplanGateDecision(
+                True, current, advisory, relative, "next_assignment_infeasible"
+            )
         if current == 0.0 and advisory > 0.0:
-            return ReplanGateDecision(True, current, advisory, relative, "positive_route_from_zero")
+            return ReplanGateDecision(
+                True, current, advisory, relative, "positive_route_from_zero"
+            )
         if relative + 1e-12 >= self.relative_improvement_threshold:
-            return ReplanGateDecision(True, current, advisory, relative, "score_improvement")
+            return ReplanGateDecision(
+                True, current, advisory, relative, "score_improvement"
+            )
         return ReplanGateDecision(False, current, advisory, relative, "below_threshold")
 
     def assess(
@@ -354,15 +549,16 @@ class Mission1ReplanGate:
     ) -> tuple[ReplanGateDecision, AdvisoryRoute]:
         graph = build_candidate_dag(environment, belief)
         advisory = longest_path_oracle(graph)
-        opportunities = {item.report_id: item for item in _opportunities(environment, belief)}
+        opportunities = {
+            item.report_id: item for item in _opportunities(environment, belief)
+        }
         candidate_keys = {
             (candidate.mode, candidate.entity_id, candidate.report_ids)
             for candidate in graph.candidates
         }
-        omission_by_ship = {
-            ship.entity_id: ship.expected_omission_probability for ship in belief.ships
-        }
-        now = float(environment["mission_time_seconds"])
+        by_ship = {ship.entity_id: ship for ship in belief.ships}
+        report_rates = public_report_rates(environment, belief)
+        now = float(cast(Any, environment["mission_time_seconds"]))
         represented: set[str] = set()
         scored_reports: set[str] = set()
         current_score = 0.0
@@ -371,7 +567,11 @@ class Mission1ReplanGate:
         for context in statechart.state_context.values():
             identity = context.get("candidate_id")
             window = context.get("observation_window")
-            if not isinstance(identity, str) or identity in represented or not isinstance(window, Mapping):
+            if (
+                not isinstance(identity, str)
+                or identity in represented
+                or not isinstance(window, Mapping)
+            ):
                 continue
             start = window.get("start")
             duration = window.get("duration")
@@ -397,13 +597,28 @@ class Mission1ReplanGate:
             newly_scored = tuple(
                 report_id for report_id in report_ids if report_id not in scored_reports
             )
-            current_score += math.fsum(
-                opportunities[report_id].utility for report_id in newly_scored
+            covered = tuple(opportunities[report_id] for report_id in newly_scored)
+            ship = by_ship.get(entity_id) if isinstance(entity_id, int) else None
+            utility = score_candidate_opportunities(
+                covered,
+                expected_omission_probability=(
+                    ship.expected_omission_probability
+                    if mode == "pursue_ship" and ship is not None
+                    else 0.0
+                ),
+                public_report_rate=(
+                    report_rates[ship.entity_id]
+                    if mode == "pursue_ship" and ship is not None
+                    else 0.0
+                ),
             )
-            if mode == "pursue_ship" and isinstance(entity_id, int):
-                current_score += omission_by_ship[entity_id] * len(newly_scored)
+            current_score += _score_units(utility) / SCORE_SCALE
             scored_reports.update(newly_scored)
-            key = (str(mode), entity_id if isinstance(entity_id, int) else None, report_ids)
+            key = (
+                str(mode),
+                entity_id if isinstance(entity_id, int) else None,
+                report_ids,
+            )
             if report_ids and start_s < next_start:
                 next_start = start_s
                 next_key = key
@@ -437,13 +652,23 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
     for source, target in arcs:
         outgoing_counts[source - 1] += 1
         incoming_counts[target - 1] += 1
-    offsets = lambda counts: [1] + [1 + sum(counts[:index]) for index in range(1, len(counts) + 1)]
-    incoming_order = sorted(range(len(arcs)), key=lambda index: (arcs[index][1], arcs[index][0]))
-    report_ids = [report_id for candidate in graph.candidates for report_id in candidate.report_ids]
+
+    def offsets(counts: Sequence[int]) -> list[int]:
+        return [1] + [1 + sum(counts[:index]) for index in range(1, len(counts) + 1)]
+
+    incoming_order = sorted(
+        range(len(arcs)), key=lambda index: (arcs[index][1], arcs[index][0])
+    )
+    report_ids = [
+        report_id
+        for candidate in graph.candidates
+        for report_id in candidate.report_ids
+    ]
     report_counts = [len(candidate.report_ids) for candidate in graph.candidates]
     report_offsets = offsets(report_counts)
-    durations = [round(candidate.duration_s * TIME_SCALE) for candidate in graph.candidates]
-    score = [round(candidate.combined_score * SCORE_SCALE) for candidate in graph.candidates]
+    durations = [
+        round(candidate.duration_s * TIME_SCALE) for candidate in graph.candidates
+    ]
     duration_bound = sum(durations) + 1
     maneuver_bound = len(graph.candidates) + 1
     assignments: dict[str, int] = {
@@ -465,21 +690,46 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
         "outgoing_start": offsets(outgoing_counts),
         "incoming_start": offsets(incoming_counts),
         "incoming_edge": [index + 1 for index in incoming_order],
-        "candidate_mode": [1 if item.mode == "fixed_view" else 2 for item in graph.candidates],
+        "candidate_mode": [
+            1 if item.mode == "fixed_view" else 2 for item in graph.candidates
+        ],
         "candidate_entity_id": [item.entity_id or 0 for item in graph.candidates],
-        "candidate_start": [round(item.start_s * TIME_SCALE) for item in graph.candidates],
+        "candidate_start": [
+            round(item.start_s * TIME_SCALE) for item in graph.candidates
+        ],
         "candidate_duration": durations,
         "candidate_x": [round(item.x) for item in graph.candidates],
         "candidate_y": [round(item.y) for item in graph.candidates],
-        "candidate_score": score,
-        "candidate_recall": [round(item.recall_utility * SCORE_SCALE) for item in graph.candidates],
-        "candidate_estimation": [round(item.estimation_utility * SCORE_SCALE) for item in graph.candidates],
-        "candidate_omission": [round(item.omission_yield * SCORE_SCALE) for item in graph.candidates],
+        "candidate_recall": [
+            round(item.recall_utility * SCORE_SCALE) for item in graph.candidates
+        ],
+        "candidate_estimation": [
+            round(item.estimation_utility * SCORE_SCALE) for item in graph.candidates
+        ],
+        "candidate_omission": [
+            round(item.omission_yield * SCORE_SCALE) for item in graph.candidates
+        ],
+        "candidate_target_risk": [
+            round(item.target_posterior_risk * SCORE_SCALE) for item in graph.candidates
+        ],
+        "candidate_omission_probability": [
+            round(item.expected_omission_probability * SCORE_SCALE)
+            for item in graph.candidates
+        ],
+        "candidate_public_report_rate": [
+            round(item.public_report_rate * SCORE_SCALE) for item in graph.candidates
+        ],
+        "candidate_report_span": [
+            round(item.report_span_s * TIME_SCALE) for item in graph.candidates
+        ],
         "candidate_report_start": report_offsets,
     }
-    lines.extend(f"{name} = {_dzn_ints(values)};" for name, values in int_arrays.items())
+    lines.extend(
+        f"{name} = {_dzn_ints(values)};" for name, values in int_arrays.items()
+    )
     lines.append(
-        f"candidate_id = {_dzn_strings([item.candidate_id for item in graph.candidates])};"
+        "candidate_id = "
+        f"{_dzn_strings([item.candidate_id for item in graph.candidates])};"
     )
     lines.append(f"candidate_report_id = {_dzn_strings(report_ids)};")
     return "\n".join(lines) + "\n"
@@ -488,11 +738,14 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
 __all__ = [
     "AdvisoryRoute",
     "CandidateDAG",
+    "CandidateUtility",
     "Mission1ReplanGate",
     "ObservationOpportunity",
     "ReplanGateDecision",
     "SurveillanceCandidate",
     "build_candidate_dag",
     "longest_path_oracle",
+    "public_report_rates",
+    "score_candidate_opportunities",
     "serialize_minizinc_data",
 ]

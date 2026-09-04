@@ -1,0 +1,65 @@
+{
+  "controlled_vehicle": {
+    "entity_id": "drone-1",
+    "fov_radius": 5.0,
+    "max_velocity": 10.0,
+    "position": {"x": 0.0, "y": 0.0, "z": -20.0}
+  },
+  "mission_id": "mission-1",
+  "mission_time_seconds": 3.0,
+  "state_version": 5,
+  "static_info": [
+    {
+      "entity_id": 7,
+      "event information": {"decision": "left"},
+      "event type": "intersection decision",
+      "position": [0.0, 0.0, -2.5],
+      "report_id": "counterexample-past-7",
+      "time": 2.0
+    },
+    {
+      "entity_id": 7,
+      "event information": {"decision": "right"},
+      "event type": "intersection decision",
+      "position": [1000.0, 0.0, -2.5],
+      "report_id": "counterexample-unreachable-a",
+      "time": 5.0
+    },
+    {
+      "entity_id": 1,
+      "event information": {"decision": "left"},
+      "event type": "intersection decision",
+      "position": [10.0, 0.0, -2.5],
+      "report_id": "counterexample-fixed-a",
+      "time": 10.0
+    },
+    {
+      "entity_id": 8,
+      "event information": {"decision": "right"},
+      "event type": "intersection decision",
+      "position": [11.0, 0.0, -2.5],
+      "report_id": "counterexample-fixed-b",
+      "time": 10.0
+    },
+    {
+      "entity_id": 7,
+      "event information": {"decision": "left"},
+      "event type": "intersection decision",
+      "position": [1000.0, 0.0, -2.5],
+      "report_id": "counterexample-unreachable-b",
+      "time": 25.0
+    }
+  ],
+  "world_model_info": {
+    "event_report_checks": [
+      {
+        "check_id": "counterexample-altered-7",
+        "checked_at_s": 2.5,
+        "entity_id": 7,
+        "event_time_s": 2.0,
+        "outcome": "altered",
+        "report_id": "counterexample-past-7"
+      }
+    ]
+  }
+}

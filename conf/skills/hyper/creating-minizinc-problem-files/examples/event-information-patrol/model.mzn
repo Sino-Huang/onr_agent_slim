@@ -27,37 +27,51 @@ array[CANDIDATES] of int: candidate_start;
 array[CANDIDATES] of int: candidate_duration;
 array[CANDIDATES] of int: candidate_x;
 array[CANDIDATES] of int: candidate_y;
-array[CANDIDATES] of int: candidate_score;
 array[CANDIDATES] of int: candidate_recall;
 array[CANDIDATES] of int: candidate_estimation;
 array[CANDIDATES] of int: candidate_omission;
+array[CANDIDATES] of int: candidate_target_risk;
+array[CANDIDATES] of int: candidate_omission_probability;
+array[CANDIDATES] of int: candidate_public_report_rate;
+array[CANDIDATES] of int: candidate_report_span;
 array[CANDIDATE_OFFSETS] of 1..report_id_count + 1: candidate_report_start;
 array[CANDIDATES] of string: candidate_id;
 array[REPORT_IDS] of string: candidate_report_id;
 
-array[ARCS] of var 0..1: flow;
-array[CANDIDATES] of var 0..1: selected;
+array[CANDIDATES] of int: candidate_combined_score = [
+  candidate_recall[candidate]
+  + candidate_estimation[candidate]
+  + candidate_omission[candidate]
+  | candidate in CANDIDATES
+];
+
+array[ARCS] of var 0.0..1.0: flow;
+array[CANDIDATES] of var 0.0..1.0: selected;
 
 constraint forall(node in NODES)(
   sum(edge in outgoing_start[node]..outgoing_start[node + 1] - 1)(flow[edge])
   - sum(position in incoming_start[node]..incoming_start[node + 1] - 1)(
       flow[incoming_edge[position]]
     )
-  = if node = source_node then 1 elseif node = sink_node then -1 else 0 endif
+  = if node = source_node then 1.0 elseif node = sink_node then -1.0 else 0.0 endif
 );
 
 constraint forall(candidate in CANDIDATES)(
-  selected[candidate] = sum(edge in ARCS where arc_to[edge] = candidate + 1)(flow[edge])
+  selected[candidate] = sum(
+    position in incoming_start[candidate + 1]..incoming_start[candidate + 2] - 1
+  )(
+    flow[incoming_edge[position]]
+  )
 );
 
-var int: combined_score = sum(candidate in CANDIDATES)(
-  candidate_score[candidate] * selected[candidate]
+var float: combined_score = sum(candidate in CANDIDATES)(
+  candidate_combined_score[candidate] * selected[candidate]
 );
-var int: maneuver_count = sum(candidate in CANDIDATES)(selected[candidate]);
-var int: surveillance_duration = sum(candidate in CANDIDATES)(
+var float: maneuver_count = sum(candidate in CANDIDATES)(selected[candidate]);
+var float: surveillance_duration = sum(candidate in CANDIDATES)(
   candidate_duration[candidate] * selected[candidate]
 );
-var int: objective =
+var float: objective =
   combined_score * maneuver_bound * duration_bound
   - maneuver_count * duration_bound
   - surveillance_duration;
@@ -65,10 +79,10 @@ var int: objective =
 solve maximize objective;
 
 output [
-  "{\"combined_score\":" ++ show(fix(combined_score))
+  "{\"combined_score\":" ++ show(round(fix(combined_score)))
   ++ ",\"score_scale\":" ++ show(score_scale)
-  ++ ",\"maneuver_count\":" ++ show(fix(maneuver_count))
-  ++ ",\"surveillance_duration\":" ++ show(fix(surveillance_duration))
+  ++ ",\"maneuver_count\":" ++ show(round(fix(maneuver_count)))
+  ++ ",\"surveillance_duration\":" ++ show(round(fix(surveillance_duration)))
   ++ ",\"assignments\":["
   ++ join(",", [
     "{\"candidate_id\":\"" ++ candidate_id[candidate] ++ "\","
@@ -79,8 +93,20 @@ output [
     ++ ",\"start\":" ++ show(candidate_start[candidate])
     ++ ",\"duration\":" ++ show(candidate_duration[candidate])
     ++ ",\"time_scale\":" ++ show(time_scale)
+    ++ ",\"observation_window\":{\"start\":" ++ show(candidate_start[candidate])
+    ++ ",\"duration\":" ++ show(candidate_duration[candidate])
+    ++ ",\"time_scale\":" ++ show(time_scale) ++ "}"
     ++ ",\"parameters\":{\"x\":" ++ show(candidate_x[candidate])
     ++ ",\"y\":" ++ show(candidate_y[candidate])
+    ++ ",\"target_posterior_risk\":"
+    ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_target_risk[candidate]) endif)
+    ++ ",\"expected_omission_probability\":"
+    ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_omission_probability[candidate]) endif)
+    ++ ",\"public_report_rate\":"
+    ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_public_report_rate[candidate]) endif)
+    ++ ",\"rate_scale\":" ++ show(score_scale)
+    ++ ",\"report_span\":" ++ show(candidate_report_span[candidate])
+    ++ ",\"time_scale\":" ++ show(time_scale)
     ++ ",\"report_ids\":["
     ++ join(",", [
       "\"" ++ candidate_report_id[position] ++ "\""
@@ -89,9 +115,9 @@ output [
     ++ "],\"utility\":{\"recall\":" ++ show(candidate_recall[candidate])
     ++ ",\"estimation\":" ++ show(candidate_estimation[candidate])
     ++ ",\"omission_yield\":" ++ show(candidate_omission[candidate])
-    ++ ",\"combined\":" ++ show(candidate_score[candidate])
+    ++ ",\"combined\":" ++ show(candidate_combined_score[candidate])
     ++ ",\"scale\":" ++ show(score_scale) ++ "}}}"
-    | candidate in CANDIDATES where fix(selected[candidate]) = 1
+    | candidate in CANDIDATES where fix(selected[candidate]) > 0.5
   ])
   ++ "]}"
 ];

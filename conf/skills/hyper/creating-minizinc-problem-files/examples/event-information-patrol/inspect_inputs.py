@@ -7,6 +7,9 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from onr.application.mission1_planning import public_report_rates
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
+
 
 def _object(path: Path) -> Mapping[str, object]:
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -28,6 +31,8 @@ def summarize(
     ships = belief.get("ships")
     if not isinstance(ships, list):
         raise ValueError("belief ships must be an array")
+    snapshot = ReportingReliabilitySnapshot.from_dict(belief)
+    rates = public_report_rates(environment, snapshot)
     return {
         "mission_id": environment.get("mission_id"),
         "mission_time_seconds": environment.get("mission_time_seconds"),
@@ -38,6 +43,15 @@ def summarize(
         "belief_input_revision": belief.get("input_revision"),
         "belief_ship_ids": [
             ship.get("entity_id") for ship in ships if isinstance(ship, Mapping)
+        ],
+        "risk_rate_inputs": [
+            {
+                "entity_id": ship.entity_id,
+                "target_posterior_risk": ship.mean,
+                "expected_omission_probability": (ship.expected_omission_probability),
+                "public_report_rate": rates[ship.entity_id],
+            }
+            for ship in snapshot.ships
         ],
     }
 
