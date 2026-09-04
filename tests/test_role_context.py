@@ -71,7 +71,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.8.1",
+        "2.8.2",
         "2.0.0",
         "1.2.0",
         "3.2.0",
@@ -559,6 +559,9 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "leading-`/` virtual paths" in minizinc_skill
     assert "repository-relative execute paths" in minizinc_skill
     assert "working directory remains the repository root" in minizinc_skill
+    assert "one independent inspection per `execute` call" in minizinc_skill
+    assert 'ship_event_reports | to_entries' in minizinc_skill
+    assert '["event type"]' in minizinc_skill
     assert "/usr/bin/python3" not in minizinc_skill
     assert "Mission 1 reliability replans" in replan_skill
     assert "fresh planner files and a fresh Statechart" in replan_skill
@@ -569,6 +572,8 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "JSON manifest" in minizinc_skill
     assert "covered_report_count" in minizinc_skill
     assert "source-to-sink route" in minizinc_skill
+    assert "nondecreasing" in minizinc_skill
+    assert "empty adjacency windows" in minizinc_skill
     assert "without capability caps" in minizinc_skill
     assert "bypasses `initialize_event_data_materialization`" in minizinc_skill
     assert 'minizinc_solver: "coin-bc"' in minizinc_skill

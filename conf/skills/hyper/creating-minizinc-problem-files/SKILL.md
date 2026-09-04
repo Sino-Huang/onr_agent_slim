@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.8.1'
+version: '2.8.2'
 ---
 
 # Creating MiniZinc Problem Files
@@ -15,6 +15,13 @@ identity/type/time/position, drone collection/identity/location/velocity/FoV,
 and their nesting are explicit. Inspect the event-type distribution and match
 each event entity to the supplied belief marginals. Preserve identifiers,
 order, units, and scales.
+
+Use one independent inspection per `execute` call so its exit status belongs
+to that query; connect genuinely dependent shell operations with `&&`. For the
+Mission 1 physical shape, sample report streams with
+`jq '.world_model_info.ship_event_reports | to_entries | .[0]' <environment-file>`
+and read spaced keys with
+`jq -r '.static_info[]["event type"]' <environment-file>`.
 
 - A Mission 1 reliability patrol that chooses fixed views and ship pursuit
   uses the code-owned candidate-DAG route below.
@@ -54,7 +61,8 @@ order, units, and scales.
 3. Keep the returned path forms distinct: leading-`/` virtual paths belong in
    `write_file`, `read_file`, `edit_file`, `submit_planner_attempt`, and
    `planner_executor`; repository-relative execute paths belong in shell commands.
-   Run the workspace script with the activated `onr` Python:
+   The execute backend already starts at the repository root. Start the
+   workspace command directly with the activated `onr` Python:
    `python <workspace>/generate_data.py <environment-file> <workspace>/belief.json <workspace>/data.dzn`.
    Build this command from the labeled shell workspace and execute environment
    path returned by `record_planning_intent`. The working directory remains the repository root
@@ -68,9 +76,11 @@ order, units, and scales.
    `covered_report_count`, and unique covered report IDs. Copy its scalar values
    verbatim into the submission reflection; `covered_report_count` is the
    authoritative array count. Confirm that `data.dzn` has aligned candidate and arc
-   arrays, forward topological arcs, a source-to-sink route, monotonic
+   arrays, forward topological arcs, a source-to-sink route, nondecreasing
    `outgoing_start` and `incoming_start` offsets ending at `arc_count + 1`, an
    `incoming_edge` permutation of every arc, and manifest-consistent counts.
+   Repeated offsets are valid empty adjacency windows; validate incoming
+   windows through the `incoming_edge` indirection.
    For a replacement revision, also confirm the environment Mission time and
    belief input revision are newer than the prior plan inputs and that expired
    and checked report IDs are absent from every candidate report array.
