@@ -45,6 +45,7 @@ const ICONS = {
   timeline: `<path d="M3 20.5h18"/><path d="M4.5 16.5h6M8.5 11.5h8M5.5 6.5h5"/>`,
   overview: `<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>`,
   workflow: `<rect x="2.5" y="3.5" width="7" height="6" rx="1.5"/><circle cx="18" cy="6.5" r="3"/><rect x="14.5" y="14.5" width="7" height="6" rx="1.5"/><path d="M9.5 6.5H15M18 9.5v5M14.5 17.5H9.5V9.5"/>`,
+  world: `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>`,
   inbox: `<path d="M3.5 13l2.7-7.5h11.6L20.5 13v5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M3.5 13h5l1.5 2.5h4L15.5 13h5"/>`,
   zap: `<path d="M13 2.5L4.5 13.5H11l-1 8 8.5-11H12z"/>`,
   link: `<path d="M10 14a4.5 4.5 0 0 0 6.4.4l3-3a4.5 4.5 0 1 0-6.4-6.4l-1.7 1.7"/><path d="M14 10a4.5 4.5 0 0 0-6.4-.4l-3 3a4.5 4.5 0 1 0 6.4 6.4l1.7-1.7"/>`,

@@ -65,7 +65,7 @@ sed \
 
 initial_event="$transport_root/identity/event-environment-update%3Amission%3Ademo%3Ainitial.json"
 
-physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec python -m onr_physical_runtime.agent.service --scenario-config '$PHYSICAL_ROOT/config/harbor_world.yaml' --transport-root '$transport_root' --state-root '$physical_state_root' --mission-id '$MISSION_ID' --vehicle-id '$VEHICLE_ID' --mission1-instance-dir '$MISSION_INSTANCE'"
+physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec python -m onr_physical_runtime.agent.service --scenario-config '$PHYSICAL_ROOT/config/harbor_world.yaml' --transport-root '$transport_root' --state-root '$physical_state_root' --mission-id '$MISSION_ID' --vehicle-id '$VEHICLE_ID' --mission1-instance-dir '$MISSION_INSTANCE' --viewer-host 127.0.0.1 --viewer-port 5066"
 printf -v physical_command 'bash -lc %q' "$physical_inner"
 
 agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; exec python -m onr.runtime.cli --mission-file '$AGENT_ROOT/examples/mission.json' --repo-root '$AGENT_ROOT' --config-path '$agent_config' --skip-runtime-artifact-rollover"
@@ -95,4 +95,5 @@ HERDR_SESSION="$sessname" herdr pane run "$agent_pane" "$agent_command"
 
 echo "Created workspace '$WORKSPACE_LABEL' ($workspace_id) in herdr session '$sessname'."
 echo "Run data: $run_root"
+echo "World-model frame stream: http://127.0.0.1:5066"
 echo "Attach with: herdr --session $sessname"

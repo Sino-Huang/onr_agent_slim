@@ -46,6 +46,13 @@ conda activate onr
 python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml
 ```
 
+The viewer's **World Model** tab connects to the physical runtime Socket.IO
+stream at `http://127.0.0.1:5066` by default. The Mission 1 launcher
+`scripts/live_demo_with_wm/herdr_start_live_demo.sh` enables that stream on the
+same in-memory MultiGrid environment that executes the mission. Use
+`--world-model-url ORIGIN` on `onr.viewer.server` when the stream uses another
+loopback port.
+
 The runtime reads the planner artifact directory from
 `storage.planner_artifacts` in the YAML configuration. Pass
 `--planner-artifacts PATH` to override it for one run.
@@ -155,6 +162,7 @@ apply to both debug folders. Debug artifacts remain outside the viewer and trace
 APIs.
 
 The viewer owns no runtime lifecycle. It polls `/api/runtime` and the selected
-mission's `/api/trace` endpoint, cannot issue commands, and cannot invoke
-summarization or an LLM. A short demo may only appear active for its execution
-window; after the runtime stops its lease, the viewer correctly returns to idle.
+mission's `/api/trace` endpoint and consumes only read-only world-model frame
+events; it cannot issue commands or invoke summarization or an LLM. A short demo
+may only appear active for its execution window; after the runtime stops its
+lease, the viewer correctly returns to idle.

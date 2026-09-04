@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
 from threading import Thread
-from typing import Iterator
+from typing import Any, Iterator
 
 import pytest
 
@@ -103,7 +103,10 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 @contextmanager
 def _running_server(
-    tmp_path: Path, *, host: str = "127.0.0.1"
+    tmp_path: Path,
+    *,
+    host: str = "127.0.0.1",
+    world_model_feed: Any | None = None,
 ) -> Iterator[tuple[ViewerHTTPServer, Path, Path]]:
     config, storage, transport = _config(tmp_path)
     static_root = tmp_path / "web"
@@ -115,6 +118,7 @@ def _running_server(
         repo_root=tmp_path,
         config_path=config,
         static_root=static_root,
+        world_model_feed=world_model_feed,
     )
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -192,6 +196,52 @@ def test_idle_get_inspection_is_non_mutating_and_returns_no_trace(
     assert trace_response.status == 200
     assert json.loads(trace_body) == {"items": []}
     assert trace_response.getheader("Cache-Control") == "no-store"
+
+
+def test_world_model_socket_cache_is_exposed_as_read_only_frame(
+    tmp_path: Path,
+) -> None:
+    frame = b"\x89PNG\r\n\x1a\nlive-frame"
+
+    class Feed:
+        started = False
+        closed = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def close(self) -> None:
+            self.closed = True
+
+        def payload(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "connected": True,
+                "status": "live",
+                "sequence": 9,
+                "generation_timestamp_s": 123.5,
+                "state": {"mission_time_seconds": 4.5},
+            }
+
+        def frame(self) -> bytes:
+            return frame
+
+    feed = Feed()
+    with _running_server(tmp_path, world_model_feed=feed) as (server, _, _):
+        metadata_response, metadata_body = _request(
+            server, "GET", "/api/world-model"
+        )
+        frame_response, frame_body = _request(
+            server, "GET", "/api/world-model/frame?sequence=9"
+        )
+        assert feed.started is True
+
+    assert feed.closed is True
+    assert metadata_response.status == 200
+    assert json.loads(metadata_body)["sequence"] == 9
+    assert frame_response.status == 200
+    assert frame_response.getheader("Content-Type") == "image/png"
+    assert frame_body == frame
 
 
 def test_persisted_artifacts_without_a_runtime_lease_remain_replayable(

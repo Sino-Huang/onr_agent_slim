@@ -61,6 +61,22 @@ export async function getRun(missionId) {
   }
 }
 
+export async function getWorldModel() {
+  try {
+    return await fetchJSON("/api/world-model");
+  } catch (error) {
+    if (!fallsToMock(error)) throw error;
+    return {
+      available: false,
+      connected: false,
+      status: "disabled",
+      sequence: 0,
+      generation_timestamp_s: null,
+      state: {},
+    };
+  }
+}
+
 export async function getArtifact(missionId, ref) {
   const url = "/api/artifact?mission_id=" + encodeURIComponent(missionId) + "&ref=" + encodeURIComponent(ref);
   try {

@@ -47,6 +47,7 @@ from onr.viewer.steps import (
     StepsView,
 )
 from onr.viewer.trace import TraceProjection, sanitize_payload
+from onr.viewer.world_model import WorldModelFeed
 
 
 _MAX_ARTIFACT_BYTES = 1024 * 1024
@@ -859,6 +860,7 @@ class ViewerApplication:
         repo_root: Path,
         config_path: Path | None = None,
         static_root: Path | None = None,
+        world_model_feed: WorldModelFeed | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.config_path = Path(config_path) if config_path is not None else None
@@ -867,6 +869,28 @@ class ViewerApplication:
         )
         self._projection = TraceProjection()
         self._steps_projection = StepProjection()
+        self._world_model_feed = world_model_feed
+
+    def world_model_payload(self) -> dict[str, object]:
+        if self._world_model_feed is None:
+            return {
+                "available": False,
+                "connected": False,
+                "status": "disabled",
+                "sequence": 0,
+                "generation_timestamp_s": None,
+                "state": {},
+            }
+        return self._world_model_feed.payload()
+
+    def world_model_frame(self) -> bytes | None:
+        if self._world_model_feed is None:
+            return None
+        return self._world_model_feed.frame()
+
+    def close(self) -> None:
+        if self._world_model_feed is not None:
+            self._world_model_feed.close()
 
     def _runtime(self) -> _RuntimeView | None:
         try:
@@ -1298,6 +1322,22 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/runtime":
             self._send_json(self.application.runtime_payload(), head_only=head_only)
             return
+        if parsed.path == "/api/world-model":
+            self._send_json(
+                self.application.world_model_payload(), head_only=head_only
+            )
+            return
+        if parsed.path == "/api/world-model/frame":
+            frame = self.application.world_model_frame()
+            if frame is None:
+                self._send_error(HTTPStatus.NOT_FOUND, head_only=head_only)
+                return
+            self._send_content(
+                frame,
+                content_type="image/png",
+                head_only=head_only,
+            )
+            return
         if parsed.path == "/api/steps":
             query = parse_qs(parsed.query, keep_blank_values=True)
             mission_values = (
@@ -1487,6 +1527,12 @@ class ViewerHTTPServer(ThreadingHTTPServer):
             for authority in _authority_variants(host, self.listener_port)
         )
 
+    def server_close(self) -> None:
+        try:
+            self.application.close()
+        finally:
+            super().server_close()
+
 
 def create_server(
     *,
@@ -1495,18 +1541,29 @@ def create_server(
     repo_root: Path | str = Path.cwd(),
     config_path: Path | str | None = None,
     static_root: Path | str | None = None,
+    world_model_url: str | None = None,
+    world_model_feed: WorldModelFeed | None = None,
 ) -> ViewerHTTPServer:
     """Create a configured loopback server without starting its serving loop."""
 
     bind_host = _validate_host(host)
+    if world_model_url is not None and world_model_feed is not None:
+        raise ValueError("provide world_model_url or world_model_feed, not both")
+    feed = world_model_feed or (
+        WorldModelFeed(world_model_url) if world_model_url is not None else None
+    )
     application = ViewerApplication(
         repo_root=Path(repo_root),
         config_path=Path(config_path) if config_path is not None else None,
         static_root=Path(static_root) if static_root is not None else None,
+        world_model_feed=feed,
     )
-    return ViewerHTTPServer(
+    server = ViewerHTTPServer(
         (bind_host, port), application, requested_host=host
     )
+    if feed is not None:
+        feed.start()
+    return server
 
 
 def _host_argument(value: str) -> str:
@@ -1523,6 +1580,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=14398)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--config-path", type=Path)
+    parser.add_argument(
+        "--world-model-url",
+        default="http://127.0.0.1:5066",
+        help="physical runtime Socket.IO origin",
+    )
     return parser
 
 
@@ -1533,6 +1595,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         port=args.port,
         repo_root=args.repo_root,
         config_path=args.config_path,
+        world_model_url=args.world_model_url,
     )
     try:
         print(f"ONR viewer listening on http://{args.host}:{server.server_port}")

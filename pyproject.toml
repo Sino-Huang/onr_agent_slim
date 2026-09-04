@@ -13,6 +13,7 @@ dependencies = [
     "langchain",
     "langchain-openai",
     "python-statemachine",
+    "python-socketio>=5.12,<6",
     "PyYAML>=6.0.2",
     "uvicorn",
 ]

@@ -6,13 +6,14 @@ import { h, icon } from "./app/dom.js";
 import {
   state, setStepsPayload, signatureOf, readHash, writeHash, resolveHashStep, selectedStep, VIEWS,
 } from "./app/store.js";
-import { getRuntime, getRun, getSteps, mockUsed } from "./app/api.js";
+import { getRuntime, getRun, getSteps, getWorldModel, mockUsed } from "./app/api.js";
 import { renderHeader } from "./app/header.js";
 import { renderTrajectory, visibleTrajectorySteps } from "./app/trajectory.js";
 import { renderTree, visibleTreeSteps } from "./app/tree.js";
 import { renderTimeline, visibleTimelineSteps } from "./app/timeline.js";
 import { renderOverview } from "./app/overview.js";
 import { renderWorkflow } from "./app/workflow.js";
+import { renderWorldModel } from "./app/world_model.js";
 import { renderDetail } from "./app/detail.js";
 import { resetJsonViewState } from "./app/jsonview.js";
 import { invalidateArtifactCache } from "./app/artifact.js";
@@ -29,6 +30,7 @@ const viewRenderers = {
   timeline: renderTimeline,
   overview: renderOverview,
   workflow: renderWorkflow,
+  "world-model": renderWorldModel,
 };
 
 function visibleStepsForView() {
@@ -76,7 +78,9 @@ function renderBanner() {
         onclick: () => { state.dismissedWarnings.add(text); renderBanner(); },
       }, icon("x", 11))));
   }
-  const hardError = state.errors.steps || state.errors.run;
+  const hardError = state.errors.steps || state.errors.run || (
+    state.view === "world-model" ? state.errors.worldModel : null
+  );
   if (hardError) {
     bannerRoot.append(h("div", { class: "banner tone-error", role: "alert" },
       icon("alert", 13),
@@ -86,7 +90,7 @@ function renderBanner() {
 }
 
 function preserveScrollAndFocus(render) {
-  const scrollSelector = ".nav-scroll, .tl-scroll, .overview, .workflow, .detail-pane";
+  const scrollSelector = ".nav-scroll, .tl-scroll, .overview, .workflow, .detail-pane, .world-model-view, .wm-state";
   const scrollPositions = [...viewRoot.querySelectorAll(scrollSelector)]
     .map((element) => ({ top: element.scrollTop, left: element.scrollLeft }));
   const active = document.activeElement;
@@ -131,6 +135,7 @@ const actions = {
     state.view = view;
     writeHash({ push: true });
     renderAll();
+    if (view === "world-model") refreshWorldModel();
   },
   setWorkflowNode(node) {
     if (node === state.workflowNode) return;
@@ -216,6 +221,31 @@ async function refreshMission() {
   }
 }
 
+let worldModelSignature = "";
+async function refreshWorldModel() {
+  if (state.view !== "world-model") return;
+  try {
+    const payload = await getWorldModel();
+    state.errors.worldModel = null;
+    state.worldModel = payload;
+    const signature = JSON.stringify([
+      payload.status,
+      payload.connected,
+      payload.available,
+      payload.sequence,
+      payload.error || "",
+      payload.state || {},
+    ]);
+    if (signature !== worldModelSignature) {
+      worldModelSignature = signature;
+      renderAll();
+    }
+  } catch (error) {
+    state.errors.worldModel = error.message;
+    renderBanner();
+  }
+}
+
 async function poll() {
   try {
     const runtime = await getRuntime();
@@ -228,7 +258,7 @@ async function poll() {
       else if (missions.length) state.missionId = missions[0];
     }
     renderHeaderIfChanged();
-    await refreshMission();
+    await Promise.all([refreshMission(), refreshWorldModel()]);
   } catch (error) {
     state.errors.runtime = error.message;
     renderHeaderIfChanged();

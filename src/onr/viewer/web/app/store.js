@@ -3,11 +3,12 @@
 
 import { walkSteps } from "./format.js";
 
-export const VIEWS = ["trajectory", "tree", "timeline", "overview", "workflow"];
+export const VIEWS = ["trajectory", "tree", "timeline", "overview", "workflow", "world-model"];
 
 export const state = {
   runtime: null,
   run: null,
+  worldModel: null,
   stepsPayload: null,
   steps: [],          // top-level steps
   flat: [],           // depth-first [{step, depth, parent}]
@@ -21,7 +22,7 @@ export const state = {
   search: "",
   errorsOnly: false,
 
-  errors: { runtime: null, steps: null, run: null },
+  errors: { runtime: null, steps: null, run: null, worldModel: null },
   signature: "",
   loadedOnce: false,
 

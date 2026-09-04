@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections.abc import Iterator
@@ -8,6 +9,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+from typing import Any
 from urllib.parse import quote
 
 import pytest
@@ -130,7 +132,9 @@ def _config(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 @contextmanager
-def _viewer_server(tmp_path: Path) -> Iterator[tuple[str, Path, Path]]:
+def _viewer_server(
+    tmp_path: Path, *, world_model_feed: Any | None = None
+) -> Iterator[tuple[str, Path, Path]]:
     config, storage, transport = _config(tmp_path)
     lease = RuntimeLeaseStore(storage / "runtime")
     lease.start(session_id="browser-test-session")
@@ -139,6 +143,7 @@ def _viewer_server(tmp_path: Path) -> Iterator[tuple[str, Path, Path]]:
         port=_TEST_PORT,
         repo_root=tmp_path,
         config_path=config,
+        world_model_feed=world_model_feed,
     )
     thread = Thread(target=server.serve_forever, name="viewer-web-test", daemon=True)
     thread.start()
@@ -585,6 +590,56 @@ def test_tree_timeline_and_overview_views_render_without_errors(
                 _assert_no_browser_errors(errors, allow_mock_endpoint_404s=True)
         finally:
             context.close()
+
+
+def test_world_model_view_renders_live_socket_frame_and_state(
+    chromium_browser: Browser, tmp_path: Path
+) -> None:
+    frame = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    class Feed:
+        closed = False
+
+        def start(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+        def payload(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "connected": True,
+                "status": "live",
+                "sequence": 12,
+                "generation_timestamp_s": 123.5,
+                "state": {
+                    "mission_id": "mission:live",
+                    "mission_time_seconds": 8.5,
+                    "state_version": 17,
+                },
+            }
+
+        def frame(self) -> bytes:
+            return frame
+
+    feed = Feed()
+    context = chromium_browser.new_context()
+    page = context.new_page()
+    try:
+        with _viewer_server(tmp_path, world_model_feed=feed) as (base_url, _, _):
+            page.goto(base_url)
+            page.get_by_test_id("tab-world-model").click()
+            expect(page.get_by_test_id("view-world-model")).to_be_visible()
+            expect(page.get_by_test_id("world-model-status")).to_have_text("live")
+            expect(page.get_by_test_id("world-model-frame")).to_be_visible()
+            expect(page.get_by_text("mission:live", exact=True)).to_be_visible()
+    finally:
+        context.close()
+
+    assert feed.closed is True
 
 
 def test_deep_link_selects_step_and_reload_restores_it(
