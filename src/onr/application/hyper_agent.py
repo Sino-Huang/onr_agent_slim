@@ -192,10 +192,6 @@ class HyperAgent:
         validate_environment_data(
             mission_input.mission_id, snapshot, environment_event
         )
-        if snapshot.source_references[source] != environment_event.event_id:
-            raise ValueError(
-                "MissionSnapshot does not reference the supplied environment event"
-            )
         if snapshot.source_health[source] != "healthy":
             raise ValueError("MissionSnapshot environment data is not healthy")
         if not callable(generate):

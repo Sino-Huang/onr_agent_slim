@@ -33,11 +33,16 @@ def validate_environment_data(
     """Validate snapshot identity, revision, reference, health, and freshness."""
 
     source = "environment_data"
+    source_reference = environment_event.payload.get(
+        "source_environment_event_id", environment_event.event_id
+    )
     if (
         snapshot.mission_id != mission_id
         or environment_event.mission_id != mission_id
         or environment_event.event_kind != "environment_data"
-        or snapshot.source_references[source] != environment_event.event_id
+        or not isinstance(source_reference, str)
+        or not source_reference.strip()
+        or snapshot.source_references[source] != source_reference
         or snapshot.source_revisions[source] is None
         or snapshot.source_health[source] != "healthy"
         or not snapshot.source_freshness[source]

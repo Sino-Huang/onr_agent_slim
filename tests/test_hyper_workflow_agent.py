@@ -319,6 +319,50 @@ def test_recorded_choice_distinguishes_virtual_file_paths_from_shell_paths(
     ).is_file()
 
 
+def test_recorded_choice_accepts_planning_projection_of_snapshot_live_event(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    live_reference = context.mission_snapshot.environment_data
+    context.environment_event = TransportEvent(
+        2,
+        "environment:planning:1",
+        context.mission_input.mission_id,
+        1,
+        "environment_data",
+        {
+            "source_environment_event_id": live_reference,
+            "static_info": [],
+        },
+    )
+
+    result = _record(context, "minizinc")
+
+    assert result.startswith("Planning intent accepted.")
+
+
+def test_recorded_choice_rejects_planning_projection_of_unrelated_event(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    context.environment_event = TransportEvent(
+        2,
+        "environment:planning:other",
+        context.mission_input.mission_id,
+        1,
+        "environment_data",
+        {
+            "source_environment_event_id": "environment:other",
+            "static_info": [],
+        },
+    )
+
+    assert _record(context, "minizinc") == (
+        "Planning intent rejected: planning requires snapshot-authorized "
+        "environment data"
+    )
+
+
 def _write(context: HyperWorkflowContext, planner: str) -> list[str]:
     paths = _paths(context, planner)
     for location in paths:

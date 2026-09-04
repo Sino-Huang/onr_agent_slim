@@ -23,7 +23,9 @@ The evidence views have separate authority:
   visibility-gated ledgers.
 - A planning view adds `static_info`, the complete future public report
   schedule, while retaining the latest live world-model fields. Public reports
-  have opaque `report_id` values and no private `source_event_index`.
+  have opaque `report_id` values and no private `source_event_index`. Its
+  `source_environment_event_id` links the projection to the live event
+  authorized by the Mission Snapshot.
 - Event Observations travel as separate perception events and describe actual
   actions. They are available to Maneuver Control but are not corruption
   outcomes and do not update reporting reliability.
