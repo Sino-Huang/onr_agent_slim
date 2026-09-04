@@ -69,7 +69,8 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
     assert "VAL" in prompt
     assert "same submitted files" in prompt
     assert "`write_todos`" in prompt
-    assert "belief marginals" in prompt
+    assert "environment, belief, and" in prompt
+    assert "Never copy or transcribe the belief document" in prompt
     assert "absolute virtual paths for file tools" in prompt
     assert "repository-relative shell paths" in prompt
     assert "jq 'keys'" in prompt

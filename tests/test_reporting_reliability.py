@@ -123,6 +123,12 @@ def test_service_processes_each_buffered_tick_and_recovers_without_duplicates(
 
     initial = service.load_current_snapshot()
     assert initial is not None and initial.belief_revision == 1
+    assert service.current_snapshot_path() == (
+        tmp_path
+        / "bayesian-beliefs/mission-1"
+        / f"reporting-reliability-{initial.content_sha256}.json"
+    )
+    assert service.current_snapshot_path().is_file()
     service.ingest_environment_tick(_tick(1, [_check("check-1", 1, "clean")]))
     service.ingest_environment_tick(
         _tick(

@@ -67,6 +67,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     }
     workflow_prompts: list[str] = []
     workflow_revisions: list[int] = []
+    workflow_belief_files: list[Path] = []
     supervisor_prompts: list[str] = []
     belief_requests: list[dict[str, object]] = []
     planning_snapshot = MissionSnapshot(
@@ -124,7 +125,11 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         def register(self, role: str, handler: object) -> None:
             _ = role, handler
 
-    belief_service = SimpleNamespace(load_current_snapshot=lambda: object())
+    belief_file = tmp_path / "storage/bayesian-beliefs/current.json"
+    belief_service = SimpleNamespace(
+        load_current_snapshot=lambda: object(),
+        current_snapshot_path=lambda: belief_file,
+    )
     supervisor = SimpleNamespace(handle_agent_message=lambda message: message)
 
     class FakeRuntime:
@@ -175,6 +180,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         _ = args
         workflow_prompts.append(str(kwargs["system_prompt"]))
         workflow_revisions.append(int(kwargs["revision"]))
+        workflow_belief_files.append(kwargs["belief_file"])
         return object()
 
     monkeypatch.setattr(runtime_cli, "FileTransport", FakeTransport)
@@ -197,6 +203,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     assert result is closed_loop_result
     assert workflow_prompts == [prompts["hyper-agent"], prompts["hyper-agent"]]
     assert workflow_revisions == [1, 2]
+    assert workflow_belief_files == [belief_file, belief_file]
     assert supervisor_prompts == [prompts["hyper-supervisor"]]
     assert belief_requests[0]["belief_kind"] == "reporting_reliability"
     assert tuple(key.entity_id for key in belief_requests[0]["keys"]) == tuple(

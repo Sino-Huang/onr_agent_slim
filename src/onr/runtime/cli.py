@@ -160,6 +160,7 @@ def _run_hyper_revision(
     environment_event: TransportEvent,
     environment_file: Path,
     belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None,
+    belief_file: Path | None,
     revision: int,
     recursion_limit: int,
 ) -> ActivePlanRevision | None:
@@ -179,6 +180,7 @@ def _run_hyper_revision(
         environment_file,
         artifact_root=revision_root,
         belief_snapshot=belief_snapshot,
+        belief_file=belief_file,
         backend_root=backend_root,
     )
     result = workflow.run(
@@ -295,6 +297,7 @@ def run_closed_loop_demo(
         environment_event=planning_view.environment_event,
         environment_file=planning_view.environment_file,
         belief_snapshot=belief,
+        belief_file=belief_service.current_snapshot_path(),
         revision=1,
         recursion_limit=recursion_limit,
     )
@@ -352,6 +355,7 @@ def run_closed_loop_demo(
             environment_event=latest_planning_view.environment_event,
             environment_file=latest_planning_view.environment_file,
             belief_snapshot=belief_service.load_current_snapshot(),
+            belief_file=belief_service.current_snapshot_path(),
             revision=revision,
             recursion_limit=recursion_limit,
         )

@@ -14,6 +14,7 @@ from langchain.tools import ToolRuntime
 
 from onr.adapters.operational_log import InProcessOperationalLog
 from onr.adapters.python_statemachine import PythonStateMachineFactory
+from onr.application.reporting_reliability import ReportingReliabilityManager
 from onr.agents.hyper_workflow import (
     HyperWorkflowContext,
     _allowed_workflow_tools,
@@ -206,6 +207,8 @@ def _context(
     downward: _FastDownward | None = None,
     val: _VAL | None = None,
     handoff: bool = False,
+    belief_snapshot: object | None = None,
+    belief_file: Path | None = None,
 ) -> HyperWorkflowContext:
     mission = MissionInput("mission-1", "Survey and return", "mission-control")
     event = TransportEvent(
@@ -246,6 +249,8 @@ def _context(
         minizinc_planner=minizinc or _MiniZinc(),
         fast_downward_planner=downward or _FastDownward(artifacts / "fd"),
         val_validator=val or _VAL(),
+        belief_snapshot=belief_snapshot,
+        belief_file=belief_file,
         max_planner_attempts=2,
         max_statechart_attempts=2,
         state_machine_factory=PythonStateMachineFactory(),
@@ -847,6 +852,33 @@ def test_recorded_choice_returns_matching_native_paths_and_reaches_verifier(
     )
     assert cast(Any, verifier).checked
     assert _allowed_workflow_tools(context) == {"planner_executor"}
+
+
+def test_recorded_choice_returns_persisted_belief_paths_without_inline_json(
+    tmp_path: Path,
+) -> None:
+    belief = ReportingReliabilityManager("mission-1", (7,)).snapshot(
+        input_event_id="initial",
+        input_revision=0,
+        created_at="2026-09-04T00:00:00+10:00",
+    )
+    belief_file = tmp_path / "backend/var/beliefs/current snapshot.json"
+    belief_file.parent.mkdir(parents=True)
+    belief_file.write_text(belief.to_canonical_json() + "\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        belief_snapshot=belief,
+        belief_file=belief_file,
+    )
+
+    result = _record(context, "minizinc")
+
+    assert (
+        "Belief file for file tools: /var/beliefs/current snapshot.json" in result
+    )
+    assert "Belief file for execute: var/beliefs/current snapshot.json" in result
+    assert "Belief evidence:" not in result
+    assert belief.content_sha256 not in result
 
 
 def test_root_relative_environment_path_works_with_file_read_and_jq(

@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.8.2'
+version: '2.9.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -29,30 +29,27 @@ and read spaced keys with
 
 ## Mission 1 reliability candidate DAG
 
-1. Read
-   `/conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`
+1. Use the checked-in, parameterized helpers at these stable repository-relative
+   execute paths:
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py`
    and
-   `/conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/generate_data.py`
-   completely; these stable reference locations replace filesystem discovery.
-   The corresponding relative paths are
-   `examples/event-information-patrol/model.mzn` and
-   `examples/event-information-patrol/generate_data.py`. The
-   checked-in `examples/event-information-patrol/data.dzn` is its current demo
-   result. `replan-environment.json`, `replan-belief.json`, and
-   `replan-data.dzn` show the same formulation rematerialized after Mission
-   time advances and report checks update the posterior; example values are teaching values only.
-   The current evidence owns every mission-specific value. For each source file,
-   call `write_file` with its contents and the
-   corresponding `model.mzn` or `generate_data.py` path in the returned
-   numbered workspace.
-   When the Mission Snapshot already names an active positive plan revision,
-   write a fresh copy of every planner file in the newly returned revision
-   workspace. The previous revision's files are immutable evidence, never a
-   repair workspace. Begin with the `write_file` calls: the first call creates
-   the numbered workspace and its parent directories.
-2. Preserve the current reporting-reliability snapshot as `belief.json` in the
-   workspace. Do not reinterpret `detected_issues` or raw Event Observations as
-   updates. The example generator calls the installed code-owned builder used
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py`.
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/generate_data.py`
+   contains the shared data-building implementation and
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/model.mzn`
+   is the paired model asset; neither contains a Mission ID, runtime
+   directory, vehicle pose, report set, ship ID, or belief value. The checked-in
+   `conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/data.dzn`
+   is the current demo result. `replan-environment.json`,
+   `replan-belief.json`, and `replan-data.dzn` are a few-shot example of the same
+   helpers run after Mission time advances and report checks update the
+   posterior; example values are teaching values only. The current evidence
+   input paths own every mission-specific value.
+2. Use the environment and belief execute paths returned by
+   `record_planning_intent` directly. Do not copy, rewrite, or transcribe the
+   reporting-reliability JSON into the numbered workspace. Do not reinterpret
+   `detected_issues` or raw Event Observations as updates. The example generator
+   calls the installed code-owned builder used
    by Context Coordination's advisory oracle. It excludes expired, checked,
    duplicated, unreachable opportunities and emits both `fixed_view` and
    `pursue_ship` candidates with opaque report IDs, numeric ship IDs, timing,
@@ -61,17 +58,17 @@ and read spaced keys with
 3. Keep the returned path forms distinct: leading-`/` virtual paths belong in
    `write_file`, `read_file`, `edit_file`, `submit_planner_attempt`, and
    `planner_executor`; repository-relative execute paths belong in shell commands.
-   The execute backend already starts at the repository root. Start the
-   workspace command directly with the activated `onr` Python:
-   `python <workspace>/generate_data.py <environment-file> <workspace>/belief.json <workspace>/data.dzn`.
-   Build this command from the labeled shell workspace and execute environment
-   path returned by `record_planning_intent`. The working directory remains the repository root
-   for generation and DZN inspection, and every returned shell path is passed
-   unchanged relative to that root.
-   Python is one-run preprocessing because DZN cannot calculate and reduce this
-   action graph. The script is an agent-authored planning artifact, not a
-   production compiler; leave it in the numbered workspace.
-4. Inspect the script's JSON manifest before submission. It must report
+   The execute backend already starts at the repository root and provides the
+   activated `onr` Python. First run the compact input inspection, substituting the two labeled execute paths verbatim:
+   `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_inputs.py <environment-file> <belief-file>`.
+   Then create both returned planner files in one command:
+   `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/prepare_problem.py <environment-file> <belief-file> <shell-workspace>/model.mzn <shell-workspace>/data.dzn`.
+   Shell-quote a substituted path if it contains whitespace. The working directory remains the repository root. Do not `cd`, embed
+   either JSON document in a tool call, or replace a returned input path with an
+   example path. `prepare_problem.py` creates the numbered directory, copies the
+   paired model, and invokes `generate_data.py`; the same commands apply to
+   initial planning and every replacement revision.
+4. Inspect `prepare_problem.py`'s JSON manifest before submission. It must report
    candidate and arc counts, advisory score, maneuver count, duration,
    `covered_report_count`, and unique covered report IDs. Copy its scalar values
    verbatim into the submission reflection; `covered_report_count` is the
@@ -84,8 +81,9 @@ and read spaced keys with
    For a replacement revision, also confirm the environment Mission time and
    belief input revision are newer than the prior plan inputs and that expired
    and checked report IDs are absent from every candidate report array.
-   Generation is complete only when `model.mzn`, `generate_data.py`, and
-   `data.dzn` all exist and the manifest is coherent.
+   Generation is complete only when `model.mzn` and `data.dzn` exist at the
+   returned paths and the manifest is coherent. The helpers remain reusable
+   checked-in skill assets rather than copied planner artifacts.
 5. Call `submit_planner_attempt` with `planner_choice: "minizinc"`, the exact
    `model.mzn` path as scalar `model_path`, and the exact `data.dzn` path as
    scalar `data_path`. Do not put the paths in an array or a quoted array.

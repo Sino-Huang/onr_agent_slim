@@ -364,6 +364,13 @@ class FileReportingReliabilityStore:
     def _mission_root(self, mission_id: str) -> Path:
         return self.root / "bayesian-beliefs" / quote(mission_id, safe="._-")
 
+    def snapshot_path(self, snapshot: ReportingReliabilitySnapshot) -> Path:
+        """Return the store-owned path for an immutable snapshot artifact."""
+
+        return self._mission_root(snapshot.mission_id) / (
+            f"reporting-reliability-{snapshot.content_sha256}.json"
+        )
+
     @staticmethod
     def _write(path: Path, value: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,7 +395,7 @@ class FileReportingReliabilityStore:
         pending: Mapping[str, object] | None,
     ) -> None:
         mission_root = self._mission_root(snapshot.mission_id)
-        artifact = mission_root / f"reporting-reliability-{snapshot.content_sha256}.json"
+        artifact = self.snapshot_path(snapshot)
         if not artifact.exists():
             self._write(artifact, snapshot.to_dict())
         self._write(
@@ -584,6 +591,9 @@ class ReportingReliabilityService:
 
     def load_current_snapshot(self) -> ReportingReliabilitySnapshot:
         return self._snapshot
+
+    def current_snapshot_path(self) -> Path:
+        return self.store.snapshot_path(self._snapshot)
 
     def load_snapshot_reference(self, reference: str) -> ReportingReliabilitySnapshot:
         return self.store.load_reference(self.manager.mission_id, reference)

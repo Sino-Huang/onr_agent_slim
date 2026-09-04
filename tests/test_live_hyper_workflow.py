@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -282,6 +283,9 @@ def _event_information_context(
     )
     environment_file = _persist_environment(tmp_path, mission.mission_id, scene)
     belief = create_fake_entity_risk_snapshot(mission.mission_id)
+    belief_file = tmp_path / "var/beliefs" / mission.mission_id / "current.json"
+    belief_file.parent.mkdir(parents=True)
+    belief_file.write_text(belief.to_canonical_json() + "\n", encoding="utf-8")
     return (
         HyperWorkflowContext(
             mission_input=mission,
@@ -297,6 +301,7 @@ def _event_information_context(
             max_statechart_attempts=3,
             state_machine_factory=PythonStateMachineFactory(),
             belief_snapshot=belief,
+            belief_file=belief_file,
         ),
         planner,
     )
@@ -364,6 +369,10 @@ def _mission1_replan_context(
     )
     planner = CapturingPlanner()
     environment_file = _persist_environment(tmp_path, mission.mission_id, event)
+    shutil.copytree(_REPO_ROOT / "conf/skills", tmp_path / "conf/skills")
+    belief_file = tmp_path / "var/beliefs/replan-belief.json"
+    belief_file.parent.mkdir(parents=True)
+    belief_file.write_text(belief.to_canonical_json() + "\n", encoding="utf-8")
     return (
         HyperWorkflowContext(
             mission_input=mission,
@@ -371,12 +380,13 @@ def _mission1_replan_context(
             environment_event=event,
             environment_file=environment_file,
             artifact_root=tmp_path / "planner-artifacts/revision-002",
-            backend_root=_REPO_ROOT,
+            backend_root=tmp_path,
             minizinc_planner=planner,
             fast_downward_planner=UnusedFastDownward(),
             val_validator=UnusedVAL(),
             max_planner_attempts=1,
             belief_snapshot=belief,
+            belief_file=belief_file,
         ),
         planner,
     )
@@ -473,7 +483,7 @@ def test_live_hyper_workflow_regenerates_mission1_minizinc_for_replan(
         model=model,
         system_prompt=f"You are agent {runtime.config.agent_name}. {prompt}",
         mission_id=context.mission_input.mission_id,
-        skill_catalog=FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills"),
+        skill_catalog=FilesystemRoleSkillCatalog(tmp_path / "conf/skills"),
         backend_root=context.backend_root,
         planner_workspace_location=context.planner_workspace_location,
         checkpointer=InMemorySaver(),
@@ -489,6 +499,8 @@ def test_live_hyper_workflow_regenerates_mission1_minizinc_for_replan(
     assert planner.checked_assets
     assets = planner.checked_assets[-1]
     assert set(assets) == {"model.mzn", "data.dzn"}
+    workspace = context.artifact_root / "workspace/001"
+    assert {path.name for path in workspace.iterdir()} == {"model.mzn", "data.dzn"}
     example_root = (
         _REPO_ROOT
         / "conf/skills/hyper/creating-minizinc-problem-files/examples/"
@@ -502,8 +514,8 @@ def test_live_hyper_workflow_regenerates_mission1_minizinc_for_replan(
             str(_REPO_ROOT / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc"),
             "--solver",
             "coin-bc",
-            str(context.artifact_root / "workspace/001/model.mzn"),
-            str(context.artifact_root / "workspace/001/data.dzn"),
+            str(workspace / "model.mzn"),
+            str(workspace / "data.dzn"),
         ],
         check=True,
         capture_output=True,

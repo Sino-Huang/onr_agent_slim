@@ -46,7 +46,8 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 - Select MiniZinc for temporal optimization and Fast Downward for symbolic reachability where timing does not affect feasibility or value.
 - Call `record_planning_intent` with the objective, selected planning profile and planner ID, rationale, details, and reflection.
 - Acceptance returns absolute virtual paths for file tools and planner submission,
-  repository-relative shell paths for `execute`, and belief marginals. Preserve
+  plus repository-relative shell paths for the environment, belief, and
+  workspace used by `execute`. Preserve
   the leading `/` in `write_file`, `read_file`, `edit_file`, and planner tool
   arguments. Keep the repository root as the execute working directory and use
   only the labeled execute path in shell commands: start with
@@ -55,12 +56,14 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 
 ### 3. Generate planner files
 
-- For Mission 1 MiniZinc, read `creating-minizinc-problem-files`, preserve the
-  current reliability snapshot as `belief.json`, and use the checked-in
-  code-owned candidate/DAG generator for both the advisory oracle and DZN.
+- For Mission 1 MiniZinc, read `creating-minizinc-problem-files`, pass the
+  returned current environment and reliability-snapshot paths directly to its
+  checked-in helpers, and use the code-owned candidate/DAG generator for both
+  the advisory oracle and DZN. Never copy or transcribe the belief document.
   For other MiniZinc models, use generic event materialization when required.
 - For Fast Downward, read `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
-- Create an absent planner file once with `write_file`. To change that path later,
+- For planner files not produced by a checked-in helper, create an absent file
+  once with `write_file`. To change that path later,
   call `read_file` on the exact path, wait for its result, then call `edit_file`;
   repair is complete only when `edit_file` succeeds.
 - Exit when both complete planner-native files exist.

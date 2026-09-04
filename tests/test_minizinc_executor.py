@@ -453,6 +453,60 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
     assert action_count == manifest["candidates"]
 
 
+def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
+    tmp_path: Path,
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    example = (
+        repository_root
+        / "conf/skills/hyper/creating-minizinc-problem-files/examples"
+        / "event-information-patrol"
+    )
+    environment = example / "replan-environment.json"
+    belief = example / "replan-belief.json"
+
+    inspected = subprocess.run(
+        [sys.executable, str(example / "inspect_inputs.py"), environment, belief],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    summary = json.loads(inspected.stdout)
+    assert summary == {
+        "belief_input_revision": 16,
+        "belief_kind": "reporting_reliability",
+        "belief_revision": 2,
+        "belief_ship_ids": [1, 7, 8],
+        "mission_id": "mission-1",
+        "mission_time_seconds": 8.0,
+        "public_report_count": 6,
+        "report_check_count": 3,
+    }
+
+    model = tmp_path / "arbitrary revision/model.mzn"
+    data = tmp_path / "arbitrary revision/data.dzn"
+    prepared = subprocess.run(
+        [
+            sys.executable,
+            str(example / "prepare_problem.py"),
+            environment,
+            belief,
+            model,
+            data,
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    assert json.loads(prepared.stdout)["covered_report_ids"] == [
+        "report-future-a",
+        "report-future-b",
+    ]
+    assert model.read_bytes() == (example / "model.mzn").read_bytes()
+    assert data.read_bytes() == (example / "replan-data.dzn").read_bytes()
+
+
 def test_full_physical_vehicle_patrol_solves_within_executor_limit(
     tmp_path: Path,
 ) -> None:
