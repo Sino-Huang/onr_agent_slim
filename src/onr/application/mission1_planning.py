@@ -448,8 +448,10 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
     for source, target in graph.arcs:
         incoming[target].append(source)
-    best: list[tuple[int, int, int, tuple[int, ...]] | None] = [None] * (graph.sink + 1)
-    best[graph.source] = (0, 0, 0, ())
+    best: list[tuple[int, int, int, int, tuple[int, ...]] | None] = [None] * (
+        graph.sink + 1
+    )
+    best[graph.source] = (0, 0, 0, 0, ())
     for node in range(graph.source + 1, graph.sink + 1):
         for previous in incoming[node]:
             prior = best[previous]
@@ -463,14 +465,16 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
                     prior[0] + _score_units(_candidate_utility(item)),
                     prior[1] + 1,
                     prior[2] + round(item.duration_s * TIME_SCALE),
-                    prior[3] + (node - 1,),
+                    prior[3] + node,
+                    prior[4] + (node - 1,),
                 )
             current = best[node]
             candidate_key = (
                 candidate[0],
                 -candidate[1],
                 -candidate[2],
-                tuple(-value for value in candidate[3]),
+                -candidate[3],
+                tuple(-value for value in candidate[4]),
             )
             current_key = (
                 None
@@ -479,7 +483,8 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
                     current[0],
                     -current[1],
                     -current[2],
-                    tuple(-value for value in current[3]),
+                    -current[3],
+                    tuple(-value for value in current[4]),
                 )
             )
             if current_key is None or candidate_key > current_key:
@@ -487,7 +492,7 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
     result = best[graph.sink]
     if result is None:
         raise ValueError("Mission 1 candidate graph has no route")
-    selected = tuple(graph.candidates[index] for index in result[3])
+    selected = tuple(graph.candidates[index] for index in result[4])
     covered = tuple(
         report_id for candidate in selected for report_id in candidate.report_ids
     )
@@ -669,8 +674,38 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
     durations = [
         round(candidate.duration_s * TIME_SCALE) for candidate in graph.candidates
     ]
-    duration_bound = sum(durations) + 1
-    maneuver_bound = len(graph.candidates) + 1
+    incoming_nodes: list[list[int]] = [[] for _ in range(node_count)]
+    for source, target in arcs:
+        incoming_nodes[target - 1].append(source - 1)
+    path_bounds: list[tuple[int, int, int] | None] = [None] * node_count
+    path_bounds[graph.source] = (0, 0, 0)
+    for node in range(graph.source + 1, graph.sink + 1):
+        additions = (
+            (0, 0, 0)
+            if node == graph.sink
+            else (1, durations[node - 1], node)
+        )
+        options = [
+            (
+                prior[0] + additions[0],
+                prior[1] + additions[1],
+                prior[2] + additions[2],
+            )
+            for previous in incoming_nodes[node]
+            if (prior := path_bounds[previous]) is not None
+        ]
+        if options:
+            path_bounds[node] = (
+                max(option[0] for option in options),
+                max(option[1] for option in options),
+                max(option[2] for option in options),
+            )
+    maximums = path_bounds[graph.sink]
+    if maximums is None:
+        raise ValueError("Mission 1 candidate graph has no route")
+    maneuver_bound = maximums[0] + 1
+    duration_bound = maximums[1] + 1
+    tie_break_bound = maximums[2] + 1
     assignments: dict[str, int] = {
         "candidate_count": len(graph.candidates),
         "node_count": node_count,
@@ -681,6 +716,7 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
         "score_scale": SCORE_SCALE,
         "duration_bound": duration_bound,
         "maneuver_bound": maneuver_bound,
+        "tie_break_bound": tie_break_bound,
         "report_id_count": len(report_ids),
     }
     lines = [f"{name} = {value};" for name, value in assignments.items()]

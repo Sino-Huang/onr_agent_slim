@@ -7,6 +7,7 @@ int: time_scale;
 int: score_scale;
 int: duration_bound;
 int: maneuver_bound;
+int: tie_break_bound;
 int: report_id_count;
 
 set of int: CANDIDATES = 1..candidate_count;
@@ -71,10 +72,14 @@ var float: maneuver_count = sum(candidate in CANDIDATES)(selected[candidate]);
 var float: surveillance_duration = sum(candidate in CANDIDATES)(
   candidate_duration[candidate] * selected[candidate]
 );
+var float: candidate_order_sum = sum(candidate in CANDIDATES)(
+  candidate * selected[candidate]
+);
 var float: objective =
-  combined_score * maneuver_bound * duration_bound
-  - maneuver_count * duration_bound
-  - surveillance_duration;
+  combined_score * maneuver_bound * duration_bound * tie_break_bound
+  - maneuver_count * duration_bound * tie_break_bound
+  - surveillance_duration * tie_break_bound
+  - candidate_order_sum;
 
 solve maximize objective;
 

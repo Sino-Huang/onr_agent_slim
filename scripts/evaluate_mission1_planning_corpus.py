@@ -213,7 +213,8 @@ def _evaluate_snapshot(
         and solver_modes == [candidate.mode for candidate in oracle.candidates]
         and solver_entities == [candidate.entity_id for candidate in oracle.candidates]
     )
-    if not semantic_parity:
+    exact_route_parity = solver_ids == oracle_ids
+    if not semantic_parity or not exact_route_parity:
         raise ValueError(f"{output.name}/{kind} oracle/MiniZinc mismatch")
     solver_summary = {
         "status": status,
@@ -252,8 +253,8 @@ def _evaluate_snapshot(
         "validation_seconds": check_seconds,
         "solver_seconds": solver_seconds,
         "solver_status": status,
-        "oracle_minizinc_match": semantic_parity,
-        "exact_candidate_id_route_match": solver_ids == oracle_ids,
+        "oracle_minizinc_match": semantic_parity and exact_route_parity,
+        "exact_candidate_id_route_match": exact_route_parity,
     }
 
 

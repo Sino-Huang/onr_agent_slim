@@ -63,6 +63,7 @@ def test_path_driven_corpus_evaluation_sanitizes_and_matches_solver(
     assert summary["snapshot_count"] == 2
     assert summary["all_optimal"] is True
     assert summary["all_oracle_minizinc_match"] is True
+    assert summary["exact_candidate_id_route_match_count"] == 2
     for environment_path in (output / "snapshots/case-001").glob("*/environment.json"):
         environment = json.loads(environment_path.read_text(encoding="utf-8"))
         assert "source_event_index" not in json.dumps(environment["static_info"])

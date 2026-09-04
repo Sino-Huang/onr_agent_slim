@@ -36,7 +36,8 @@ high-risk schedule can likewise leave `fixed_view` preferable.
 
 `model.mzn` derives each candidate score from the recall, estimation, and
 omission arrays and maximizes their route sum. It then minimizes maneuver count
-and total surveillance duration lexicographically. Compatible routes never
+and total surveillance duration lexicographically, using candidate order only
+to make otherwise identical optima deterministic. Compatible routes never
 repeat a public report. The unit-flow relaxation remains exact because a
 directed network incidence matrix has integral vertices.
 

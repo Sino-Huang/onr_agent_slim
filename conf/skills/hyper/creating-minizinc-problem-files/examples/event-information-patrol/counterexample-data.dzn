@@ -7,6 +7,7 @@ time_scale = 2;
 score_scale = 1000000;
 duration_bound = 2;
 maneuver_bound = 2;
+tie_break_bound = 2;
 report_id_count = 2;
 arc_from = [1, 2];
 arc_to = [2, 3];
