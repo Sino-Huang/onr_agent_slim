@@ -40,6 +40,13 @@ def candidate_arrays(value: object) -> list[list[Mapping[str, Any]]]:
             found.append(value)
         for child in value:
             found.extend(candidate_arrays(child))
+    elif isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+        else:
+            found.extend(candidate_arrays(decoded))
     return found
 
 
@@ -211,7 +218,11 @@ def build_statechart(
                     "context": {
                         "desired_outcome": "confirm the completed evidence interval",
                         "readiness": {
-                            "live_evidence": "the drone is at the selected location",
+                            "live_evidence": (
+                                "the drone is at the selected location"
+                                if item["surveillance_mode"] == "fixed_view"
+                                else "the pursued vessel is held in the FoV"
+                            ),
                             "not_before": scaled_time(
                                 observation_end_tick, item["time_scale"]
                             ),

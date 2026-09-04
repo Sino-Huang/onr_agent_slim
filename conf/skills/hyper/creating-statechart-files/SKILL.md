@@ -1,16 +1,36 @@
 ---
 name: creating-statechart-files
 description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
-version: '3.2.0'
+version: '3.3.0'
 ---
 
 # Creating Statechart Files
 
 ## Procedure
 
-1. Inspect and decode the exact `planner_native_plan_artifact_reference` with `jq` or standard-library Python. Treat the artifact, not the tool-call transcript, as the input.
-2. Read `examples/event-information-patrol/generate_statechart.py` as a few-shot. Author a mission-specific `generate_statechart.py` at the exact leading-`/` virtual location returned by `planner_executor`. Use the separately returned repository-relative shell workspace when running it with `execute`.
-3. Keep two sections obvious in the generator: planner-output extraction and semantic-topology construction. Adapt extraction to the observed artifact schema; do not introduce a production-owned planner schema.
+1. Treat the exact `planner_native_plan_artifact_reference`, not the tool-call
+   transcript, as the input. Keep its returned leading-`/` file-tool path and
+   repository-relative execute path distinct.
+2. For the Mission 1 event-information patrol, use these checked-in,
+   parameterized helpers directly:
+   `conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/prepare_statechart.py`
+   and
+   `conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/inspect_statechart.py`.
+   Run
+   `python conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/prepare_statechart.py <planner-artifact> <shell-workspace>/generate_statechart.py <shell-workspace>/statechart.json`,
+   then
+   `python conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/inspect_statechart.py <planner-artifact> <shell-workspace>/statechart.json`.
+   Substitute the labeled paths returned by `planner_executor`; shell-quote paths
+   containing whitespace. Do not copy or transcribe the helper, inspect the
+   MiniZinc JSONL with an ad-hoc query, or author an inspection script. The same
+   commands apply to initial planning and replacement revisions.
+3. For any other planner shape, inspect and decode the artifact with `jq` or
+   standard-library Python. Read
+   `examples/event-information-patrol/generate_statechart.py` as a few-shot,
+   author a mission-specific generator at the exact returned virtual location,
+   and keep planner-output extraction separate from semantic-topology
+   construction. Adapt extraction to the observed schema; do not introduce a
+   production-owned planner schema.
 4. Preserve every planner-selected item’s order, dependencies, parameters, timing, units, and identifiers in self-explanatory state or transition contexts. Describe desired operational outcomes and evidence; Maneuver Control chooses physical tools.
    Initial travel may be authorized at Mission time zero. Later travel becomes
    eligible when the prior planner evidence interval ends; authoritative maneuver
@@ -24,7 +44,11 @@ version: '3.2.0'
    Continuous sensing needs no maneuver-owned sensing state; represent a
    planner assignment with movement followed by its evidence-ready outcome.
 5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
-6. Run the generator. Inspect both authored files and the printed manifest. Repair the same files until their contents and manifest agree with the planner artifact.
+6. For Mission 1, require both helper manifests to agree and the inspector to
+   report `valid: true`. For other planner shapes, run the authored generator and
+   inspect both authored files and its manifest. Do not read a large generated
+   Statechart into model context. Repair the same files until their contents and
+   manifest agree with the planner artifact.
 7. Call `submit_statechart_draft` with the exact returned `statechart_file_location`. On rejection, use the structured diagnostic to edit, rerun, inspect, and resubmit those same files.
 8. Completion requires verifier acceptance and successful `python-statemachine` construction.
 

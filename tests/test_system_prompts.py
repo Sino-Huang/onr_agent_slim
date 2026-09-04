@@ -73,6 +73,7 @@ def test_hyper_prompt_matches_dual_planner_fsm_only_workflow() -> None:
     assert "Never copy or transcribe the belief document" in prompt
     assert "compact DZN inspector" in prompt
     assert "read the generated DZN into model context" in prompt
+    assert "checked-in preparation and inspection helpers" in prompt
     assert "absolute virtual paths for file tools" in prompt
     assert "repository-relative shell paths" in prompt
     assert "jq 'keys'" in prompt

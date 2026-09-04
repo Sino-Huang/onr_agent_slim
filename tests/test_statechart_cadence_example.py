@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 from onr.contracts.fsm import Statechart
@@ -91,6 +94,11 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
         "evidence_window": pursuing["observation_window"],
         "physical_action": "pursue",
     }
+    pursue_confirm = transitions["assignment-2-outcome-confirmed"]
+    assert (
+        pursue_confirm["context"]["readiness"]["live_evidence"]
+        == "the pursued vessel is held in the FoV"
+    )
     assert len(draft["states"]) == 6
     assert len(draft["transitions"]) == 5
     assert manifest["represented_once"] == ["first", "second"]
@@ -106,3 +114,104 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
         }
     )
     assert chart.terminal_states == ("patrol-objective-complete",)
+
+
+def test_statechart_path_helpers_decode_minizinc_jsonl_and_inspect_output(
+    tmp_path: Path,
+) -> None:
+    example = Path(
+        "conf/skills/hyper/creating-statechart-files/examples/"
+        "event-information-patrol"
+    )
+    assignments = [
+        {
+            "candidate_id": "fixed-a",
+            "surveillance_mode": "fixed_view",
+            "entity_id": None,
+            "start": 20,
+            "duration": 2,
+            "time_scale": 2,
+            "parameters": {
+                "x": 10,
+                "y": 20,
+                "report_ids": ["report-a"],
+                "utility": {"combined": 4},
+            },
+        },
+        {
+            "candidate_id": "pursue-b",
+            "surveillance_mode": "pursue_ship",
+            "entity_id": 7,
+            "start": 30,
+            "duration": 4,
+            "time_scale": 2,
+            "parameters": {
+                "x": 30,
+                "y": 40,
+                "report_ids": ["report-b"],
+                "utility": {"combined": 8},
+            },
+        },
+    ]
+    planner = tmp_path / "arbitrary planner output.plan"
+    planner.write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "type": "solution",
+                        "output": {
+                            "default": json.dumps({"assignments": assignments})
+                        },
+                    }
+                ),
+                json.dumps({"type": "status", "status": "OPTIMAL_SOLUTION"}),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    generator = tmp_path / "arbitrary revision/generate_statechart.py"
+    statechart = tmp_path / "arbitrary revision/statechart.json"
+
+    prepared = subprocess.run(
+        [
+            sys.executable,
+            str(example / "prepare_statechart.py"),
+            planner,
+            generator,
+            statechart,
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    assert json.loads(prepared.stdout) == {
+        "edges": 5,
+        "planner_items": 2,
+        "planner_order_preserved": True,
+        "represented_once": ["fixed-a", "pursue-b"],
+        "states": 6,
+        "terminal_completion": "patrol-objective-complete",
+    }
+    assert generator.read_bytes() == (example / "generate_statechart.py").read_bytes()
+
+    inspected = subprocess.run(
+        [sys.executable, str(example / "inspect_statechart.py"), planner, statechart],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    assert json.loads(inspected.stdout) == {
+        "context_covers_states": True,
+        "planner_items": 2,
+        "planner_order_preserved": True,
+        "represented_once": True,
+        "state_count": 6,
+        "terminal_count": 1,
+        "transition_count": 5,
+        "unique_events": True,
+        "unique_state_pairs": True,
+        "valid": True,
+    }

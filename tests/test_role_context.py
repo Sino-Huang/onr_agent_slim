@@ -74,7 +74,7 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "2.9.1",
         "2.0.0",
         "1.2.0",
-        "3.2.0",
+        "3.3.0",
         "2.1.0",
         "1.1.0",
         "1.1.0",
@@ -603,3 +603,17 @@ def test_planner_generation_skills_use_direct_external_tools_and_same_file_repai
         assert "edit_file" in skill
         assert "normalization template" not in skill
         assert "code-owned action checker" not in skill
+
+
+def test_mission1_statechart_skill_uses_parameterized_path_helpers() -> None:
+    skill = (
+        _REPO_ROOT / "conf/skills/hyper/creating-statechart-files/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "event-information-patrol/prepare_statechart.py" in skill
+    assert "event-information-patrol/inspect_statechart.py" in skill
+    assert "Substitute the labeled paths" in skill
+    assert "Do not copy or transcribe the helper" in skill
+    assert "Do not read a large generated" in skill
+    assert "Statechart into model context" in skill
+    assert "For any other planner shape" in skill

@@ -89,7 +89,12 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 ### 6–7. Generate, validate, and repair the Statechart
 
 - Read `creating-statechart-files`.
-- Inspect the exact planner-native artifact. Read the few-shot generator, then author a mission-specific `generate_statechart.py` and its `statechart.json` at the exact returned virtual locations. Run shell commands from the separately returned repository-relative Statechart shell workspace.
+- For Mission 1, pass the exact planner-native artifact and returned Statechart
+  workspace paths to the checked-in preparation and inspection helpers. For
+  other planner shapes, inspect the artifact, read the few-shot generator, then
+  author a mission-specific `generate_statechart.py` and `statechart.json` at
+  the exact returned virtual locations. Run shell commands from the separately
+  returned repository-relative Statechart shell workspace.
 - Run the generator and inspect its compact coverage manifest plus both files. The generator must account for every extracted planner item exactly once while preserving planner order, dependencies, parameters, timing, units, and identifiers.
 - Submit the exact returned `statechart_file_location` to `submit_statechart_draft`. The validator checks universal graph structure and FSM construction only. Repair the same generator and draft from structured diagnostics within the remaining bound. A terminal failure returns `statechart_rejected`.
 
