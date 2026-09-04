@@ -495,9 +495,10 @@ def test_navigation_completion_feedback_triggers_maneuver_before_five_seconds(
     maneuver.decision_provider = navigation_provider
     result = coordinator(lambda *_: None, simulation_limit_seconds=10).run(active)
 
-    assert navigation_provider.times == [0.0, 0.5, 1.0]
-    assert result.maneuver_heartbeat_count == 3
-    assert result.environment_triggered_maneuver_heartbeat_count == 2
+    assert navigation_provider.times == [0.0, 1.0]
+    assert result.maneuver_heartbeat_count == 2
+    assert result.environment_triggered_maneuver_heartbeat_count == 1
+    assert result.tick_count == 2
     assert result.simulated_duration_seconds == 1.0
     assert result.final_fsm_state == "complete"
 
@@ -593,7 +594,6 @@ def test_four_perceptions_commit_four_ordered_beliefs_without_agent_belief(
         0,
         8,
         8,
-        8,
     ]
     assert all(not hasattr(item, "belief_snapshot") for item in provider.invocations)
     assert all(len(item.request_id) < 100 for item in provider.invocations)
@@ -602,7 +602,7 @@ def test_four_perceptions_commit_four_ordered_beliefs_without_agent_belief(
         item.startswith("environment:")
         for item in provider.invocations[1].trigger_identities
     )
-    assert result.environment_triggered_maneuver_heartbeat_count == 2
+    assert result.environment_triggered_maneuver_heartbeat_count == 1
     assert result.perception_count == 8
     assert result.belief_revisions == (1, 2, 3, 4)
     assert hyper_invocations[0].belief_snapshot is not None
@@ -849,7 +849,6 @@ def test_environment_driven_updates_fold_during_blocked_inference(
         for identity in catch_up.trigger_identities
         if identity.startswith("environment:")
     } == {
-        "environment:maneuver-feedback:maneuver:maneuver-heartbeat:mission-1:0:1:active",
         "environment:maneuver-feedback:maneuver:maneuver-heartbeat:mission-1:0:1:completed",
     }
     periodic = [

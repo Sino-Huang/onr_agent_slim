@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
 description: Use when a Maneuver Decision may request, track, or cancel one environment-executed physical maneuver while preserving environment lifecycle authority.
-version: '1.1.0'
+version: '1.1.1'
 ---
 
 # Physical Maneuver Selection
@@ -38,7 +38,9 @@ Copy target facts from the active semantic state and current environment data. E
 2. Ensure the selected maneuver belongs to the current Mission and revision and has a valid target and typed parameters.
 3. Prefer no physical request while a suitable action remains nonterminal.
 4. A new physical tool call always submits and overrides the active action. Use this for inappropriate actions or emergencies, not as routine polling.
-5. Inspect normalized lifecycle feedback in the next injected environment payload; do not wait for a refreshed planning Mission Snapshot.
+5. Inspect normalized lifecycle feedback in each injected environment payload.
+   Active progress is folded until the next configured or actionable trigger;
+   terminal feedback triggers an immediate heartbeat.
 6. A `fixed_view` assignment selects `navigate`. A `pursue_ship` assignment
    selects `pursue(entity_id=target_entity_id)` with the numeric ID copied from
    Statechart context. Keep suitable pursuit active; a later assignment or

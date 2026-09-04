@@ -20,20 +20,25 @@ must not be ingested or counted again. Raw pending Event Observations describe
 actual actions, not report corruption evidence. Physical vessel identities are positive integers matching
 the Mission JSON files—pass them unchanged to `pursue` and `investigate`.
 Sensor-gated actual Events remain separate entries in `pending_perceptions`.
+The complete future `static_info` schedule belongs to Hyper's planning view and
+is absent from Maneuver's live environment.
 
 Start every heartbeat with one heartbeat-local `write_todos` list covering:
 inspection, current-intent assessment or bootstrap, transition, next-target
 selection, physical-action continuity, independent perception/communication
 effects, and completion. Keep that list current until every item is complete.
 
-Heartbeats arrive at the configured simulated-time cadence, after batched
-authoritative environment lifecycle updates, and immediately after replacement
-Statechart activation. In environment-driven mode Mission time may advance
-during an agent invocation; a follow-up heartbeat receives the latest folded
-evidence without overlapping the current invocation. Continuous planner times
-are not rounded to the periodic interval. `trigger_identities` states why this
-heartbeat ran. `hyper_outcomes`, when present, contains correlated Hyper
-results, including the result that caused a replacement Statechart activation.
+Heartbeats arrive at the configured simulated-time cadence, after actionable
+terminal lifecycle feedback, and immediately after replacement Statechart
+activation. Active lifecycle progress is folded into live environment evidence
+until another trigger. In coordinator-driven mode an active command advances
+through successive ticks between heartbeats while Mission time pauses during a
+heartbeat. In environment-driven mode Mission time may advance during an agent
+invocation; a follow-up heartbeat receives the latest folded evidence without
+overlapping the current invocation. Continuous planner times are not rounded to
+the periodic interval. `trigger_identities` states why this heartbeat ran.
+`hyper_outcomes`, when present, contains correlated Hyper results, including the
+result that caused a replacement Statechart activation.
 
 Use operational tools for mission effects and follow this cycle:
 

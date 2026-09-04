@@ -75,8 +75,8 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "2.0.0",
         "1.2.0",
         "3.3.0",
-        "2.1.0",
-        "1.1.0",
+        "2.1.1",
+        "1.1.1",
         "1.1.0",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [

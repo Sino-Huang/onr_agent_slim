@@ -1,7 +1,7 @@
 ---
 name: decision-cycle
 description: Use on every Maneuver heartbeat to reconcile Transition Intent, live FSM evidence, physical continuity, belief, and communication effects.
-version: '2.1.0'
+version: '2.1.1'
 ---
 
 # Decision Cycle
@@ -65,9 +65,10 @@ physical action.
 
 ## Live reconciliation
 
-- Periodic, lifecycle-triggered, and `replan-activated:<revision>` heartbeats use
-  the same cycle. Replan activation supplies the Hyper outcome at the same
-  Mission time, before an environment tick.
+- Periodic, actionable terminal-feedback, and `replan-activated:<revision>`
+  heartbeats use the same cycle. Active feedback remains live progress evidence
+  and is folded until another trigger. Replan activation supplies the Hyper
+  outcome at the same Mission time, before an environment tick.
 - A stale intent is invalidated when its source state, Statechart revision,
   plan revision, or state-entry revision no longer matches live authority.
 - A queued communication acknowledgement is transport evidence; the correlated

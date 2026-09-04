@@ -252,6 +252,10 @@ _Avoid_: Duration, timeout
 An environment-authoritative lifecycle fact for a Maneuver Command.
 _Avoid_: Agent assertion, tool return text
 
+**Actionable Maneuver Feedback**:
+Completed, failed, or cancelled Maneuver Feedback that immediately triggers Maneuver Control; active feedback remains authoritative progress evidence and is coalesced until another trigger.
+_Avoid_: Every lifecycle update, periodic heartbeat
+
 **Maneuver Adapter**:
 An environment-side consumer that applies durably delivered Maneuver Commands and acknowledges delivery after local application. It publishes Maneuver Feedback rather than returning lifecycle truth to Maneuver Control.
 _Avoid_: In-process callback, Maneuver Control dependency

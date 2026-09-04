@@ -28,7 +28,7 @@ from onr.contracts.environment import (
     environment_mission_time,
     perception_from_dict,
 )
-from onr.contracts.fsm import FSMStatus, Statechart
+from onr.contracts.fsm import FSMStatus, ManeuverFeedback, Statechart
 from onr.contracts.hyper_agent import (
     HyperHeartbeatDecision,
     HyperHeartbeatDisposition,
@@ -427,7 +427,9 @@ class ContextCoordination:
                 for event in update.perception_events
             )
             for event in update.feedback_events:
-                self._queue_maneuver_trigger(f"environment:{event.event_id}")
+                feedback = ManeuverFeedback.from_dict(event.payload)
+                if feedback.lifecycle != "active":
+                    self._queue_maneuver_trigger(f"environment:{event.event_id}")
         latest = self._drain_required(context_consumer, fallback=snapshot)
         return latest, len(updates)
 
