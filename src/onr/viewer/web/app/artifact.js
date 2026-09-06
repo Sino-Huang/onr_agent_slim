@@ -42,7 +42,7 @@ export function artifactViewer(ref, label) {
 
   if (!cached) {
     CACHE.set(ref, { status: "loading" });
-    getArtifact(state.missionId, ref)
+    getArtifact(state.missionId, ref, state.runId)
       .then((result) => CACHE.set(ref, { status: "ok", ...result }))
       .catch((error) => CACHE.set(ref, { status: "error", message: error.status === 404 ? "Artifact not found on the server." : "Could not load artifact: " + error.message }))
       .finally(render);

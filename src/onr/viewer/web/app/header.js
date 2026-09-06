@@ -45,6 +45,27 @@ function badges() {
   );
 }
 
+function runPicker(actions) {
+  const runs = state.runtime && Array.isArray(state.runtime.runs)
+    ? state.runtime.runs
+    : [];
+  if (!runs.length) return null;
+  const selectedRunId = state.runId || state.runtime.selected_run_id;
+  const select = h("select", {
+    id: "runSelect",
+    "data-testid": "run-picker",
+    "aria-label": "Selected run",
+    onchange: (event) => actions.selectRun(event.target.value),
+  });
+  runs.forEach((run, index) => {
+    select.append(h("option", {
+      value: run.run_id,
+      selected: run.run_id === selectedRunId || null,
+    }, run.run_id + (index === 0 ? " (latest)" : "")));
+  });
+  return h("label", { class: "run-picker" }, icon("clock", 11), select);
+}
+
 function missionPicker(actions) {
   const missions = state.runtime && Array.isArray(state.runtime.mission_ids) ? state.runtime.mission_ids : [];
   if (!missions.length) return null;
@@ -104,6 +125,7 @@ export function renderHeader(root, actions) {
           ? h("div", { class: "mission-sub" }, state.missionId, mission.sector ? " · " + mission.sector : "")
           : null),
       h("div", { class: "header-right" },
+        runPicker(actions),
         missionPicker(actions),
         runtimeStatus())),
     h("div", { class: "header-tier header-sub" },

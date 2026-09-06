@@ -101,6 +101,14 @@ class _RuntimeView:
     lease: RuntimeLease | None
 
 
+@dataclass(frozen=True, slots=True)
+class _RunOption:
+    run_id: str
+    config_path: Path
+    created_at: str
+    created_ns: int
+
+
 def _aware_timestamp(value: str) -> str:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -892,9 +900,61 @@ class ViewerApplication:
         if self._world_model_feed is not None:
             self._world_model_feed.close()
 
-    def _runtime(self) -> _RuntimeView | None:
+    def _run_options(self) -> tuple[_RunOption, ...]:
         try:
-            config = load_runtime_config(self.config_path, repo_root=self.repo_root)
+            base_config = load_runtime_config(
+                self.config_path, repo_root=self.repo_root
+            )
+        except Exception:  # noqa: BLE001 - invalid viewer config disables discovery.
+            return ()
+        runs_root = base_config.storage.root.parent / "live_demo_with_wm"
+        options: list[_RunOption] = []
+        for directory in _safe_dirs(runs_root):
+            if not directory.name.startswith("run."):
+                continue
+            config_path = directory / "onr_agent_params.yaml"
+            try:
+                if config_path.is_symlink() or not config_path.is_file():
+                    continue
+                metadata = config_path.stat()
+            except OSError:
+                continue
+            options.append(
+                _RunOption(
+                    run_id=directory.name,
+                    config_path=config_path,
+                    created_at=datetime.fromtimestamp(
+                        metadata.st_mtime, timezone.utc  # noqa: UP017
+                    ).isoformat(),
+                    created_ns=metadata.st_mtime_ns,
+                )
+            )
+        return tuple(
+            sorted(
+                options,
+                key=lambda option: (option.created_ns, option.run_id),
+                reverse=True,
+            )
+        )
+
+    @staticmethod
+    def _selected_run(
+        options: Sequence[_RunOption], run_id: str | None
+    ) -> _RunOption | None:
+        if run_id is not None:
+            selected = next(
+                (option for option in options if option.run_id == run_id), None
+            )
+            if selected is not None:
+                return selected
+        return options[0] if options else None
+
+    def _runtime(self, run_id: str | None = None) -> _RuntimeView | None:
+        options = self._run_options()
+        selected = self._selected_run(options, run_id)
+        config_path = selected.config_path if selected is not None else self.config_path
+        try:
+            config = load_runtime_config(config_path, repo_root=self.repo_root)
             store = RuntimeLeaseStore(config.storage.root / "runtime")
             lease = store.inspect()
         except Exception:
@@ -914,13 +974,39 @@ class ViewerApplication:
             runtime.lease.started_at,
         )
 
-    def runtime_payload(self) -> dict[str, object]:
-        runtime = self._runtime()
+    def runtime_payload(self, run_id: str | None = None) -> dict[str, object]:
+        options = self._run_options()
+        selected = self._selected_run(options, run_id)
+        runtime = self._runtime(selected.run_id if selected is not None else None)
+        run_fields: dict[str, object] = (
+            {
+                "selected_run_id": selected.run_id,
+                "runs": [
+                    {
+                        "run_id": option.run_id,
+                        "created_at": option.created_at,
+                    }
+                    for option in options
+                ],
+            }
+            if selected is not None
+            else {}
+        )
         if runtime is None:
-            return {"active": False, "available": False, "status": "unavailable"}
+            return {
+                "active": False,
+                "available": False,
+                "status": "unavailable",
+                **run_fields,
+            }
         artifacts = _load_public_artifacts(runtime.config)
         if not self._runtime_unchanged(runtime):
-            return {"active": False, "available": False, "status": "unavailable"}
+            return {
+                "active": False,
+                "available": False,
+                "status": "unavailable",
+                **run_fields,
+            }
         mission_ids = sorted({artifact.mission_id for artifact in artifacts})
         lease = runtime.lease
         if lease is None:
@@ -929,12 +1015,14 @@ class ViewerApplication:
                     "active": False,
                     "available": False,
                     "status": "unavailable",
+                    **run_fields,
                 }
             return {
                 "active": False,
                 "available": True,
                 "status": "historical",
                 "mission_ids": mission_ids,
+                **run_fields,
             }
         return {
             "active": lease.status == "active",
@@ -943,12 +1031,15 @@ class ViewerApplication:
             "started_at": lease.started_at,
             "last_seen": lease.last_seen,
             "mission_ids": mission_ids,
+            **run_fields,
         }
 
-    def trace_payload(self, mission_id: str | None) -> dict[str, object]:
+    def trace_payload(
+        self, mission_id: str | None, run_id: str | None = None
+    ) -> dict[str, object]:
         if not _valid_mission_id(mission_id):
             return {"items": []}
-        runtime = self._runtime()
+        runtime = self._runtime(run_id)
         if runtime is None:
             return {"items": []}
         selected = cast(str, mission_id)
@@ -989,7 +1080,10 @@ class ViewerApplication:
         return {"items": selected_items}
 
     def debug_payload(
-        self, mission_id: str | None, role: str | None = None
+        self,
+        mission_id: str | None,
+        role: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, object]:
         empty: dict[str, object] = {
             "enabled": False,
@@ -1001,7 +1095,7 @@ class ViewerApplication:
             role is not None and role not in KNOWN_DEBUG_ROLES
         ):
             return empty
-        runtime = self._runtime()
+        runtime = self._runtime(run_id)
         if runtime is None or not runtime.config.debug:
             return empty
         try:
@@ -1069,7 +1163,9 @@ class ViewerApplication:
         )
         return view, artifacts, planner_artifacts, invocations
 
-    def steps_payload(self, mission_id: str | None) -> dict[str, object]:
+    def steps_payload(
+        self, mission_id: str | None, run_id: str | None = None
+    ) -> dict[str, object]:
         generated_at = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         if not _valid_mission_id(mission_id):
             view = self._steps_projection.project("", generated_at=generated_at)
@@ -1079,7 +1175,7 @@ class ViewerApplication:
                 *cast(list[str], payload["warnings"]),
             ]
             return payload
-        runtime = self._runtime()
+        runtime = self._runtime(run_id)
         if runtime is None:
             view = self._steps_projection.project(
                 cast(str, mission_id), generated_at=generated_at
@@ -1105,7 +1201,9 @@ class ViewerApplication:
             return payload
         return view.to_dict()
 
-    def run_payload(self, mission_id: str | None) -> dict[str, object]:
+    def run_payload(
+        self, mission_id: str | None, run_id: str | None = None
+    ) -> dict[str, object]:
         generated_at = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         if not _valid_mission_id(mission_id):
             view = self._steps_projection.project("", generated_at=generated_at)
@@ -1115,7 +1213,7 @@ class ViewerApplication:
                 generated_at=generated_at,
             )
             return overview.to_dict()
-        runtime = self._runtime()
+        runtime = self._runtime(run_id)
         selected = cast(str, mission_id)
         if runtime is None:
             view = self._steps_projection.project(selected, generated_at=generated_at)
@@ -1218,7 +1316,10 @@ class ViewerApplication:
         return overview.to_dict()
 
     def artifact_payload(
-        self, mission_id: str | None, ref: str | None
+        self,
+        mission_id: str | None,
+        ref: str | None,
+        run_id: str | None = None,
     ) -> tuple[bytes, str] | None:
         if not _valid_mission_id(mission_id) or not isinstance(ref, str):
             return None
@@ -1229,7 +1330,7 @@ class ViewerApplication:
             return None
         if relative.name not in _PLANNER_ARTIFACT_LABELS:
             return None
-        runtime = self._runtime()
+        runtime = self._runtime(run_id)
         if runtime is None:
             return None
         root = runtime.config.storage.planner_artifacts
@@ -1320,7 +1421,12 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         parsed = urlsplit(self.path)
         if parsed.path == "/api/runtime":
-            self._send_json(self.application.runtime_payload(), head_only=head_only)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            run_values = query.get("run_id", []) if set(query) <= {"run_id"} else []
+            run_id = run_values[0] if len(run_values) == 1 else None
+            self._send_json(
+                self.application.runtime_payload(run_id), head_only=head_only
+            )
             return
         if parsed.path == "/api/world-model":
             self._send_json(
@@ -1341,31 +1447,43 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/steps":
             query = parse_qs(parsed.query, keep_blank_values=True)
             mission_values = (
-                query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+                query.get("mission_id", [])
+                if set(query) <= {"mission_id", "run_id"}
+                else []
             )
+            run_values = query.get("run_id", [])
             mission_id = mission_values[0] if len(mission_values) == 1 else None
+            run_id = run_values[0] if len(run_values) == 1 else None
             self._send_json(
-                self.application.steps_payload(mission_id), head_only=head_only
+                self.application.steps_payload(mission_id, run_id),
+                head_only=head_only,
             )
             return
         if parsed.path == "/api/run":
             query = parse_qs(parsed.query, keep_blank_values=True)
             mission_values = (
-                query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+                query.get("mission_id", [])
+                if set(query) <= {"mission_id", "run_id"}
+                else []
             )
+            run_values = query.get("run_id", [])
             mission_id = mission_values[0] if len(mission_values) == 1 else None
+            run_id = run_values[0] if len(run_values) == 1 else None
             self._send_json(
-                self.application.run_payload(mission_id), head_only=head_only
+                self.application.run_payload(mission_id, run_id),
+                head_only=head_only,
             )
             return
         if parsed.path == "/api/artifact":
             query = parse_qs(parsed.query, keep_blank_values=True)
-            valid_keys = set(query) <= {"mission_id", "ref"}
+            valid_keys = set(query) <= {"mission_id", "ref", "run_id"}
             mission_values = query.get("mission_id", []) if valid_keys else []
             ref_values = query.get("ref", []) if valid_keys else []
+            run_values = query.get("run_id", []) if valid_keys else []
             mission_id = mission_values[0] if len(mission_values) == 1 else None
             ref = ref_values[0] if len(ref_values) == 1 else None
-            artifact = self.application.artifact_payload(mission_id, ref)
+            run_id = run_values[0] if len(run_values) == 1 else None
+            artifact = self.application.artifact_payload(mission_id, ref, run_id)
             if artifact is None:
                 self._send_error(HTTPStatus.NOT_FOUND, head_only=head_only)
                 return
@@ -1378,25 +1496,32 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/trace":
             query = parse_qs(parsed.query, keep_blank_values=True)
-            mission_values = query.get("mission_id", []) if set(query) <= {"mission_id"} else []
+            valid_keys = set(query) <= {"mission_id", "run_id"}
+            mission_values = query.get("mission_id", []) if valid_keys else []
+            run_values = query.get("run_id", []) if valid_keys else []
             mission_id = mission_values[0] if len(mission_values) == 1 else None
+            run_id = run_values[0] if len(run_values) == 1 else None
             self._send_json(
-                self.application.trace_payload(mission_id), head_only=head_only
+                self.application.trace_payload(mission_id, run_id),
+                head_only=head_only,
             )
             return
         if parsed.path == "/api/debug":
             query = parse_qs(parsed.query, keep_blank_values=True)
-            valid_keys = set(query) <= {"mission_id", "role"}
+            valid_keys = set(query) <= {"mission_id", "role", "run_id"}
             mission_values = query.get("mission_id", []) if valid_keys else []
             role_values = query.get("role", []) if valid_keys else []
+            run_values = query.get("run_id", []) if valid_keys else []
             mission_id = mission_values[0] if len(mission_values) == 1 else None
             role = role_values[0] if len(role_values) == 1 else None
+            run_id = run_values[0] if len(run_values) == 1 else None
             if len(role_values) > 1 or (
                 role is not None and role not in KNOWN_DEBUG_ROLES
             ):
                 mission_id = None
             self._send_json(
-                self.application.debug_payload(mission_id, role), head_only=head_only
+                self.application.debug_payload(mission_id, role, run_id),
+                head_only=head_only,
             )
             return
         path = self.application.static_file(parsed.path)

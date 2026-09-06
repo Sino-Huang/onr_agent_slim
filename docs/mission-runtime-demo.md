@@ -41,6 +41,11 @@ python -m onr.viewer.server --host 127.0.0.1 --port 14398 --repo-root . --config
 
 Open `http://127.0.0.1:14398`, then run the mission in terminal 2:
 
+When started with the default configuration above, the viewer also discovers
+launcher-created `var/live_demo_with_wm/run.*` directories. It opens the newest
+run by default and exposes a run picker in the header for selecting retained
+older runs. Mission and artifact selections stay scoped to the selected run.
+
 ```bash
 conda activate onr
 python -m onr.runtime.cli --mission-file examples/mission.json --repo-root . --config-path conf/onr_agent_params.yaml

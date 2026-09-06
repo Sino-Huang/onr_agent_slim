@@ -27,6 +27,9 @@ Start every heartbeat with one heartbeat-local `write_todos` list covering:
 inspection, current-intent assessment or bootstrap, transition, next-target
 selection, physical-action continuity, independent perception/communication
 effects, and completion. Keep that list current until every item is complete.
+Pass the complete list in the `todos` array on every call. For example, a
+single-item list has arguments
+`{"todos":[{"content":"Inspect current evidence","status":"in_progress"}]}`.
 
 Heartbeats arrive at the configured simulated-time cadence, after actionable
 terminal lifecycle feedback, and immediately after replacement Statechart

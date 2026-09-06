@@ -24,9 +24,10 @@ function fallsToMock(error) {
   return !error.status || error.status === 404;
 }
 
-export async function getRuntime() {
+export async function getRuntime(runId = "") {
   try {
-    const data = await fetchJSON("/api/runtime");
+    const url = "/api/runtime" + (runId ? "?run_id=" + encodeURIComponent(runId) : "");
+    const data = await fetchJSON(url);
     mockUsed.runtime = false;
     return data;
   } catch (error) {
@@ -36,9 +37,12 @@ export async function getRuntime() {
   }
 }
 
-export async function getSteps(missionId) {
+export async function getSteps(missionId, runId = "") {
   try {
-    const data = await fetchJSON("/api/steps?mission_id=" + encodeURIComponent(missionId));
+    const data = await fetchJSON(
+      "/api/steps?mission_id=" + encodeURIComponent(missionId)
+      + (runId ? "&run_id=" + encodeURIComponent(runId) : ""),
+    );
     mockUsed.steps = false;
     return data;
   } catch (error) {
@@ -49,9 +53,12 @@ export async function getSteps(missionId) {
   }
 }
 
-export async function getRun(missionId) {
+export async function getRun(missionId, runId = "") {
   try {
-    const data = await fetchJSON("/api/run?mission_id=" + encodeURIComponent(missionId));
+    const data = await fetchJSON(
+      "/api/run?mission_id=" + encodeURIComponent(missionId)
+      + (runId ? "&run_id=" + encodeURIComponent(runId) : ""),
+    );
     mockUsed.run = false;
     return data;
   } catch (error) {
@@ -77,8 +84,10 @@ export async function getWorldModel() {
   }
 }
 
-export async function getArtifact(missionId, ref) {
-  const url = "/api/artifact?mission_id=" + encodeURIComponent(missionId) + "&ref=" + encodeURIComponent(ref);
+export async function getArtifact(missionId, ref, runId = "") {
+  const url = "/api/artifact?mission_id=" + encodeURIComponent(missionId)
+    + "&ref=" + encodeURIComponent(ref)
+    + (runId ? "&run_id=" + encodeURIComponent(runId) : "");
   try {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) {

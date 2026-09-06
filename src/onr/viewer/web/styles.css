@@ -204,10 +204,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 .header-right { display: flex; align-items: center; gap: 12px; flex: none; }
 
+.run-picker,
 .mission-picker {
   display: inline-flex; align-items: center; gap: 7px;
   color: var(--text-2);
 }
+.run-picker select,
 .mission-picker select {
   background: var(--bg-2);
   color: var(--text-0);
@@ -218,6 +220,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
   padding: 5px 9px;
   max-width: 260px;
 }
+.run-picker select:hover,
 .mission-picker select:hover { border-color: var(--accent-line); }
 
 .runtime-status {

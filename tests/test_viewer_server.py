@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPResponse
@@ -272,6 +273,99 @@ def test_persisted_artifacts_without_a_runtime_lease_remain_replayable(
     assert [item["event_kind"] for item in json.loads(trace_body)["items"]] == [
         "planning-context"
     ]
+
+
+def test_live_demo_runs_default_to_latest_and_remain_selectable(
+    tmp_path: Path,
+) -> None:
+    with _running_server(tmp_path) as (server, storage, transport):
+        base_config = tmp_path / "viewer.yaml"
+        run_root = storage.parent / "live_demo_with_wm"
+        runs = (
+            ("run.older", "mission-old", 1_000_000_000),
+            ("run.latest", "mission-latest", 2_000_000_000),
+        )
+        for run_id, mission_id, timestamp in runs:
+            directory = run_root / run_id
+            run_storage = directory / "agent-storage"
+            run_transport = directory / "transport"
+            run_planners = directory / "planner-artifacts"
+            config_path = directory / "onr_agent_params.yaml"
+            directory.mkdir(parents=True)
+            config_path.write_text(
+                base_config.read_text(encoding="utf-8")
+                .replace(str(storage), str(run_storage))
+                .replace(str(transport), str(run_transport))
+                .replace(str(tmp_path / "planner-artifacts"), str(run_planners)),
+                encoding="utf-8",
+            )
+            os.utime(config_path, ns=(timestamp, timestamp))
+            FileOperationalLog(run_storage / "operational-log").emit(
+                mission_id,
+                "runtime",
+                "heartbeat",
+                "completed",
+                details={"run_id": run_id},
+            )
+            model = run_planners / "workspace" / "001" / "model.mzn"
+            model.parent.mkdir(parents=True)
+            model.write_text(f"% {run_id}\nsolve satisfy;\n", encoding="utf-8")
+
+        latest_response, latest_body = _request(server, "GET", "/api/runtime")
+        latest_trace_response, latest_trace_body = _request(
+            server,
+            "GET",
+            "/api/trace?mission_id=mission-latest",
+        )
+        older_response, older_body = _request(
+            server,
+            "GET",
+            "/api/runtime?run_id=run.older",
+        )
+        older_trace_response, older_trace_body = _request(
+            server,
+            "GET",
+            "/api/trace?mission_id=mission-old&run_id=run.older",
+        )
+        older_steps_response, older_steps_body = _request(
+            server,
+            "GET",
+            "/api/steps?mission_id=mission-old&run_id=run.older",
+        )
+        older_run_response, older_run_body = _request(
+            server,
+            "GET",
+            "/api/run?mission_id=mission-old&run_id=run.older",
+        )
+        older_artifact_response, older_artifact_body = _request(
+            server,
+            "GET",
+            (
+                "/api/artifact?mission_id=mission-old"
+                "&ref=workspace%2F001%2Fmodel.mzn&run_id=run.older"
+            ),
+        )
+
+    latest = json.loads(latest_body)
+    assert latest_response.status == latest_trace_response.status == 200
+    assert latest["selected_run_id"] == "run.latest"
+    assert [run["run_id"] for run in latest["runs"]] == [
+        "run.latest",
+        "run.older",
+    ]
+    assert latest["mission_ids"] == ["mission-latest"]
+    assert len(json.loads(latest_trace_body)["items"]) == 1
+
+    older = json.loads(older_body)
+    assert older_response.status == older_trace_response.status == 200
+    assert older["selected_run_id"] == "run.older"
+    assert older["mission_ids"] == ["mission-old"]
+    assert len(json.loads(older_trace_body)["items"]) == 1
+    assert older_steps_response.status == older_run_response.status == 200
+    assert json.loads(older_steps_body)["mission_id"] == "mission-old"
+    assert json.loads(older_run_body)["mission_id"] == "mission-old"
+    assert older_artifact_response.status == 200
+    assert older_artifact_body == b"% run.older\nsolve satisfy;\n"
 
 
 def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:

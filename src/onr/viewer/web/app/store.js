@@ -15,6 +15,7 @@ export const state = {
   byId: new Map(),    // step_id → step
   bySeq: new Map(),   // seq → step
 
+  runId: "",
   missionId: "",
   view: "trajectory",
   selectedStepId: "",
@@ -88,6 +89,7 @@ export function readHash() {
   const raw = location.hash.replace(/^#/, "");
   const params = new URLSearchParams(raw);
   const out = {};
+  if (params.get("run")) out.run = params.get("run");
   if (params.get("mission")) out.mission = params.get("mission");
   if (params.get("view") && VIEWS.includes(params.get("view"))) out.view = params.get("view");
   if (params.get("step")) out.step = params.get("step"); // seq number or step_id
@@ -98,6 +100,7 @@ export function readHash() {
 
 export function currentHash() {
   const params = new URLSearchParams();
+  if (state.runId) params.set("run", state.runId);
   if (state.missionId) params.set("mission", state.missionId);
   params.set("view", state.view);
   if (state.view === "workflow" && state.workflowNode) params.set("node", state.workflowNode);

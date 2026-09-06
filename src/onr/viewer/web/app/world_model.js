@@ -55,5 +55,5 @@ export function renderWorldModel(root) {
         : null),
     h("aside", { class: "wm-state" },
       h("div", { class: "wm-state-head" }, icon("list", 13), h("h3", {}, "World-model state")),
-      jsonView(payload.state || {}, { stateKey: "world-model:state" }))));
+      jsonView(payload.state || {}, { stateKey: "world-model:state" })))));
 }

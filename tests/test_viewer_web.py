@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -635,7 +636,7 @@ def test_world_model_view_renders_live_socket_frame_and_state(
             expect(page.get_by_test_id("view-world-model")).to_be_visible()
             expect(page.get_by_test_id("world-model-status")).to_have_text("live")
             expect(page.get_by_test_id("world-model-frame")).to_be_visible()
-            expect(page.get_by_text("mission:live", exact=True)).to_be_visible()
+            expect(page.get_by_text('"mission:live"', exact=True)).to_be_visible()
     finally:
         context.close()
 
@@ -753,6 +754,69 @@ def test_live_backend_uses_real_var_data_without_mock_fallback(
                 expect(page.get_by_test_id("ov-fsm")).to_contain_text("state-0")
                 expect(page.get_by_test_id("artifact-list")).to_be_visible()
                 expect(page.get_by_test_id("artifact-row")).to_have_count(2)
+                _assert_no_browser_errors(errors)
+        finally:
+            context.close()
+
+
+def test_run_picker_defaults_to_latest_and_requests_selected_run(
+    chromium_browser: Browser, tmp_path: Path
+) -> None:
+    with _viewer_server(tmp_path) as (url, storage, transport):
+        base_config = tmp_path / "viewer.yaml"
+        run_root = storage.parent / "live_demo_with_wm"
+        for run_id, timestamp in (
+            ("run.older", 1_000_000_000),
+            ("run.latest", 2_000_000_000),
+        ):
+            directory = run_root / run_id
+            run_storage = directory / "agent-storage"
+            run_transport = directory / "transport"
+            config_path = directory / "onr_agent_params.yaml"
+            directory.mkdir(parents=True)
+            config_path.write_text(
+                base_config.read_text(encoding="utf-8")
+                .replace(str(storage), str(run_storage))
+                .replace(str(transport), str(run_transport))
+                .replace(
+                    str(tmp_path / "configured-planner-artifacts"),
+                    str(directory / "configured-planner-artifacts"),
+                ),
+                encoding="utf-8",
+            )
+            os.utime(config_path, ns=(timestamp, timestamp))
+            _seed_live_artifacts(run_storage, run_transport, directory)
+
+        context, page = _page(chromium_browser)
+        errors = _browser_errors(page)
+        try:
+            with _diagnostic(page, tmp_path, "run-picker-failure"):
+                page.goto(url, wait_until="networkidle")
+                picker = page.get_by_test_id("run-picker")
+                expect(picker).to_have_value("run.latest")
+                expect(picker.locator("option").first).to_have_text(
+                    "run.latest (latest)"
+                )
+
+                with page.expect_request(
+                    lambda request: "/api/run?" in request.url
+                    and "run_id=run.older" in request.url
+                ):
+                    picker.select_option("run.older")
+
+                expect(picker).to_have_value("run.older")
+                expect(page).to_have_url(re.compile(r"run=run\.older"))
+                expect(page.get_by_test_id("mission-picker")).to_have_value(
+                    _LIVE_MISSION
+                )
+                page.reload(wait_until="networkidle")
+                expect(page.get_by_test_id("run-picker")).to_have_value(
+                    "run.older"
+                )
+                page.go_back()
+                expect(page.get_by_test_id("run-picker")).to_have_value(
+                    "run.latest"
+                )
                 _assert_no_browser_errors(errors)
         finally:
             context.close()

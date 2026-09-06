@@ -47,9 +47,12 @@ function headerSignature() {
   const runtime = state.runtime;
   return [
     state.signature,
+    state.runId,
     state.missionId,
     state.view,
-    runtime ? runtime.active + ":" + (runtime.mission_ids || []).join(",") : "none",
+    runtime
+      ? runtime.active + ":" + (runtime.runs || []).map((run) => run.run_id).join(",")
+      : "none",
     mockUsed.runtime, mockUsed.steps, mockUsed.run,
     state.errors.runtime ? "err" : "",
   ].join("|");
@@ -113,6 +116,23 @@ function preserveScrollAndFocus(render) {
 }
 
 const actions = {
+  selectRun(runId) {
+    if (!runId || runId === state.runId) return;
+    state.runId = runId;
+    state.missionId = "";
+    state.selectedStepId = "";
+    state.detailTab = "";
+    state.artifactRef = "";
+    state.phaseFilter = "";
+    state.signature = "";
+    state.run = null;
+    setStepsPayload(null);
+    resetJsonViewState();
+    invalidateArtifactCache();
+    state.treeCollapsed.clear();
+    writeHash({ push: true });
+    renderAll();
+  },
   selectMission(missionId) {
     if (!missionId || missionId === state.missionId) return;
     state.missionId = missionId;
@@ -195,10 +215,14 @@ function renderAll() {
 
 async function refreshMission() {
   if (!state.missionId) return;
+  const runId = state.runId;
   const missionId = state.missionId;
   try {
-    const [run, steps] = await Promise.all([getRun(missionId), getSteps(missionId)]);
-    if (missionId !== state.missionId) return; // switched while fetching
+    const [run, steps] = await Promise.all([
+      getRun(missionId, runId),
+      getSteps(missionId, runId),
+    ]);
+    if (runId !== state.runId || missionId !== state.missionId) return;
     state.errors.run = null;
     state.errors.steps = null;
     state.run = run;
@@ -248,14 +272,24 @@ async function refreshWorldModel() {
 
 async function poll() {
   try {
-    const runtime = await getRuntime();
+    const requestedRunId = state.runId;
+    const runtime = await getRuntime(requestedRunId);
+    if (requestedRunId && requestedRunId !== state.runId) return;
+    const selectedRunId = runtime.selected_run_id || "";
+    if (selectedRunId && selectedRunId !== state.runId) {
+      state.runId = selectedRunId;
+      invalidateArtifactCache();
+    }
     state.runtime = runtime;
     state.errors.runtime = null;
-    if (!state.missionId) {
-      const hash = readHash();
-      const missions = Array.isArray(runtime.mission_ids) ? runtime.mission_ids : [];
-      if (hash.mission) state.missionId = hash.mission;
-      else if (missions.length) state.missionId = missions[0];
+    const hash = readHash();
+    const missions = Array.isArray(runtime.mission_ids) ? runtime.mission_ids : [];
+    if (!missions.includes(state.missionId)) {
+      if (hash.mission && missions.includes(hash.mission)) {
+        state.missionId = hash.mission;
+      } else {
+        state.missionId = missions[0] || "";
+      }
     }
     renderHeaderIfChanged();
     await Promise.all([refreshMission(), refreshWorldModel()]);
@@ -301,6 +335,16 @@ document.addEventListener("keydown", (event) => {
 
 function applyHash() {
   const hash = readHash();
+  const hashRunId = hash.run || "";
+  if (hashRunId !== state.runId) {
+    state.runId = hashRunId;
+    state.missionId = hash.mission || "";
+    state.selectedStepId = "";
+    state.signature = "";
+    state.run = null;
+    setStepsPayload(null);
+    invalidateArtifactCache();
+  }
   if (hash.mission && hash.mission !== state.missionId) {
     state.missionId = hash.mission;
     state.selectedStepId = "";
@@ -326,6 +370,7 @@ window.addEventListener("popstate", applyHash);
 /* ------------------------------ boot ------------------------------ */
 
 const initialHash = readHash();
+if (initialHash.run) state.runId = initialHash.run;
 if (initialHash.view) state.view = initialHash.view;
 if (initialHash.mission) state.missionId = initialHash.mission;
 if (initialHash.node) state.workflowNode = initialHash.node;
