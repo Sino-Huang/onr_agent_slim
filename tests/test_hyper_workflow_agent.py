@@ -4,17 +4,19 @@ import json
 import os
 import shutil
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from onr.adapters.operational_log import InProcessOperationalLog
 from onr.adapters.python_statemachine import PythonStateMachineFactory
-from onr.application.reporting_reliability import ReportingReliabilityManager
 from onr.agents.hyper_workflow import (
     HyperWorkflowContext,
     _allowed_workflow_tools,
@@ -28,6 +30,7 @@ from onr.agents.hyper_workflow import (
     submit_planner_attempt,
     submit_statechart_draft,
 )
+from onr.application.reporting_reliability import ReportingReliabilityManager
 from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
@@ -314,8 +317,7 @@ def test_recorded_choice_distinguishes_virtual_file_paths_from_shell_paths(
 
     assert write_result.error is None
     assert (
-        cast(Path, context.backend_root)
-        / "artifacts/workspace/001/model.mzn"
+        cast(Path, context.backend_root) / "artifacts/workspace/001/model.mzn"
     ).is_file()
 
 
@@ -534,11 +536,7 @@ def test_terminal_workflow_gate_exposes_only_structured_response(
 def test_success_gate_requires_final_todo_update_before_structured_response(
     tmp_path: Path,
 ) -> None:
-    context = _context(tmp_path)
-    context.planning_intent = object()
-    context.planner_choice = object()
-    context.planner_plan = object()
-    context.statechart = object()
+    context = _accepted_context(tmp_path)
     response_format = object()
     write_todos = SimpleNamespace(name="write_todos")
     request = SimpleNamespace(
@@ -552,7 +550,9 @@ def test_success_gate_requires_final_todo_update_before_structured_response(
     update = cast(Any, _gate_workflow_tools).wrap_model_call(
         request, lambda value: value
     )
-    assert update == {"tools": [write_todos], "response_format": None}
+    assert update["tools"] == [write_todos]
+    assert update["response_format"] is None
+    assert "messages" not in update  # keep full instructions to repair missing todos
 
     request.state = {
         "todos": [
@@ -562,7 +562,208 @@ def test_success_gate_requires_final_todo_update_before_structured_response(
     terminal = cast(Any, _gate_workflow_tools).wrap_model_call(
         request, lambda value: value
     )
-    assert terminal == {"tools": [], "response_format": response_format}
+    assert terminal["tools"] == []
+    assert terminal["response_format"] is response_format
+
+
+def _accepted_context(tmp_path: Path) -> HyperWorkflowContext:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    _submit(context, "minizinc", paths)
+    _execute(context, "minizinc", paths)
+    location = _write_statechart(context, _statechart())
+    cast(Any, submit_statechart_draft).func(
+        statechart_file_location=location,
+        reflection="Verified local fixture.",
+        runtime=_runtime(context),
+    )
+    return context
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_success_gate_compacts_only_model_view_and_preserves_verified_receipts(
+    tmp_path: Path, completed: bool
+) -> None:
+    context = _accepted_context(tmp_path)
+    todos = [
+        {"content": f"stage-{i}", "status": "completed" if completed else "in_progress"}
+        for i in range(8)
+    ]
+    history = [HumanMessage(content="old-inspection-output " * 5000)]
+    state = {"messages": history, "todos": todos}
+    response_format = {"type": "object"}
+    request = ModelRequest(
+        model=cast(Any, object()),
+        messages=history,
+        system_message=SystemMessage(content="Long planning instructions " * 1000),
+        tools=[{"type": "function", "function": {"name": "write_todos"}}],
+        response_format=cast(Any, response_format),
+        state=state,
+        runtime=cast(Any, SimpleNamespace(context=context)),
+    )
+
+    result = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+
+    assert len(result.system_message.content) < 2000
+    assert len(result.messages) == 1
+    receipt = json.loads(result.messages[0].content)
+    assert receipt["mission_id"] == context.mission_input.mission_id
+    assert receipt["planner_plan"] == context.planner_plan.to_dict()
+    assert receipt["statechart_reference"] == context.statechart_reference
+    assert receipt["statechart_revision"] == context.statechart.statechart_revision
+    assert receipt["todos"] == todos
+    assert "old-inspection-output" not in result.messages[0].content
+    assert result.response_format == (response_format if completed else None)
+    assert result.tools == ([] if completed else request.tools)
+    assert request.messages is history and request.state is state
+    assert state["messages"] is history and state["todos"] is todos
+    assert Path(context.statechart_reference).is_file()
+
+
+@pytest.mark.live
+def test_live_compact_finalization_uses_real_agent_gate_without_mission_execution(
+    tmp_path: Path,
+) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from onr.runtime.composition import create_chat_model
+    from onr.runtime.config import load_runtime_config
+
+    root = Path(__file__).parents[1]
+    config = load_runtime_config(root / "conf/onr_agent_params.yaml", repo_root=root)
+    config = replace(
+        config, debug=True, storage=replace(config.storage, root=tmp_path / "storage")
+    )
+    context = _accepted_context(tmp_path)
+    before = Path(context.statechart_reference).read_bytes()
+    model = create_chat_model(config, mission_id="mission-1", debug_scope="hyper-agent")
+    graph = cast(
+        Any,
+        create_hyper_workflow_agent(
+            model=model,
+            system_prompt="Old planning instructions. " * 1000,
+            mission_id="mission-1",
+            backend_root=context.backend_root,
+            planner_workspace_location=context.planner_workspace_location,
+            checkpointer=InMemorySaver(),
+        ),
+    )
+    todos = [
+        {"content": f"Planning stage {i}", "status": "in_progress"} for i in range(8)
+    ]
+    invocation_config = {
+        "configurable": {"thread_id": "local-finalization"},
+        "recursion_limit": 8,
+    }
+    # Resume after verification, as in the actual workflow. The graph's public
+    # input schema admits messages only, not a pre-existing todo state.
+    graph.update_state(
+        invocation_config,
+        {
+            "messages": [HumanMessage(content="Prior inspection transcript. " * 5000)],
+            "todos": todos,
+        },
+        as_node="tools",
+    )
+    response = graph.invoke(None, config=invocation_config, context=context)
+    assert response["structured_response"] == {
+        "mission_id": "mission-1",
+        "outcome": "execution_ready",
+    }
+    assert response["todos"] == [{**item, "status": "completed"} for item in todos]
+    assert Path(context.statechart_reference).read_bytes() == before
+    records = [
+        json.loads(path.read_text())
+        for path in (tmp_path / "debug/llm").rglob("*.json")
+    ]
+    assert len(records) == 2
+    assert all(len(json.dumps(record["request"])) < 15000 for record in records)
+    assert all(
+        "Prior inspection transcript" not in json.dumps(record["request"])
+        for record in records
+    )
+    assert len(context.minizinc_planner.executed) == 1  # fixture preparation only
+
+
+def test_statechart_gate_keeps_stable_receipts_and_complete_repair_suffix(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    paths = _write(context, "minizinc")
+    _submit(context, "minizinc", paths)
+    plan_result = _execute(context, "minizinc", paths)
+    old = HumanMessage(content="old generation inspection " * 5000)
+    execution_call = AIMessage(
+        content="",
+        tool_calls=[{"id": "planner-call", "name": "planner_executor", "args": {}}],
+    )
+    execution_result = ToolMessage(
+        content=plan_result, tool_call_id="planner-call", name="planner_executor"
+    )
+    history = [old, execution_call, execution_result]
+    tools = [{"type": "function", "function": {"name": "submit_statechart_draft"}}]
+    request = ModelRequest(
+        model=cast(Any, object()),
+        messages=history,
+        system_message=SystemMessage(content="Stable workflow instructions"),
+        tools=tools,
+        state={"todos": []},
+        runtime=cast(Any, SimpleNamespace(context=context)),
+    )
+    first = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+    assert first.messages[0] is not old
+    receipt = json.loads(first.messages[0].content)
+    assert receipt["mission_input"] == context.mission_input.to_dict()
+    assert receipt["planning_intent"] == context.planning_intent.to_dict()
+    assert receipt["planner_plan"] == context.planner_plan.to_dict()
+    assert first.messages[1] == execution_call
+    assert first.messages[2].tool_call_id == execution_result.tool_call_id
+    assert first.messages[2].content != execution_result.content
+    assert receipt["statechart_file_location"] == context.statechart_file_location
+    assert (
+        receipt["statechart_generator_file_location"]
+        == context.statechart_generator_location
+    )
+    assert (
+        receipt["statechart_shell_workspace"]
+        == context.planner_shell_workspace_location + "/001"
+    )
+    native = (
+        context.backend_root
+        / context.planner_plan.planner_native_plan_artifact_reference
+    ).read_text()
+    assert native in execution_result.content
+    assert native not in first.messages[2].content
+    assert execution_result.content == plan_result
+    assert first.tools == tools
+    repair = [
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "draft", "name": "submit_statechart_draft", "args": {}}],
+        ),
+        ToolMessage(
+            content="rejected: retain exact diagnostic and repair this draft",
+            tool_call_id="draft",
+            name="submit_statechart_draft",
+        ),
+    ]
+    second_request = request.override(
+        messages=[*history, *repair],
+        state={"todos": [{"content": "repair", "status": "in_progress"}]},
+    )
+    second = cast(Any, _gate_workflow_tools).wrap_model_call(
+        second_request, lambda value: value
+    )
+    assert second.messages[: len(first.messages)] == first.messages
+    assert second.messages[-2:] == repair
+    assert second.system_message == first.system_message
+    assert request.messages is history
 
 
 def test_handoff_tool_recovers_when_verification_workflow_requires_no_handoff(
@@ -917,9 +1118,7 @@ def test_recorded_choice_returns_persisted_belief_paths_without_inline_json(
 
     result = _record(context, "minizinc")
 
-    assert (
-        "Belief file for file tools: /var/beliefs/current snapshot.json" in result
-    )
+    assert "Belief file for file tools: /var/beliefs/current snapshot.json" in result
     assert "Belief file for execute: var/beliefs/current snapshot.json" in result
     assert "Belief evidence:" not in result
     assert belief.content_sha256 not in result
@@ -937,7 +1136,11 @@ def test_root_relative_environment_path_works_with_file_read_and_jq(
         inherit_env=False,
         env={
             "PATH": os.pathsep.join(
-                (str(Path(shutil.which("jq") or "/usr/bin/jq").parent), "/usr/bin", "/bin")
+                (
+                    str(Path(shutil.which("jq") or "/usr/bin/jq").parent),
+                    "/usr/bin",
+                    "/bin",
+                )
             )
         },
     )

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from onr.application.mission1_planning import (
+    SCORE_SCALE,
     Mission1ReplanGate,
+    _travel_time,
     build_candidate_dag,
     longest_path_oracle,
     public_report_rates,
@@ -56,6 +59,48 @@ def _report(report_id: str, ship: int, time_s: float, x: float, y: float):
     }
 
 
+def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None:
+    assert _travel_time(0, 0, 511, 318, 30) == pytest.approx(829 / 27)
+    assert _travel_time(511, 318, 0, 0, 30) == pytest.approx(829 / 27)
+    environment = _environment([_report("too-early", 1, 21, 511, 318)])
+    environment["controlled_vehicle"]["max_velocity"] = 30.0
+    graph = build_candidate_dag(environment, _belief((1,)))
+    assert not graph.candidates
+
+
+def test_travel_margin_filters_initial_arrival_and_route_transitions() -> None:
+    graph = build_candidate_dag(
+        _environment(
+            [
+                _report("at-margin", 1, 10, 90, 0),
+                _report("beyond-margin", 2, 10, 91, 0),
+                _report("next", 3, 20.5, 181, 0),
+            ],
+            fov=0.1,
+        ),
+        _belief((1, 2, 3)),
+    )
+    by_report = {c.report_ids[0]: i + 1 for i, c in enumerate(graph.candidates)}
+    assert "at-margin" in by_report
+    assert "beyond-margin" not in by_report
+    assert "next" in by_report
+    assert (by_report["at-margin"], by_report["next"]) not in graph.arcs
+
+
+def test_pursuit_rejects_motion_requiring_the_unreserved_maximum_speed() -> None:
+    graph = build_candidate_dag(
+        _environment(
+            [
+                _report("a", 1, 10, 10, 0),
+                _report("b", 1, 12, 30, 0),
+            ],
+            fov=1,
+        ),
+        _belief((1,)),
+    )
+    assert all(c.mode == "fixed_view" for c in graph.candidates)
+
+
 def test_fixed_view_wins_for_an_efficient_cluster_without_double_scoring() -> None:
     graph = build_candidate_dag(
         _environment(
@@ -96,8 +141,8 @@ def test_pursuit_wins_for_a_dense_risky_ship_and_checked_reports_are_excluded() 
         [
             _report("old-report", 7, 2.0, 1.0, 0.0),
             _report("report-1", 7, 10.0, 10.0, 0.0),
-            _report("report-2", 7, 12.0, 30.0, 0.0),
-            _report("report-3", 7, 14.0, 50.0, 0.0),
+            _report("report-2", 7, 12.0, 28.0, 0.0),
+            _report("report-3", 7, 14.0, 46.0, 0.0),
         ],
         fov=1.0,
     )
@@ -128,8 +173,8 @@ def test_pursuit_candidates_are_every_reachable_contiguous_window() -> None:
         _environment(
             [
                 _report("report-a", 1, 10.0, 10.0, 0.0),
-                _report("report-b", 1, 12.0, 30.0, 0.0),
-                _report("report-c", 1, 14.0, 50.0, 0.0),
+                _report("report-b", 1, 12.0, 28.0, 0.0),
+                _report("report-c", 1, 14.0, 46.0, 0.0),
                 _report("report-d", 1, 16.0, 100.0, 0.0),
             ],
             fov=1.0,
@@ -203,7 +248,7 @@ def test_clean_evidence_can_change_pursuit_preference_to_fixed_view() -> None:
         [
             _report("report-a", 7, 10.0, 10.0, 0.0),
             _report("report-cluster", 8, 10.0, 11.0, 0.0),
-            _report("report-b", 7, 12.0, 30.0, 0.0),
+            _report("report-b", 7, 12.0, 28.0, 0.0),
         ]
     )
     manager = ReportingReliabilityManager("mission-1", (7, 8))
@@ -280,12 +325,13 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
     environment = _environment(
         [
             _report("report-a", 7, 10.0, 10.0, 0.0),
-            _report("report-b", 7, 12.0, 30.0, 0.0),
+            _report("report-b", 7, 12.0, 26.0, 0.0),
         ],
         fov=1.0,
     )
     route = longest_path_oracle(build_candidate_dag(environment, belief))
     candidate = route.candidates[0]
+    assert candidate.mode == "pursue_ship"
     context = {
         "candidate_id": candidate.candidate_id,
         "surveillance_mode": candidate.mode,
@@ -319,6 +365,34 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
 
     assert decision.current_score == advisory.score
     assert not decision.trigger
+
+    # One unchecked report remains in an already executing pursuit. It is
+    # still useful, although it cannot be admitted as a new two-report window.
+    environment["mission_time_seconds"] = 11.0
+    environment["controlled_vehicle"]["position"] = {"x": 21.0, "y": 0.0, "z": -20.0}
+    decision, remaining_route = Mission1ReplanGate().assess(
+        environment, belief, chart, status
+    )
+    assert decision.reason != "next_assignment_infeasible"
+    assert remaining_route.candidates[0].mode == "fixed_view"
+    remaining_yield = (
+        round(belief.ships[0].expected_omission_probability * 0.5 * 1.0 * SCORE_SCALE)
+        / SCORE_SCALE
+    )
+    assert decision.current_score == pytest.approx(
+        remaining_route.score + remaining_yield
+    )
+    not_active, _ = Mission1ReplanGate().assess(
+        environment, belief, chart, replace(status, active_state_context={})
+    )
+    assert not_active.reason == "next_assignment_infeasible"
+
+    environment["world_model_info"]["event_report_checks"] = [
+        {"report_id": "report-b"}
+    ]
+    checked, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert checked.current_score == 0.0
+    assert not checked.trigger
 
 
 def test_minizinc_and_advisory_oracle_select_the_same_candidate_route(

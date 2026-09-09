@@ -792,7 +792,11 @@ def pursue(
     speed: float | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
-    """Submit an entity-pursuit action.
+    """Submit visibility-based pursuit, including local search after target loss.
+
+    For an unseen target away from its public rendezvous, navigate there first.
+    On arrival or a current sighting, submit pursuit within the same assignment.
+    This tool does not receive the planner rendezvous or navigate to it itself.
 
     Args:
         maneuver_id: Action identity selected for pursuit.
@@ -863,6 +867,12 @@ def ingest_perceptions(
 ) -> str:
     """Ingest every pending event perception as an ordered Bayesian update.
 
+    Call only when pending_perceptions contains observation_kind="event".
+    Entity sightings (observation_kind="entity") are tracking evidence, not
+    event evidence. A mixed batch processes only its event observations.
+    With no event observations, the call is rejected without changing belief
+    or marking the batch ingested; continue the heartbeat without retrying it.
+
     Args:
         reflection: Concise public evidence summary for this perception batch.
 
@@ -883,7 +893,16 @@ def ingest_perceptions(
         if isinstance(item, EventObservation)
     )
     if not perceptions:
-        raise RuntimeError("Maneuver heartbeat has no pending event perceptions")
+        result = {
+            "status": "rejected",
+            "reason": "no_pending_event_observations",
+            "message": (
+                "No event observations to ingest. Entity sightings are tracking "
+                "evidence; continue this heartbeat without retrying ingestion."
+            ),
+        }
+        context.execution_record.append("ingest_perceptions", result, successful=False)
+        return _canonical_json(result)
     if getattr(context.belief_service, "belief_kind", None) == "reporting_reliability":
         context.perception_batch_ingested = True
         result = {

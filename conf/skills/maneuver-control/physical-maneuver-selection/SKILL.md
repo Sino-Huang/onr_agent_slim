@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
-description: Use when a Maneuver Decision may request, track, or cancel one environment-executed physical maneuver while preserving environment lifecycle authority.
-version: '1.1.1'
+description: Use when selecting or preserving a physical maneuver, including rendezvous navigation, pursuit acquisition, and recovery after losing a target.
+version: '1.2.1'
 ---
 
 # Physical Maneuver Selection
@@ -42,9 +42,18 @@ Copy target facts from the active semantic state and current environment data. E
    Active progress is folded until the next configured or actionable trigger;
    terminal feedback triggers an immediate heartbeat.
 6. A `fixed_view` assignment selects `navigate`. A `pursue_ship` assignment
-   selects `pursue(entity_id=target_entity_id)` with the numeric ID copied from
-   Statechart context. Keep suitable pursuit active; a later assignment or
-   replacement Statechart overrides it through the normal command lifecycle.
+   retains that surveillance mode while Maneuver Control acquires and tracks
+   the target. Before selecting an action for this mode, read
+   [Pursuit acquisition and recovery](references/pursuit-acquisition.md).
+   An unseen target away from the public rendezvous needs `navigate` first;
+   arrival or a current target sighting permits `pursue(entity_id=target_entity_id)`.
+   These are physical phases within the same FSM assignment, not transitions
+   or a replacement fixed-view plan.
+   A search that missed its acquisition deadline is unsuitable even if the
+   observation-window gate is still future. With a newer GPS fix, navigate for
+   recovery and notify Hyper about the missed report; otherwise use the
+   reference's escalation-only response. An unsatisfied FSM gate does not
+   prevent these within-state physical decisions.
 
 The Mission Snapshot avoids known duplicate actions, but only the environment has final authority over what was accepted or executed. Preserve the action ID on retries or correlation; do not create a second action to work around uncertain feedback.
 

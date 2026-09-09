@@ -197,8 +197,9 @@ def test_minizinc_executor_returns_exact_failed_process_diagnostic(
     assert result.evidence.stderr_path.read_text(encoding="utf-8") == result.stderr
 
 
+@pytest.mark.parametrize("solver", ["coin-bc", "highs", "gecode"])
 def test_minizinc_executor_passes_only_the_validated_solver_argument(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, solver: str
 ) -> None:
     import onr.adapters.minizinc as module
 
@@ -220,15 +221,21 @@ def test_minizinc_executor_passes_only_the_validated_solver_argument(
     monkeypatch.setattr(module.subprocess, "run", run)
     executor = MiniZincExecutor(Path("/opt/minizinc"), tmp_path / "artifacts")
 
-    result = executor.execute(_PLANNER_ASSETS, "highs")
+    result = executor.execute(_PLANNER_ASSETS, cast(Any, solver))
 
     assert result.outcome is PlanningOutcome.UNSOLVABLE
-    assert observed[:4] == [
+    expected = [
         "/opt/minizinc",
         "--solver",
-        "highs",
-        "--json-stream",
+        solver,
     ]
+    if solver == "coin-bc":
+        expected += [
+            "--cbcArgs",
+            "-dualTolerance 1e-12 -primalTolerance 1e-10",
+        ]
+    expected += ["--json-stream"]
+    assert observed[: len(expected)] == expected
     assert observed.count("--solver") == 1
     assert result.evidence is not None
     assert observed_environment["TMPDIR"] == str(result.evidence.artifact_directory)

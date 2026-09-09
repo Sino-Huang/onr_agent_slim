@@ -10,7 +10,7 @@ from typing import Any, cast
 
 import pytest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
 from onr.adapters.file_transport import FileTransport
@@ -41,7 +41,7 @@ from onr.application.maneuver_control import ManeuverControl
 from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.bayesian_belief import BeliefKey
 from onr.contracts.communication import AgentMessage
-from onr.contracts.environment import EventObservation
+from onr.contracts.environment import EntityObservation, EventObservation
 from onr.contracts.fsm import ManeuverDecision, Statechart, StatechartTransition
 from onr.contracts.maneuver_control import (
     ManeuverCommand,
@@ -1862,8 +1862,63 @@ def test_communicate_builds_a_correlated_replan_request() -> None:
     assert seen[0].payload["replan_request"]["requester"] == "maneuver-control"  # type: ignore[index]
 
 
+@pytest.mark.parametrize("entity_count", [0, 2])
+def test_belief_tool_rejects_non_event_batches_without_mutation(
+    tmp_path: Path, entity_count: int
+) -> None:
+    plan = _plan()
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    perceptions = tuple(
+        EntityObservation(f"sighting:{index}", "ship-1", (1, 2, 0), index, 0.0)
+        for index in range(entity_count)
+    )
+    invocation = ManeuverInvocation(
+        "heartbeat-entity-only",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {"mission_time_seconds": 20},
+        pending_perceptions=perceptions,
+    )
+    service = BayesianBeliefService(
+        BayesianBeliefManager(
+            plan.mission_id,
+            (BeliefKey("ship-1", "event-risk"),),
+            particle_count=128,
+            seed=3,
+        ),
+        FileBayesianBeliefStore(tmp_path),
+        InProcessTransport(),
+    )
+    context = ManeuverToolContext(
+        invocation, runner, _Dispatcher(), belief_service=service
+    )
+    before = service.load_current_snapshot()
+    result = json.loads(
+        cast(Any, ingest_perceptions).func(
+            reflection="Process the current sightings.", runtime=_runtime(context)
+        )
+    )
+    assert result["status"] == "rejected"
+    assert result["reason"] == "no_pending_event_observations"
+    assert context.perception_batch_ingested is False
+    assert context.execution_record.executions[-1].successful is False
+    assert invocation.pending_perceptions == perceptions
+    assert service.load_current_snapshot() == before
+    assert (
+        service.transport.next_event_sequence(
+            service.observation_topic, plan.mission_id
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize("include_entity", [False, True])
 def test_belief_tool_ingests_each_pending_event_once(
-    tmp_path: Path,
+    tmp_path: Path, include_entity: bool
 ) -> None:
     plan = _plan()
     runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
@@ -1890,7 +1945,11 @@ def test_belief_tool_ingests_each_pending_event_once(
         "statechart.json",
         _focused(status),
         {"mission_time_seconds": 0},
-        pending_perceptions=perceptions,
+        pending_perceptions=(
+            (EntityObservation("sighting", "ship-1", (0, 0, 0), 0, 0.0),)
+            + perceptions
+            if include_entity else perceptions
+        ),
     )
     manager = BayesianBeliefManager(
         plan.mission_id,
@@ -2114,7 +2173,7 @@ def test_prose_only_heartbeat_resumes_same_episode_for_structured_summary() -> N
                 return {
                     "messages": [
                         *cast(list[object], state["messages"]),
-                        HumanMessage(content="Prose-only heartbeat completion."),
+                        AIMessage(content="Prose-only heartbeat completion."),
                     ],
                     "todos": todo_state,
                 }
@@ -2123,8 +2182,10 @@ def test_prose_only_heartbeat_resumes_same_episode_for_structured_summary() -> N
             messages = cast(list[HumanMessage], state["messages"])
             assert messages[-2].content == "Prose-only heartbeat completion."
             correction = json.loads(cast(str, messages[-1].content))
+            assert "ManeuverHeartbeatResponse" in correction["completion_correction"]
             assert correction["prohibition"] == (
-                "Do not call any tools again in this heartbeat."
+                "Do not call other tools or repeat mission effects, skill reads, "
+                "or todo updates. Preserve the successful work already recorded."
             )
             assert correction["errors"] == [
                 {

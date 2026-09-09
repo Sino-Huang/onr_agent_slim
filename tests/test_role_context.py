@@ -73,10 +73,10 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
         "1.5.0",
         "2.10.0",
         "2.0.0",
-        "1.2.0",
-        "3.3.0",
-        "2.1.1",
-        "1.1.1",
+        "1.2.1",
+        "3.4.0",
+        "2.1.3",
+        "1.2.1",
         "1.1.0",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [
@@ -584,7 +584,7 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "source-to-sink route" in mission1_reference
     assert "nondecreasing" in mission1_reference
     assert "empty adjacency windows" in mission1_reference
-    assert "without capability caps" in mission1_reference
+    assert "0.9 * controlled_vehicle.max_velocity" in mission1_reference
     assert "E[p_i q] * rate_i * (t_last - t_first)" in mission1_reference
     assert "no risk threshold or pursuit bonus" in mission1_reference
     assert "bypasses `initialize_event_data_materialization`" in minizinc_skill

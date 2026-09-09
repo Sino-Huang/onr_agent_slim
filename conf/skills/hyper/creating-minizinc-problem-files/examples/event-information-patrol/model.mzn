@@ -17,6 +17,8 @@ set of int: NODE_OFFSETS = 1..node_count + 1;
 set of int: CANDIDATE_OFFSETS = 1..candidate_count + 1;
 set of int: REPORT_IDS = 1..report_id_count;
 
+% The shared candidate builder admits only timing-feasible arcs, using
+% cardinal-grid distance at 0.9 * the advertised vehicle maximum velocity.
 array[ARCS] of NODES: arc_from;
 array[ARCS] of NODES: arc_to;
 array[NODE_OFFSETS] of 1..arc_count + 1: outgoing_start;
@@ -75,6 +77,8 @@ var float: surveillance_duration = sum(candidate in CANDIDATES)(
 var float: candidate_order_sum = sum(candidate in CANDIDATES)(
   candidate * selected[candidate]
 );
+% Keep integral lexicographic weights; the executor sets COIN's LP tolerances
+% explicitly so the final candidate-order tie-break is retained.
 var float: objective =
   combined_score * maneuver_bound * duration_bound * tie_break_bound
   - maneuver_count * duration_bound * tie_break_bound

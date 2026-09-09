@@ -1,7 +1,7 @@
 ---
 name: creating-statechart-files
 description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
-version: '3.3.0'
+version: '3.4.0'
 ---
 
 # Creating Statechart Files
@@ -41,8 +41,17 @@ version: '3.3.0'
    entity where applicable, opaque report identities, observation window, and
    the recall/estimation/omission utility breakdown. Maneuver Control chooses
    `navigate` or `pursue` and its adapter parameters at runtime.
-   Continuous sensing needs no maneuver-owned sensing state; represent a
-   planner assignment with movement followed by its evidence-ready outcome.
+   For pursuit, expose the public first-report position and observation-start
+   deadline as `desired_outcome.acquisition_rendezvous`. This enables initial
+   navigation before visibility-based pursuit without changing the selected
+   mode, adding an assignment, or adding an FSM acquisition state.
+   Use one operational state per assignment. Its outgoing transition confirms
+   that assignment's evidence interval and enters the next assignment directly
+   (or the terminal state after the last interval). Maneuver Control can then
+   dispatch the next action in the same frozen-time heartbeat. An intermediate
+   outcome-only state adds a wait until a later heartbeat even when the next
+   assignment is already eligible. Preserve the evidence/time conditions on
+   the direct transition; reasoning wall time requires no schedule allowance.
 5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
 6. For Mission 1, require both helper manifests to agree and the inspector to
    report `valid: true`. For other planner shapes, run the authored generator and

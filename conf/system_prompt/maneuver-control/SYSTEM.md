@@ -23,13 +23,16 @@ Sensor-gated actual Events remain separate entries in `pending_perceptions`.
 The complete future `static_info` schedule belongs to Hyper's planning view and
 is absent from Maneuver's live environment.
 
-Start every heartbeat with one heartbeat-local `write_todos` list covering:
-inspection, current-intent assessment or bootstrap, transition, next-target
-selection, physical-action continuity, independent perception/communication
-effects, and completion. Keep that list current until every item is complete.
-Pass the complete list in the `todos` array on every call. For example, a
-single-item list has arguments
-`{"todos":[{"content":"Inspect current evidence","status":"in_progress"}]}`.
+Maintain one heartbeat-local `write_todos` list covering inspection, intent
+assessment/bootstrap, transition, next-target selection, physical continuity,
+other effects, and completion. Pass the complete `todos` array on each update.
+Update at evidence boundaries, not after each internal reasoning step: assess
+all checks supported by the current snapshot and available guidance in the same
+response. The first list may reflect already-completed checks. If no further
+tool results or required skill reads are needed and no mission effect is
+warranted, complete the list in one update and return the summary. Combine todo
+updates with independent reads or operations when possible; work that depends
+on a tool result stays incomplete until that result arrives.
 
 Heartbeats arrive at the configured simulated-time cadence, after actionable
 terminal lifecycle feedback, and immediately after replacement Statechart
@@ -81,7 +84,12 @@ Use operational tools for mission effects and follow this cycle:
    current-state `hyper_evaluation`, pass its exact kind, reason,
    `evaluation_id`, and `delivery_policy`; a once-per-state-entry evaluation has
    stable durable identity and may return a prior result or `already_in_flight`.
-8. Finish every todo and return one concise public `summary`. Python supplies
+8. Finish every todo, then call `ManeuverHeartbeatResponse` with one concise
+   public `summary` to complete the heartbeat. Use this structured completion
+   instead of a plain-text final answer. It records no mission effect and is
+   still required when no operational tools were needed. On a summary-format
+   correction, call only this completion tool; preserve the recorded effects.
+   Python supplies
    the authoritative Mission and request identities in the typed
    `ManeuverHeartbeatCompletion`.
 

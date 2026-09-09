@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
 description: Apply when observed execution facts may invalidate the current plan and an evidence-based replan decision is required.
-version: '1.2.0'
+version: '1.2.1'
 ---
 
 # Detect And Replan
@@ -31,6 +31,18 @@ removes expired and checked opportunities and recomputes reachability and
 utility. The flow formulation may remain unchanged, but `model.mzn`,
 `generate_data.py`, `belief.json`, and `data.dzn` are newly written artifacts
 for the replacement revision.
+
+An active pursuit's last unchecked report is continuation work, not a new
+two-report pursuit candidate. Evaluate its remaining observation window and
+the gate's score comparison before choosing a replacement. A periodic GPS fix
+describes the ship at its sample time; compare it with the public schedule at
+that time, not with a later rendezvous coordinate as though the ship were static.
+
+An accepted replacement starts its new Statechart and may preempt the current
+assignment through Maneuver Control. Describe that tradeoff explicitly when
+requesting a replan. Claim that a pursuit is preserved only if the accepted
+replacement actually retains its target and remaining window; choose
+`no_change` when the intended decision is to continue the current plan.
 
 ## Authority Boundaries
 

@@ -699,6 +699,21 @@ class ContextCoordination:
                         environment.advance()
                     else:
                         environment.wait_for_update(environment.cadence_seconds * 2)
+        except Exception as exc:
+            if self.operational_log is not None:
+                self.operational_log.emit(
+                    mission_id,
+                    "context-coordination",
+                    "error",
+                    "failed",
+                    details={
+                        "operation": "closed_loop",
+                        "error_type": type(exc).__name__,
+                        "mission_time_seconds": environment.current_time,
+                        "plan_revision": active_revision.planner_plan.plan_revision,
+                    },
+                )
+            raise
         finally:
             environment.stop()
             environment.join()
@@ -1255,10 +1270,11 @@ class ContextCoordination:
         environment = self._environment_source
         if (
             environment is not None
-            and environment.update_ownership == "environment_driven"
             and environment.has_current_maneuver
             and revisions["environment_data"] is not None
         ):
+            # The environment record contains maneuver lifecycle/progress in
+            # both ownership modes, including ticks between agent heartbeats.
             revisions["active_maneuver"] = revisions["environment_data"]
             references["active_maneuver"] = references["environment_data"]
             health["active_maneuver"] = health["environment_data"]

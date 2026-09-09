@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
+import pytest
+
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
 from onr.application.context_coordination import ContextCoordination
@@ -147,7 +149,8 @@ def test_context_coordination_does_not_publish_unchanged_facts_and_tracks_health
         assert changed.source_freshness["environment_data"] is True
 
 
-def test_environment_driven_snapshot_uses_latest_environment_for_active_maneuver() -> None:
+@pytest.mark.parametrize("ownership", ["environment_driven", "coordinator_driven"])
+def test_snapshot_uses_latest_environment_for_active_maneuver(ownership: str) -> None:
     input_subscription = Subscription(
         "context-coordination", "mission-context", "planning-evidence"
     )
@@ -156,7 +159,7 @@ def test_environment_driven_snapshot_uses_latest_environment_for_active_maneuver
         "EnvironmentSource",
         (),
         {
-            "update_ownership": "environment_driven",
+            "update_ownership": ownership,
             "has_current_maneuver": True,
         },
     )()

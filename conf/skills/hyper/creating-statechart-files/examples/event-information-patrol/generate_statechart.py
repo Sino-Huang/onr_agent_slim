@@ -96,11 +96,15 @@ def extract_assignments(values: list[object]) -> list[dict[str, Any]]:
                     ("report_ids",),
                     ("parameters", "report_ids"),
                 )
-                entity_id = raw.get("entity_id", raw.get("parameters", {}).get("entity_id"))
+                entity_id = raw.get(
+                    "entity_id", raw.get("parameters", {}).get("entity_id")
+                )
                 utility = raw.get("utility", raw.get("parameters", {}).get("utility"))
                 if surveillance_mode not in {"fixed_view", "pursue_ship"}:
                     raise ValueError("unsupported surveillance mode")
-                if not isinstance(report_ids, list) or not all(isinstance(value, str) for value in report_ids):
+                if not isinstance(report_ids, list) or not all(
+                    isinstance(value, str) for value in report_ids
+                ):
                     raise ValueError("report IDs must be strings")
                 if surveillance_mode == "pursue_ship" and (
                     isinstance(entity_id, bool) or not isinstance(entity_id, int)
@@ -148,14 +152,30 @@ def build_statechart(
     }
     transitions: list[dict[str, object]] = []
     represented: list[str] = []
-    source = states[0]
-    previous_end_tick: int | None = None
+    terminal = "patrol-objective-complete"
+    transitions.append(
+        {
+            "event": f"assignment-{items[0]['order']}-may-begin",
+            "source": states[0],
+            "target": f"assignment-{items[0]['order']}-in-progress",
+            "context": {
+                "desired_outcome": "begin the first planner-selected assignment",
+                "readiness": {
+                    "mission_time_at_or_after": scaled_time(0, items[0]["time_scale"]),
+                },
+            },
+        }
+    )
 
-    for item in items:
+    for index, item in enumerate(items):
         identifier = item["identifier"]
         moving = f"assignment-{item['order']}-in-progress"
-        achieved = f"assignment-{item['order']}-outcome-achieved"
-        states.extend((moving, achieved))
+        next_state = (
+            f"assignment-{items[index + 1]['order']}-in-progress"
+            if index + 1 < len(items)
+            else terminal
+        )
+        states.append(moving)
         shared = {
             "candidate_id": identifier,
             "planner_order": item["order"],
@@ -183,83 +203,48 @@ def build_statechart(
                 "entity_id": item["entity_id"],
                 "evidence_window": shared["observation_window"],
                 "physical_action": "pursue",
+                "acquisition_rendezvous": {
+                    "location": {"x": item["x"], "y": item["y"]},
+                    "arrival_deadline": scaled_time(
+                        item["start_tick"], item["time_scale"]
+                    ),
+                    "position_source": "planner_public_report",
+                },
             }
         state_context[moving] = {**shared, "desired_outcome": desired_outcome}
-        state_context[achieved] = {
-            **shared,
-            "desired_outcome": "the planner-selected evidence interval is complete",
-            "planner_evidence_interval": {
-                "start": scaled_time(item["start_tick"], item["time_scale"]),
-                "duration": scaled_time(item["duration_tick"], item["time_scale"]),
-                "report_ids": item["report_ids"],
-            },
-        }
-        departure_tick = 0 if previous_end_tick is None else previous_end_tick
         observation_end_tick = item["start_tick"] + item["duration_tick"]
-        transitions.extend(
-            (
-                {
-                    "event": f"assignment-{item['order']}-may-begin",
-                    "source": source,
-                    "target": moving,
-                    "context": {
-                        "desired_outcome": "begin the next planner-selected assignment",
-                        "readiness": {
-                            "mission_time_at_or_after": scaled_time(
-                                departure_tick, item["time_scale"]
-                            ),
+        # One confirmation edge exposes the next operational context in this
+        # heartbeat; an empty outcome state would add a simulated-time wait.
+        transitions.append(
+            {
+                "event": f"assignment-{item['order']}-outcome-confirmed",
+                "source": moving,
+                "target": next_state,
+                "context": {
+                    "desired_outcome": "confirm the completed evidence interval",
+                    "readiness": {
+                        "live_evidence": (
+                            "the drone is at the selected location"
+                            if item["surveillance_mode"] == "fixed_view"
+                            else "the pursued vessel is held in the FoV"
+                        ),
+                        "not_before": scaled_time(
+                            observation_end_tick, item["time_scale"]
+                        ),
+                        "sensed_evidence": {
+                            "report_ids": item["report_ids"],
+                            "report_check_ledger": "world_model_info.event_report_checks",
                         },
                     },
                 },
-                {
-                    "event": f"assignment-{item['order']}-outcome-confirmed",
-                    "source": moving,
-                    "target": achieved,
-                    "context": {
-                        "desired_outcome": "confirm the completed evidence interval",
-                        "readiness": {
-                            "live_evidence": (
-                                "the drone is at the selected location"
-                                if item["surveillance_mode"] == "fixed_view"
-                                else "the pursued vessel is held in the FoV"
-                            ),
-                            "not_before": scaled_time(
-                                observation_end_tick, item["time_scale"]
-                            ),
-                            "sensed_evidence": {
-                                "report_ids": item["report_ids"],
-                                "report_check_ledger": "world_model_info.event_report_checks",
-                            },
-                        },
-                    },
-                },
-            )
+            }
         )
         represented.append(identifier)
-        source = achieved
-        previous_end_tick = observation_end_tick
 
-    terminal = "patrol-objective-complete"
     states.append(terminal)
     state_context[terminal] = {
         "desired_outcome": "every planner-selected patrol assignment is complete"
     }
-    final_tick = items[-1]["start_tick"] + items[-1]["duration_tick"]
-    transitions.append(
-        {
-            "event": "patrol-objective-may-complete",
-            "source": source,
-            "target": terminal,
-            "context": {
-                "desired_outcome": "finish after the final planned dwell interval",
-                "readiness": {
-                    "mission_time_at_or_after": scaled_time(
-                        final_tick, items[-1]["time_scale"]
-                    )
-                },
-            },
-        }
-    )
     expected = [item["identifier"] for item in items]
     assert represented == expected and len(set(represented)) == len(expected)
     chart = {

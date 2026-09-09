@@ -67,6 +67,8 @@ def test_shipped_physical_profile_is_explicit_and_composes_transport_source(
     assert source.planning_topic == "environment-planning"
     assert source.control_topic == "environment-control"
     assert source.update_ownership == "coordinator_driven"
+    assert source.stale_after_seconds == 2.0
+    assert source.advance_timeout_seconds == 30.0
     with pytest.raises(RuntimeError, match="no planning data"):
         source.planning_view()
     source.stop()

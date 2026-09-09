@@ -110,7 +110,9 @@ def _candidate_id(mode: str, report_ids: Sequence[str]) -> str:
 
 
 def _travel_time(ax: float, ay: float, bx: float, by: float, speed: float) -> float:
-    return math.hypot(bx - ax, by - ay) / speed
+    # Navigation follows cardinal grid edges. Reserve 10% of the advertised
+    # speed for execution overhead; obstacle detours still require replanning.
+    return (abs(bx - ax) + abs(by - ay)) / (0.9 * speed)
 
 
 def _public_reports(
@@ -231,6 +233,7 @@ def score_candidate_opportunities(
     *,
     expected_omission_probability: float = 0.0,
     public_report_rate: float = 0.0,
+    observation_start_s: float | None = None,
 ) -> CandidateUtility:
     """Score public reports and one pursuit interval's expected hidden yield."""
 
@@ -238,6 +241,8 @@ def score_candidate_opportunities(
     recall = math.fsum(0.5 * item.recall for item in ordered)
     estimation = math.fsum(item.utility - 0.5 * item.recall for item in ordered)
     report_span = ordered[-1].time_s - ordered[0].time_s if len(ordered) >= 2 else 0.0
+    if ordered and observation_start_s is not None:
+        report_span = max(0.0, ordered[-1].time_s - observation_start_s)
     return CandidateUtility(
         recall=recall,
         estimation=estimation,
@@ -569,6 +574,7 @@ class Mission1ReplanGate:
         current_score = 0.0
         next_key: tuple[str, int | None, tuple[str, ...]] | None = None
         next_start = math.inf
+        active_candidate_id = status.active_state_context.get("candidate_id")
         for context in statechart.state_context.values():
             identity = context.get("candidate_id")
             window = context.get("observation_window")
@@ -603,6 +609,11 @@ class Mission1ReplanGate:
                 report_id for report_id in report_ids if report_id not in scored_reports
             )
             covered = tuple(opportunities[report_id] for report_id in newly_scored)
+            continuing_pursuit = (
+                mode == "pursue_ship"
+                and identity == active_candidate_id
+                and start_s <= now < end_s
+            )
             ship = by_ship.get(entity_id) if isinstance(entity_id, int) else None
             utility = score_candidate_opportunities(
                 covered,
@@ -616,6 +627,7 @@ class Mission1ReplanGate:
                     if mode == "pursue_ship" and ship is not None
                     else 0.0
                 ),
+                observation_start_s=now if continuing_pursuit else None,
             )
             current_score += _score_units(utility) / SCORE_SCALE
             scored_reports.update(newly_scored)
@@ -624,7 +636,10 @@ class Mission1ReplanGate:
                 entity_id if isinstance(entity_id, int) else None,
                 report_ids,
             )
-            if report_ids and start_s < next_start:
+            # The two-report admission rule applies to new pursuit windows,
+            # not the unchecked tail of the currently executing assignment.
+            # Maneuver Control owns tracking loss and acquisition recovery.
+            if report_ids and not continuing_pursuit and start_s < next_start:
                 next_start = start_s
                 next_key = key
         next_feasible = next_key is None or next_key in candidate_keys

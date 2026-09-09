@@ -16,14 +16,19 @@ from typing import Any, Literal, cast
 
 from langchain.agents.middleware import TodoListMiddleware, wrap_model_call
 from langchain.tools import ToolRuntime, tool
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from onr.agents.hyper_agent import (
     _create_deep_agent,
     _parse_planning_intent_response,
 )
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
-from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
@@ -39,6 +44,7 @@ from onr.contracts.planning import (
 )
 from onr.contracts.planning_evidence import PlannerChoiceRecord
 from onr.contracts.planning_intent import PlanningIntent
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.transport import CommandOutcome, TransportEvent
 
 HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
@@ -486,6 +492,83 @@ def _request_tool_name(value: object) -> str | None:
     return None
 
 
+def _statechart_model_messages(
+    context: HyperWorkflowContext, messages: list[BaseMessage]
+) -> list[BaseMessage]:
+    """Keep a stable phase prefix and all post-planner tool/repair evidence."""
+
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, AIMessage) and any(
+            call["name"] == "planner_executor" for call in message.tool_calls
+        ):
+            receipt = {
+                "workflow_stage": "generate_and_verify_statechart",
+                "mission_input": context.mission_input.to_dict(),
+                "planning_intent": context.planning_intent.to_dict(),
+                "planner_plan": context.planner_plan.to_dict(),
+                "statechart_generator_file_location": context.statechart_generator_location,
+                "statechart_file_location": context.statechart_file_location,
+                "statechart_shell_workspace": context.planner_shell_workspace_location
+                + "/001",
+            }
+            # Keep the assistant tool call as well as every paired tool result.
+            # The prefix contains immutable accepted facts, not changing todos.
+            planner_calls = {
+                call["id"]
+                for call in message.tool_calls
+                if call["name"] == "planner_executor"
+            }
+            suffix = [
+                item.model_copy(
+                    update={
+                        "content": (
+                            "status: success\nThe exact planner-native result is in "
+                            + context.planner_plan.planner_native_plan_artifact_reference
+                            + ". Use that artifact and the workspace references above with "
+                            "the creating-statechart-files skill."
+                        )
+                    }
+                )
+                if isinstance(item, ToolMessage) and item.tool_call_id in planner_calls
+                else item
+                for item in messages[index:]
+            ]
+            return [HumanMessage(content=_canonical_json(receipt)), *suffix]
+    return messages
+
+
+def _finalization_model_context(
+    context: HyperWorkflowContext, todos: object
+) -> tuple[SystemMessage, list[HumanMessage]]:
+    """Give final bookkeeping verified receipts, without rewriting thread state."""
+
+    plan = context.planner_plan
+    chart = context.statechart
+    system = SystemMessage(
+        content=(
+            "Finalize this Hyper planning workflow using the verified receipts below. "
+            "The external planner and Statechart construction have succeeded. "
+            "Keep Mission identity and artifact references unchanged. "
+            "If write_todos is available, mark all eight existing planning todos "
+            "completed, preserving their content and order. This includes preparing "
+            "the accepted revision for Context Coordination, which owns execution. "
+            "When the structured result is available, return the supplied mission_id "
+            "with outcome execution_ready. This means planning is ready, NOT that "
+            "physical Mission execution is complete. Do not replan or modify artifacts."
+        )
+    )
+    receipt = {
+        "mission_id": plan.mission_id,
+        "planner_plan": plan.to_dict(),
+        "statechart_reference": context.statechart_reference,
+        "statechart_revision": chart.statechart_revision,
+        "statechart_entry_state": chart.entry_state,
+        "todos": todos,
+    }
+    return system, [HumanMessage(content=_canonical_json(receipt))]
+
+
 @wrap_model_call
 def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
     runtime = request.runtime
@@ -496,13 +579,16 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
     terminal = "HyperWorkflowResultCandidate" in allowed
     state = request.state if isinstance(request.state, Mapping) else {}
     todos = state.get("todos", ())
-    success_todos_complete = (
+    has_workflow_todos = (
         isinstance(todos, (list, tuple))
         and len(todos) == 8
         and all(
-            isinstance(item, Mapping) and item.get("status") == "completed"
+            isinstance(item, Mapping) and isinstance(item.get("content"), str)
             for item in todos
         )
+    )
+    success_todos_complete = has_workflow_todos and all(
+        item.get("status") == "completed" for item in todos
     )
     needs_final_todo_update = (
         terminal and context.statechart is not None and not success_todos_complete
@@ -523,7 +609,13 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
     response_format = (
         request.response_format if terminal and not needs_final_todo_update else None
     )
-    return handler(request.override(tools=tools, response_format=response_format))
+    overrides = {"tools": tools, "response_format": response_format}
+    if terminal and context.statechart is not None and has_workflow_todos:
+        system, messages = _finalization_model_context(context, todos)
+        overrides.update(system_message=system, messages=messages)
+    elif not terminal and context.planner_plan is not None:
+        overrides["messages"] = _statechart_model_messages(context, request.messages)
+    return handler(request.override(**overrides))
 
 
 @dataclass(frozen=True, slots=True)

@@ -84,6 +84,7 @@ def _advisory_indices(
                 candidate[0],
                 -candidate[1],
                 -candidate[2],
+                -sum(candidate[3]),
                 tuple(-value for value in candidate[3]),
             )
             current_key = (
@@ -93,6 +94,7 @@ def _advisory_indices(
                     current[0],
                     -current[1],
                     -current[2],
+                    -sum(current[3]),
                     tuple(-value for value in current[3]),
                 )
             )

@@ -43,10 +43,16 @@ def _positive_duration(value: object, label: str) -> int | float:
     return value
 
 
-def _exact(value: object, expected: set[str], label: str) -> dict[str, Any]:
+def _exact(
+    value: object,
+    expected: set[str],
+    label: str,
+    *,
+    optional: set[str] | None = None,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a mapping")
-    if set(value) != expected:
+    if not expected <= set(value) or set(value) - expected - (optional or set()):
         raise ValueError(f"{label} has unknown or missing keys")
     return value
 
@@ -201,6 +207,7 @@ class ExternalEnvironmentConfig:
     altitude_convention: str
     max_retries: int
     update_stale_after_seconds: int | float
+    advance_timeout_seconds: int | float = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,6 +487,7 @@ def load_environment_profile(
                 "update_stale_after_seconds",
             },
             "environment.external",
+            optional={"advance_timeout_seconds"},
         )
         coordinate_frame = _text(
             external_values["coordinate_frame"],
@@ -541,6 +549,10 @@ def load_environment_profile(
             update_stale_after_seconds=_positive_duration(
                 external_values["update_stale_after_seconds"],
                 "environment.external.update_stale_after_seconds",
+            ),
+            advance_timeout_seconds=_positive_duration(
+                external_values.get("advance_timeout_seconds", 30.0),
+                "environment.external.advance_timeout_seconds",
             ),
         )
     return EnvironmentProfile(

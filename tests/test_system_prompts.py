@@ -163,6 +163,7 @@ def test_maneuver_prompt_enforces_assess_first_single_snapshot_ordering() -> Non
     assert "submitting no physical command" in prompt
     assert "Python supplies\n   the authoritative Mission and request identities" in prompt
     assert "ManeuverHeartbeatCompletion" in prompt
+    assert "ManeuverHeartbeatResponse" in prompt
     assert "do not submit a hold" in prompt
     assert "Terminal lifecycle alone does not require replacement" in prompt
     assert "world_model_info" in prompt

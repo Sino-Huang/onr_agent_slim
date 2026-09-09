@@ -57,7 +57,7 @@
       "entity_id": 7,
       "event information": {"decision": "right"},
       "event type": "intersection decision",
-      "position": [40.0, 0.0, -2.5],
+      "position": [38.0, 0.0, -2.5],
       "report_id": "report-future-b",
       "time": 14.0
     }

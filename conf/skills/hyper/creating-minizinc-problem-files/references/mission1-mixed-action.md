@@ -12,8 +12,19 @@ expired, checked, duplicate, and unreachable opportunities.
 during the observation dwell. `pursue_ship` candidates are every feasible
 contiguous window of at least two consecutive future reports for one numeric
 ship ID. A pursuit starts at its first report position/time, follows every
-adjacent advertised movement at the vehicle maximum velocity, and ends after
-the last report dwell. The builder uses the current FoV and velocity without capability caps.
+adjacent advertised movement within the travel budget, and ends after
+the last report dwell. The builder budgets cardinal-grid distance
+`abs(dx) + abs(dy)` at `0.9 * controlled_vehicle.max_velocity` for initial
+reachability, pursuit windows, and route transitions. These feasible arcs are
+the timing constraints supplied to MiniZinc; the oracle and replan gate share
+the same builder. The physical speed cap is unchanged. The 10% reserve allows
+early arrival but does not bound arbitrary obstacle detours; new observations
+can still require replanning.
+
+During active-plan rescoring, an executing pursuit may have only one unchecked
+report left. The gate treats that tail as continuation, with hidden yield from
+the current Mission time to the last remaining report, excluding elapsed time
+and final dwell. The two-report minimum still applies to new candidates.
 
 The public report rate uses the ship's complete valid public schedule, including
 reports that are now expired or checked:
@@ -55,7 +66,10 @@ estimation / hidden-omission / combined utility. Interpret risk and rate using
 
 MiniZinc selects the mode. Hyper preserves that mode in the Statechart. Maneuver
 Control alone turns `fixed_view` into navigation or calls
-`pursue(entity_id=<numeric target>)` for `pursue_ship`.
+`pursue(entity_id=<numeric target>)` for `pursue_ship`. An unseen pursuit target
+may first require navigation to the public first-report rendezvous, and later
+public-position-guided reacquisition. Those physical phases remain within the
+same pursuit assignment and do not change its mode or evidence window.
 
 ## Few-shot sequence
 

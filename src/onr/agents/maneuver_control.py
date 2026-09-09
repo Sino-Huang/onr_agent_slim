@@ -133,6 +133,11 @@ MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
 
 _MANEUVER_HEARTBEAT_RESPONSE_SCHEMA: dict[str, Any] = {
     "title": "ManeuverHeartbeatResponse",
+    "description": (
+        "Complete this heartbeat with its concise public summary after all todos "
+        "are complete. Call this instead of returning prose. This completion "
+        "records no physical, FSM, belief, or communication effect."
+    ),
     "type": "object",
     "properties": {
         "summary": {"type": "string", "minLength": 1},
@@ -306,10 +311,14 @@ def _heartbeat_summary_correction_state(
                         for issue in sorted(set(error.issues))
                     ],
                     "completion_correction": (
-                        "Return a JSON object with exactly one non-empty summary "
-                        "field as the final response."
+                        "Call only ManeuverHeartbeatResponse with exactly one "
+                        "non-empty summary field to finish this heartbeat. "
+                        "This structured completion records no mission effect."
                     ),
-                    "prohibition": "Do not call any tools again in this heartbeat.",
+                    "prohibition": (
+                        "Do not call other tools or repeat mission effects, skill reads, "
+                        "or todo updates. Preserve the successful work already recorded."
+                    ),
                 },
                 sort_keys=True,
                 separators=(",", ":"),

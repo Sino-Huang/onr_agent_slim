@@ -127,6 +127,16 @@ class MiniZincExecutor:
                     *self.arguments,
                     "--solver",
                     solver,
+                    # Preserve small lexicographic tie-break coefficients in
+                    # continuous network-flow models handled by COIN's LP core.
+                    *(
+                        (
+                            "--cbcArgs",
+                            "-dualTolerance 1e-12 -primalTolerance 1e-10",
+                        )
+                        if solver == "coin-bc"
+                        else ()
+                    ),
                     *_MINIZINC_ARGUMENTS,
                     *map(str, asset_paths),
                 ],

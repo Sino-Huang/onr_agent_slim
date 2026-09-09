@@ -57,15 +57,16 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
 
     transitions = {item["event"]: item for item in draft["transitions"]}
     first_departure = transitions["assignment-1-may-begin"]
-    second_departure = transitions["assignment-2-may-begin"]
+    second_departure = transitions["assignment-1-outcome-confirmed"]
     assert (
         first_departure["context"]["readiness"]["mission_time_at_or_after"]["seconds"]
         == 0
     )
-    assert (
-        second_departure["context"]["readiness"]["mission_time_at_or_after"]["seconds"]
-        == 12
-    )
+    assert second_departure["context"]["readiness"]["not_before"]["seconds"] == 12
+    # Confirming this interval exposes the next assignment in the same
+    # heartbeat, without an empty state that costs another simulation period.
+    assert second_departure["source"] == "assignment-1-in-progress"
+    assert second_departure["target"] == "assignment-2-in-progress"
 
     first_confirm = transitions["assignment-1-outcome-confirmed"]
     assert first_confirm["context"]["readiness"]["not_before"]["seconds"] == 12
@@ -93,14 +94,19 @@ def test_statechart_example_preserves_evidence_intervals_and_departures() -> Non
         "entity_id": 7,
         "evidence_window": pursuing["observation_window"],
         "physical_action": "pursue",
+        "acquisition_rendezvous": {
+            "location": {"x": 30, "y": 40},
+            "arrival_deadline": {"tick": 60, "ticks_per_second": 2, "seconds": 30.0},
+            "position_source": "planner_public_report",
+        },
     }
     pursue_confirm = transitions["assignment-2-outcome-confirmed"]
     assert (
         pursue_confirm["context"]["readiness"]["live_evidence"]
         == "the pursued vessel is held in the FoV"
     )
-    assert len(draft["states"]) == 6
-    assert len(draft["transitions"]) == 5
+    assert len(draft["states"]) == 4
+    assert len(draft["transitions"]) == 3
     assert manifest["represented_once"] == ["first", "second"]
 
     chart = Statechart.from_dict(
@@ -120,8 +126,7 @@ def test_statechart_path_helpers_decode_minizinc_jsonl_and_inspect_output(
     tmp_path: Path,
 ) -> None:
     example = Path(
-        "conf/skills/hyper/creating-statechart-files/examples/"
-        "event-information-patrol"
+        "conf/skills/hyper/creating-statechart-files/examples/event-information-patrol"
     )
     assignments = [
         {
@@ -160,9 +165,7 @@ def test_statechart_path_helpers_decode_minizinc_jsonl_and_inspect_output(
                 json.dumps(
                     {
                         "type": "solution",
-                        "output": {
-                            "default": json.dumps({"assignments": assignments})
-                        },
+                        "output": {"default": json.dumps({"assignments": assignments})},
                     }
                 ),
                 json.dumps({"type": "status", "status": "OPTIMAL_SOLUTION"}),
@@ -188,11 +191,11 @@ def test_statechart_path_helpers_decode_minizinc_jsonl_and_inspect_output(
     )
 
     assert json.loads(prepared.stdout) == {
-        "edges": 5,
+        "edges": 3,
         "planner_items": 2,
         "planner_order_preserved": True,
         "represented_once": ["fixed-a", "pursue-b"],
-        "states": 6,
+        "states": 4,
         "terminal_completion": "patrol-objective-complete",
     }
     assert generator.read_bytes() == (example / "generate_statechart.py").read_bytes()
@@ -208,10 +211,66 @@ def test_statechart_path_helpers_decode_minizinc_jsonl_and_inspect_output(
         "planner_items": 2,
         "planner_order_preserved": True,
         "represented_once": True,
-        "state_count": 6,
+        "state_count": 4,
         "terminal_count": 1,
-        "transition_count": 5,
+        "transition_count": 3,
         "unique_events": True,
         "unique_state_pairs": True,
         "valid": True,
     }
+
+    original = statechart.read_text()
+    for field, value in (
+        ("location", {"x": 999, "y": 40}),
+        ("arrival_deadline", {"seconds": 30}),
+        ("position_source", "unverified_position"),
+    ):
+        damaged = json.loads(original)
+        damaged["state_context"]["assignment-2-in-progress"]["desired_outcome"][
+            "acquisition_rendezvous"
+        ][field] = value
+        statechart.write_text(json.dumps(damaged))
+        rejected = subprocess.run(
+            [
+                sys.executable,
+                str(example / "inspect_statechart.py"),
+                planner,
+                statechart,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "acquisition rendezvous" in rejected.stderr
+    statechart.write_text(original)
+
+    # An outcome-only hop must not be reintroduced by a generated draft.
+    draft = json.loads(statechart.read_text())
+    bridge = "extra-outcome-hop"
+    draft["states"].append(bridge)
+    draft["state_context"][bridge] = {"desired_outcome": "previous interval complete"}
+    handoff = next(
+        edge
+        for edge in draft["transitions"]
+        if edge["source"] == "assignment-1-in-progress"
+    )
+    next_state = handoff["target"]
+    handoff["target"] = bridge
+    draft["transitions"].append(
+        {
+            "event": "extra-hop",
+            "source": bridge,
+            "target": next_state,
+            "context": {},
+        }
+    )
+    statechart.write_text(json.dumps(draft))
+    rejected = subprocess.run(
+        [sys.executable, str(example / "inspect_statechart.py"), planner, statechart],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "directly" in rejected.stderr

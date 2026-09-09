@@ -32,3 +32,4 @@ external:
   altitude_convention: ned_down_metres
   max_retries: 3
   update_stale_after_seconds: 2
+  advance_timeout_seconds: 30

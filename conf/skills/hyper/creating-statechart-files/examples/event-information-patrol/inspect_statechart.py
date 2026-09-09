@@ -70,6 +70,46 @@ def inspect(planner_path: Path, statechart_path: Path) -> dict[str, object]:
     _require(represented == expected, "planner assignment order or coverage differs")
     _require(len(represented) == len(set(represented)), "planner item is repeated")
 
+    operational_states = [
+        name for name, context in contexts.items() if context in moving_contexts
+    ]
+    for index, (name, item) in enumerate(zip(operational_states, items, strict=True)):
+        context = contexts[name]
+        _require(
+            context.get("surveillance_mode") == item["surveillance_mode"]
+            and context.get("target_entity_id") == item["entity_id"],
+            "assignment mode or target entity differs",
+        )
+        if item["surveillance_mode"] == "pursue_ship":
+            rendezvous = context["desired_outcome"].get("acquisition_rendezvous", {})
+            _require(
+                rendezvous.get("location") == {"x": item["x"], "y": item["y"]}
+                and rendezvous.get("arrival_deadline", {}).get("seconds")
+                == item["start_tick"] / item["time_scale"]
+                and rendezvous.get("position_source") == "planner_public_report",
+                "pursuit acquisition rendezvous differs from public planner input",
+            )
+        outgoing = [edge for edge in transitions if edge["source"] == name]
+        expected_targets = (
+            [operational_states[index + 1]] if index + 1 < len(items) else terminals
+        )
+        _require(
+            len(outgoing) == 1 and outgoing[0]["target"] in expected_targets,
+            "assignment confirmation must enter the next assignment or terminal directly",
+        )
+        readiness = outgoing[0]["context"].get("readiness", {})
+        end = readiness.get("not_before", {})
+        _require(
+            end.get("seconds")
+            == (item["start_tick"] + item["duration_tick"]) / item["time_scale"],
+            "assignment evidence end time differs",
+        )
+        _require(
+            readiness.get("sensed_evidence", {}).get("report_ids")
+            == item["report_ids"],
+            "assignment report evidence differs",
+        )
+
     return {
         "valid": True,
         "planner_items": len(items),

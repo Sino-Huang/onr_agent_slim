@@ -682,6 +682,7 @@ class RuntimeComposition:
                 cadence_seconds=float(profile.updates.cadence_seconds),
                 artifact_root=output_root or external.planning_artifact_root,
                 stale_after_seconds=float(external.update_stale_after_seconds),
+                advance_timeout_seconds=float(external.advance_timeout_seconds),
                 max_retries=external.max_retries,
                 coordinate_frame=external.coordinate_frame,
                 update_ownership=selected.value,

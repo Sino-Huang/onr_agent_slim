@@ -6,7 +6,9 @@ import time
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any, cast
+from unittest.mock import Mock
 
+import pytest
 from langchain.tools import ToolRuntime
 
 from onr.adapters.bayesian_belief_store import FileBayesianBeliefStore
@@ -257,6 +259,27 @@ def _runtime_parts(
         )
 
     return environment, coordinator, belief, fsm, supervisor, maneuver, provider
+
+
+def test_closed_loop_failure_is_logged_and_source_is_stopped(tmp_path: Path) -> None:
+    _, coordinator, *_ = _runtime_parts(tmp_path, Mock())
+    runtime = coordinator(lambda *_: None)
+    source = runtime._environment_source
+    source.advance = Mock(side_effect=TimeoutError("advance response missing"))
+    source.stop = Mock(wraps=source.stop)
+    source.join = Mock(wraps=source.join)
+    runtime.operational_log = Mock()
+
+    with pytest.raises(TimeoutError, match="advance response missing"):
+        runtime.run(_revision(1))
+
+    source.advance.assert_called_once()
+    source.stop.assert_called_once()
+    source.join.assert_called_once()
+    failure = runtime.operational_log.emit.call_args
+    assert failure.args == ("mission-1", "context-coordination", "error", "failed")
+    assert failure.kwargs["details"]["error_type"] == "TimeoutError"
+    assert failure.kwargs["details"]["plan_revision"] == 1
 
 
 def test_fixed_rate_loop_coalesces_request_with_periodic_and_injects_outcome(

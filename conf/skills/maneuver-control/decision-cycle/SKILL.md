@@ -1,7 +1,7 @@
 ---
 name: decision-cycle
 description: Use on every Maneuver heartbeat to reconcile Transition Intent, live FSM evidence, physical continuity, belief, and communication effects.
-version: '2.1.1'
+version: '2.1.3'
 ---
 
 # Decision Cycle
@@ -18,10 +18,14 @@ version: '2.1.1'
 
 ## Procedure
 
-1. Create one heartbeat-local todo list for inspection, current-intent
-   assessment or bootstrap, transition, next-target selection, physical
-   continuity, other effects, and completion. Maintain it through the
-   heartbeat.
+1. Maintain one heartbeat-local todo list covering the checks below. Update at
+   evidence boundaries: assess everything supported by the injected snapshot
+   and already-read guidance in one response, then record the resulting
+   progress together. Combine that update with independent tool calls where
+   possible. Required skill reads and dependent tool results must arrive before
+   their work is marked complete. A no-effect heartbeat can complete its list
+   in one update once all checks are resolved; it needs no intermediate
+   bookkeeping-only updates.
 2. Inspect current intent, candidates, environment, active action, pending
    perceptions, and Hyper outcomes.
 3. If no valid intent exists, select one exact candidate and assess it
@@ -41,8 +45,20 @@ version: '2.1.1'
    submitting it again would replace it. When replacement is warranted, choose
    the physical action and parameters at runtime from current outcome facts and
    environment evidence.
-7. Independently ingest the complete pending perception batch once when
-   warranted and send evidence-driven communications. A declared
+   For a pursuit assignment or active pursuit, read
+   `/conf/skills/maneuver-control/physical-maneuver-selection/SKILL.md` and its
+   acquisition reference before judging the action suitable, including on
+   tool-free heartbeats. A future FSM evidence gate does not extend a missed
+   acquisition deadline.
+7. Inspect `observation_kind` before belief ingestion. Call `ingest_perceptions`
+   once when the pending batch contains `event` observations; it processes all
+   events in order. `entity` observations are sightings for tracking and physical
+   decisions, not event evidence. For example, two ship-position sightings with
+   `observation_kind: "entity"` need no ingestion call. An empty or entity-only
+   batch leaves belief unchanged. If the tool returns
+   `no_pending_event_observations`, continue the heartbeat without retrying it
+   or claiming ingestion succeeded. Send evidence-driven communications
+   independently. A declared
    `hyper_evaluation` is sent with its exact kind, reason, evaluation ID, and
    delivery policy. Unmarked queries, reports, and replans remain unrestricted.
 8. Complete every todo and return one concise public summary. Python supplies
@@ -57,11 +73,14 @@ action requires a valid intent whenever the live state has candidates. If the
 runtime resumes this episode to correct a missing post-transition selection,
 use its latest focused context and do not call `transition_fsm` again.
 
-A completed navigation that established the current state's desired location
+A completed fixed-view navigation that established the current state's desired location
 remains suitable while a time or observation gate is pending. Do not submit a
 hold, repeat navigation, or renamed copy merely because its lifecycle is
 terminal; replace it only when current-state evidence requires a different
 physical action.
+For pursuit acquisition, completed rendezvous navigation instead hands off to
+`pursue` within the same state; use the physical-maneuver-selection skill for
+visibility checks, bounded search, and public-position recovery.
 
 ## Live reconciliation
 
