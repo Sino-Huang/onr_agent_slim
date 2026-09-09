@@ -1,7 +1,7 @@
 ---
 name: decision-cycle
-description: Use on every Maneuver heartbeat to reconcile Transition Intent, live FSM evidence, physical continuity, belief, and communication effects.
-version: '2.1.3'
+description: Use for Maneuver intent bootstrap, transitions, retargeting, belief ingestion, or communication. Routine fixed-view waiting is covered by the system prompt; pursuit continuity requires physical-maneuver-selection.
+version: '2.2.0'
 ---
 
 # Decision Cycle
@@ -18,14 +18,11 @@ version: '2.1.3'
 
 ## Procedure
 
-1. Maintain one heartbeat-local todo list covering the checks below. Update at
-   evidence boundaries: assess everything supported by the injected snapshot
-   and already-read guidance in one response, then record the resulting
-   progress together. Combine that update with independent tool calls where
-   possible. Required skill reads and dependent tool results must arrive before
-   their work is marked complete. A no-effect heartbeat can complete its list
-   in one update once all checks are resolved; it needs no intermediate
-   bookkeeping-only updates.
+1. Assess the checks below once against the injected snapshot and available
+   guidance. Todos are optional for short heartbeats; use them when tracking
+   dependent multi-step work is useful. If used, update at evidence boundaries
+   and combine updates with independent calls. Required skill reads and
+   dependent tool results must arrive before their work is marked complete.
 2. Inspect current intent, candidates, environment, active action, pending
    perceptions, and Hyper outcomes.
 3. If no valid intent exists, select one exact candidate and assess it
@@ -61,7 +58,8 @@ version: '2.1.3'
    independently. A declared
    `hyper_evaluation` is sent with its exact kind, reason, evaluation ID, and
    delivery policy. Unmarked queries, reports, and replans remain unrestricted.
-8. Complete every todo and return one concise public summary. Python supplies
+8. Complete any todos you created and call `ManeuverHeartbeatResponse` with one
+   concise public summary. A no-effect cycle needs no bookkeeping call. Python supplies
    the authoritative identities in `ManeuverHeartbeatCompletion`. Durable tool
    records distinguish tool-free, rejected-tool, intent-only, and effectful
    cycles.
@@ -84,8 +82,9 @@ visibility checks, bounded search, and public-position recovery.
 
 ## Live reconciliation
 
-- Periodic, actionable terminal-feedback, and `replan-activated:<revision>`
-  heartbeats use the same cycle. Active feedback remains live progress evidence
+- Fallback, deadline, relevant evidence-change, actionable terminal-feedback,
+  and `replan-activated:<revision>` heartbeats use the same assessment cycle.
+  A wake-up does not assert condition satisfaction. Active feedback remains live progress evidence
   and is folded until another trigger. Replan activation supplies the Hyper
   outcome at the same Mission time, before an environment tick.
 - A stale intent is invalidated when its source state, Statechart revision,

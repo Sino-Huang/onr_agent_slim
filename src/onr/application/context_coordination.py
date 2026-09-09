@@ -11,10 +11,10 @@ from threading import Lock
 from typing import Any, cast
 
 from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
-from onr.application.transition_intents import TransitionIntentJournal
+from onr.application.maneuver_wakeups import ManeuverWakeups
 from onr.application.mission1_planning import Mission1ReplanGate
+from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
-from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import (
     MISSION_SNAPSHOT_SOURCES,
     MissionSnapshot,
@@ -43,6 +43,7 @@ from onr.contracts.planning_evidence import (
     PlannerRevisionEvidence,
     planner_revision_to_transport_event,
 )
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.transport import (
     NormalizedPlanTransportEvent,
     TransportEvent,
@@ -467,6 +468,7 @@ class ContextCoordination:
             else None
         )
         last_gate_signature: tuple[object, ...] | None = None
+        maneuver_wakeups = ManeuverWakeups()
 
         environment_started = False
         try:
@@ -484,6 +486,14 @@ class ContextCoordination:
                     tick_count += batch_size
                     maximum_update_batch = max(maximum_update_batch, batch_size)
                     now = environment.current_time
+
+                    for trigger in maneuver_wakeups.due(
+                        status,
+                        self._transition_intents.current(status),
+                        self._resolve_environment(snapshot),
+                        now,
+                    ):
+                        self._queue_maneuver_trigger(trigger)
 
                     periodic, last_maneuver_periodic, coalesced = self._next_periodic(
                         now, self._maneuver_seconds, last_maneuver_periodic

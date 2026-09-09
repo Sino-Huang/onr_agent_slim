@@ -134,8 +134,10 @@ MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
 _MANEUVER_HEARTBEAT_RESPONSE_SCHEMA: dict[str, Any] = {
     "title": "ManeuverHeartbeatResponse",
     "description": (
-        "Complete this heartbeat with its concise public summary after all todos "
-        "are complete. Call this instead of returning prose. This completion "
+        "Complete this heartbeat with its concise public summary after assessing "
+        "the evidence and finishing any chosen todos. Short no-effect heartbeats "
+        "can call this directly without creating todos. Call this instead of "
+        "returning prose. This completion "
         "records no physical, FSM, belief, or communication effect."
     ),
     "type": "object",

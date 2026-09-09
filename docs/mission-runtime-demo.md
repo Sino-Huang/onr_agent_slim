@@ -94,12 +94,24 @@ plus an accepted Statechart. No Normalized Plan is introduced.
 Context Coordination owns execution after initial planning: it resolves each
 Mission Snapshot, builds every Maneuver and supervisory Hyper invocation,
 coordinates replanning, and advances 0.5-second simulation ticks without sleeping. Maneuver is
-invoked at time zero, every 5 simulated seconds, and immediately when the
-environment publishes authoritative maneuver lifecycle feedback such as
-navigation completion. MiniZinc timing remains continuous and is not rounded to
-the agent heartbeat cadence. Hyper runs a fresh supervisory episode every 10
-seconds and immediately after a queued Maneuver replan request; coincident
-triggers are coalesced. Maneuver receives the pending raw perception batch and
+invoked at time zero, at the configured fallback cadence (30 simulated seconds
+in the shipped profile), and on current-state timing or relevant evidence
+changes. Explicit observation-window boundaries, the selected intent's
+`readiness.not_before.seconds`, active maneuver deadlines, and pursuit
+acquisition timing wake Maneuver on the first available environment tick.
+Relevant report checks and pursuit target visibility/GPS changes also wake it;
+repeated payloads do not. Authoritative terminal lifecycle feedback such as
+navigation completion remains immediate. Coincident triggers are coalesced.
+These are assessment requests, not automatic FSM transitions or commands.
+MiniZinc timing is not rounded to the fallback interval.
+With `ownership: coordinator_driven`, Mission time remains frozen throughout
+LLM reasoning; environment ticks advance only between serialized decisions.
+Routine fixed-view waiting can complete in one model response without todos or
+skill reads. Multi-step Maneuver work may use todos; Hyper's eight-stage planning
+workflow retains its structured todos.
+Non-Mission-1 Hyper supervision uses its configured periodic cadence; Mission 1
+uses its evidence/feasibility replan gate. Explicit replan requests remain
+supported. Maneuver receives the pending raw perception batch and
 never receives accumulated Bayesian belief. One successful `ingest_perceptions`
 call commits each pending event separately and clears the process-local batch;
 skipped or failed ingestion retains it. Hyper receives only the latest resolved

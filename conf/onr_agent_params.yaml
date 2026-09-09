@@ -17,7 +17,8 @@ planners:
     timeout_seconds: 30
 heartbeats:
   hyper_seconds: 10
-  maneuver_seconds: 5
+  # Fallback cadence; current-state deadlines and actionable evidence wake sooner.
+  maneuver_seconds: 30
   summary_seconds: 30
 transport:
   backend: file

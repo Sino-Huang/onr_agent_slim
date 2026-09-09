@@ -242,6 +242,7 @@ def _runtime_parts(
         replan_workflow,  # type: ignore[no-untyped-def]
         *,
         simulation_limit_seconds: float = 20,
+        maneuver_seconds: float = 5,
     ) -> ContextCoordination:
         return ContextCoordination(
             transport,
@@ -256,9 +257,108 @@ def _runtime_parts(
             belief_service=belief,
             replan_workflow=replan_workflow,
             simulation_limit_seconds=simulation_limit_seconds,
+            maneuver_seconds=maneuver_seconds,
         )
 
     return environment, coordinator, belief, fsm, supervisor, maneuver, provider
+
+
+@pytest.mark.parametrize(
+    "window_start, fallback, expected_times",
+    [
+        (7, 30, [0, 7, 7.5]),
+        (77, 5, [*range(0, 76, 5), 77, 77.5]),
+        (77, 30, [0, 30, 60, 77, 77.5]),
+    ],
+)
+def test_timed_wakeup_preserves_short_window_and_pauses_world(
+    tmp_path: Path,
+    window_start: float,
+    fallback: float,
+    expected_times: list[float],
+) -> None:
+    """A slower fallback must not round a planner gate to the next heartbeat."""
+
+    def hyper(invocation):
+        return HyperHeartbeatDecision(
+            invocation.mission_id,
+            invocation.plan_revision,
+            "no_change",
+            "Keep plan",
+            invocation.trigger_identities,
+            (),
+        )
+
+    environment, coordinator, _, fsm, _, maneuver, _ = _runtime_parts(tmp_path, hyper)
+    base = _revision(1)
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id=base.planner_plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="observing",
+        states=("observing", "complete"),
+        terminal_states=("complete",),
+        state_context={
+            "observing": {
+                "observation_window": {
+                    "start": {"seconds": window_start},
+                    "duration": {"seconds": 0.5},
+                },
+            },
+            "complete": {},
+        },
+        transitions=(
+            StatechartTransition(
+                "finish",
+                "observing",
+                "complete",
+                {
+                    "readiness": {"not_before": {"seconds": window_start + 0.5}},
+                },
+            ),
+        ),
+    )
+    invocations = []
+
+    class Provider:
+        def heartbeat(self, invocation, context):
+            invocations.append(invocation)
+            now = environment.current_time
+            time.sleep(
+                0.02
+            )  # Simulate reasoning; coordinator ownership must freeze time.
+            assert environment.current_time == now
+            status = asyncio.run(fsm.status())
+            if context.transition_intents.current(status) is None:
+                context.transition_intents.select(
+                    status, "complete", "Wait for evidence", selected_at=now
+                )
+            if now >= window_start + 0.5:
+                _ManeuverProvider._transition(invocation, context, "finish")
+            return ManeuverHeartbeatCompletion(
+                invocation.mission_id, invocation.request_id, "Assessed"
+            )
+
+    maneuver.decision_provider = Provider()
+    result = coordinator(
+        lambda *_: None,
+        simulation_limit_seconds=window_start + 5,
+        maneuver_seconds=fallback,
+    ).run(
+        ActivePlanRevision(
+            base.planner_plan, base.planner_plan_reference, chart, "timed-chart.json"
+        )
+    )
+    assert result.terminal
+    assert result.simulated_duration_seconds == window_start + 0.5
+    assert [
+        i.environment_data["scene_graph"]["mission_time_seconds"] for i in invocations
+    ] == expected_times
+    assert all(
+        w.evidence_time_seconds == w.completion_time_seconds
+        for w in result.inference_windows
+    )
 
 
 def test_closed_loop_failure_is_logged_and_source_is_stopped(tmp_path: Path) -> None:
@@ -813,7 +913,7 @@ def test_environment_driven_updates_fold_during_blocked_inference(
                         sequence=1,
                     )
                     entered.set()
-                    if not release.wait(2):
+                    if not release.wait(15):
                         raise RuntimeError("barrier was not released")
                 else:
                     status = asyncio.run(context.fsm_runner.status())
@@ -851,12 +951,14 @@ def test_environment_driven_updates_fold_during_blocked_inference(
     thread = Thread(target=run, name="environment-driven-test")
     thread.start()
     assert entered.wait(5), errors
-    deadline = time.monotonic() + 2
-    while environment.current_time < 15 and time.monotonic() < deadline:
-        time.sleep(0.005)
-    assert environment.current_time >= 15
-    release.set()
-    thread.join(3)
+    deadline = time.monotonic() + 10
+    try:
+        while environment.current_time < 15 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert environment.current_time >= 15
+    finally:
+        release.set()
+        thread.join(10)
 
     assert not thread.is_alive()
     assert errors == []

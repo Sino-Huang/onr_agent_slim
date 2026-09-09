@@ -22,10 +22,10 @@ def preview(tmp_path, **overrides):
     return result.stdout, shlex.split(command.removeprefix("Command:"))
 
 
-def test_shared_gpu_defaults_and_no_launch(tmp_path):
+def test_current_four_gpu_defaults_and_no_launch(tmp_path):
     output, args = preview(tmp_path)
-    assert "CUDA_VISIBLE_DEVICES=1,2" in output
-    assert args[args.index("--tensor-parallel-size") + 1] == "2"
+    assert "CUDA_VISIBLE_DEVICES=0,1,2,3" in output
+    assert args[args.index("--tensor-parallel-size") + 1] == "4"
     assert args[args.index("--max-model-len") + 1] == "65536"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.95"
     assert args[args.index("--max-num-seqs") + 1] == "4"

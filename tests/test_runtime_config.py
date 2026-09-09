@@ -69,7 +69,7 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
         config.storage.planner_artifacts == (root / "var/planner-artifacts").resolve()
     )
     assert config.heartbeats.hyper_seconds == 10
-    assert config.heartbeats.maneuver_seconds == 5
+    assert config.heartbeats.maneuver_seconds == 30
     assert config.heartbeats.summary_seconds == 30
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
