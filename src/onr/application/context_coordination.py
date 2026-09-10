@@ -521,6 +521,7 @@ class ContextCoordination:
                         )
                         environment_started = True
                         inference_windows.append(window)
+                        last_maneuver_periodic = window.evidence_time_seconds
                         tick_count += batch_size
                         maximum_update_batch = max(maximum_update_batch, batch_size)
                         pending_hyper_outcomes = ()
@@ -678,6 +679,7 @@ class ContextCoordination:
                                     )
                                 )
                                 inference_windows.append(window)
+                                last_maneuver_periodic = window.evidence_time_seconds
                                 tick_count += batch_size
                                 maximum_update_batch = max(
                                     maximum_update_batch, batch_size
@@ -833,7 +835,9 @@ class ContextCoordination:
         *,
         include_zero: bool = True,
     ) -> tuple[str | None, float, int]:
-        due = math.floor((now + 1e-9) / interval) * interval
+        # Maneuver anchors fallback to its last assessed snapshot, including
+        # event-driven calls. Hyper supplies its last periodic boundary.
+        due = last_due + math.floor((now - last_due + 1e-9) / interval) * interval
         if (not include_zero and due <= 0) or due <= last_due + 1e-9:
             return None, last_due, 0
         crossed = max(1, round((due - last_due) / interval))

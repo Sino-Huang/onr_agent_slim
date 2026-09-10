@@ -178,6 +178,79 @@ def create_maneuver_control_agent(
     )
 
 
+def _derived_transition_facts(
+    invocation: ManeuverInvocation,
+) -> dict[str, object] | None:
+    """Exact arithmetic and ledger membership, not a condition assessment."""
+    intent = invocation.fsm_context.transition_intent
+    if intent is None:
+        return None
+    readiness = intent.condition.get("readiness")
+    if not isinstance(readiness, Mapping):
+        return None
+
+    def seconds(value: object) -> float | None:
+        if isinstance(value, Mapping):
+            value = value.get("seconds")
+        return float(value) if type(value) in (int, float) else None
+
+    facts: dict[str, object] = {}
+    now = seconds(invocation.environment_data.get("mission_time_seconds"))
+    if now is not None:
+        bound = seconds(readiness.get("not_before"))
+        if bound is not None:
+            facts["not_before_seconds"] = bound
+            facts["seconds_until_not_before"] = bound - now
+        window = invocation.fsm_context.current_state_context.get("observation_window")
+        if isinstance(window, Mapping):
+            start = seconds(window.get("start"))
+            duration = seconds(window.get("duration"))
+            if start is not None and duration is not None:
+                facts["window_end_seconds"] = start + duration
+                facts["seconds_until_window_end"] = start + duration - now
+
+    sensed = readiness.get("sensed_evidence")
+    info = invocation.environment_data.get("world_model_info")
+    if (
+        isinstance(sensed, Mapping)
+        and sensed.get("report_check_ledger") == "world_model_info.event_report_checks"
+        and isinstance(info, Mapping)
+    ):
+        required = sensed.get("report_ids")
+        ledger = info.get("event_report_checks")
+        if (
+            isinstance(required, (list, tuple))
+            and all(isinstance(item, str) for item in required)
+            and isinstance(ledger, (list, tuple))
+        ):
+            required_ids = list(dict.fromkeys(required))
+            outcomes = {
+                row["report_id"]: row.get("outcome")
+                for row in ledger
+                if isinstance(row, Mapping) and row.get("report_id") in required_ids
+            }
+            matched = [item for item in required_ids if item in outcomes]
+            unconfirmed = [item for item in required_ids if item not in outcomes]
+            facts["report_check_comparison"] = {
+                "required_count": len(required_ids),
+                "matched_count": len(matched),
+                "matched_report_ids": matched,
+                "matched_outcomes": outcomes,
+                "unconfirmed_count": len(unconfirmed),
+                "unconfirmed_report_ids": unconfirmed,
+            }
+    if not facts:
+        return None
+    return {
+        "intent_id": intent.intent_id,
+        "source_state": invocation.fsm_context.current_state,
+        "target_state": intent.target_state,
+        "state_entry_revision": invocation.fsm_context.state_entry_revision,
+        "mission_time_seconds": now,
+        **facts,
+    }
+
+
 class DeepAgentsHeartbeatProvider:
     """Invoke a Maneuver Deep Agent and identify its heartbeat completion."""
 
@@ -216,6 +289,19 @@ class DeepAgentsHeartbeatProvider:
                 )
             )
         ]
+        facts = _derived_transition_facts(invocation)
+        if facts is not None:
+            messages.append(
+                HumanMessage(
+                    content=json.dumps(
+                        {"derived_transition_facts": facts},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    )
+                )
+            )
         kwargs: dict[str, object] = {"context": tool_context}
         if config is not None:
             kwargs["config"] = config

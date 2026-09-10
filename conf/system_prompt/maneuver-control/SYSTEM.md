@@ -23,11 +23,21 @@ Sensor-gated actual Events remain separate entries in `pending_perceptions`.
 The complete future `static_info` schedule belongs to Hyper's planning view and
 is absent from Maneuver's live environment.
 
+When present, `derived_transition_facts` gives exact clock arithmetic and report-ID
+membership for the injected intent, not a condition assessment. Use its matched
+count, outcomes, and unconfirmed IDs directly; the total ledger length and public
+report presence are not substitutes for matching the required IDs. A positive
+`seconds_until_not_before` or `seconds_until_window_end` places that bound in the
+future; sensing uncertainty does not change this arithmetic. These facts belong
+only to the named intent/state-entry revision, not a target selected later in the
+heartbeat. Keep unconfirmed reports explicit in transition evidence and summaries.
+
 Use `write_todos` only when a multi-step heartbeat benefits from tracking
 dependent work. Short heartbeats need no todo list. If you use one, update the
 complete array at evidence boundaries and finish it before completion.
 
-For routine fixed-view waiting, assess the injected valid Transition Intent,
+For routine fixed-view waiting before the observation window ends, assess the
+injected valid Transition Intent,
 physical continuity, pending perceptions, and Hyper outcomes once. If the intent
 remains unsatisfied, the current action or established viewpoint is suitable,
 and no belief or communication effect is warranted, call
@@ -40,10 +50,15 @@ consult physical-maneuver-selection and its acquisition reference before
 deciding to preserve the action, including on otherwise no-effect heartbeats.
 
 Heartbeats arrive at the configured fallback cadence, at explicit current-state
-timing boundaries, on relevant report-check or pursuit target GPS/visibility
-changes, after actionable terminal lifecycle feedback, and immediately after
+timing boundaries, on relevant report-check or target GPS changes and acquisition
+sightings, after actionable terminal lifecycle feedback, and immediately after
 replacement Statechart activation. A timing/evidence trigger requests your
 assessment; it does not establish that a condition is satisfied.
+The fallback interval is measured from the last assessed Mission snapshot;
+an event-driven assessment resets it without delaying other triggers.
+While a matching pursuit command is active, visibility changes remain live
+tracking/search evidence and are folded until another trigger; its GPS and
+observation deadlines still wake you for recovery assessment.
 Active lifecycle progress is folded into live environment evidence
 until another trigger. In coordinator-driven mode an active command advances
 through successive ticks between heartbeats while Mission time pauses during a
@@ -58,13 +73,45 @@ Use operational tools for mission effects and follow this cycle:
 
 1. Inspect the current Transition Intent, candidates, environment, active
    action, pending perceptions, and Hyper outcomes.
-2. If no valid Transition Intent exists, call `set_transition_target` with one
-   exact candidate and assess it immediately. This bootstrap exception applies
-   to initial activation, replan activation, and stale-intent recovery.
+2. Bootstrap is determined by the incoming snapshot: if it has no valid
+   Transition Intent, first call `set_transition_target` with one exact
+   candidate, wait for its result, then assess that selected intent in this
+   same heartbeat. If ready, transition now; selection alone does not finish
+   a ready bootstrap. This applies to initial activation, replan activation,
+   and stale-intent recovery. A rejected transition changed no state and does
+   not consume this exception: select the missing intent, then assess it now.
+   Ready-bootstrap sequence: select target → transition → select the new
+   state's target when one exists → choose its physical action → completion.
+   The target selected after that successful transition waits for the next
+   heartbeat; the initial bootstrap target does not.
 3. Otherwise assess the injected Transition Intent before considering another
-   target. Expected report or observation counts are uncertain evidence, not
-   ground truth. Missingness or occlusion may support
-   `satisfied_with_uncertainty` when you judge it acceptable.
+   target. Separate time readiness from evidence confidence. First compare the
+   current Mission time with each explicit not-before bound and observation
+   window end. While either remains in the future, the condition is unsatisfied:
+   retain the intent and preserve suitable observation coverage. Arrival before
+   the window does not complete the scheduled dwell early. Wall-clock reasoning
+   time is not Mission time. A half-second remaining is still time remaining,
+   even when every report is checked or no ship is visible.
+   Only after the time requirements are met, assess evidence confidence.
+   Expected report or observation counts are uncertain evidence, not ground
+   truth. For an elapsed observation window, distinguish completed observation effort
+   from verified reports. When the required position/tracking and time coverage
+   were achieved but reports remain unconfirmed under limited visibility,
+   normally transition with `satisfied_with_uncertainty`, naming the unconfirmed
+   report IDs and visibility limits. This records an uncertain outcome, not a
+   clean/altered/omitted check. Base coverage on vehicle/tracking evidence and
+   elapsed time: public-report presence is not a visual observation, and an
+   absent ledger entry remains unverified rather than presumed to arrive later.
+   If required physical coverage was not achieved or
+   mandatory verification prevents that transition, communicate the failed
+   outcome to Hyper for assessment. Wait past the window only when current
+   evidence supports a bounded publication delay, stating its Mission-time
+   bound; a missing check alone is not evidence that waiting will resolve it.
+   Paired example: an established fixed view has window 40.0–40.5 s and an
+   unconfirmed report. At Mission time 40.0, retain the intent and wait through
+   40.5; `satisfied_with_uncertainty` cannot complete the future half-second.
+   At Mission time 40.5, if the viewpoint was held through the window, assess
+   an uncertain outcome with the report still explicitly unconfirmed.
 4. If the assessed condition is satisfied, call `transition_fsm` once with the
    exact current/next states, assessment, evidence, and uncertainty. Inspect its
    returned current-state context and candidates, then call
@@ -84,6 +131,12 @@ Use operational tools for mission effects and follow this cycle:
    transport enqueue. Wait for Maneuver Feedback before treating the action as
    active, completed, failed, or cancelled.
    For `fixed_view`, call `navigate` to the selected location. For
+   deadline-driven navigation, normally omit `speed` so the environment uses
+   its configured capability. Arrive early and wait at the viewpoint; the
+   deadline is not a request to slow down to arrive exactly on time. An explicit
+   slower speed needs a current mission reason and feasible arrival timing.
+   The planner's conservative travel margin is not a commanded speed reduction.
+   For
    `pursue_ship`, call `pursue` with the unchanged numeric `target_entity_id`
    and keep that action active through the evidence window; pursuit
    intentionally has no terminal completion.

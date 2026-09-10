@@ -68,6 +68,32 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     assert not graph.candidates
 
 
+def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) -> None:
+    import onr.application.mission1_planning as planning
+
+    count = 20
+    calls = 0
+
+    def measured_travel(*args):
+        nonlocal calls
+        calls += 1
+        return _travel_time(*args)
+
+    monkeypatch.setattr(planning, "_travel_time", measured_travel)
+    graph = build_candidate_dag(
+        _environment([
+            _report(f"r{i}", i, 10 + 2 * i, i, 0)
+            for i in range(1, count + 1)
+        ]),
+        _belief(tuple(range(1, count + 1))),
+    )
+    assert len(graph.candidates) == count
+    # One initial reachability check and one fixed-view check per report;
+    # only forward temporal pairs can require a route travel calculation.
+    assert calls <= 2 * count + count * (count - 1) // 2
+    assert len(longest_path_oracle(graph).candidates) == count
+
+
 def test_travel_margin_filters_initial_arrival_and_route_transitions() -> None:
     graph = build_candidate_dag(
         _environment(
@@ -365,6 +391,46 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
 
     assert decision.current_score == advisory.score
     assert not decision.trigger
+
+    # Acquired before the scheduled window: reaching the report's exact
+    # position is no longer a prerequisite for an already-visible target.
+    environment["mission_time_seconds"] = 9.0
+    environment["controlled_vehicle"]["fov_radius"] = 20.0
+    environment["maneuver_lifecycle"] = {
+        "action": "pursue", "lifecycle": "active", "phase": "pursuit",
+        "plan_revision": 1, "parameters": {"entity_id": 7}, "start_time": 8,
+    }
+    environment["world_model_info"]["visible_ship_ids"] = [7]
+    early, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert not early.trigger
+    # Retain both future reports, but do not score omission yield before the
+    # assigned observation window starts.
+    assert early.current_score == decision.current_score
+    for change in (
+        {"lifecycle": "accepted"}, {"action": "navigate"},
+        {"parameters": {"entity_id": 8}},
+    ):
+        inactive_environment = {
+            **environment,
+            "maneuver_lifecycle": {**environment["maneuver_lifecycle"], **change},
+        }
+        not_acquired, _ = Mission1ReplanGate().assess(inactive_environment, belief, chart, status)
+        assert not_acquired.reason == "next_assignment_infeasible"
+    environment["world_model_info"]["visible_ship_ids"] = []
+    flicker, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert not flicker.trigger  # Tracking controller bridges brief camera loss.
+    environment["maneuver_lifecycle"]["phase"] = "search"
+    unseen, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert unseen.reason == "next_assignment_infeasible"
+    environment["world_model_info"]["visible_ship_ids"] = [7]
+    acquired_now, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert not acquired_now.trigger  # Camera reacquired before phase publication.
+    environment["maneuver_lifecycle"]["phase"] = "pursuit"
+    retained, _ = Mission1ReplanGate().assess(
+        environment, belief, replace(chart, plan_revision=2),
+        replace(status, plan_revision=2, statechart_revision=2),
+    )
+    assert not retained.trigger  # An accepted replan need not replace the same pursuit.
 
     # One unchecked report remains in an already executing pursuit. It is
     # still useful, although it cannot be admitted as a new two-report window.

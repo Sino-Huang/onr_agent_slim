@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import time
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any, cast
@@ -2121,7 +2122,8 @@ def test_todo_only_heartbeat_retains_intent_and_returns_typed_completion() -> No
     class Agent:
         todo_calls = 1
 
-        def invoke(self, *_: object, **__: object) -> dict[str, object]:
+        def invoke(self, state: dict[str, Any], **_: object) -> dict[str, object]:
+            assert len(state["messages"]) == 1  # Unknown condition schema is unchanged.
             return {
                 "structured_response": {
                     "summary": "Current evidence warrants no effect.",
@@ -2138,6 +2140,116 @@ def test_todo_only_heartbeat_retains_intent_and_returns_typed_completion() -> No
     assert completion.mission_id == invocation.mission_id
     assert completion.request_id == invocation.request_id
     assert context.execution_record.executions == []
+
+
+@pytest.mark.parametrize("now", [10.0, 10.5, 11.0])
+@pytest.mark.parametrize(
+    ("ledger_ids", "matched_ids", "missing_ids"),
+    [
+        ((), [], ["required-a", "required-b"]),
+        (("required-a", "required-a"), ["required-a"], ["required-b"]),
+        (("required-a", "required-b"), ["required-a", "required-b"], []),
+    ],
+)
+def test_heartbeat_adds_exact_read_only_transition_facts(
+    now: float,
+    ledger_ids: tuple[str, ...],
+    matched_ids: list[str],
+    missing_ids: list[str],
+) -> None:
+    plan = _plan()
+    chart = _chart(plan)
+    chart = replace(
+        chart,
+        state_context={
+            chart.entry_state: {
+                "observation_window": {
+                    "start": {"seconds": 10.0},
+                    "duration": {"seconds": 0.5},
+                }
+            },
+            "arbitrary destination": {},
+        },
+        transitions=(
+            replace(
+                chart.transitions[0],
+                context={
+                    "readiness": {
+                        "not_before": {"seconds": 10.5},
+                        "sensed_evidence": {
+                            "report_check_ledger": "world_model_info.event_report_checks",
+                            "report_ids": ["required-a", "required-b"],
+                        },
+                    }
+                },
+            ),
+        ),
+    )
+    transport = InProcessTransport()
+    runner = FSMRunner(transport, store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(chart))
+    journal = TransitionIntentJournal(transport)
+    intent = journal.select(
+        status, "arbitrary destination", "Assess this intent.", selected_at=0
+    )
+    invocation = ManeuverInvocation(
+        "fact-heartbeat",
+        "fact-correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {
+            "mission_time_seconds": now,
+            "world_model_info": {
+                "event_report_checks": [
+                    {"report_id": "unrelated", "outcome": "clean"},
+                    {"report_id": None, "outcome": "omitted"},
+                    *[
+                        {"report_id": report_id, "outcome": "altered"}
+                        for report_id in ledger_ids
+                    ],
+                ]
+            },
+        },
+    )
+    original = invocation.to_dict()
+
+    class Agent:
+        def invoke(self, state: dict[str, Any], **_: object) -> dict[str, object]:
+            messages = state["messages"]
+            assert len(messages) == 2
+            assert json.loads(messages[0].content) == original
+            facts = json.loads(messages[1].content)["derived_transition_facts"]
+            assert facts["intent_id"] == intent.intent_id
+            assert facts["source_state"] == chart.entry_state
+            assert facts["target_state"] == "arbitrary destination"
+            assert facts["mission_time_seconds"] == now
+            assert facts["seconds_until_not_before"] == 10.5 - now
+            assert facts["seconds_until_window_end"] == 10.5 - now
+            assert facts["report_check_comparison"] == {
+                "required_count": 2,
+                "matched_count": len(matched_ids),
+                "matched_report_ids": matched_ids,
+                "matched_outcomes": {report_id: "altered" for report_id in matched_ids},
+                "unconfirmed_count": len(missing_ids),
+                "unconfirmed_report_ids": missing_ids,
+            }
+            assert "assessment" not in facts
+            return {
+                "structured_response": {
+                    "summary": "Facts received; assessment remains agent-owned."
+                }
+            }
+
+    context = ManeuverToolContext(
+        invocation, runner, _Dispatcher(), transition_intents=journal
+    )
+    DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+    assert invocation.to_dict() == original
+    assert ManeuverInvocation.from_dict(original) == invocation
+    assert context.execution_record.executions == []
+    assert asyncio.run(runner.status()).active_state == chart.entry_state
 
 
 def test_prose_only_heartbeat_resumes_same_episode_for_structured_summary() -> None:

@@ -96,11 +96,16 @@ Mission Snapshot, builds every Maneuver and supervisory Hyper invocation,
 coordinates replanning, and advances 0.5-second simulation ticks without sleeping. Maneuver is
 invoked at time zero, at the configured fallback cadence (30 simulated seconds
 in the shipped profile), and on current-state timing or relevant evidence
-changes. Explicit observation-window boundaries, the selected intent's
+changes. The fallback is measured from the last assessed Mission snapshot,
+including event-driven assessments, without delaying other triggers.
+Explicit observation-window boundaries, the selected intent's
 `readiness.not_before.seconds`, active maneuver deadlines, and pursuit
 acquisition timing wake Maneuver on the first available environment tick.
-Relevant report checks and pursuit target visibility/GPS changes also wake it;
-repeated payloads do not. Authoritative terminal lifecycle feedback such as
+Relevant report checks, new target GPS, and acquisition visibility changes also
+wake it. During a matching active pursuit, visibility flicker is tracking/search
+progress rather than a separate LLM trigger; the next GPS, observation deadline,
+report check, fallback, or other actionable trigger still carries fresh evidence.
+Repeated payloads do not wake it. Authoritative terminal lifecycle feedback such as
 navigation completion remains immediate. Coincident triggers are coalesced.
 These are assessment requests, not automatic FSM transitions or commands.
 MiniZinc timing is not rounded to the fallback interval.
@@ -109,6 +114,14 @@ LLM reasoning; environment ticks advance only between serialized decisions.
 Routine fixed-view waiting can complete in one model response without todos or
 skill reads. Multi-step Maneuver work may use todos; Hyper's eight-stage planning
 workflow retains its structured todos.
+For an injected intent with structured timing/report metadata, Maneuver also
+receives a snapshot-specific arithmetic and report-ID comparison message. It
+lists matching and unconfirmed IDs without changing the original invocation or
+raw world-model data. These are read-only facts, not a condition verdict or an
+automatic transition; semantic assessment remains agent-owned.
+Maneuver guidance separates time readiness from evidence confidence: an explicit
+future window end keeps the intent pending; missing observations may support an
+uncertain outcome only after the time requirement is met.
 Non-Mission-1 Hyper supervision uses its configured periodic cadence; Mission 1
 uses its evidence/feasibility replan gate. Explicit replan requests remain
 supported. Maneuver receives the pending raw perception batch and

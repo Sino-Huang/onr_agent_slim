@@ -361,6 +361,45 @@ def test_timed_wakeup_preserves_short_window_and_pauses_world(
     )
 
 
+def test_fallback_waits_a_full_interval_after_feedback_assessment(
+    tmp_path: Path,
+) -> None:
+    environment, coordinator, _, _, _, maneuver, _ = _runtime_parts(tmp_path, Mock())
+    times = []
+
+    class Provider:
+        def heartbeat(self, invocation, context):
+            times.append(environment.current_time)
+            if len(times) == 1:
+                context.command_dispatcher.dispatch_physical(
+                    invocation,
+                    ManeuverControlDecision(
+                        "initial-navigation",
+                        invocation.mission_id,
+                        invocation.plan_revision,
+                        maneuver_id="short-navigation",
+                        physical_intent=ManeuverIntent(
+                            "navigate",
+                            (
+                                ManeuverParameter("x", 1),
+                                ManeuverParameter("y", 0),
+                                ManeuverParameter("z", -250),
+                                ManeuverParameter("speed", 20),
+                            ),
+                        ),
+                    ),
+                    sequence=1,
+                )
+            return ManeuverHeartbeatCompletion(
+                invocation.mission_id, invocation.request_id, "Assessed"
+            )
+
+    maneuver.decision_provider = Provider()
+    result = coordinator(lambda *_: None, simulation_limit_seconds=7).run(_revision(1))
+    assert result.environment_triggered_maneuver_heartbeat_count == 1
+    assert times == [0, 0.5, 5.5]
+
+
 def test_closed_loop_failure_is_logged_and_source_is_stopped(tmp_path: Path) -> None:
     _, coordinator, *_ = _runtime_parts(tmp_path, Mock())
     runtime = coordinator(lambda *_: None)

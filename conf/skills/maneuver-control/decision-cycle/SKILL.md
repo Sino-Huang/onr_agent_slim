@@ -1,7 +1,7 @@
 ---
 name: decision-cycle
 description: Use for Maneuver intent bootstrap, transitions, retargeting, belief ingestion, or communication. Routine fixed-view waiting is covered by the system prompt; pursuit continuity requires physical-maneuver-selection.
-version: '2.2.0'
+version: '2.2.1'
 ---
 
 # Decision Cycle
@@ -27,9 +27,11 @@ version: '2.2.0'
    perceptions, and Hyper outcomes.
 3. If no valid intent exists, select one exact candidate and assess it
    immediately as the initial/replan/recovery bootstrap exception. Otherwise
-   assess the injected intent before considering another target. Use
-   `satisfied_with_uncertainty` when judged acceptable despite missing or
-   occluded evidence.
+   assess the injected intent before considering another target. Apply the
+   system prompt's time-readiness check before evidence confidence: retain an
+   intent whose explicit time requirement is still pending. Once time-ready,
+   use `satisfied_with_uncertainty` when judged acceptable despite missing or
+   occluded evidence; uncertainty qualifies sensing, not future elapsed time.
 4. If satisfied, call `transition_fsm` once with exact current/next state
    identity, assessment, evidence, and uncertainty. Use its returned focused
    current-state context and select one next target when candidates remain. Do

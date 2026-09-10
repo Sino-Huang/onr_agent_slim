@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
 description: Use when selecting or preserving a physical maneuver, including rendezvous navigation, pursuit acquisition, and recovery after losing a target.
-version: '1.2.1'
+version: '1.2.2'
 ---
 
 # Physical Maneuver Selection
@@ -31,6 +31,12 @@ Each tool call is an environment-agnostic command containing:
 - typed intent parameters required by that maneuver kind.
 
 Copy target facts from the active semantic state and current environment data. Express intent, not adapter calls, vehicle controls, environment-specific protocols, or an expected lifecycle result.
+
+For deadline-driven navigation, normally omit the optional `speed` override:
+the environment uses its configured capability. Early arrival is useful; wait
+at the established viewpoint for the evidence window. Do not turn the planner's
+conservative travel margin into a slower execution speed. Override speed only
+for a current mission constraint, checking that the deadline remains feasible.
 
 ## Selection and Submission
 

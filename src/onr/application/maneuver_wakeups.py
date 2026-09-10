@@ -97,7 +97,18 @@ class ManeuverWakeups:
         )
         target = current.get("target_entity_id")
         if current.get("surveillance_mode") == "pursue_ship" and target is not None:
-            changed("target-visibility", target in world.get("visible_ship_ids", ()))
+            visible = target in world.get("visible_ship_ids", ())
+            active_target_pursuit = (
+                lifecycle.get("action") == "pursue"
+                and lifecycle.get("lifecycle") == "active"
+                and _object(lifecycle.get("parameters")).get("entity_id") == target
+            )
+            if active_target_pursuit:
+                # Tracking/search already belongs to the running controller.
+                # Keep fresh visibility, but do not deliberate on every blink.
+                self._signals["target-visibility"] = visible
+            else:
+                changed("target-visibility", visible)
             fixes = world.get("public_position_fixes", ())
             changed(
                 "target-gps",

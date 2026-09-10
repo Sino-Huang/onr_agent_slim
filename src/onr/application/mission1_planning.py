@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -175,7 +176,8 @@ def public_report_rates(
 
 
 def _opportunities(
-    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
+    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
+    *, ongoing_report_ids: Sequence[str] = (),
 ) -> tuple[ObservationOpportunity, ...]:
     world = environment.get("world_model_info")
     checks = world.get("event_report_checks", ()) if isinstance(world, Mapping) else ()
@@ -190,13 +192,17 @@ def _opportunities(
     position = cast(Mapping[str, object], vehicle["position"])
     start_x, start_y = float(cast(Any, position["x"])), float(cast(Any, position["y"]))
     speed = float(cast(Any, vehicle["max_velocity"]))
+    ongoing = frozenset(ongoing_report_ids)
     raw: list[tuple[str, int, float, float, float, float, float]] = []
     for report in _public_reports(environment, belief):
         if (
             report.report_id in checked
             or report.time_s < now
-            or now + _travel_time(start_x, start_y, report.x, report.y, speed)
-            > report.time_s + 1e-9
+            or (
+                report.report_id not in ongoing
+                and now + _travel_time(start_x, start_y, report.x, report.y, speed)
+                > report.time_s + 1e-9
+            )
         ):
             continue
         ship = by_ship[report.entity_id]
@@ -431,11 +437,17 @@ def build_candidate_dag(
     for index, candidate in enumerate(ordered_candidates, start=1):
         arcs.add((source, index))
         arcs.add((index, sink))
+    # Starts are sorted. A candidate that starts before this one ends cannot
+    # follow it, even with zero travel. Preserve the exact existing tolerance.
+    adjusted_starts = [item.start_s + 1e-9 for item in ordered_candidates]
+    report_sets = [frozenset(item.report_ids) for item in ordered_candidates]
     for left_index, left in enumerate(ordered_candidates, start=1):
-        for right_index, right in enumerate(ordered_candidates, start=1):
-            if left_index == right_index or set(left.report_ids) & set(
-                right.report_ids
-            ):
+        first = bisect_left(adjusted_starts, left.end_s)
+        left_reports = report_sets[left_index - 1]
+        for right_offset in range(first, len(ordered_candidates)):
+            right_index = right_offset + 1
+            right = ordered_candidates[right_offset]
+            if left_index == right_index or not left_reports.isdisjoint(report_sets[right_offset]):
                 continue
             if right.start_s + 1e-9 >= left.end_s + _travel_time(
                 left.end_x, left.end_y, right.x, right.y, speed
@@ -559,8 +571,36 @@ class Mission1ReplanGate:
     ) -> tuple[ReplanGateDecision, AdvisoryRoute]:
         graph = build_candidate_dag(environment, belief)
         advisory = longest_path_oracle(graph)
+        active_context = status.active_state_context
+        active_target = active_context.get("target_entity_id")
+        lifecycle = environment.get("maneuver_lifecycle")
+        world = environment.get("world_model_info")
+        acquired_pursuit = (
+            active_context.get("surveillance_mode") == "pursue_ship"
+            and isinstance(lifecycle, Mapping)
+            and lifecycle.get("action") == "pursue"
+            and lifecycle.get("lifecycle") == "active"
+            and isinstance(lifecycle.get("parameters"), Mapping)
+            and lifecycle["parameters"].get("entity_id") == active_target
+            and (
+                lifecycle.get("phase") == "pursuit"
+                or (
+                    isinstance(world, Mapping)
+                    and active_target in world.get("visible_ship_ids", ())
+                )
+            )
+        )
+        # An acquired target is observed from the pursuit's live viewpoint,
+        # not by flying again to the scheduled ship position. This exemption
+        # is only for rescoring the current assignment, never new candidates.
+        # Controller phase and camera evidence can straddle a step. Either
+        # tracking evidence suffices; a replan also need not replace a suitable
+        # already-active command merely to change its creation revision.
+        ongoing_ids = active_context.get("target_report_ids", ()) if acquired_pursuit else ()
         opportunities = {
-            item.report_id: item for item in _opportunities(environment, belief)
+            item.report_id: item for item in _opportunities(
+                environment, belief, ongoing_report_ids=ongoing_ids,
+            )
         }
         candidate_keys = {
             (candidate.mode, candidate.entity_id, candidate.report_ids)
@@ -612,7 +652,8 @@ class Mission1ReplanGate:
             continuing_pursuit = (
                 mode == "pursue_ship"
                 and identity == active_candidate_id
-                and start_s <= now < end_s
+                and now < end_s
+                and (start_s <= now or acquired_pursuit)
             )
             ship = by_ship.get(entity_id) if isinstance(entity_id, int) else None
             utility = score_candidate_opportunities(
@@ -627,7 +668,7 @@ class Mission1ReplanGate:
                     if mode == "pursue_ship" and ship is not None
                     else 0.0
                 ),
-                observation_start_s=now if continuing_pursuit else None,
+                observation_start_s=max(now, start_s) if continuing_pursuit else None,
             )
             current_score += _score_units(utility) / SCORE_SCALE
             scored_reports.update(newly_scored)

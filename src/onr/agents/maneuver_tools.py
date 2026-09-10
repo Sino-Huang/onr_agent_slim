@@ -253,6 +253,11 @@ def set_transition_target(
 ) -> str:
     """Select one exact live target without changing FSM state.
 
+    If the incoming heartbeat had no valid intent, assess this selected intent
+    in the same heartbeat: transition when ready, then choose the next action.
+    Only a post-transition target or replacement of an incoming intent defers
+    assessment to a later heartbeat. Selection alone is not a transition.
+
     Args:
         target_state: Exact target state from the current live candidates.
         rationale: Concise public rationale for selecting this target.
@@ -336,6 +341,11 @@ def transition_fsm(
     runtime: ToolRuntime[ManeuverToolContext],
 ) -> str:
     """Consume the selected intent and apply its exact internal FSM event.
+
+    A selected intent is required first. For a heartbeat that began without
+    one, call set_transition_target, inspect its result, then assess and use
+    this tool in the same heartbeat when ready. A rejected attempt changes no
+    FSM state and does not consume the bootstrap exception.
 
     Args:
         current_state: Exact current state returned by the live FSM context.
@@ -649,7 +659,7 @@ def navigate(
         y: Target planar y coordinate.
         reflection: Concise public evidence summary for this action.
         z: Optional target altitude or depth.
-        speed: Optional requested speed.
+        speed: Optional speed override in metres per second. Omit for deadline-driven transit to use the environment's configured speed; arriving early is allowed. Set a lower override only when current mission evidence requires slower travel and the deadline remains feasible.
         deadline_time: Absolute non-negative Mission time by which to reach the target.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """

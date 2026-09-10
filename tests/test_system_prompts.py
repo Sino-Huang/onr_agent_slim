@@ -172,3 +172,19 @@ def test_maneuver_prompt_enforces_assess_first_single_snapshot_ordering() -> Non
     assert "positive integers" in prompt
     assert "Sensor-gated actual Events" in prompt
     assert "no_change Maneuver heartbeat requires no tool executions" not in prompt
+
+
+def test_maneuver_prompt_bounds_waiting_for_unconfirmed_reports() -> None:
+    prompt = " ".join(
+        load_system_prompt(
+            Path(__file__).parents[1] / "conf/system_prompt", "maneuver-control"
+        ).split()
+    )
+    assert "before the observation window ends" in prompt
+    assert "completed observation effort" in prompt
+    assert "unconfirmed report IDs" in prompt
+    assert "mandatory verification" in prompt
+    assert "bounded publication delay" in prompt
+    assert "derived_transition_facts" in prompt
+    assert "not a condition assessment" in prompt
+    assert "sensing uncertainty does not change this arithmetic" in prompt
