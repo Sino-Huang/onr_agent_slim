@@ -355,8 +355,8 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     assert "+ candidate_estimation[candidate]" in model_text
     assert "+ candidate_omission[candidate]" in model_text
     assert "candidate_score" not in data_text
-    assert "candidate_count = 4;" in data_text
-    assert "arc_count = 7;" in data_text
+    assert "candidate_count = 5;" in data_text
+    assert "arc_count = 9;" in data_text
     assert result.evidence is not None
     assert result.evidence.minizinc_solver == "coin-bc"
     assert '"status": "OPTIMAL_SOLUTION"' in result.stdout
@@ -557,14 +557,14 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
     )
     assert json.loads(inspected_problem.stdout) == {
         "advisory_modes": ["pursue_ship"],
-        "arc_count": 6,
+        "arc_count": 8,
         "candidate_arrays_aligned": True,
-        "candidate_count": 3,
-        "candidate_counts_by_mode": {"fixed_view": 2, "pursue_ship": 1},
+        "candidate_count": 4,
+        "candidate_counts_by_mode": {"fixed_view": 3, "pursue_ship": 1},
         "component_score_consistent": True,
         "forward_arcs": True,
         "incoming_index_valid": True,
-        "node_count": 5,
+        "node_count": 6,
         "outgoing_index_valid": True,
         "pursuit_risk_rate_inputs": [
             {
@@ -577,7 +577,7 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         ],
         "pursuit_ship_ids": [7],
         "report_arrays_aligned": True,
-        "report_id_count": 5,
+        "report_id_count": 7,
         "source_to_sink": True,
         "valid": True,
     }
@@ -585,8 +585,9 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
     broken = tmp_path / "broken.dzn"
     broken.write_text(
         data.read_text(encoding="utf-8").replace(
-            "outgoing_start = [1, 4, 5, 6, 7, 7];",
-            "outgoing_start = [1, 4, 5, 6, 6, 7];",
+            "outgoing_start = [1,",
+            "outgoing_start = [0,",
+            1,
         ),
         encoding="utf-8",
     )
@@ -597,7 +598,7 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         text=True,
     )
     assert rejected.returncode != 0
-    assert "outgoing index does not match arc_from" in rejected.stderr
+    assert "adjacency offset bounds are invalid" in rejected.stderr
 
 
 def test_full_physical_vehicle_patrol_solves_within_executor_limit(

@@ -114,6 +114,10 @@ def inspect(path: Path) -> dict[str, object]:
     source = _integer(values, "source_node")
     sink = _integer(values, "sink_node")
     report_count = _integer(values, "report_id_count")
+    _require(
+        len(_integer_array(values, "node_objective_potential")) == node_count,
+        "objective potentials are misaligned",
+    )
 
     arc_from = _integer_array(values, "arc_from")
     arc_to = _integer_array(values, "arc_to")

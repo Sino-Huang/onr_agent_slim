@@ -101,9 +101,14 @@ class ReplanGateDecision:
     reason: str
 
 
-def _candidate_id(mode: str, report_ids: Sequence[str]) -> str:
+def _candidate_id(
+    mode: str, report_ids: Sequence[str], *, viewpoint: tuple[int, int] | None = None,
+) -> str:
+    identity: dict[str, object] = {"mode": mode, "report_ids": list(report_ids)}
+    if viewpoint is not None:
+        identity["viewpoint"] = viewpoint
     encoded = json.dumps(
-        {"mode": mode, "report_ids": list(report_ids)},
+        identity,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -177,7 +182,6 @@ def public_report_rates(
 
 def _opportunities(
     environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
-    *, ongoing_report_ids: Sequence[str] = (),
 ) -> tuple[ObservationOpportunity, ...]:
     world = environment.get("world_model_info")
     checks = world.get("event_report_checks", ()) if isinstance(world, Mapping) else ()
@@ -188,21 +192,11 @@ def _opportunities(
     }
     by_ship = {ship.entity_id: ship for ship in belief.ships}
     now = float(cast(Any, environment["mission_time_seconds"]))
-    vehicle = cast(Mapping[str, object], environment["controlled_vehicle"])
-    position = cast(Mapping[str, object], vehicle["position"])
-    start_x, start_y = float(cast(Any, position["x"])), float(cast(Any, position["y"]))
-    speed = float(cast(Any, vehicle["max_velocity"]))
-    ongoing = frozenset(ongoing_report_ids)
     raw: list[tuple[str, int, float, float, float, float, float]] = []
     for report in _public_reports(environment, belief):
         if (
             report.report_id in checked
             or report.time_s < now
-            or (
-                report.report_id not in ongoing
-                and now + _travel_time(start_x, start_y, report.x, report.y, speed)
-                > report.time_s + 1e-9
-            )
         ):
             continue
         ship = by_ship[report.entity_id]
@@ -320,7 +314,10 @@ def _candidate(
     )
     report_span = ordered[-1].time_s - ordered[0].time_s
     return SurveillanceCandidate(
-        candidate_id=_candidate_id(mode, report_ids),
+        candidate_id=_candidate_id(
+            mode, report_ids,
+            viewpoint=(round(x), round(y)) if mode == "fixed_view" else None,
+        ),
         mode=mode,
         entity_id=entity_id,
         start_s=ordered[0].time_s,
@@ -341,10 +338,51 @@ def _candidate(
     )
 
 
+def _fixed_view_candidates(
+    opportunities: Sequence[ObservationOpportunity],
+    radius: float,
+    current_position: tuple[float, float],
+) -> tuple[SurveillanceCandidate, ...]:
+    """Sample report centres, pair midpoints, and the current viewpoint.
+
+    A report need not be reachable at its own position to be observable.
+    Quantize viewpoints before checking coverage, matching MiniZinc output.
+    Keep distinct locations even when they cover identical reports: their
+    connections to earlier/later assignments can differ.
+    """
+    candidates: dict[str, SurveillanceCandidate] = {}
+    for anchor in opportunities:
+        simultaneous = tuple(
+            report for report in opportunities
+            if abs(report.time_s - anchor.time_s) <= OBSERVATION_DWELL_SECONDS
+        )
+        viewpoints = {
+            (round(anchor.x), round(anchor.y)),
+            (round(current_position[0]), round(current_position[1])),
+        }
+        viewpoints.update(
+            (round((anchor.x + other.x) / 2), round((anchor.y + other.y) / 2))
+            for other in simultaneous
+            if math.hypot(anchor.x - other.x, anchor.y - other.y) <= 2 * radius
+        )
+        for x, y in sorted(viewpoints):
+            covered = tuple(
+                report for report in simultaneous
+                if math.hypot(report.x - x, report.y - y) <= radius
+            )
+            if not covered:
+                continue
+            candidate = _candidate(
+                "fixed_view", covered, x=x, y=y, end_x=x, end_y=y, entity_id=None,
+            )
+            candidates[candidate.candidate_id] = candidate
+    return tuple(candidates.values())
+
+
 def build_candidate_dag(
     environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
 ) -> CandidateDAG:
-    """Build all feasible fixed-view and pursuit candidates and one shared DAG."""
+    """Build feasible sampled fixed views and contiguous pursuits in one DAG."""
 
     if belief.belief_kind != "reporting_reliability":
         raise ValueError("Mission 1 planning requires a reporting reliability belief")
@@ -360,29 +398,14 @@ def build_candidate_dag(
     start_x, start_y = float(position["x"]), float(position["y"])
     opportunities = _opportunities(environment, belief)
     report_rates = public_report_rates(environment, belief)
-    candidates: dict[tuple[str, tuple[str, ...]], SurveillanceCandidate] = {}
+    candidates: dict[str, SurveillanceCandidate] = {}
 
-    for anchor in opportunities:
-        covered = tuple(
-            item
-            for item in opportunities
-            if abs(item.time_s - anchor.time_s) <= 0.5
-            and math.hypot(item.x - anchor.x, item.y - anchor.y) <= fov
-        )
-        item = _candidate(
-            "fixed_view",
-            covered,
-            x=anchor.x,
-            y=anchor.y,
-            end_x=anchor.x,
-            end_y=anchor.y,
-            entity_id=None,
-        )
+    for item in _fixed_view_candidates(opportunities, fov, (start_x, start_y)):
         if (
             now + _travel_time(start_x, start_y, item.x, item.y, speed)
             <= item.start_s + 1e-9
         ):
-            candidates[(item.mode, item.report_ids)] = item
+            candidates[item.candidate_id] = item
 
     by_ship = {ship.entity_id: ship for ship in belief.ships}
     for entity_id in sorted(by_ship):
@@ -423,7 +446,7 @@ def build_candidate_dag(
                     expected_omission_probability=(ship.expected_omission_probability),
                     public_report_rate=report_rates[entity_id],
                 )
-                candidates[(item.mode, item.report_ids)] = item
+                candidates[item.candidate_id] = item
 
     ordered_candidates = tuple(
         sorted(
@@ -590,17 +613,11 @@ class Mission1ReplanGate:
                 )
             )
         )
-        # An acquired target is observed from the pursuit's live viewpoint,
-        # not by flying again to the scheduled ship position. This exemption
-        # is only for rescoring the current assignment, never new candidates.
-        # Controller phase and camera evidence can straddle a step. Either
-        # tracking evidence suffices; a replan also need not replace a suitable
-        # already-active command merely to change its creation revision.
-        ongoing_ids = active_context.get("target_report_ids", ()) if acquired_pursuit else ()
+        # Opportunities are sensing targets, not destinations. Reachability
+        # belongs to candidate admission; an acquired pursuit need not repeat
+        # its rendezvous just to retain the unchecked tail of its assignment.
         opportunities = {
-            item.report_id: item for item in _opportunities(
-                environment, belief, ongoing_report_ids=ongoing_ids,
-            )
+            item.report_id: item for item in _opportunities(environment, belief)
         }
         candidate_keys = {
             (candidate.mode, candidate.entity_id, candidate.report_ids)
@@ -612,7 +629,7 @@ class Mission1ReplanGate:
         represented: set[str] = set()
         scored_reports: set[str] = set()
         current_score = 0.0
-        next_key: tuple[str, int | None, tuple[str, ...]] | None = None
+        next_feasible = True
         next_start = math.inf
         active_candidate_id = status.active_state_context.get("candidate_id")
         for context in statechart.state_context.values():
@@ -680,10 +697,43 @@ class Mission1ReplanGate:
             # The two-report admission rule applies to new pursuit windows,
             # not the unchecked tail of the currently executing assignment.
             # Maneuver Control owns tracking loss and acquisition recovery.
-            if report_ids and not continuing_pursuit and start_s < next_start:
+            continuing_fixed_view = (
+                mode == "fixed_view" and identity == active_candidate_id
+                and start_s <= now < end_s
+            )
+            if (
+                report_ids and not continuing_pursuit and not continuing_fixed_view
+                and start_s < next_start
+            ):
                 next_start = start_s
-                next_key = key
-        next_feasible = next_key is None or next_key in candidate_keys
+                if mode == "fixed_view":
+                    # A different point covering the same IDs is not evidence
+                    # that the selected point remains reachable. Conversely,
+                    # checks can remove a midpoint's defining reports without
+                    # invalidating the still-reachable selected viewpoint.
+                    planner_item = context.get("planner_item")
+                    parameters = (
+                        planner_item.get("parameters")
+                        if isinstance(planner_item, Mapping) else None
+                    )
+                    vehicle = cast(Mapping[str, Any], environment["controlled_vehicle"])
+                    position = vehicle["position"]
+                    next_feasible = (
+                        isinstance(parameters, Mapping)
+                        and isinstance(parameters.get("x"), (int, float))
+                        and isinstance(parameters.get("y"), (int, float))
+                        and now + _travel_time(
+                            position["x"], position["y"], parameters["x"], parameters["y"],
+                            vehicle["max_velocity"],
+                        ) <= start_s + 1e-9
+                        and all(
+                            math.hypot(item.x - parameters["x"], item.y - parameters["y"])
+                            <= vehicle["fov_radius"]
+                            for item in covered
+                        )
+                    )
+                else:
+                    next_feasible = key in candidate_keys
         return (
             self.evaluate(
                 current_score,
@@ -762,6 +812,21 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
     maneuver_bound = maximums[0] + 1
     duration_bound = maximums[1] + 1
     tie_break_bound = maximums[2] + 1
+    # Reweight network edges by node potentials before conversion to floating
+    # point. Potentials telescope to a route-independent constant, preserving
+    # every lexicographic preference without removing any feasible route.
+    potentials = [0] * node_count
+    for node in range(graph.source + 1, graph.sink + 1):
+        weight = 0 if node == graph.sink else (
+            _score_units(_candidate_utility(graph.candidates[node - 1]))
+            * maneuver_bound * duration_bound * tie_break_bound
+            - duration_bound * tie_break_bound
+            - durations[node - 1] * tie_break_bound - node
+        )
+        potentials[node] = max(
+            (potentials[previous] + weight for previous in incoming_nodes[node]),
+            default=0,
+        )
     assignments: dict[str, int] = {
         "candidate_count": len(graph.candidates),
         "node_count": node_count,
@@ -782,6 +847,7 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
         "outgoing_start": offsets(outgoing_counts),
         "incoming_start": offsets(incoming_counts),
         "incoming_edge": [index + 1 for index in incoming_order],
+        "node_objective_potential": potentials,
         "candidate_mode": [
             1 if item.mode == "fixed_view" else 2 for item in graph.candidates
         ],

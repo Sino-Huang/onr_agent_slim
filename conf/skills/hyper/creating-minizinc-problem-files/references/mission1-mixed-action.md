@@ -6,10 +6,18 @@ The installed code-owned builder is shared by data materialization, the Python
 advisory oracle, and Context Coordination active-plan rescoring. It consumes the
 current agent-facing public schedule, vehicle pose/capabilities, cumulative
 report-check ledger, and persisted reporting-reliability snapshot. It excludes
-expired, checked, duplicate, and unreachable opportunities.
+expired, checked, and duplicate reports; reachability is checked at each
+candidate's actual viewpoint or pursuit rendezvous.
 
-`fixed_view` candidates cover the reports visible from one report-anchored FoV
-during the observation dwell. `pursue_ship` candidates are every feasible
+`fixed_view` candidates sample report centres, pair midpoints, and the drone's
+current position. A nearby report need not be reachable at its own position to
+be observed from a feasible viewpoint. Coordinates are rounded to the solver's
+integer metres before coverage is tested. Distinct viewpoints retain distinct
+candidate IDs even when they cover the same reports, because their travel
+connections can differ. Coverage uses the advertised radius; actual direction
+and occlusion can still leave reports unconfirmed.
+
+`pursue_ship` candidates are every feasible
 contiguous window of at least two consecutive future reports for one numeric
 ship ID. A pursuit starts at its first report position/time, follows every
 adjacent advertised movement within the travel budget, and ends after
@@ -52,6 +60,14 @@ to make otherwise identical optima deterministic. Compatible routes never
 repeat a public report. The unit-flow relaxation remains exact because a
 directed network incidence matrix has integral vertices.
 
+Integer node potentials first reweight network costs by a route-independent
+constant. MiniZinc verifies the longest-prefix potentials against the
+component-derived weights, then uses unit penalties for negative reduced-cost
+edges. Zero-loss paths are exactly the original lexicographic optima; all
+feasible routes remain available. This avoids huge floating-point objective
+coefficients while preserving the optimal plans and reported utility. Keep the
+generated potential array with its paired model and data files.
+
 The compact inspector validates aligned candidate/report/arc arrays, forward
 arcs, a source-to-sink route, an incoming-edge permutation, and nondecreasing
 CSR offsets. Repeated offsets are valid empty adjacency windows.
@@ -65,6 +81,11 @@ estimation / hidden-omission / combined utility. Interpret risk and rate using
 `rate_scale`, utility using `utility.scale`, and time using `time_scale`.
 
 MiniZinc selects the mode. Hyper preserves that mode in the Statechart. Maneuver
+receives the exact selected fixed-view coordinates through the bound
+`planner_item.parameters`; retain those coordinates even for a midpoint or
+current-position view. Replanning checks the selected viewpoint's reachability,
+not an alternative location covering the same reports.
+Maneuver
 Control alone turns `fixed_view` into navigation or calls
 `pursue(entity_id=<numeric target>)` for `pursue_ship`. An unseen pursuit target
 may first require navigation to the public first-report rendezvous, and later

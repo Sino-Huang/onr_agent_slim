@@ -72,13 +72,173 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
 def test_fixed_view_uses_advertised_sensor_range(radius, covered_count):
     environment = _environment([
         _report("near", 1, 60.0, 0.0, 0.0),
-        _report("further", 2, 60.0, 200.0, 0.0),
+        _report("further", 2, 60.0, 350.0, 0.0),
     ], fov=radius)
     graph = build_candidate_dag(environment, _belief((1, 2)))
     route = longest_path_oracle(graph)
     assert len(route.candidates) == 1
     assert route.candidates[0].mode == "fixed_view"
     assert len(route.covered_report_ids) == covered_count
+
+
+@pytest.mark.parametrize("event_time", [12.0, 30.0])
+def test_midpoint_view_covers_reports_without_reaching_each_ship(event_time):
+    environment = _environment([
+        _report("a", 1, event_time, 0.0, 0.0),
+        _report("b", 2, event_time, 150.0, 0.0),
+    ], fov=100.0)
+    route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2))))
+    assert set(route.covered_report_ids) == {"a", "b"}
+    assert len(route.candidates) == 1
+    assert (route.candidates[0].x, route.candidates[0].y) == (75, 0)
+
+
+def test_distinct_fixed_viewpoints_keep_distinct_stable_identity():
+    reports = [_report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0)]
+    belief = _belief((1, 2))
+    graph = build_candidate_dag(_environment(reports, fov=100), belief)
+    views = [c for c in graph.candidates if c.mode == "fixed_view" and len(c.report_ids) == 2]
+    assert {(c.x, c.y) for c in views} >= {(0, 0), (50, 0), (100, 0)}
+    assert len({c.candidate_id for c in views}) == len(views)
+    reordered = build_candidate_dag(_environment(list(reversed(reports)), fov=100), belief)
+    assert graph == reordered
+
+
+def test_fixed_view_coverage_is_checked_after_integer_coordinate_rounding():
+    import math
+
+    reports = [_report("a", 1, 30, 0.49, 0), _report("b", 2, 30, 200.49, 0)]
+    graph = build_candidate_dag(_environment(reports, fov=100), _belief((1, 2)))
+    positions = {r["report_id"]: r["position"][:2] for r in reports}
+    for candidate in graph.candidates:
+        if candidate.mode == "fixed_view":
+            assert candidate.x == round(candidate.x) and candidate.y == round(candidate.y)
+            assert all(math.dist((candidate.x, candidate.y), positions[r]) <= 100 for r in candidate.report_ids)
+
+
+def test_current_view_is_feasible_without_flying_to_a_report():
+    environment = _environment([_report("a", 1, 0.5, 80, 0)], fov=100)
+    route = longest_path_oracle(build_candidate_dag(environment, _belief((1,))))
+    assert route.covered_report_ids == ("a",)
+    assert (route.candidates[0].x, route.candidates[0].y) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "selected_x, now, checked, expected_infeasible",
+    [(0, 29, False, False), (100, 29, False, True), (50, 24, True, False)],
+)
+def test_replan_checks_selected_viewpoint_not_an_alternative(selected_x, now, checked, expected_infeasible):
+    environment = _environment([
+        _report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0),
+    ], fov=100)
+    belief = _belief((1, 2))
+    context = {
+        "candidate_id": "selected-viewpoint", "surveillance_mode": "fixed_view",
+        "target_entity_id": None, "target_report_ids": ["a", "b"],
+        "observation_window": {"start": {"seconds": 30}, "duration": {"seconds": .5}},
+        "planner_item": {"parameters": {"x": selected_x, "y": 0}},
+    }
+    chart = Statechart(
+        mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+        planning_profile="temporal", entry_state="active", states=("active",),
+        transitions=(), terminal_states=("active",), state_context={"active": context},
+    )
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+        active_state="active", active_state_context=context)
+    environment["mission_time_seconds"] = now
+    if checked:
+        environment["world_model_info"]["event_report_checks"] = [{"check_id": "already-checked", "report_id": "a", "outcome": "clean"}]
+    decision, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert (decision.reason == "next_assignment_infeasible") == expected_infeasible
+    assert decision.trigger == expected_infeasible
+
+
+def test_midpoint_route_matches_real_minizinc(tmp_path):
+    environment = _environment([
+        _report("a", 1, 12, 0, 0), _report("b", 2, 12, 150, 0),
+    ], fov=100)
+    graph = build_candidate_dag(environment, _belief((1, 2)))
+    oracle = longest_path_oracle(graph)
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    solved = json.loads(result.stdout.splitlines()[0])
+    assert [a["candidate_id"] for a in solved["assignments"]] == [c.candidate_id for c in oracle.candidates]
+    assert solved["combined_score"] == round(oracle.score * SCORE_SCALE)
+    assert solved["assignments"][0]["parameters"]["x"] == 75
+    assert set(solved["assignments"][0]["parameters"]["report_ids"]) == {"a", "b"}
+
+
+def test_objective_potentials_shift_every_route_by_the_same_constant():
+    graph = build_candidate_dag(_environment([
+        _report("a", 1, 10, 0, 0), _report("b", 2, 10, 8, 0),
+        _report("c", 3, 20, 15, 0),
+    ], fov=5), _belief((1, 2, 3)))
+    data = {name: json.loads(value[:-1]) for name, value in (
+        line.split(" = ", 1) for line in serialize_minizinc_data(graph).splitlines()
+    )}
+    potentials = data["node_objective_potential"]
+    scores = [a + b + c for a, b, c in zip(data["candidate_recall"], data["candidate_estimation"], data["candidate_omission"])]
+    weights = [0] + [
+        score * data["maneuver_bound"] * data["duration_bound"] * data["tie_break_bound"]
+        - data["duration_bound"] * data["tie_break_bound"]
+        - duration * data["tie_break_bound"] - (i + 1)
+        for i, (score, duration) in enumerate(zip(scores, data["candidate_duration"]))
+    ] + [0]
+    outgoing = [[] for _ in potentials]
+    for u, v in graph.arcs:
+        outgoing[u].append(v)
+
+    priorities = []
+
+    def check_paths(node, original, reduced, loss=0):
+        if node == graph.sink:
+            assert reduced == original + potentials[graph.source] - potentials[graph.sink]
+            priorities.append((original, loss))
+            return 1
+        return sum(check_paths(v, original + weights[v],
+            reduced + weights[v] + potentials[node] - potentials[v],
+            loss + int(weights[v] + potentials[node] - potentials[v] < 0)) for v in outgoing[node])
+
+    assert check_paths(graph.source, 0, 0) > 1
+    best = max(original for original, _ in priorities)
+    assert all((original == best) == (loss == 0) for original, loss in priorities)
+
+
+def test_large_lexicographic_weights_keep_solver_tie_parity(tmp_path, monkeypatch):
+    import onr.application.mission1_planning as planning
+    from onr.adapters.minizinc import MiniZincExecutor
+    from onr.contracts.planning import PlanningOutcome
+
+    # Minimize the observed ~10^15-objective failure to three tied viewpoints.
+    # Scaling units changes neither the public evidence nor the utility ratio.
+    monkeypatch.setattr(planning, "SCORE_SCALE", 1_000_000_000_000_000)
+    graph = planning.build_candidate_dag(_environment([
+        _report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0),
+    ], fov=100), _belief((1, 2)))
+    oracle = planning.longest_path_oracle(graph)
+    data = planning.serialize_minizinc_data(graph)
+    values = {name: json.loads(value[:-1]) for name, value in (
+        line.split(" = ", 1) for line in data.splitlines()
+    )}
+    assert max(values["node_objective_potential"]) > 2**53
+    executor = MiniZincExecutor(
+        Path("modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc").resolve(), tmp_path / "solver",
+    )
+    assets = {"model.mzn": (EXAMPLE_ROOT / "model.mzn").read_bytes(), "data.dzn": data.encode()}
+    result = executor.execute(assets, "coin-bc")
+    stream = [json.loads(line) for line in result.stdout.splitlines()]
+    assert any(row.get("status") == "OPTIMAL_SOLUTION" for row in stream)
+    native = json.loads(next(row["output"]["default"] for row in reversed(stream) if row.get("type") == "solution"))
+    assert [a["candidate_id"] for a in native["assignments"]] == [c.candidate_id for c in oracle.candidates]
+    corrupted = data.replace("node_objective_potential = [0,", "node_objective_potential = [1,", 1)
+    # Instance checking validates types; the assert is evaluated on flattening.
+    rejected = executor.execute({**assets, "data.dzn": corrupted.encode()}, "coin-bc")
+    assert rejected.outcome is PlanningOutcome.ERROR
+    assert "invalid objective potentials" in rejected.stdout + rejected.stderr
 
 
 def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) -> None:
@@ -100,10 +260,11 @@ def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) ->
         ]),
         _belief(tuple(range(1, count + 1))),
     )
-    assert len(graph.candidates) == count
-    # One initial reachability check and one fixed-view check per report;
-    # only forward temporal pairs can require a route travel calculation.
-    assert calls <= 2 * count + count * (count - 1) // 2
+    candidate_count = len(graph.candidates)
+    assert {r for c in graph.candidates for r in c.report_ids} == {f"r{i}" for i in range(1, count + 1)}
+    # One viewpoint admission check per candidate; only forward temporal
+    # pairs can require a route travel calculation, including alternate views.
+    assert calls <= candidate_count + candidate_count * (candidate_count - 1) // 2
     assert len(longest_path_oracle(graph).candidates) == count
 
 

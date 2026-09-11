@@ -77,13 +77,39 @@ var float: surveillance_duration = sum(candidate in CANDIDATES)(
 var float: candidate_order_sum = sum(candidate in CANDIDATES)(
   candidate * selected[candidate]
 );
-% Keep integral lexicographic weights; the executor sets COIN's LP tolerances
-% explicitly so the final candidate-order tie-break is retained.
-var float: objective =
-  combined_score * maneuver_bound * duration_bound * tie_break_bound
-  - maneuver_count * duration_bound * tie_break_bound
-  - surveillance_duration * tie_break_bound
-  - candidate_order_sum;
+% Apply potentials while coefficients are integers, before floating-point LP
+% conversion. Along ANY source-to-sink unit flow these terms telescope to
+% potential[source] - potential[sink], a constant. The same routes and exact
+% lexicographic preferences remain; no advisory route is imposed as a constraint.
+array[NODES] of int: node_objective_potential;
+array[NODES] of int: node_weight = [
+  if node = source_node \/ node = sink_node then 0 else
+    candidate_combined_score[node - 1] * maneuver_bound * duration_bound * tie_break_bound
+    - duration_bound * tie_break_bound
+    - candidate_duration[node - 1] * tie_break_bound - (node - 1)
+  endif | node in NODES
+];
+array[ARCS] of int: arc_weight = [
+  node_weight[arc_to[edge]] + node_objective_potential[arc_from[edge]]
+  - node_objective_potential[arc_to[edge]] | edge in ARCS
+];
+% Verify longest-prefix potentials from the component-derived node weights.
+% Consequently all reduced costs are nonpositive and a zero-cost path exists.
+% Penalizing each strictly negative edge by one preserves EXACTLY the optimal
+% paths, while avoiding huge floating-point coefficients and tiny tie losses.
+constraint assert(
+  node_objective_potential[source_node] = 0 /\
+  forall(node in NODES where node != source_node)(
+    node_objective_potential[node] = max(
+      position in incoming_start[node]..incoming_start[node + 1] - 1
+    )(
+      node_objective_potential[arc_from[incoming_edge[position]]] + node_weight[node]
+    )
+  ), "invalid objective potentials"
+);
+var float: objective = -sum(edge in ARCS)(
+  bool2int(arc_weight[edge] < 0) * flow[edge]
+);
 
 solve maximize objective;
 
