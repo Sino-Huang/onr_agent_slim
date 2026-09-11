@@ -19,8 +19,23 @@ A nearby report need not be reachable at its own position to
 be observed from a feasible viewpoint. Coordinates are rounded to the solver's
 integer metres before coverage is tested. Distinct viewpoints retain distinct
 candidate IDs even when they cover the same reports, because their travel
-connections can differ. Coverage uses the advertised radius; actual direction
-and occlusion can still leave reports unconfirmed.
+connections can differ. Without `surveillance_views`, coverage uses the advertised
+radius; actual direction and occlusion can still leave reports unconfirmed.
+
+Offline sensor-aware snapshots can supply `surveillance_views`: public geometry
+rows containing integer `x`, `y`, `arrival_direction` (0=east, 1=south, 2=west,
+3=north), and visible `report_ids`. These replace radius-only fixed-view coverage;
+an empty table means no visible fixed views. The physical-runtime offline helper
+computes these rows from native camera/occlusion masks and position-selected
+partitions, without reading event truth. Use supplied rows unchanged, never
+invent visibility from hidden events. This is not yet a live-feed export or a
+replay of navigation-dependent partition migration.
+
+When supplied, `controlled_vehicle.quarter_turn_seconds` reserves multigrid Mission
+time per 90-degree turn, including navigation and final orientation. A half-turn
+costs two ticks. The builder reserves the worse of the two cardinal axis orders;
+an unknown post-pursuit heading reserves its worst initial turn. This is
+world-model timing, not AirSim yaw calibration.
 
 `pursue_ship` candidates are every feasible
 contiguous window of at least two consecutive future reports for one numeric
@@ -67,7 +82,7 @@ ordering. Compatible routes never
 repeat a public report. The unit-flow relaxation remains exact because a
 directed network incidence matrix has integral vertices.
 
-Consecutive selected fixed views at the same coordinates form one sustained
+Consecutive selected fixed views at the same coordinates and direction form one sustained
 assignment, from the first report time through the last dwell. The objective
 counts one maneuver for that run and includes its holding gaps in surveillance
 duration. Other viewpoints and pursuits separate runs. Public utility is rounded
@@ -103,6 +118,11 @@ receives the exact selected fixed-view coordinates through the bound
 `planner_item.parameters`; retain those coordinates even for a midpoint or
 current-position view. Replanning checks the selected viewpoint's reachability,
 not an alternative location covering the same reports.
+When present, preserve `planner_item.parameters.arrival_direction` through the
+Statechart and copy it to `navigate`. Complete the requested orientation by the
+observation-window start; a different heading is a different fixed view. Omit
+the field when the verified plan supplies none. Directions are discrete, not
+continuous yaw angles.
 Maneuver
 Control alone turns `fixed_view` into navigation or calls
 `pursue(entity_id=<numeric target>)` for `pursue_ship`. An unseen pursuit target

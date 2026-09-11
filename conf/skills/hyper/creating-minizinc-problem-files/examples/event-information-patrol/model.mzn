@@ -30,6 +30,7 @@ array[CANDIDATES] of int: candidate_start;
 array[CANDIDATES] of int: candidate_duration;
 array[CANDIDATES] of int: candidate_x;
 array[CANDIDATES] of int: candidate_y;
+array[CANDIDATES] of -1..3: candidate_arrival_direction;
 array[CANDIDATES] of int: candidate_recall;
 array[CANDIDATES] of int: candidate_estimation;
 array[CANDIDATES] of int: candidate_omission;
@@ -72,7 +73,8 @@ var float: combined_score = sum(candidate in CANDIDATES)(
 );
 function bool: same_fixed_view(int: left, int: right) =
   candidate_mode[left] = 1 /\ candidate_mode[right] = 1 /\
-  candidate_x[left] = candidate_x[right] /\ candidate_y[left] = candidate_y[right];
+  candidate_x[left] = candidate_x[right] /\ candidate_y[left] = candidate_y[right] /\
+  candidate_arrival_direction[left] = candidate_arrival_direction[right];
 array[ARCS] of bool: continues_view = [
   if arc_from[e] = source_node \/ arc_to[e] = sink_node then false else
     same_fixed_view(arc_from[e] - 1, arc_to[e] - 1)
@@ -176,6 +178,8 @@ output let {
     ++ ",\"time_scale\":" ++ show(time_scale) ++ "}"
     ++ ",\"parameters\":{\"x\":" ++ show(candidate_x[candidate])
     ++ ",\"y\":" ++ show(candidate_y[candidate])
+    ++ (if candidate_arrival_direction[candidate] < 0 then "" else
+        ",\"arrival_direction\":" ++ show(candidate_arrival_direction[candidate]) endif)
     ++ ",\"target_posterior_risk\":"
     ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_target_risk[candidate]) endif)
     ++ ",\"expected_omission_probability\":"

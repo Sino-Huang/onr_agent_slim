@@ -21,6 +21,7 @@ candidate_start = [24, 24, 24, 28];
 candidate_duration = [1, 1, 5, 1];
 candidate_x = [21, 20, 20, 38];
 candidate_y = [0, 0, 0, 0];
+candidate_arrival_direction = [-1, -1, -1, -1];
 candidate_recall = [340439, 340439, 623102, 311551];
 candidate_estimation = [737776, 737776, 475553, 237776];
 candidate_omission = [0, 0, 92316, 0];

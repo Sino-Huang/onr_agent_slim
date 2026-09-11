@@ -102,6 +102,7 @@ def build_instance(
         "arcs": len(graph.arcs),
         "advisory_score": route.score,
         "advisory_modes": [candidate.mode for candidate in route.candidates],
+        "advisory_arrival_directions": [candidate.arrival_direction for candidate in route.candidates],
         "advisory_maneuvers": len(route.candidates),
         "advisory_duration_s": route.duration_s,
         "component_score_consistent": (

@@ -127,6 +127,7 @@ def inspect(path: Path) -> dict[str, object]:
         "candidate_duration",
         "candidate_x",
         "candidate_y",
+        "candidate_arrival_direction",
         "candidate_recall",
         "candidate_estimation",
         "candidate_omission",
@@ -152,6 +153,8 @@ def inspect(path: Path) -> dict[str, object]:
     )
 
     modes = _integer_array(values, "candidate_mode")
+    directions = _integer_array(values, "candidate_arrival_direction")
+    _require(all(direction in range(-1, 4) for direction in directions), "invalid arrival direction")
     entities = _integer_array(values, "candidate_entity_id")
     durations = _integer_array(values, "candidate_duration")
     recall = _integer_array(values, "candidate_recall")
@@ -188,10 +191,12 @@ def inspect(path: Path) -> dict[str, object]:
         )
     ]
     nodes = tuple(
-        _RouteNode(score, start, duration, "fixed_view" if mode == 1 else "pursue_ship", x, y)
-        for score, start, duration, mode, x, y in zip(
+        _RouteNode(score, start, duration, "fixed_view" if mode == 1 else "pursue_ship", x, y,
+                   None if direction == -1 else direction)
+        for score, start, duration, mode, x, y, direction in zip(
             candidate_scores, _integer_array(values, "candidate_start"), durations,
             modes, _integer_array(values, "candidate_x"), _integer_array(values, "candidate_y"),
+            directions,
             strict=True,
         )
     )
@@ -228,6 +233,7 @@ def inspect(path: Path) -> dict[str, object]:
         "advisory_modes": [
             nodes[index].mode for index in run_starts
         ],
+        "advisory_arrival_directions": [nodes[index].arrival_direction for index in run_starts],
         "advisory_maneuvers": route[1],
         "advisory_duration_s": route[2] / _integer(values, "time_scale"),
         "component_score_consistent": (

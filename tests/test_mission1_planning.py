@@ -68,6 +68,123 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     assert not graph.candidates
 
 
+@pytest.mark.parametrize("direction, seconds", [(0, 0), (1, .5), (2, 1), (3, .5)])
+def test_multigrid_turn_time_uses_discrete_ticks(direction, seconds):
+    from onr.application.mission1_planning import _navigation_time
+
+    assert _navigation_time(0, 0, 0, 0, 10, 0, direction, .5) == seconds
+    # Both axis orders require at most three turns for this start/end heading.
+    assert _navigation_time(0, 0, 9, 9, 10, 0, 0, .5) == 3.0
+    assert _navigation_time(0, 0, 0, 0, 10, None, direction, .5) == 1.0
+
+
+def _directional_environment():
+    environment = _environment([
+        _report("east", 1, 2, 0, 1),
+        _report("west", 2, 4, 0, -1),
+        _report("occluded", 3, 4, 0, 2),
+    ])
+    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["east"]},
+        {"x": 0, "y": 0, "arrival_direction": 2, "report_ids": ["west"]},
+    ]
+    return environment
+
+
+def test_native_views_exclude_hidden_reports_and_do_not_merge_different_headings():
+    environment = _directional_environment()
+    graph = build_candidate_dag(environment, _belief((1, 2, 3)))
+    route = longest_path_oracle(graph)
+    assert route.covered_report_ids == ("east", "west")
+    assert [c.arrival_direction for c in route.candidates] == [0, 2]
+    assert len(route.candidates) == 2
+    environment["static_info"][1]["time"] = 3
+    route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2, 3))))
+    assert len(route.candidates) == 1  # 0.5 dwell + 1.0 half-turn will not fit.
+    environment["surveillance_views"] = []
+    assert not build_candidate_dag(environment, _belief((1, 2, 3))).candidates
+
+
+@pytest.mark.parametrize("invalid", [-1, 4, 90, 1.0, True, "1"])
+def test_native_views_reject_non_discrete_directions(invalid):
+    environment = _directional_environment()
+    environment["surveillance_views"][0]["arrival_direction"] = invalid
+    with pytest.raises(ValueError, match="arrival_direction"):
+        build_candidate_dag(environment, _belief((1, 2, 3)))
+
+
+def test_directional_route_matches_real_minizinc(tmp_path):
+    graph = build_candidate_dag(_directional_environment(), _belief((1, 2, 3)))
+    oracle = longest_path_oracle(graph)
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    solved = json.loads(result.stdout.splitlines()[0])
+    assert [a["candidate_id"] for a in solved["assignments"]] == [c.candidate_id for c in oracle.candidates]
+    assert [a["parameters"]["arrival_direction"] for a in solved["assignments"]] == [0, 2]
+    assert solved["maneuver_count"] == 2
+    assert solved["combined_score"] == round(oracle.score * SCORE_SCALE)
+
+
+def test_native_views_still_exclude_checked_and_expired_reports():
+    environment = _directional_environment()
+    environment["mission_time_seconds"] = 3
+    environment["world_model_info"]["event_report_checks"] = [{"report_id": "west"}]
+    assert not build_candidate_dag(environment, _belief((1, 2, 3))).candidates
+
+
+def test_native_views_require_turn_timing():
+    environment = _directional_environment()
+    del environment["controlled_vehicle"]["quarter_turn_seconds"]
+    with pytest.raises(ValueError, match="quarter_turn_seconds"):
+        build_candidate_dag(environment, _belief((1, 2, 3)))
+
+
+@pytest.mark.parametrize("direction, now, feasible", [(2, 0, True), (0, 0, False), (2, 3.5, False)])
+def test_replan_uses_selected_native_heading_and_turn_deadline(direction, now, feasible):
+    environment = _directional_environment()
+    environment["mission_time_seconds"] = now
+    environment["world_model_info"]["event_report_checks"] = [{"report_id": "east"}]
+    context = {
+        "candidate_id": "selected-view", "surveillance_mode": "fixed_view",
+        "target_entity_id": None, "target_report_ids": ["west"],
+        "observation_window": {"start": {"seconds": 4}, "duration": {"seconds": .5}},
+        "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": direction}},
+    }
+    chart = Statechart(
+        mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+        planning_profile="temporal", entry_state="active", states=("active",),
+        transitions=(), terminal_states=("active",), state_context={"active": context},
+    )
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                      active_state="active", active_state_context=context)
+    decision, _ = Mission1ReplanGate().assess(environment, _belief((1, 2, 3)), chart, status)
+    assert (decision.reason != "next_assignment_infeasible") == feasible
+    if direction == 0:
+        assert decision.current_score == 0  # It cannot see the selected west report.
+
+
+def test_turn_aware_reduced_graph_matches_dense_route():
+    from onr.application.mission1_planning import _navigation_time
+
+    environment = _directional_environment()
+    graph = build_candidate_dag(environment, _belief((1, 2, 3)))
+    arcs = {(0, graph.sink)}
+    for u, left in enumerate(graph.candidates, 1):
+        arcs.update({(0, u), (u, graph.sink)})
+        for v, right in enumerate(graph.candidates, 1):
+            if u < v and left.end_s + _navigation_time(
+                left.end_x, left.end_y, right.x, right.y, 10,
+                left.arrival_direction, right.arrival_direction, .5,
+            ) <= right.start_s and set(left.report_ids).isdisjoint(right.report_ids):
+                arcs.add((u, v))
+    assert longest_path_oracle(graph) == longest_path_oracle(replace(graph, arcs=tuple(sorted(arcs))))
+
+
 @pytest.mark.parametrize("radius, covered_count", [(100.0, 1), (300.0, 2)])
 def test_fixed_view_uses_advertised_sensor_range(radius, covered_count):
     environment = _environment([

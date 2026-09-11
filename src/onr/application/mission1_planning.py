@@ -8,6 +8,8 @@ import math
 from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import cache
+from itertools import pairwise
 from typing import Any, cast
 
 from onr.contracts.fsm import FSMStatus, Statechart
@@ -70,6 +72,7 @@ class SurveillanceCandidate:
     estimation_utility: float
     omission_yield: float
     combined_score: float
+    arrival_direction: int | None = None
 
     @property
     def duration_s(self) -> float:
@@ -103,10 +106,13 @@ class ReplanGateDecision:
 
 def _candidate_id(
     mode: str, report_ids: Sequence[str], *, viewpoint: tuple[int, int] | None = None,
+    arrival_direction: int | None = None,
 ) -> str:
     identity: dict[str, object] = {"mode": mode, "report_ids": list(report_ids)}
     if viewpoint is not None:
         identity["viewpoint"] = viewpoint
+    if arrival_direction is not None:
+        identity["arrival_direction"] = arrival_direction
     encoded = json.dumps(
         identity,
         sort_keys=True,
@@ -119,6 +125,70 @@ def _travel_time(ax: float, ay: float, bx: float, by: float, speed: float) -> fl
     # Navigation follows cardinal grid edges. Reserve 10% of the advertised
     # speed for execution overhead; obstacle detours still require replanning.
     return (abs(bx - ax) + abs(by - ay)) / (0.9 * speed)
+
+
+def _navigation_time(
+    ax: float, ay: float, bx: float, by: float, speed: float,
+    start_direction: int | None, arrival_direction: int | None,
+    quarter_turn_seconds: float,
+) -> float:
+    """Reserve cardinal travel and turns for either obstacle-free axis order.
+
+    NED x is north, y is east; grid headings are east/south/west/north.
+    Pursuit leaves an unknown heading, so reserve the worst initial turn.
+    Obstacle detours, like before, remain a replanning concern.
+    """
+    travel = _travel_time(ax, ay, bx, by, speed)
+    if quarter_turn_seconds == 0:
+        return travel
+    north = None if bx == ax else (3 if bx > ax else 1)
+    east = None if by == ay else (0 if by > ay else 2)
+    return travel + _navigation_turns(north, east, start_direction, arrival_direction) * quarter_turn_seconds
+
+
+@cache
+def _navigation_turns(
+    north: int | None, east: int | None,
+    start_direction: int | None, arrival_direction: int | None,
+) -> int:
+    # Only 3 * 3 * 5 * 5 discrete combinations, reused across the candidate DAG.
+    legs = [direction for direction in (north, east) if direction is not None]
+
+    def turns(left: int, right: int) -> int:
+        delta = abs(left - right)
+        return min(delta, 4 - delta)
+
+    counts = []
+    for initial in range(4) if start_direction is None else (start_direction,):
+        for order in (legs, legs[::-1]):
+            headings = [initial, *order]
+            if arrival_direction is not None:
+                headings.append(arrival_direction)
+            counts.append(sum(turns(a, b) for a, b in pairwise(headings)))
+    return max(counts)
+
+
+def _vehicle_direction(vehicle: Mapping[str, Any]) -> int | None:
+    heading = vehicle.get("heading_degrees")
+    return None if heading is None else (round(float(heading) / 90) - 1) % 4
+
+
+def _fixed_view_report_ids(
+    environment: Mapping[str, Any], parameters: Mapping[str, Any],
+    opportunities: Sequence[ObservationOpportunity],
+) -> set[str]:
+    views = environment.get("surveillance_views")
+    if views is not None:
+        return {
+            report_id for view in views
+            if all(view[key] == parameters.get(key) for key in ("x", "y", "arrival_direction"))
+            for report_id in view["report_ids"]
+        }
+    return {
+        item.report_id for item in opportunities
+        if math.hypot(item.x - parameters["x"], item.y - parameters["y"])
+        <= environment["controlled_vehicle"]["fov_radius"]
+    }
 
 
 def _public_reports(
@@ -319,6 +389,7 @@ def _candidate(
     target_posterior_risk: float = 0.0,
     expected_omission_probability: float = 0.0,
     public_report_rate: float = 0.0,
+    arrival_direction: int | None = None,
 ) -> SurveillanceCandidate:
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     report_ids = tuple(item.report_id for item in ordered)
@@ -335,6 +406,7 @@ def _candidate(
         candidate_id=_candidate_id(
             mode, report_ids,
             viewpoint=(round(x), round(y)) if mode == "fixed_view" else None,
+            arrival_direction=arrival_direction,
         ),
         mode=mode,
         entity_id=entity_id,
@@ -353,19 +425,21 @@ def _candidate(
         estimation_utility=utility.estimation,
         omission_yield=utility.omission_yield,
         combined_score=utility.combined,
+        arrival_direction=arrival_direction,
     )
 
 
 def _candidate_arcs(
     candidates: Sequence[SurveillanceCandidate], speed: float,
+    quarter_turn_seconds: float = 0.0,
 ) -> tuple[tuple[int, int], ...]:
     """Build the same reduced arcs without materializing the dense closure.
 
-    Generated candidates move within their reserved travel budget and end with
-    observation dwell. Thus timing feasibility is transitive, and disjoint time
-    windows cannot repeat a report. Backward traversal can reuse each target's
-    reachable successors. Only a positive-utility intermediate dominates an arc;
-    zero-utility candidates must not erase a shorter equivalent route.
+    Generated candidates end with observation dwell; disjoint time windows
+    cannot repeat a report. Backward traversal reuses each target's reachable
+    successors: a compatible path through a positive-utility intermediate
+    dominates a direct arc to the same successor. Zero-utility candidates
+    must not erase a shorter equivalent route.
     """
     sink = len(candidates) + 1
     sink_bit = 1 << sink
@@ -392,8 +466,9 @@ def _candidate_arcs(
             right = candidates[target - 1]
             if not reports[source - 1].isdisjoint(reports[target - 1]):
                 continue
-            if right.start_s + 1e-9 < left.end_s + _travel_time(
+            if right.start_s + 1e-9 < left.end_s + _navigation_time(
                 left.end_x, left.end_y, right.x, right.y, speed,
+                left.arrival_direction, right.arrival_direction, quarter_turn_seconds,
             ):
                 continue
             arcs.append((source, target))
@@ -413,20 +488,11 @@ def _candidate_arcs(
     return tuple(sorted(arcs))
 
 
-def _fixed_view_candidates(
-    opportunities: Sequence[ObservationOpportunity],
-    radius: float,
+def sample_fixed_viewpoints(
+    opportunities: Sequence[ObservationOpportunity], radius: float,
     current_position: tuple[float, float],
-) -> tuple[SurveillanceCandidate, ...]:
-    """Reuse sampled report centres/midpoints and the current viewpoint over time.
-
-    A report need not be reachable at its own position to be observable.
-    Quantize viewpoints before checking coverage, matching MiniZinc output.
-    Keep distinct locations even when they cover identical reports: their
-    connections to earlier/later assignments can differ. A location sampled
-    from one report is also a valid viewpoint for other visible report times.
-    """
-    candidates: dict[str, SurveillanceCandidate] = {}
+) -> tuple[tuple[int, int], ...]:
+    """Public-schedule sampling shared with offline native-camera evaluation."""
     viewpoints = {
         (round(report.x), round(report.y)) for report in opportunities
     } | {(round(current_position[0]), round(current_position[1]))}
@@ -440,7 +506,48 @@ def _fixed_view_candidates(
             for other in simultaneous
             if math.hypot(anchor.x - other.x, anchor.y - other.y) <= 2 * radius
         )
-    for x, y in sorted(viewpoints):
+    return tuple(sorted(viewpoints))
+
+
+def _fixed_view_candidates(
+    opportunities: Sequence[ObservationOpportunity],
+    radius: float,
+    current_position: tuple[float, float],
+    surveillance_views: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[SurveillanceCandidate, ...]:
+    """Reuse sampled report centres/midpoints and the current viewpoint over time.
+
+    A report need not be reachable at its own position to be observable.
+    Quantize viewpoints before checking coverage, matching MiniZinc output.
+    Keep distinct locations even when they cover identical reports: their
+    connections to earlier/later assignments can differ. A location sampled
+    from one report is also a valid viewpoint for other visible report times.
+    """
+    candidates: dict[str, SurveillanceCandidate] = {}
+    if surveillance_views is not None:
+        # Supplied by the world-model visibility evaluator, using public report
+        # positions only. An empty table means no visible opportunities, not
+        # permission to fall back to omnidirectional radius coverage.
+        for view in surveillance_views:
+            direction = view["arrival_direction"]
+            if type(direction) is not int or direction not in range(4):
+                raise ValueError("surveillance view arrival_direction must be an integer in 0..3")
+            x, y = view["x"], view["y"]
+            if x != round(x) or y != round(y):
+                raise ValueError("surveillance viewpoints must use integer output coordinates")
+            visible_ids = set(view["report_ids"])
+            by_time: dict[float, list[ObservationOpportunity]] = {}
+            for report in opportunities:
+                if report.report_id in visible_ids:
+                    by_time.setdefault(report.time_s, []).append(report)
+            for covered in by_time.values():
+                candidate = _candidate(
+                    "fixed_view", covered, x=x, y=y, end_x=x, end_y=y,
+                    entity_id=None, arrival_direction=direction,
+                )
+                candidates[candidate.candidate_id] = candidate
+        return tuple(candidates.values())
+    for x, y in sample_fixed_viewpoints(opportunities, radius, current_position):
         visible = tuple(
             report for report in opportunities
             if math.hypot(report.x - x, report.y - y) <= radius
@@ -470,6 +577,10 @@ def build_candidate_dag(
         raise ValueError("Mission 1 planning requires controlled vehicle state")
     position = vehicle["position"]
     speed = float(vehicle["max_velocity"])
+    turn_seconds = float(vehicle.get("quarter_turn_seconds", 0.0))
+    if "surveillance_views" in environment and (not math.isfinite(turn_seconds) or turn_seconds <= 0):
+        raise ValueError("sensor-aware planning requires positive quarter_turn_seconds")
+    direction = _vehicle_direction(vehicle)
     fov = float(vehicle["fov_radius"])
     now = float(cast(Any, environment["mission_time_seconds"]))
     start_x, start_y = float(position["x"]), float(position["y"])
@@ -477,9 +588,13 @@ def build_candidate_dag(
     report_rates = public_report_rates(environment, belief)
     candidates: dict[str, SurveillanceCandidate] = {}
 
-    for item in _fixed_view_candidates(opportunities, fov, (start_x, start_y)):
+    for item in _fixed_view_candidates(
+        opportunities, fov, (start_x, start_y),
+        cast(Any, environment.get("surveillance_views")),
+    ):
         if (
-            now + _travel_time(start_x, start_y, item.x, item.y, speed)
+            now + _navigation_time(start_x, start_y, item.x, item.y, speed,
+                                   direction, item.arrival_direction, turn_seconds)
             <= item.start_s + 1e-9
         ):
             candidates[item.candidate_id] = item
@@ -496,7 +611,8 @@ def build_candidate_dag(
         for start_index in range(len(ordered) - 1):
             first = ordered[start_index]
             if (
-                now + _travel_time(start_x, start_y, first.x, first.y, speed)
+                now + _navigation_time(start_x, start_y, first.x, first.y, speed,
+                                       direction, None, turn_seconds)
                 > first.time_s + 1e-9
             ):
                 continue
@@ -504,8 +620,9 @@ def build_candidate_dag(
                 previous = ordered[end_index - 1]
                 following = ordered[end_index]
                 if (
-                    _travel_time(
-                        previous.x, previous.y, following.x, following.y, speed
+                    _navigation_time(
+                        previous.x, previous.y, following.x, following.y, speed,
+                        None, None, turn_seconds,
                     )
                     > following.time_s - previous.time_s + 1e-9
                 ):
@@ -535,7 +652,7 @@ def build_candidate_dag(
     sink = len(ordered_candidates) + 1
     return CandidateDAG(
         ordered_candidates,
-        _candidate_arcs(ordered_candidates, speed),
+        _candidate_arcs(ordered_candidates, speed, turn_seconds),
         source,
         sink,
     )
@@ -551,12 +668,14 @@ class _RouteNode:
     mode: str
     x: int
     y: int
+    arrival_direction: int | None = None
 
 
 def _route_nodes(candidates: Sequence[SurveillanceCandidate]) -> tuple[_RouteNode, ...]:
     return tuple(
         _RouteNode(_score_units(_candidate_utility(c)), round(c.start_s * TIME_SCALE),
-                   round(c.duration_s * TIME_SCALE), c.mode, round(c.x), round(c.y))
+                   round(c.duration_s * TIME_SCALE), c.mode, round(c.x), round(c.y),
+                   c.arrival_direction)
         for c in candidates
     )
 
@@ -567,6 +686,7 @@ def _same_fixed_view(
     return (
         left.mode == right.mode == "fixed_view"
         and left.x == right.x and left.y == right.y
+        and left.arrival_direction == right.arrival_direction
     )
 
 
@@ -803,6 +923,16 @@ class Mission1ReplanGate:
                 report_id for report_id in report_ids if report_id not in scored_reports
             )
             covered = tuple(opportunities[report_id] for report_id in newly_scored)
+            planner_item = context.get("planner_item")
+            parameters = (
+                planner_item.get("parameters") if isinstance(planner_item, Mapping) else None
+            )
+            if mode == "fixed_view" and "surveillance_views" in environment:
+                visible_ids = (
+                    _fixed_view_report_ids(environment, parameters, covered)
+                    if isinstance(parameters, Mapping) else set()
+                )
+                covered = tuple(item for item in covered if item.report_id in visible_ids)
             continuing_pursuit = (
                 mode == "pursue_ship"
                 and identity == active_candidate_id
@@ -822,7 +952,7 @@ class Mission1ReplanGate:
                 )
             )
             current_score += _score_units(utility) / SCORE_SCALE
-            scored_reports.update(newly_scored)
+            scored_reports.update(item.report_id for item in covered)
             key = (
                 str(mode),
                 entity_id if isinstance(entity_id, int) else None,
@@ -845,25 +975,20 @@ class Mission1ReplanGate:
                     # that the selected point remains reachable. Conversely,
                     # checks can remove a midpoint's defining reports without
                     # invalidating the still-reachable selected viewpoint.
-                    planner_item = context.get("planner_item")
-                    parameters = (
-                        planner_item.get("parameters")
-                        if isinstance(planner_item, Mapping) else None
-                    )
                     vehicle = cast(Mapping[str, Any], environment["controlled_vehicle"])
                     position = vehicle["position"]
                     next_feasible = (
                         isinstance(parameters, Mapping)
                         and isinstance(parameters.get("x"), (int, float))
                         and isinstance(parameters.get("y"), (int, float))
-                        and now + _travel_time(
+                        and now + _navigation_time(
                             position["x"], position["y"], parameters["x"], parameters["y"],
                             vehicle["max_velocity"],
+                            _vehicle_direction(vehicle), parameters.get("arrival_direction"),
+                            float(vehicle.get("quarter_turn_seconds", 0.0)),
                         ) <= start_s + 1e-9
-                        and all(
-                            math.hypot(item.x - parameters["x"], item.y - parameters["y"])
-                            <= vehicle["fov_radius"]
-                            for item in covered
+                        and set(report_ids) <= _fixed_view_report_ids(
+                            environment, parameters, tuple(opportunities.values()),
                         )
                     )
                 else:
@@ -987,6 +1112,10 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
         "candidate_duration": durations,
         "candidate_x": [round(item.x) for item in graph.candidates],
         "candidate_y": [round(item.y) for item in graph.candidates],
+        "candidate_arrival_direction": [
+            -1 if item.arrival_direction is None else item.arrival_direction
+            for item in graph.candidates
+        ],
         "candidate_recall": [
             round(item.recall_utility * SCORE_SCALE) for item in graph.candidates
         ],
@@ -1033,6 +1162,7 @@ __all__ = [
     "build_candidate_dag",
     "longest_path_oracle",
     "public_report_rates",
+    "sample_fixed_viewpoints",
     "score_candidate_opportunities",
     "score_fixed_view_opportunities",
     "serialize_minizinc_data",

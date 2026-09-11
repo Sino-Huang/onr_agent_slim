@@ -67,6 +67,7 @@ def solve_public_plan(environment, belief, model, executable, output):
     assert solution["maneuver_count"] == len(oracle.candidates)
     assert solution["surveillance_duration"] == round(oracle.duration_s * TIME_SCALE)
     for assignment, candidate in zip(solution["assignments"], oracle.candidates, strict=True):
+        assert assignment["parameters"].get("arrival_direction") == candidate.arrival_direction
         assert assignment["start"] == round(candidate.start_s * TIME_SCALE)
         assert assignment["duration"] == round(candidate.duration_s * TIME_SCALE)
         assert assignment["parameters"]["report_ids"] == list(candidate.report_ids)
@@ -105,7 +106,7 @@ def ideal_visible_ids(assignment, positions, radius):
     ]
 
 
-def score_ideal_plan(solution, converter, radius, step):
+def score_ideal_plan(solution, converter, radius, step, *, visibility=None):
     """Use runtime discrepancy pairing/latching with idealized visibility."""
     converter.reset_detected_discrepancies()
     assignments = solution["assignments"]
@@ -126,7 +127,10 @@ def score_ideal_plan(solution, converter, radius, step):
                 point = trajectory.get_traj_point_at_time(now)
                 if point is not None:
                     positions[ship] = (point.ned_north, point.ned_east)
-            visible = ideal_visible_ids(assignment, positions, radius)
+            visible = (
+                ideal_visible_ids(assignment, positions, radius) if visibility is None
+                else visibility(assignment, positions)
+            )
             converter.update_detected_discrepancies(visible, now)
     checks = converter.get_event_report_checks()
     realized = Counter()
