@@ -1,4 +1,8 @@
 adapter_kind: external_transport
+# Sensor range is owned by the supplied Physical Runtime scenario configuration
+# (harbor_world.yaml: runtime.max_visibility_distance_m = 300 m). It arrives as
+# controlled_vehicle.fov_radius in both initial planning and live snapshots.
+# Do not override it here or substitute the fake environment's sensing_radius.
 protocols:
   maneuver_command: 1
   maneuver_feedback: 1

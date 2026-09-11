@@ -68,6 +68,19 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     assert not graph.candidates
 
 
+@pytest.mark.parametrize("radius, covered_count", [(100.0, 1), (300.0, 2)])
+def test_fixed_view_uses_advertised_sensor_range(radius, covered_count):
+    environment = _environment([
+        _report("near", 1, 60.0, 0.0, 0.0),
+        _report("further", 2, 60.0, 200.0, 0.0),
+    ], fov=radius)
+    graph = build_candidate_dag(environment, _belief((1, 2)))
+    route = longest_path_oracle(graph)
+    assert len(route.candidates) == 1
+    assert route.candidates[0].mode == "fixed_view"
+    assert len(route.covered_report_ids) == covered_count
+
+
 def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) -> None:
     import onr.application.mission1_planning as planning
 
