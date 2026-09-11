@@ -649,6 +649,7 @@ def navigate(
     z: float | None = None,
     speed: float | None = None,
     deadline_time: float | None = None,
+    arrival_direction: Annotated[int, Field(strict=True, ge=0, le=3)] | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
     """Submit deadline-aware navigation.
@@ -660,7 +661,8 @@ def navigate(
         reflection: Concise public evidence summary for this action.
         z: Optional target altitude or depth.
         speed: Optional speed override in metres per second. Omit for deadline-driven transit to use the environment's configured speed; arriving early is allowed. Set a lower override only when current mission evidence requires slower travel and the deadline remains feasible.
-        deadline_time: Absolute non-negative Mission time by which to reach the target.
+        deadline_time: Absolute non-negative Mission time by which to reach the target and finish the requested arrival turn.
+        arrival_direction: Optional discrete camera-facing direction on arrival: 0=east, 1=south, 2=west, 3=north. Copy planner_item.parameters.arrival_direction; omit when the verified plan supplies none. Continuous angles are not supported.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
@@ -673,7 +675,13 @@ def navigate(
             required["speed"] = speed
         if deadline_time is not None:
             required["deadline_time"] = _deadline(deadline_time)
+        if arrival_direction is not None:
+            required["arrival_direction"] = arrival_direction
         parameters = _parameters(required, extra_parameters)
+        if "arrival_direction" in parameters:
+            direction = parameters["arrival_direction"]
+            if type(direction) is not int or direction not in range(4):
+                raise ValueError("arrival_direction must be an integer: 0=east, 1=south, 2=west, 3=north")
     except ValueError as exc:
         result = {"status": "rejected", "reason": str(exc)}
         context.execution_record.append("navigate", result, successful=False)

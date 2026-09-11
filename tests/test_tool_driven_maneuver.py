@@ -238,6 +238,7 @@ def test_operational_tools_have_typed_model_visible_schemas() -> None:
         "z",
         "speed",
         "deadline_time",
+        "arrival_direction",
         "extra_parameters",
         "reflection",
     }
@@ -417,6 +418,46 @@ def test_maneuver_parameters_reject_non_json_values_and_negative_deadlines() -> 
             reflection="Reject an invalid absolute deadline.",
             runtime=None,
         )
+
+
+@pytest.mark.parametrize("direction", [-1, 4, 1.0, 1.5, True, "east"])
+def test_navigation_tool_schema_rejects_non_discrete_arrival_direction(direction):
+    schema = cast(Any, navigate).tool_call_schema
+    with pytest.raises(ValueError):
+        schema.model_validate({"maneuver_id": "view", "x": 0, "y": 0,
+                               "reflection": "Face the selected view", "arrival_direction": direction})
+
+
+@pytest.mark.parametrize("direction", range(4))
+def test_navigation_tool_dispatches_selected_arrival_direction(direction):
+    plan = _plan()
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    chart = Statechart(mission_id=plan.mission_id, plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id, planning_profile="temporal",
+        entry_state="view", states=("view",), terminal_states=("view",), transitions=(),
+        state_context={"view": {"surveillance_mode": "fixed_view",
+            "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": direction}}}})
+    status = asyncio.run(runner.activate(chart))
+    invocation = ManeuverInvocation("turn-heartbeat", "turn-correlation", plan.mission_id,
+        plan.plan_revision, "statechart.json", _focused(status), {"mission_time_seconds": 0})
+
+    class Dispatcher:
+        command = None
+
+        def dispatch_physical(self, invocation, decision, *, sequence):
+            self.command = ManeuverCommand(f"command-{sequence}", invocation.correlation_id,
+                invocation.mission_id, invocation.plan_revision, decision.maneuver_id,
+                decision.physical_intent)
+            return self.command, True
+
+    dispatcher = Dispatcher()
+    context = ManeuverToolContext(invocation, runner, dispatcher)
+    parameters = invocation.fsm_context.current_state_context["planner_item"]["parameters"]
+    result = json.loads(cast(Any, navigate).func(maneuver_id="face-view", x=parameters["x"], y=parameters["y"],
+        arrival_direction=parameters["arrival_direction"], reflection="Preserve the selected discrete viewing direction",
+        runtime=_runtime(context)))
+    assert result["action"] == "navigate"
+    assert dispatcher.command.to_dict()["intent"]["parameters"]["arrival_direction"] == direction
 
 
 def test_transition_tool_checks_exact_candidate_without_interpreting_context() -> None:
