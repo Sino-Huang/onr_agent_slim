@@ -556,6 +556,8 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         text=True,
     )
     assert json.loads(inspected_problem.stdout) == {
+        "advisory_duration_s": 2.5,
+        "advisory_maneuvers": 1,
         "advisory_modes": ["pursue_ship"],
         "arc_count": 8,
         "candidate_arrays_aligned": True,

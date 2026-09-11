@@ -185,7 +185,7 @@ def _evaluate_snapshot(
         for assignment in assignments
         if isinstance(assignment, Mapping)
     ]
-    by_id = {candidate.candidate_id: candidate for candidate in graph.candidates}
+    by_id = {candidate.candidate_id: candidate for candidate in oracle.candidates}
     if len(solver_ids) != len(set(solver_ids)) or any(
         candidate_id not in by_id for candidate_id in solver_ids
     ):
@@ -197,6 +197,8 @@ def _evaluate_snapshot(
         isinstance(assignment, Mapping)
         and assignment.get("surveillance_mode") == candidate.mode
         and assignment.get("entity_id") == candidate.entity_id
+        and assignment.get("start") == round(candidate.start_s * TIME_SCALE)
+        and assignment.get("duration") == round(candidate.duration_s * TIME_SCALE)
         and isinstance(assignment.get("parameters"), Mapping)
         and assignment["parameters"].get("report_ids") == list(candidate.report_ids)
         for assignment, candidate in zip(assignments, selected, strict=True)

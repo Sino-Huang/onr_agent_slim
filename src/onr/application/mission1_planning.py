@@ -7,7 +7,7 @@ import json
 import math
 from bisect import bisect_left
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from onr.contracts.fsm import FSMStatus, Statechart
@@ -259,6 +259,21 @@ def _score_units(utility: CandidateUtility) -> int:
     )
 
 
+def score_fixed_view_opportunities(
+    covered: Sequence[ObservationOpportunity],
+) -> CandidateUtility:
+    """Round each report-time block once, also when rescoring a sustained view."""
+    by_time: dict[float, list[ObservationOpportunity]] = {}
+    for item in covered:
+        by_time.setdefault(item.time_s, []).append(item)
+    utilities = [score_candidate_opportunities(items) for items in by_time.values()]
+    return CandidateUtility(
+        sum(round(item.recall * SCORE_SCALE) for item in utilities) / SCORE_SCALE,
+        sum(round(item.estimation * SCORE_SCALE) for item in utilities) / SCORE_SCALE,
+        0.0,
+    )
+
+
 def _candidate_utility(candidate: SurveillanceCandidate) -> CandidateUtility:
     return CandidateUtility(
         candidate.recall_utility,
@@ -307,10 +322,13 @@ def _candidate(
 ) -> SurveillanceCandidate:
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     report_ids = tuple(item.report_id for item in ordered)
-    utility = score_candidate_opportunities(
-        ordered,
-        expected_omission_probability=expected_omission_probability,
-        public_report_rate=public_report_rate,
+    utility = (
+        score_fixed_view_opportunities(ordered)
+        if mode == "fixed_view" else score_candidate_opportunities(
+            ordered,
+            expected_omission_probability=expected_omission_probability,
+            public_report_rate=public_report_rate,
+        )
     )
     report_span = ordered[-1].time_s - ordered[0].time_s
     return SurveillanceCandidate(
@@ -427,11 +445,10 @@ def _fixed_view_candidates(
             report for report in opportunities
             if math.hypot(report.x - x, report.y - y) <= radius
         )
-        for anchor in visible:
-            covered = tuple(
-                report for report in visible
-                if abs(report.time_s - anchor.time_s) <= OBSERVATION_DWELL_SECONDS
-            )
+        by_time: dict[float, list[ObservationOpportunity]] = {}
+        for report in visible:
+            by_time.setdefault(report.time_s, []).append(report)
+        for covered in by_time.values():
             candidate = _candidate(
                 "fixed_view", covered, x=x, y=y, end_x=x, end_y=y, entity_id=None,
             )
@@ -524,28 +541,75 @@ def build_candidate_dag(
     )
 
 
-def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
-    incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
-    for source, target in graph.arcs:
+@dataclass(frozen=True, slots=True)
+class _RouteNode:
+    """Integer objective inputs shared with the serialized-data inspector."""
+
+    score: int
+    start: int
+    duration: int
+    mode: str
+    x: int
+    y: int
+
+
+def _route_nodes(candidates: Sequence[SurveillanceCandidate]) -> tuple[_RouteNode, ...]:
+    return tuple(
+        _RouteNode(_score_units(_candidate_utility(c)), round(c.start_s * TIME_SCALE),
+                   round(c.duration_s * TIME_SCALE), c.mode, round(c.x), round(c.y))
+        for c in candidates
+    )
+
+
+def _same_fixed_view(
+    left: _RouteNode | SurveillanceCandidate, right: _RouteNode | SurveillanceCandidate,
+) -> bool:
+    return (
+        left.mode == right.mode == "fixed_view"
+        and left.x == right.x and left.y == right.y
+    )
+
+
+def _route_cost(
+    nodes: Sequence[_RouteNode], source: int, target: int,
+) -> tuple[int, int, int, int]:
+    if target == len(nodes) + 1:
+        return (0, 0, 0, 0)
+    right = nodes[target - 1]
+    left = nodes[source - 1] if source else None
+    holding = left is not None and _same_fixed_view(left, right)
+    duration = right.duration + (
+        right.start - left.start - left.duration if holding and left is not None else 0
+    )
+    return right.score, int(not holding), duration, target
+
+
+def _best_route(
+    nodes: Sequence[_RouteNode], arcs: Sequence[tuple[int, int]],
+) -> tuple[int, int, int, int, tuple[int, ...]]:
+    """Exact lexicographic path, with fixed-view holding charged on transitions."""
+    sink = len(nodes) + 1
+    incoming: list[list[int]] = [[] for _ in range(sink + 1)]
+    for source, target in arcs:
         incoming[target].append(source)
     best: list[tuple[int, int, int, int, tuple[int, ...]] | None] = [None] * (
-        graph.sink + 1
+        sink + 1
     )
-    best[graph.source] = (0, 0, 0, 0, ())
-    for node in range(graph.source + 1, graph.sink + 1):
+    best[0] = (0, 0, 0, 0, ())
+    for node in range(1, sink + 1):
         for previous in incoming[node]:
             prior = best[previous]
             if prior is None:
                 continue
-            if node == graph.sink:
+            if node == sink:
                 candidate = prior
             else:
-                item = graph.candidates[node - 1]
+                score, maneuvers, duration, order = _route_cost(nodes, previous, node)
                 candidate = (
-                    prior[0] + _score_units(_candidate_utility(item)),
-                    prior[1] + 1,
-                    prior[2] + round(item.duration_s * TIME_SCALE),
-                    prior[3] + node,
+                    prior[0] + score,
+                    prior[1] + maneuvers,
+                    prior[2] + duration,
+                    prior[3] + order,
                     prior[4] + (node - 1,),
                 )
             current = best[node]
@@ -569,10 +633,43 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
             )
             if current_key is None or candidate_key > current_key:
                 best[node] = candidate
-    result = best[graph.sink]
+    result = best[sink]
     if result is None:
         raise ValueError("Mission 1 candidate graph has no route")
-    selected = tuple(graph.candidates[index] for index in result[4])
+    return result
+
+
+def _fixed_view_runs(
+    selected: Sequence[SurveillanceCandidate],
+) -> tuple[SurveillanceCandidate, ...]:
+    groups: list[list[SurveillanceCandidate]] = []
+    for candidate in selected:
+        if groups and _same_fixed_view(groups[-1][-1], candidate):
+            groups[-1].append(candidate)
+        else:
+            groups.append([candidate])
+    result: list[SurveillanceCandidate] = []
+    for group in groups:
+        first, last = group[0], group[-1]
+        if len(group) == 1:
+            result.append(first)
+            continue
+        recall = sum(round(c.recall_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
+        estimation = sum(round(c.estimation_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
+        result.append(replace(
+            first, candidate_id=first.candidate_id + "--" + last.candidate_id,
+            end_s=last.end_s,
+            report_ids=tuple(r for c in group for r in c.report_ids),
+            report_span_s=last.start_s + last.report_span_s - first.start_s,
+            recall_utility=recall, estimation_utility=estimation,
+            combined_score=recall + estimation,
+        ))
+    return tuple(result)
+
+
+def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
+    result = _best_route(_route_nodes(graph.candidates), graph.arcs)
+    selected = _fixed_view_runs(tuple(graph.candidates[index] for index in result[4]))
     covered = tuple(
         report_id for candidate in selected for report_id in candidate.report_ids
     )
@@ -713,19 +810,16 @@ class Mission1ReplanGate:
                 and (start_s <= now or acquired_pursuit)
             )
             ship = by_ship.get(entity_id) if isinstance(entity_id, int) else None
-            utility = score_candidate_opportunities(
-                covered,
-                expected_omission_probability=(
-                    ship.expected_omission_probability
-                    if mode == "pursue_ship" and ship is not None
-                    else 0.0
-                ),
-                public_report_rate=(
-                    report_rates[ship.entity_id]
-                    if mode == "pursue_ship" and ship is not None
-                    else 0.0
-                ),
-                observation_start_s=max(now, start_s) if continuing_pursuit else None,
+            utility = (
+                score_fixed_view_opportunities(covered)
+                if mode == "fixed_view" else score_candidate_opportunities(
+                    covered,
+                    expected_omission_probability=(
+                        ship.expected_omission_probability if ship is not None else 0.0
+                    ),
+                    public_report_rate=(report_rates[ship.entity_id] if ship is not None else 0.0),
+                    observation_start_s=max(now, start_s) if continuing_pursuit else None,
+                )
             )
             current_score += _score_units(utility) / SCORE_SCALE
             scored_reports.update(newly_scored)
@@ -823,19 +917,16 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
     incoming_nodes: list[list[int]] = [[] for _ in range(node_count)]
     for source, target in arcs:
         incoming_nodes[target - 1].append(source - 1)
+    nodes = _route_nodes(graph.candidates)
+    costs = {(u, v): _route_cost(nodes, u, v) for u, v in graph.arcs}
     path_bounds: list[tuple[int, int, int] | None] = [None] * node_count
     path_bounds[graph.source] = (0, 0, 0)
     for node in range(graph.source + 1, graph.sink + 1):
-        additions = (
-            (0, 0, 0)
-            if node == graph.sink
-            else (1, durations[node - 1], node)
-        )
         options = [
             (
-                prior[0] + additions[0],
-                prior[1] + additions[1],
-                prior[2] + additions[2],
+                prior[0] + costs[previous, node][1],
+                prior[1] + costs[previous, node][2],
+                prior[2] + costs[previous, node][3],
             )
             for previous in incoming_nodes[node]
             if (prior := path_bounds[previous]) is not None
@@ -857,14 +948,12 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
     # every lexicographic preference without removing any feasible route.
     potentials = [0] * node_count
     for node in range(graph.source + 1, graph.sink + 1):
-        weight = 0 if node == graph.sink else (
-            _score_units(_candidate_utility(graph.candidates[node - 1]))
-            * maneuver_bound * duration_bound * tie_break_bound
-            - duration_bound * tie_break_bound
-            - durations[node - 1] * tie_break_bound - node
-        )
         potentials[node] = max(
-            (potentials[previous] + weight for previous in incoming_nodes[node]),
+            (potentials[previous]
+             + costs[previous, node][0] * maneuver_bound * duration_bound * tie_break_bound
+             - costs[previous, node][1] * duration_bound * tie_break_bound
+             - costs[previous, node][2] * tie_break_bound - costs[previous, node][3]
+             for previous in incoming_nodes[node]),
             default=0,
         )
     assignments: dict[str, int] = {
@@ -945,5 +1034,6 @@ __all__ = [
     "longest_path_oracle",
     "public_report_rates",
     "score_candidate_opportunities",
+    "score_fixed_view_opportunities",
     "serialize_minizinc_data",
 ]

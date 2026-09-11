@@ -8,6 +8,8 @@ from itertools import pairwise
 from pathlib import Path
 from typing import cast
 
+from onr.application.mission1_planning import _best_route, _RouteNode, _same_fixed_view
+
 
 def _assignments(path: Path) -> dict[str, int | list[object]]:
     values: dict[str, int | list[object]] = {}
@@ -49,63 +51,6 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
-def _advisory_indices(
-    *,
-    node_count: int,
-    source: int,
-    sink: int,
-    arc_from: list[int],
-    arc_to: list[int],
-    scores: list[int],
-    durations: list[int],
-) -> tuple[int, ...]:
-    best: list[tuple[int, int, int, tuple[int, ...]] | None] = [None] * (node_count + 1)
-    best[source] = (0, 0, 0, ())
-    incoming: list[list[int]] = [[] for _ in range(node_count + 1)]
-    for start, end in zip(arc_from, arc_to, strict=True):
-        incoming[end].append(start)
-    for node in range(source + 1, sink + 1):
-        for previous in incoming[node]:
-            prior = best[previous]
-            if prior is None:
-                continue
-            if node == sink:
-                candidate = prior
-            else:
-                index = node - 2
-                candidate = (
-                    prior[0] + scores[index],
-                    prior[1] + 1,
-                    prior[2] + durations[index],
-                    prior[3] + (index,),
-                )
-            current = best[node]
-            key = (
-                candidate[0],
-                -candidate[1],
-                -candidate[2],
-                -sum(candidate[3]),
-                tuple(-value for value in candidate[3]),
-            )
-            current_key = (
-                None
-                if current is None
-                else (
-                    current[0],
-                    -current[1],
-                    -current[2],
-                    -sum(current[3]),
-                    tuple(-value for value in current[3]),
-                )
-            )
-            if current_key is None or key > current_key:
-                best[node] = candidate
-    result = best[sink]
-    if result is None:
-        raise ValueError("candidate DAG has no advisory route")
-    return result[3]
-
-
 def inspect(path: Path) -> dict[str, object]:
     values = _assignments(path)
     candidate_count = _integer(values, "candidate_count")
@@ -114,6 +59,8 @@ def inspect(path: Path) -> dict[str, object]:
     source = _integer(values, "source_node")
     sink = _integer(values, "sink_node")
     report_count = _integer(values, "report_id_count")
+    _require(source == 1 and sink == node_count == candidate_count + 2,
+             "source, candidate and sink node layout is invalid")
     _require(
         len(_integer_array(values, "node_objective_potential")) == node_count,
         "objective potentials are misaligned",
@@ -240,15 +187,18 @@ def inspect(path: Path) -> dict[str, object]:
             recall, estimation, omission, strict=True
         )
     ]
-    advisory = _advisory_indices(
-        node_count=node_count,
-        source=source,
-        sink=sink,
-        arc_from=arc_from,
-        arc_to=arc_to,
-        scores=candidate_scores,
-        durations=durations,
+    nodes = tuple(
+        _RouteNode(score, start, duration, "fixed_view" if mode == 1 else "pursue_ship", x, y)
+        for score, start, duration, mode, x, y in zip(
+            candidate_scores, _integer_array(values, "candidate_start"), durations,
+            modes, _integer_array(values, "candidate_x"), _integer_array(values, "candidate_y"),
+            strict=True,
+        )
     )
+    route = _best_route(nodes, [(u - 1, v - 1) for u, v in zip(arc_from, arc_to, strict=True)])
+    advisory = route[4]
+    run_starts = [index for position, index in enumerate(advisory)
+                  if position == 0 or not _same_fixed_view(nodes[advisory[position - 1]], nodes[index])]
     pursuit_inputs = {
         entities[index]: {
             "entity_id": entities[index],
@@ -276,8 +226,10 @@ def inspect(path: Path) -> dict[str, object]:
             pursuit_inputs[entity_id] for entity_id in sorted(pursuit_inputs)
         ],
         "advisory_modes": [
-            "fixed_view" if modes[index] == 1 else "pursue_ship" for index in advisory
+            nodes[index].mode for index in run_starts
         ],
+        "advisory_maneuvers": route[1],
+        "advisory_duration_s": route[2] / _integer(values, "time_scale"),
         "component_score_consistent": (
             sum(candidate_scores[index] for index in advisory)
             == sum(

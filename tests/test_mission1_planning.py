@@ -17,7 +17,7 @@ from onr.application.mission1_planning import (
     serialize_minizinc_data,
 )
 from onr.application.reporting_reliability import ReportingReliabilityManager
-from onr.contracts.fsm import FSMStatus, Statechart
+from onr.contracts.fsm import FSMStatus, Statechart, StatechartTransition
 from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 
 NOW = "2026-09-03T00:00:00+10:00"
@@ -141,6 +141,129 @@ def test_current_view_is_feasible_without_flying_to_a_report():
     assert (route.candidates[0].x, route.candidates[0].y) == (0, 0)
 
 
+def test_unreachable_earlier_report_does_not_hide_reachable_later_report():
+    environment = _environment([
+        _report("earlier", 1, 0.5, 9, 0),
+        _report("later", 2, 1.0, 9, 0),
+    ], fov=0.1)
+    route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2))))
+    assert route.covered_report_ids == ("later",)
+    assert route.candidates[0].start_s == 1.0
+
+
+def test_consecutive_fixed_views_are_one_native_surveillance_run(tmp_path):
+    environment = _environment([
+        _report("a", 1, 10, 0, 0),
+        _report("b", 2, 10.5, 0, 0),
+        _report("c", 3, 20, 0, 0),
+    ], fov=0.1)
+    graph = build_candidate_dag(environment, _belief((1, 2, 3)))
+    oracle = longest_path_oracle(graph)
+    assert len(oracle.candidates) == 1
+    assert oracle.covered_report_ids == ("a", "b", "c")
+    assert oracle.duration_s == 10.5
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    native = json.loads(result.stdout.splitlines()[0])
+    assert native["maneuver_count"] == 1
+    assert native["surveillance_duration"] == 21
+    assert native["combined_score"] == round(oracle.score * SCORE_SCALE)
+    (assignment,) = native["assignments"]
+    assert assignment["candidate_id"] == oracle.candidates[0].candidate_id
+    assert assignment["start"] == 20 and assignment["duration"] == 21
+    assert assignment["parameters"]["report_ids"] == ["a", "b", "c"]
+    inspected = subprocess.run(
+        ["python", str(EXAMPLE_ROOT / "inspect_problem.py"), str(data)],
+        capture_output=True, text=True, check=True,
+    )
+    summary = json.loads(inspected.stdout)
+    assert summary["valid"] and summary["component_score_consistent"]
+    assert summary["advisory_modes"] == ["fixed_view"]
+    assert summary["advisory_maneuvers"] == 1
+    assert summary["advisory_duration_s"] == oracle.duration_s
+
+
+@pytest.mark.parametrize("has_candidates", [False, True])
+def test_empty_or_zero_utility_route_has_no_native_runs(tmp_path, has_candidates):
+    from onr.application.mission1_planning import CandidateDAG
+
+    graph = build_candidate_dag(_environment([
+        _report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0),
+    ] if has_candidates else []), _belief((1, 2)))
+    graph = CandidateDAG(tuple(replace(c, recall_utility=0, estimation_utility=0,
+                                      omission_yield=0, combined_score=0) for c in graph.candidates),
+                         tuple(sorted(set(graph.arcs) | {(graph.source, graph.sink)})),
+                         graph.source, graph.sink)
+    oracle = longest_path_oracle(graph)
+    assert not oracle.candidates
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    native = json.loads(result.stdout.splitlines()[0])
+    assert native["assignments"] == []
+    assert native["combined_score"] == native["maneuver_count"] == native["surveillance_duration"] == 0
+
+
+def test_sustained_fixed_view_rescoring_retains_rounding_and_unique_reports():
+    environment = _environment([
+        _report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0),
+        _report("c", 3, 30, 0, 0),
+    ], fov=0.1)
+    prior = _belief((1, 2, 3))
+    belief = ReportingReliabilitySnapshot.create(
+        mission_id=prior.mission_id, belief_revision=prior.belief_revision,
+        input_event_id=prior.input_event_id, input_revision=prior.input_revision,
+        created_at=prior.created_at, omission=prior.omission,
+        ships=tuple(replace(ship, mean=0.1234568) for ship in prior.ships),
+    )
+    route = longest_path_oracle(build_candidate_dag(environment, belief))
+    (candidate,) = route.candidates
+    # Per-time rounding differs from rounding all three raw recalls together.
+    assert round(candidate.recall_utility * SCORE_SCALE) == 3 * 61728
+    context = {
+        "candidate_id": candidate.candidate_id, "surveillance_mode": "fixed_view",
+        "target_entity_id": None, "target_report_ids": list(candidate.report_ids),
+        "observation_window": {"start": {"seconds": 10}, "duration": {"seconds": 20.5}},
+        "planner_item": {"parameters": {"x": 0, "y": 0}},
+    }
+    chart = Statechart(
+        mission_id="mission-1", plan_revision=1, mission_snapshot_id="mission-1:snapshot:1",
+        planning_profile="temporal", entry_state="active", states=("active", "copy"),
+        transitions=(StatechartTransition(event="finish", source="active", target="copy"),),
+        terminal_states=("copy",),
+        state_context={"active": context, "copy": context},
+    )
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="active", active_state_context=context)
+    decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert decision.current_score == advisory.score == route.score
+    assert not decision.trigger
+    environment["mission_time_seconds"] = 15
+    environment["world_model_info"]["event_report_checks"] = [{"report_id": "b"}]
+    decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert advisory.covered_report_ids == ("c",)
+    assert decision.current_score == advisory.score
+    assert not decision.trigger
+
+
+def test_fixed_runs_do_not_merge_across_other_viewpoints_or_pursuits():
+    from onr.application.mission1_planning import _fixed_view_runs
+
+    seed = build_candidate_dag(_environment([_report("a", 1, 10, 0, 0)]), _belief((1,))).candidates[0]
+    for middle in (replace(seed, x=1, end_x=1), replace(seed, mode="pursue_ship", entity_id=1)):
+        selections = tuple(replace(c, candidate_id=f"c{i}", report_ids=(f"r{i}",),
+                                   start_s=10 * i, end_s=10 * i + 0.5)
+                           for i, c in enumerate((seed, middle, seed), start=1))
+        assert _fixed_view_runs(selections) == selections
+
+
 @pytest.mark.parametrize(
     "selected_x, now, checked, expected_infeasible",
     [(0, 29, False, False), (100, 29, False, True), (50, 24, True, False)],
@@ -200,12 +323,20 @@ def test_objective_potentials_shift_every_route_by_the_same_constant():
     )}
     potentials = data["node_objective_potential"]
     scores = [a + b + c for a, b, c in zip(data["candidate_recall"], data["candidate_estimation"], data["candidate_omission"])]
-    weights = [0] + [
-        score * data["maneuver_bound"] * data["duration_bound"] * data["tie_break_bound"]
-        - data["duration_bound"] * data["tie_break_bound"]
-        - duration * data["tie_break_bound"] - (i + 1)
-        for i, (score, duration) in enumerate(zip(scores, data["candidate_duration"]))
-    ] + [0]
+    weights = {}
+    for u, v in graph.arcs:
+        if v == graph.sink:
+            weights[u, v] = 0
+            continue
+        right = graph.candidates[v - 1]
+        left = graph.candidates[u - 1] if u else None
+        hold = left is not None and left.mode == right.mode == "fixed_view" and (left.x, left.y) == (right.x, right.y)
+        duration = round((right.end_s - left.end_s if hold else right.duration_s) * 2)
+        weights[u, v] = (
+            scores[v - 1] * data["maneuver_bound"] * data["duration_bound"] * data["tie_break_bound"]
+            - int(not hold) * data["duration_bound"] * data["tie_break_bound"]
+            - duration * data["tie_break_bound"] - v
+        )
     outgoing = [[] for _ in potentials]
     for u, v in graph.arcs:
         outgoing[u].append(v)
@@ -217,9 +348,9 @@ def test_objective_potentials_shift_every_route_by_the_same_constant():
             assert reduced == original + potentials[graph.source] - potentials[graph.sink]
             priorities.append((original, loss))
             return 1
-        return sum(check_paths(v, original + weights[v],
-            reduced + weights[v] + potentials[node] - potentials[v],
-            loss + int(weights[v] + potentials[node] - potentials[v] < 0)) for v in outgoing[node])
+        return sum(check_paths(v, original + weights[node, v],
+            reduced + weights[node, v] + potentials[node] - potentials[v],
+            loss + int(weights[node, v] + potentials[node] - potentials[v] < 0)) for v in outgoing[node])
 
     assert check_paths(graph.source, 0, 0) > 1
     best = max(original for original, _ in priorities)
@@ -279,7 +410,7 @@ def test_equal_candidate_order_sums_have_one_canonical_solver_route(tmp_path):
     # Resolve the residual tie by smallest optimal predecessor, back from sink.
     graph = CandidateDAG(candidates, ((0, 1), (0, 2), (1, 4), (2, 3), (3, 5), (4, 5)), 0, 5)
     oracle = longest_path_oracle(graph)
-    expected = ["c2", "c3"]
+    expected = ["c2--c3"]
     assert [c.candidate_id for c in oracle.candidates] == expected
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
@@ -316,7 +447,7 @@ def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) ->
     # One viewpoint admission check per candidate; only forward temporal
     # pairs can require a route travel calculation, including alternate views.
     assert calls <= candidate_count + candidate_count * (candidate_count - 1) // 2
-    assert len(longest_path_oracle(graph).candidates) == count
+    assert len(longest_path_oracle(graph).covered_report_ids) == count
 
 
 def test_travel_margin_filters_initial_arrival_and_route_transitions() -> None:

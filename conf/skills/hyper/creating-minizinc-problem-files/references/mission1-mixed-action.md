@@ -12,7 +12,9 @@ candidate's actual viewpoint or pursuit rendezvous.
 `fixed_view` candidates sample report centres, pair midpoints, and the drone's
 current position. Each sampled viewpoint is considered at every visible future
 report time, including times unrelated to the reports that supplied that
-viewpoint. Each candidate still covers only its half-second temporal cluster.
+viewpoint. Each candidate covers the visible reports at one exact timestamp,
+followed by half a second of dwell. Later reachable reports remain available
+even when a nearby earlier report is unreachable.
 A nearby report need not be reachable at its own position to
 be observed from a feasible viewpoint. Coordinates are rounded to the solver's
 integer metres before coverage is tested. Distinct viewpoints retain distinct
@@ -65,6 +67,13 @@ ordering. Compatible routes never
 repeat a public report. The unit-flow relaxation remains exact because a
 directed network incidence matrix has integral vertices.
 
+Consecutive selected fixed views at the same coordinates form one sustained
+assignment, from the first report time through the last dwell. The objective
+counts one maneuver for that run and includes its holding gaps in surveillance
+duration. Other viewpoints and pursuits separate runs. Public utility is rounded
+per report-time block and summed, identically in the model, oracle and active-plan
+rescoring. Holding adds no pursuit-only omission yield.
+
 Integer node potentials first reweight network costs by a route-independent
 constant. MiniZinc verifies the longest-prefix potentials against the
 component-derived weights, then uses unit penalties for negative reduced-cost
@@ -85,6 +94,9 @@ observation window, numeric target entity when present, opaque covered report
 IDs, scaled target posterior risk, `E[p_i q]`, public report rate, and recall /
 estimation / hidden-omission / combined utility. Interpret risk and rate using
 `rate_scale`, utility using `utility.scale`, and time using `time_scale`.
+MiniZinc emits sustained fixed-view runs directly, with all their covered report
+IDs and summed utility components. Preserve each emitted window as one assignment;
+the raw candidate count can exceed the advisory or selected maneuver count.
 
 MiniZinc selects the mode. Hyper preserves that mode in the Statechart. Maneuver
 receives the exact selected fixed-view coordinates through the bound

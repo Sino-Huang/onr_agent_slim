@@ -17,6 +17,8 @@ from pathlib import Path
 
 from onr.adapters.minizinc import MiniZincExecutor
 from onr.application.mission1_planning import (
+    SCORE_SCALE,
+    TIME_SCALE,
     build_candidate_dag,
     longest_path_oracle,
     serialize_minizinc_data,
@@ -62,6 +64,20 @@ def solve_public_plan(environment, belief, model, executable, output):
     assert [
         (a["surveillance_mode"], a["entity_id"]) for a in solution["assignments"]
     ] == [(c.mode, c.entity_id) for c in oracle.candidates]
+    assert solution["maneuver_count"] == len(oracle.candidates)
+    assert solution["surveillance_duration"] == round(oracle.duration_s * TIME_SCALE)
+    for assignment, candidate in zip(solution["assignments"], oracle.candidates, strict=True):
+        assert assignment["start"] == round(candidate.start_s * TIME_SCALE)
+        assert assignment["duration"] == round(candidate.duration_s * TIME_SCALE)
+        assert assignment["parameters"]["report_ids"] == list(candidate.report_ids)
+        assert assignment["parameters"]["utility"] == {
+            "recall": round(candidate.recall_utility * SCORE_SCALE),
+            "estimation": round(candidate.estimation_utility * SCORE_SCALE),
+            "omission_yield": round(candidate.omission_yield * SCORE_SCALE),
+            "combined": sum(round(value * SCORE_SCALE) for value in (
+                candidate.recall_utility, candidate.estimation_utility, candidate.omission_yield)),
+            "scale": SCORE_SCALE,
+        }
     write_json(output / "environment.json", environment)
     write_json(output / "belief.json", belief.to_dict())
     write_json(output / "solution.json", solution)

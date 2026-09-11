@@ -70,10 +70,25 @@ constraint forall(candidate in CANDIDATES)(
 var float: combined_score = sum(candidate in CANDIDATES)(
   candidate_combined_score[candidate] * selected[candidate]
 );
-var float: maneuver_count = sum(candidate in CANDIDATES)(selected[candidate]);
-var float: surveillance_duration = sum(candidate in CANDIDATES)(
-  candidate_duration[candidate] * selected[candidate]
-);
+function bool: same_fixed_view(int: left, int: right) =
+  candidate_mode[left] = 1 /\ candidate_mode[right] = 1 /\
+  candidate_x[left] = candidate_x[right] /\ candidate_y[left] = candidate_y[right];
+array[ARCS] of bool: continues_view = [
+  if arc_from[e] = source_node \/ arc_to[e] = sink_node then false else
+    same_fixed_view(arc_from[e] - 1, arc_to[e] - 1)
+  endif | e in ARCS
+];
+array[ARCS] of int: run_maneuvers = [
+  if arc_to[e] = sink_node \/ continues_view[e] then 0 else 1 endif | e in ARCS
+];
+array[ARCS] of int: run_duration = [
+  if arc_to[e] = sink_node then 0 else candidate_duration[arc_to[e] - 1] +
+    (if continues_view[e] then candidate_start[arc_to[e] - 1]
+      - candidate_start[arc_from[e] - 1] - candidate_duration[arc_from[e] - 1] else 0 endif)
+  endif | e in ARCS
+];
+var float: maneuver_count = sum(e in ARCS)(run_maneuvers[e] * flow[e]);
+var float: surveillance_duration = sum(e in ARCS)(run_duration[e] * flow[e]);
 var float: candidate_order_sum = sum(candidate in CANDIDATES)(
   candidate * selected[candidate]
 );
@@ -82,18 +97,18 @@ var float: candidate_order_sum = sum(candidate in CANDIDATES)(
 % potential[source] - potential[sink], a constant. The same routes and exact
 % lexicographic preferences remain; no advisory route is imposed as a constraint.
 array[NODES] of int: node_objective_potential;
-array[NODES] of int: node_weight = [
-  if node = source_node \/ node = sink_node then 0 else
-    candidate_combined_score[node - 1] * maneuver_bound * duration_bound * tie_break_bound
-    - duration_bound * tie_break_bound
-    - candidate_duration[node - 1] * tie_break_bound - (node - 1)
-  endif | node in NODES
+array[ARCS] of int: unreduced_arc_weight = [
+  if arc_to[e] = sink_node then 0 else
+    candidate_combined_score[arc_to[e] - 1] * maneuver_bound * duration_bound * tie_break_bound
+    - run_maneuvers[e] * duration_bound * tie_break_bound
+    - run_duration[e] * tie_break_bound - (arc_to[e] - 1)
+  endif | e in ARCS
 ];
 array[ARCS] of int: arc_weight = [
-  node_weight[arc_to[edge]] + node_objective_potential[arc_from[edge]]
+  unreduced_arc_weight[edge] + node_objective_potential[arc_from[edge]]
   - node_objective_potential[arc_to[edge]] | edge in ARCS
 ];
-% Verify longest-prefix potentials from the component-derived node weights.
+% Verify longest-prefix potentials from the component-derived arc weights.
 % Consequently all reduced costs are nonpositive and a zero-cost path exists.
 % Penalizing each strictly negative edge by one preserves EXACTLY the optimal
 % paths, while avoiding huge floating-point coefficients and tiny tie losses.
@@ -103,7 +118,8 @@ constraint assert(
     node_objective_potential[node] = max(
       position in incoming_start[node]..incoming_start[node + 1] - 1
     )(
-      node_objective_potential[arc_from[incoming_edge[position]]] + node_weight[node]
+      node_objective_potential[arc_from[incoming_edge[position]]]
+      + unreduced_arc_weight[incoming_edge[position]]
     )
   ), "invalid objective potentials"
 );
@@ -126,23 +142,37 @@ var float: objective = -sum(edge in ARCS)(
 
 solve maximize objective;
 
-output [
+% Compact only consecutive selections at one fixed viewpoint. The solver owns
+% these sustained assignments, including the holding gaps charged above.
+output let {
+  array[int] of int: chosen = [c | c in CANDIDATES where fix(selected[c]) > 0.5];
+  array[int] of int: run_start = [p | p in index_set(chosen) where
+    if p = 1 then true else not same_fixed_view(chosen[p - 1], chosen[p]) endif];
+} in [
   "{\"combined_score\":" ++ show(round(fix(combined_score)))
   ++ ",\"score_scale\":" ++ show(score_scale)
   ++ ",\"maneuver_count\":" ++ show(round(fix(maneuver_count)))
   ++ ",\"surveillance_duration\":" ++ show(round(fix(surveillance_duration)))
   ++ ",\"assignments\":["
   ++ join(",", [
-    "{\"candidate_id\":\"" ++ candidate_id[candidate] ++ "\","
+    let {
+      int: last_position = if run < length(run_start) then run_start[run + 1] - 1 else length(chosen) endif;
+      array[int] of int: members = [chosen[p] | p in run_start[run]..last_position];
+      int: candidate = members[1];
+      int: last = members[length(members)];
+      int: duration = candidate_start[last] + candidate_duration[last] - candidate_start[candidate];
+    } in
+    "{\"candidate_id\":\"" ++ candidate_id[candidate]
+    ++ (if length(members) = 1 then "" else "--" ++ candidate_id[last] endif) ++ "\","
     ++ "\"surveillance_mode\":\""
     ++ (if candidate_mode[candidate] = 1 then "fixed_view" else "pursue_ship" endif)
     ++ "\",\"entity_id\":"
     ++ (if candidate_entity_id[candidate] = 0 then "null" else show(candidate_entity_id[candidate]) endif)
     ++ ",\"start\":" ++ show(candidate_start[candidate])
-    ++ ",\"duration\":" ++ show(candidate_duration[candidate])
+    ++ ",\"duration\":" ++ show(duration)
     ++ ",\"time_scale\":" ++ show(time_scale)
     ++ ",\"observation_window\":{\"start\":" ++ show(candidate_start[candidate])
-    ++ ",\"duration\":" ++ show(candidate_duration[candidate])
+    ++ ",\"duration\":" ++ show(duration)
     ++ ",\"time_scale\":" ++ show(time_scale) ++ "}"
     ++ ",\"parameters\":{\"x\":" ++ show(candidate_x[candidate])
     ++ ",\"y\":" ++ show(candidate_y[candidate])
@@ -153,19 +183,19 @@ output [
     ++ ",\"public_report_rate\":"
     ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_public_report_rate[candidate]) endif)
     ++ ",\"rate_scale\":" ++ show(score_scale)
-    ++ ",\"report_span\":" ++ show(candidate_report_span[candidate])
+    ++ ",\"report_span\":" ++ show(candidate_start[last] + candidate_report_span[last] - candidate_start[candidate])
     ++ ",\"time_scale\":" ++ show(time_scale)
     ++ ",\"report_ids\":["
     ++ join(",", [
       "\"" ++ candidate_report_id[position] ++ "\""
-      | position in candidate_report_start[candidate]..candidate_report_start[candidate + 1] - 1
+      | member in members, position in candidate_report_start[member]..candidate_report_start[member + 1] - 1
     ])
-    ++ "],\"utility\":{\"recall\":" ++ show(candidate_recall[candidate])
-    ++ ",\"estimation\":" ++ show(candidate_estimation[candidate])
-    ++ ",\"omission_yield\":" ++ show(candidate_omission[candidate])
-    ++ ",\"combined\":" ++ show(candidate_combined_score[candidate])
+    ++ "],\"utility\":{\"recall\":" ++ show(sum(c in members)(candidate_recall[c]))
+    ++ ",\"estimation\":" ++ show(sum(c in members)(candidate_estimation[c]))
+    ++ ",\"omission_yield\":" ++ show(sum(c in members)(candidate_omission[c]))
+    ++ ",\"combined\":" ++ show(sum(c in members)(candidate_combined_score[c]))
     ++ ",\"scale\":" ++ show(score_scale) ++ "}}}"
-    | candidate in CANDIDATES where fix(selected[candidate]) > 0.5
+    | run in index_set(run_start)
   ])
   ++ "]}"
 ];
