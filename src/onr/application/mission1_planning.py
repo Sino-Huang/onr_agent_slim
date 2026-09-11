@@ -338,6 +338,63 @@ def _candidate(
     )
 
 
+def _candidate_arcs(
+    candidates: Sequence[SurveillanceCandidate], speed: float,
+) -> tuple[tuple[int, int], ...]:
+    """Build the same reduced arcs without materializing the dense closure.
+
+    Generated candidates move within their reserved travel budget and end with
+    observation dwell. Thus timing feasibility is transitive, and disjoint time
+    windows cannot repeat a report. Backward traversal can reuse each target's
+    reachable successors. Only a positive-utility intermediate dominates an arc;
+    zero-utility candidates must not erase a shorter equivalent route.
+    """
+    sink = len(candidates) + 1
+    sink_bit = 1 << sink
+    all_nodes = (1 << (sink + 1)) - 1
+    reachable = [0] * (sink + 1)
+    starts = [candidate.start_s + 1e-9 for candidate in candidates]
+    reports = [frozenset(candidate.report_ids) for candidate in candidates]
+    positive = [False] + [
+        _score_units(_candidate_utility(candidate)) > 0 for candidate in candidates
+    ] + [False]
+    arcs: list[tuple[int, int]] = []
+    for source in range(sink - 1, 0, -1):
+        left = candidates[source - 1]
+        first = bisect_left(starts, left.end_s) + 1
+        pending = all_nodes & ~((1 << first) - 1)
+        successors = sink_bit
+        while pending:
+            bit = pending & -pending
+            pending ^= bit
+            target = bit.bit_length() - 1
+            if target == sink:
+                arcs.append((source, sink))
+                break
+            right = candidates[target - 1]
+            if not reports[source - 1].isdisjoint(reports[target - 1]):
+                continue
+            if right.start_s + 1e-9 < left.end_s + _travel_time(
+                left.end_x, left.end_y, right.x, right.y, speed,
+            ):
+                continue
+            arcs.append((source, target))
+            successors |= bit | reachable[target]
+            if positive[target]:
+                pending &= ~reachable[target]
+        reachable[source] = successors
+    # Every candidate has already passed initial-pose/time admission.
+    pending = all_nodes & ~1
+    while pending:
+        bit = pending & -pending
+        pending ^= bit
+        target = bit.bit_length() - 1
+        arcs.append((0, target))
+        if positive[target]:
+            pending &= ~reachable[target]
+    return tuple(sorted(arcs))
+
+
 def _fixed_view_candidates(
     opportunities: Sequence[ObservationOpportunity],
     radius: float,
@@ -459,29 +516,9 @@ def build_candidate_dag(
     )
     source = 0
     sink = len(ordered_candidates) + 1
-    arcs: set[tuple[int, int]] = {(source, sink)}
-    for index, candidate in enumerate(ordered_candidates, start=1):
-        arcs.add((source, index))
-        arcs.add((index, sink))
-    # Starts are sorted. A candidate that starts before this one ends cannot
-    # follow it, even with zero travel. Preserve the exact existing tolerance.
-    adjusted_starts = [item.start_s + 1e-9 for item in ordered_candidates]
-    report_sets = [frozenset(item.report_ids) for item in ordered_candidates]
-    for left_index, left in enumerate(ordered_candidates, start=1):
-        first = bisect_left(adjusted_starts, left.end_s)
-        left_reports = report_sets[left_index - 1]
-        for right_offset in range(first, len(ordered_candidates)):
-            right_index = right_offset + 1
-            right = ordered_candidates[right_offset]
-            if left_index == right_index or not left_reports.isdisjoint(report_sets[right_offset]):
-                continue
-            if right.start_s + 1e-9 >= left.end_s + _travel_time(
-                left.end_x, left.end_y, right.x, right.y, speed
-            ):
-                arcs.add((left_index, right_index))
     return CandidateDAG(
         ordered_candidates,
-        _prune_dominated_arcs(arcs, ordered_candidates, sink),
+        _candidate_arcs(ordered_candidates, speed),
         source,
         sink,
     )

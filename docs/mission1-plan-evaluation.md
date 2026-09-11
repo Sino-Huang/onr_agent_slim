@@ -111,3 +111,33 @@ do not establish human-level performance or completion of the high-recall goal.
 Detailed local receipts are under `var/mission1-recall/global-short-corpus-002/`,
 `reused-viewpoints-integrated/`, `windows-corpus-001/`,
 `continuous-reused-viewpoints-001/`, and `adaptive-global-short-001/`.
+
+## Preparation performance and wider-field probes
+
+The builder now constructs the reduced temporal arcs directly, reusing backward
+reachability instead of first allocating every feasible pair. Only positive
+intermediate candidates dominate an arc; zero-utility candidates retain their
+previous treatment. Candidate movement budgets and observation dwell make this
+timing relation transitive. This changes preparation cost, not planning policy.
+Regeneration of 60 stored snapshots produced byte-identical DZN and identical
+oracle routes, including the seed-100 and eventful non-collision cases.
+
+Observed demo results before/after this preparation optimization:
+
+| Visibility radius | Preparation before | After | Ideal scheduled recall | Assignments |
+| --- | ---: | ---: | ---: | ---: |
+| 300 m | 8.51 s | 2.38 s | 12/39 | 30 |
+| 500 m | 36.53 s | 7.54 s | 13/39 | 46 |
+| 750 m | 118.75 s | 21.33 s | 19/39 | 62 |
+
+All three new real solves were optimal with exact oracle parity. At 500 m,
+continuous ideal sensing during shortest-cardinal transit and early waiting
+found 15/39 or 16/39 depending on axis order; at 750 m both orders found 21/39.
+These are single-demo sensitivity results, not live-camera performance or
+independent-corpus validation. The packaged event-timing caveats recorded in
+issue #58 still apply. The production range remains **300 m**; larger radii
+also increase assignment count and need execution-level evaluation.
+
+Receipts: `var/mission1-recall/reduced-arc-parity-001.json`,
+`reduced-arc-visibility-sweep-001/`, `continuous-radius-500-001/`, and
+`continuous-radius-750-001/`.

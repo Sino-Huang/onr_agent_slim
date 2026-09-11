@@ -338,6 +338,54 @@ def test_travel_margin_filters_initial_arrival_and_route_transitions() -> None:
     assert (by_report["at-margin"], by_report["next"]) not in graph.arcs
 
 
+def test_dense_temporal_chain_skips_transitively_redundant_travel_checks(monkeypatch):
+    import onr.application.mission1_planning as planning
+
+    calls = 0
+
+    def measured_travel(*args):
+        nonlocal calls
+        calls += 1
+        return _travel_time(*args)
+
+    monkeypatch.setattr(planning, "_travel_time", measured_travel)
+    count = 20
+    graph = build_candidate_dag(_environment([
+        _report(f"r{i}", i, i * 2, 0, 0) for i in range(1, count + 1)
+    ], fov=0.1), _belief(tuple(range(1, count + 1))))
+    assert len(graph.candidates) == count
+    assert graph.arcs == tuple((i, i + 1) for i in range(count + 1))
+    # Admission plus adjacent transitions, not every pair in the dense closure.
+    assert calls <= 2 * count
+
+
+@pytest.mark.parametrize("zero_stride", [0, 1, 3])
+def test_reduced_arcs_match_dense_reference_with_mixed_and_zero_utilities(zero_stride):
+    from onr.application.mission1_planning import _candidate_arcs, _prune_dominated_arcs
+
+    graph = build_candidate_dag(_environment([
+        _report(f"r{ship}-{i}", ship, 10 + 5 * i, 3 * i + ship, ship * 4)
+        for i in range(4) for ship in (1, 2, 3)
+    ], fov=5), _belief((1, 2, 3)))
+    candidates = tuple(
+        replace(c, recall_utility=0, estimation_utility=0, omission_yield=0, combined_score=0)
+        if zero_stride and i % zero_stride == 0 else c
+        for i, c in enumerate(graph.candidates)
+    )
+    sink = len(candidates) + 1
+    dense = {(0, sink)} | {(0, i) for i in range(1, sink)} | {(i, sink) for i in range(1, sink)}
+    for u, left in enumerate(candidates, 1):
+        for v, right in enumerate(candidates, 1):
+            if (
+                set(left.report_ids).isdisjoint(right.report_ids)
+                and right.start_s + 1e-9 >= left.end_s + _travel_time(
+                    left.end_x, left.end_y, right.x, right.y, 10,
+                )
+            ):
+                dense.add((u, v))
+    assert _candidate_arcs(candidates, 10) == _prune_dominated_arcs(dense, candidates, sink)
+
+
 def test_pursuit_rejects_motion_requiring_the_unreserved_maximum_speed() -> None:
     graph = build_candidate_dag(
         _environment(
