@@ -107,8 +107,21 @@ constraint assert(
     )
   ), "invalid objective potentials"
 );
+% Candidate-index sums can tie across different paths. Among equal optimal
+% prefixes, choose the smallest predecessor recursively, back from the sink.
+% Every non-source node has a zero-cost incoming edge by the verified recurrence.
+% This defines one canonical optimal path without imposing an advisory route.
+array[NODES] of NODES: preferred_predecessor = [
+  if node = source_node then source_node else
+    min(position in incoming_start[node]..incoming_start[node + 1] - 1
+        where arc_weight[incoming_edge[position]] = 0)(
+      arc_from[incoming_edge[position]]
+    )
+  endif | node in NODES
+];
 var float: objective = -sum(edge in ARCS)(
-  bool2int(arc_weight[edge] < 0) * flow[edge]
+  bool2int(arc_weight[edge] < 0 \/
+    arc_from[edge] != preferred_predecessor[arc_to[edge]]) * flow[edge]
 );
 
 solve maximize objective;

@@ -10,7 +10,10 @@ expired, checked, and duplicate reports; reachability is checked at each
 candidate's actual viewpoint or pursuit rendezvous.
 
 `fixed_view` candidates sample report centres, pair midpoints, and the drone's
-current position. A nearby report need not be reachable at its own position to
+current position. Each sampled viewpoint is considered at every visible future
+report time, including times unrelated to the reports that supplied that
+viewpoint. Each candidate still covers only its half-second temporal cluster.
+A nearby report need not be reachable at its own position to
 be observed from a feasible viewpoint. Coordinates are rounded to the solver's
 integer metres before coverage is tested. Distinct viewpoints retain distinct
 candidate IDs even when they cover the same reports, because their travel
@@ -55,16 +58,19 @@ high-risk schedule can likewise leave `fixed_view` preferable.
 
 `model.mzn` derives each candidate score from the recall, estimation, and
 omission arrays and maximizes their route sum. It then minimizes maneuver count
-and total surveillance duration lexicographically, using candidate order only
-to make otherwise identical optima deterministic. Compatible routes never
+and total surveillance duration lexicographically, then minimizes candidate
+index sum. Equal index sums are resolved recursively by choosing the smallest
+optimal predecessor, back from the sink; the oracle uses the same reverse-path
+ordering. Compatible routes never
 repeat a public report. The unit-flow relaxation remains exact because a
 directed network incidence matrix has integral vertices.
 
 Integer node potentials first reweight network costs by a route-independent
 constant. MiniZinc verifies the longest-prefix potentials against the
 component-derived weights, then uses unit penalties for negative reduced-cost
-edges. Zero-loss paths are exactly the original lexicographic optima; all
-feasible routes remain available. This avoids huge floating-point objective
+or noncanonical predecessor edges. The unique zero-loss path is a lexicographic
+optimum with the deterministic final tie-break; all feasible routes remain
+available. This avoids huge floating-point objective
 coefficients while preserving the optimal plans and reported utility. Keep the
 generated potential array with its paired model and data files.
 

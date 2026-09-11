@@ -343,35 +343,38 @@ def _fixed_view_candidates(
     radius: float,
     current_position: tuple[float, float],
 ) -> tuple[SurveillanceCandidate, ...]:
-    """Sample report centres, pair midpoints, and the current viewpoint.
+    """Reuse sampled report centres/midpoints and the current viewpoint over time.
 
     A report need not be reachable at its own position to be observable.
     Quantize viewpoints before checking coverage, matching MiniZinc output.
     Keep distinct locations even when they cover identical reports: their
-    connections to earlier/later assignments can differ.
+    connections to earlier/later assignments can differ. A location sampled
+    from one report is also a valid viewpoint for other visible report times.
     """
     candidates: dict[str, SurveillanceCandidate] = {}
+    viewpoints = {
+        (round(report.x), round(report.y)) for report in opportunities
+    } | {(round(current_position[0]), round(current_position[1]))}
     for anchor in opportunities:
         simultaneous = tuple(
             report for report in opportunities
             if abs(report.time_s - anchor.time_s) <= OBSERVATION_DWELL_SECONDS
         )
-        viewpoints = {
-            (round(anchor.x), round(anchor.y)),
-            (round(current_position[0]), round(current_position[1])),
-        }
         viewpoints.update(
             (round((anchor.x + other.x) / 2), round((anchor.y + other.y) / 2))
             for other in simultaneous
             if math.hypot(anchor.x - other.x, anchor.y - other.y) <= 2 * radius
         )
-        for x, y in sorted(viewpoints):
+    for x, y in sorted(viewpoints):
+        visible = tuple(
+            report for report in opportunities
+            if math.hypot(report.x - x, report.y - y) <= radius
+        )
+        for anchor in visible:
             covered = tuple(
-                report for report in simultaneous
-                if math.hypot(report.x - x, report.y - y) <= radius
+                report for report in visible
+                if abs(report.time_s - anchor.time_s) <= OBSERVATION_DWELL_SECONDS
             )
-            if not covered:
-                continue
             candidate = _candidate(
                 "fixed_view", covered, x=x, y=y, end_x=x, end_y=y, entity_id=None,
             )
@@ -514,7 +517,7 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
                 -candidate[1],
                 -candidate[2],
                 -candidate[3],
-                tuple(-value for value in candidate[4]),
+                tuple(-value for value in reversed(candidate[4])),
             )
             current_key = (
                 None
@@ -524,7 +527,7 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
                     -current[1],
                     -current[2],
                     -current[3],
-                    tuple(-value for value in current[4]),
+                    tuple(-value for value in reversed(current[4])),
                 )
             )
             if current_key is None or candidate_key > current_key:

@@ -73,3 +73,41 @@ no difference. With the configured 300 m cap actually enabled, the old commands
 found zero issues: changed visibility also changed pursuit motion. Thus a larger
 radius alone is not a recall fix; fresh planning and further sensor/route
 verification remain necessary. Speed and warmup were not changed.
+
+## Viewpoint reuse comparison (2026-09-11)
+
+The builder now considers every sampled viewpoint at other visible future
+report times, not just at the time of the report that supplied its coordinates.
+This fixes a missing feasible option: an earlier report's viewpoint can see a
+later ship whose own position is unreachable by its deadline. Fixed-view dwell,
+public-opportunity utility, pursuit omission yield, and the 10% replan threshold
+are unchanged. MiniZinc also resolves residual equal-index-sum route ties using
+the smallest optimal predecessor recursively, matching the oracle.
+
+Against commit `a40d771`, with the same public prior and 300 m capability:
+
+- Demo ideal scheduled recall: **10/39 → 12/39 (30.77%)**; covered public
+  reports: **41 → 56**. Balanced MSE: **0.070201 → 0.069182**.
+- All 30 seed-100 corruption profiles: mean ideal recall
+  **19.13% → 24.47%**, with **23 improvements, 7 unchanged, 0 regressions**.
+  Every real COIN-BC solve was optimal and exactly matched oracle route, score,
+  mode and entity. Maximum solver time was **5.97 s**; candidate generation
+  took about **10 s** per corpus case. The profiles share harbor trajectories,
+  so this is not independent-map generalization.
+- A longer-fixed-window prototype also improved mean recall to **23.82%**,
+  but was not adopted. Reusing viewpoints with short windows explains the demo
+  gain without changing the observation-window semantics. Circle-intersection
+  viewpoints and a speed-only 30→45 m/s trial both stayed at 10/39 on the demo.
+- Continuous ideal replay of the selected demo route remains at 12/39 for
+  either shortest cardinal axis order, with all arrivals feasible. An offline
+  adaptive shared-viewpoint trial also reached 12/39 with one gate-triggered
+  replan at 247.5 s. These are not live controller/camera results.
+
+There is a cost: the demo's selected assignments rise from 14 to 30. Further
+work should preserve coverage while reducing execution overhead and improving
+observation utility. No human-expert schedule has been supplied; these results
+do not establish human-level performance or completion of the high-recall goal.
+
+Detailed local receipts are under `var/mission1-recall/global-short-corpus-002/`,
+`reused-viewpoints-integrated/`, `windows-corpus-001/`,
+`continuous-reused-viewpoints-001/`, and `adaptive-global-short-001/`.

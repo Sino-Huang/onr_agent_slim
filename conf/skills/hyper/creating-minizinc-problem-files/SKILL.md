@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.11.0'
+version: '2.12.0'
 ---
 
 # Creating MiniZinc Problem Files

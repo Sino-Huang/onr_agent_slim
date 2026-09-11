@@ -104,6 +104,24 @@ def test_distinct_fixed_viewpoints_keep_distinct_stable_identity():
     assert graph == reordered
 
 
+def test_fixed_viewpoint_can_be_reused_at_a_different_report_time():
+    environment = _environment([
+        _report("earlier", 1, 10, 100, 0),
+        _report("later", 2, 11, 200, 0),
+    ], fov=150)
+    environment["controlled_vehicle"]["max_velocity"] = 20.0
+    # The later ship's own position is unreachable by t=11 and the current
+    # position cannot see it. The earlier report's viewpoint sees both times.
+    assert _travel_time(0, 0, 200, 0, 20) > 11
+    graph = build_candidate_dag(environment, _belief((1, 2)))
+    assert any(
+        c.mode == "fixed_view" and c.report_ids == ("later",) and (c.x, c.y) == (100, 0)
+        for c in graph.candidates
+    )
+    route = longest_path_oracle(graph)
+    assert route.covered_report_ids == ("earlier", "later")
+
+
 def test_fixed_view_coverage_is_checked_after_integer_coordinate_rounding():
     import math
 
@@ -238,7 +256,40 @@ def test_large_lexicographic_weights_keep_solver_tie_parity(tmp_path, monkeypatc
     # Instance checking validates types; the assert is evaluated on flattening.
     rejected = executor.execute({**assets, "data.dzn": corrupted.encode()}, "coin-bc")
     assert rejected.outcome is PlanningOutcome.ERROR
-    assert "invalid objective potentials" in rejected.stdout + rejected.stderr
+    # Rejection may occur at the potential assertion or during construction of
+    # its zero-cost predecessor set. Neither may produce an accepted plan.
+    assert not any(
+        row.get("type") == "solution"
+        for row in (json.loads(line) for line in rejected.stdout.splitlines())
+    )
+
+
+def test_equal_candidate_order_sums_have_one_canonical_solver_route(tmp_path):
+    from onr.application.mission1_planning import CandidateDAG
+
+    seed = build_candidate_dag(
+        _environment([_report("seed", 1, 10, 0, 0)]), _belief((1,)),
+    ).candidates[0]
+    candidates = tuple(
+        replace(seed, candidate_id=f"c{i}", report_ids=(f"r{i}",),
+                start_s=10 if i <= 2 else 20, end_s=10.5 if i <= 2 else 20.5)
+        for i in range(1, 5)
+    )
+    # [1,4] and [2,3] have identical utility, count, duration AND index sum.
+    # Resolve the residual tie by smallest optimal predecessor, back from sink.
+    graph = CandidateDAG(candidates, ((0, 1), (0, 2), (1, 4), (2, 3), (3, 5), (4, 5)), 0, 5)
+    oracle = longest_path_oracle(graph)
+    expected = ["c2", "c3"]
+    assert [c.candidate_id for c in oracle.candidates] == expected
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    native = json.loads(result.stdout.splitlines()[0])
+    assert [c["candidate_id"] for c in native["assignments"]] == expected
+    assert native["combined_score"] == round(oracle.score * SCORE_SCALE)
 
 
 def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) -> None:
