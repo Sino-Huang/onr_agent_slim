@@ -73,6 +73,7 @@ class SurveillanceCandidate:
     omission_yield: float
     combined_score: float
     arrival_direction: int | None = None
+    observation_delay_s: float = 0.0
 
     @property
     def duration_s(self) -> float:
@@ -107,12 +108,15 @@ class ReplanGateDecision:
 def _candidate_id(
     mode: str, report_ids: Sequence[str], *, viewpoint: tuple[int, int] | None = None,
     arrival_direction: int | None = None,
+    observation_delay_s: float = 0.0,
 ) -> str:
     identity: dict[str, object] = {"mode": mode, "report_ids": list(report_ids)}
     if viewpoint is not None:
         identity["viewpoint"] = viewpoint
     if arrival_direction is not None:
         identity["arrival_direction"] = arrival_direction
+    if observation_delay_s:
+        identity["observation_delay_s"] = observation_delay_s
     encoded = json.dumps(
         identity,
         sort_keys=True,
@@ -176,13 +180,18 @@ def _vehicle_direction(vehicle: Mapping[str, Any]) -> int | None:
 def _fixed_view_report_ids(
     environment: Mapping[str, Any], parameters: Mapping[str, Any],
     opportunities: Sequence[ObservationOpportunity],
+    *, start_s: float | None = None, end_s: float | None = None,
 ) -> set[str]:
     views = environment.get("surveillance_views")
     if views is not None:
+        by_id = {item.report_id: item for item in opportunities}
         return {
             report_id for view in views
             if all(view[key] == parameters.get(key) for key in ("x", "y", "arrival_direction"))
             for report_id in view["report_ids"]
+            if report_id in by_id
+            and (start_s is None or by_id[report_id].time_s + view.get("observation_delay_s", 0) >= start_s)
+            and (end_s is None or by_id[report_id].time_s + view.get("observation_delay_s", 0) < end_s)
         }
     return {
         item.report_id for item in opportunities
@@ -262,11 +271,12 @@ def _opportunities(
     }
     by_ship = {ship.entity_id: ship for ship in belief.ships}
     now = float(cast(Any, environment["mission_time_seconds"]))
+    window = float(cast(Any, environment.get("observation_window_seconds", 0.0)))
     raw: list[tuple[str, int, float, float, float, float, float]] = []
     for report in _public_reports(environment, belief):
         if (
             report.report_id in checked
-            or report.time_s < now
+            or report.time_s + window < now
         ):
             continue
         ship = by_ship[report.entity_id]
@@ -390,6 +400,7 @@ def _candidate(
     expected_omission_probability: float = 0.0,
     public_report_rate: float = 0.0,
     arrival_direction: int | None = None,
+    observation_delay_s: float = 0.0,
 ) -> SurveillanceCandidate:
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     report_ids = tuple(item.report_id for item in ordered)
@@ -407,11 +418,12 @@ def _candidate(
             mode, report_ids,
             viewpoint=(round(x), round(y)) if mode == "fixed_view" else None,
             arrival_direction=arrival_direction,
+            observation_delay_s=observation_delay_s,
         ),
         mode=mode,
         entity_id=entity_id,
-        start_s=ordered[0].time_s,
-        end_s=ordered[-1].time_s + OBSERVATION_DWELL_SECONDS,
+        start_s=ordered[0].time_s + observation_delay_s,
+        end_s=ordered[-1].time_s + observation_delay_s + OBSERVATION_DWELL_SECONDS,
         x=x,
         y=y,
         end_x=end_x,
@@ -426,12 +438,14 @@ def _candidate(
         omission_yield=utility.omission_yield,
         combined_score=utility.combined,
         arrival_direction=arrival_direction,
+        observation_delay_s=observation_delay_s,
     )
 
 
 def _candidate_arcs(
     candidates: Sequence[SurveillanceCandidate], speed: float,
     quarter_turn_seconds: float = 0.0,
+    chronological_reports: bool = False,
 ) -> tuple[tuple[int, int], ...]:
     """Build the same reduced arcs without materializing the dense closure.
 
@@ -464,6 +478,15 @@ def _candidate_arcs(
                 arcs.append((source, sink))
                 break
             right = candidates[target - 1]
+            if chronological_reports and (
+                right.start_s - right.observation_delay_s
+                <= left.end_s - OBSERVATION_DWELL_SECONDS - left.observation_delay_s + 1e-9
+            ):
+                # Window alternatives can otherwise repeat an older report
+                # after an intervening visit. Ordered report epochs preclude
+                # both adjacent and nonadjacent reuse without relaxing flow
+                # integrality. One view per co-timed batch remains the scope.
+                continue
             if not reports[source - 1].isdisjoint(reports[target - 1]):
                 continue
             if right.start_s + 1e-9 < left.end_s + _navigation_time(
@@ -485,7 +508,40 @@ def _candidate_arcs(
         arcs.append((0, target))
         if positive[target]:
             pending &= ~reachable[target]
-    return tuple(sorted(arcs))
+    ordered_arcs = tuple(sorted(arcs))
+    return (
+        _prune_terminal_alternatives(candidates, ordered_arcs)
+        if chronological_reports else ordered_arcs
+    )
+
+
+def _prune_terminal_alternatives(
+    candidates: Sequence[SurveillanceCandidate], arcs: Sequence[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Remove locally dominated choices with no possible later observation.
+
+    Compare the complete remaining lexicographic cost from each predecessor.
+    No best prefix/advisory route is imposed. Candidate indices are retained,
+    including their deterministic tie-break meaning. A terminal made orphaned
+    by dominance keeps its initially feasible source arc so model potentials
+    still have a defined incoming recurrence for every candidate.
+    """
+    sink = len(candidates) + 1
+    nonterminal = {source for source, target in arcs if target != sink}
+    terminal = set(range(1, sink)) - nonterminal
+    nodes = _route_nodes(candidates)
+    best = {}
+    for source, target in arcs:
+        if target in terminal:
+            score, count, duration, order = _route_cost(nodes, source, target)
+            priority = score, -count, -duration, -order
+            if source not in best or priority > best[source][0]:
+                best[source] = priority, target
+    kept = {(source, target) for source, target in arcs
+            if target not in terminal or best[source][1] == target}
+    incoming = {target for _, target in kept}
+    kept.update((0, target) for target in terminal - incoming)
+    return tuple(sorted(kept))
 
 
 def sample_fixed_viewpoints(
@@ -544,6 +600,7 @@ def _fixed_view_candidates(
                 candidate = _candidate(
                     "fixed_view", covered, x=x, y=y, end_x=x, end_y=y,
                     entity_id=None, arrival_direction=direction,
+                    observation_delay_s=float(view.get("observation_delay_s", 0.0)),
                 )
                 candidates[candidate.candidate_id] = candidate
         return tuple(candidates.values())
@@ -578,6 +635,19 @@ def build_candidate_dag(
     position = vehicle["position"]
     speed = float(vehicle["max_velocity"])
     turn_seconds = float(vehicle.get("quarter_turn_seconds", 0.0))
+    observation_window = float(cast(Any, environment.get("observation_window_seconds", 0.0)))
+    views = environment.get("surveillance_views")
+    if observation_window < 0 or not math.isfinite(observation_window):
+        raise ValueError("observation window must be finite and nonnegative")
+    if observation_window > 0 and views is None:
+        raise ValueError("observation windows require forecast surveillance views")
+    if views is not None and any(
+        not 0 <= float(view.get("observation_delay_s", 0.0)) <= observation_window
+        or round(float(view.get("observation_delay_s", 0.0)) * TIME_SCALE)
+        != float(view.get("observation_delay_s", 0.0)) * TIME_SCALE
+        for view in cast(Any, views)
+    ):
+        raise ValueError("view observation delay is outside the declared window")
     if "surveillance_views" in environment and (not math.isfinite(turn_seconds) or turn_seconds <= 0):
         raise ValueError("sensor-aware planning requires positive quarter_turn_seconds")
     direction = _vehicle_direction(vehicle)
@@ -652,7 +722,7 @@ def build_candidate_dag(
     sink = len(ordered_candidates) + 1
     return CandidateDAG(
         ordered_candidates,
-        _candidate_arcs(ordered_candidates, speed, turn_seconds),
+        _candidate_arcs(ordered_candidates, speed, turn_seconds, observation_window > 0),
         source,
         sink,
     )
@@ -780,7 +850,8 @@ def _fixed_view_runs(
             first, candidate_id=first.candidate_id + "--" + last.candidate_id,
             end_s=last.end_s,
             report_ids=tuple(r for c in group for r in c.report_ids),
-            report_span_s=last.start_s + last.report_span_s - first.start_s,
+            report_span_s=(last.start_s - last.observation_delay_s + last.report_span_s
+                           - first.start_s + first.observation_delay_s),
             recall_utility=recall, estimation_utility=estimation,
             combined_score=recall + estimation,
         ))
@@ -929,7 +1000,8 @@ class Mission1ReplanGate:
             )
             if mode == "fixed_view" and "surveillance_views" in environment:
                 visible_ids = (
-                    _fixed_view_report_ids(environment, parameters, covered)
+                    _fixed_view_report_ids(environment, parameters, covered,
+                                           start_s=max(now, start_s), end_s=end_s)
                     if isinstance(parameters, Mapping) else set()
                 )
                 covered = tuple(item for item in covered if item.report_id in visible_ids)
@@ -989,6 +1061,7 @@ class Mission1ReplanGate:
                         ) <= start_s + 1e-9
                         and set(report_ids) <= _fixed_view_report_ids(
                             environment, parameters, tuple(opportunities.values()),
+                            start_s=max(now, start_s), end_s=end_s,
                         )
                     )
                 else:
@@ -1112,6 +1185,7 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
         "candidate_duration": durations,
         "candidate_x": [round(item.x) for item in graph.candidates],
         "candidate_y": [round(item.y) for item in graph.candidates],
+        "candidate_observation_delay": [round(item.observation_delay_s * TIME_SCALE) for item in graph.candidates],
         "candidate_arrival_direction": [
             -1 if item.arrival_direction is None else item.arrival_direction
             for item in graph.candidates

@@ -31,6 +31,7 @@ array[CANDIDATES] of int: candidate_duration;
 array[CANDIDATES] of int: candidate_x;
 array[CANDIDATES] of int: candidate_y;
 array[CANDIDATES] of -1..3: candidate_arrival_direction;
+array[CANDIDATES] of int: candidate_observation_delay;
 array[CANDIDATES] of int: candidate_recall;
 array[CANDIDATES] of int: candidate_estimation;
 array[CANDIDATES] of int: candidate_omission;
@@ -187,7 +188,12 @@ output let {
     ++ ",\"public_report_rate\":"
     ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_public_report_rate[candidate]) endif)
     ++ ",\"rate_scale\":" ++ show(score_scale)
-    ++ ",\"report_span\":" ++ show(candidate_start[last] + candidate_report_span[last] - candidate_start[candidate])
+    ++ ",\"report_span\":" ++ show(candidate_start[last] - candidate_observation_delay[last]
+       + candidate_report_span[last] - candidate_start[candidate] + candidate_observation_delay[candidate])
+    ++ (if max(c in members)(candidate_observation_delay[c]) = 0 then "" else
+        ",\"observation_delay\":{\"minimum\":" ++ show(min(c in members)(candidate_observation_delay[c]))
+        ++ ",\"maximum\":" ++ show(max(c in members)(candidate_observation_delay[c]))
+        ++ ",\"time_scale\":" ++ show(time_scale) ++ "}" endif)
     ++ ",\"time_scale\":" ++ show(time_scale)
     ++ ",\"report_ids\":["
     ++ join(",", [

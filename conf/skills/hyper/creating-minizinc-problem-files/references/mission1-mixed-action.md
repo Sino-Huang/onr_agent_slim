@@ -31,6 +31,28 @@ partitions, without reading event truth. Use supplied rows unchanged, never
 invent visibility from hidden events. This is not yet a live-feed export or a
 replay of navigation-dependent partition migration.
 
+Rows may also supply `observation_delay_s`, bounded by the snapshot's
+`observation_window_seconds`, in half-second increments. The offline helper
+forecasts delayed positions by interpolating disclosed public report locations,
+holding the final disclosed position afterward; these are point forecasts, not
+confirmed observations or hidden trajectories. MiniZinc selects among these
+sampled observation times. A report expires after its declared eligibility
+window, not merely when its nominal event time passes.
+
+This window formulation retains chronological report order and at most one
+fixed view per co-timed report batch. Arcs require the next original report epoch
+to follow the previous candidate's last original epoch. This prevents reuse of
+an older report after an intervening view while keeping integral network flow.
+It is not an unrestricted window/set-cover planner or a multi-heading batch scan.
+Pursuit rendezvous remains at the first public report time.
+
+Window graphs also remove locally dominated terminal choices: from one
+predecessor, a final observation with no later continuation cannot beat a better
+final observation under the complete lexicographic cost. Candidate indices stay
+unchanged, preserving tie-break meaning; orphaned terminal candidates retain
+their initially feasible source arc. This is local dominance, not an imposed
+advisory route or a change to mode utility.
+
 When supplied, `controlled_vehicle.quarter_turn_seconds` reserves multigrid Mission
 time per 90-degree turn, including navigation and final orientation. A half-turn
 costs two ticks. The builder reserves the worse of the two cardinal axis orders;
@@ -112,6 +134,11 @@ estimation / hidden-omission / combined utility. Interpret risk and rate using
 MiniZinc emits sustained fixed-view runs directly, with all their covered report
 IDs and summed utility components. Preserve each emitted window as one assignment;
 the raw candidate count can exceed the advisory or selected maneuver count.
+For delayed views, `parameters.observation_delay` gives the minimum/maximum
+sampled delay in the emitted run using its included time scale. `report_span`
+still describes original public report times; it can differ from the observation
+span. Execute the emitted observation window unchanged. Delay metadata is
+explanatory, not an additional physical command parameter.
 
 MiniZinc selects the mode. Hyper preserves that mode in the Statechart. Maneuver
 receives the exact selected fixed-view coordinates through the bound

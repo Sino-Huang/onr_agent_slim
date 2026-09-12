@@ -36,6 +36,7 @@ def solve_public_plan(environment, belief, model, executable, output):
     started = time.perf_counter()
     graph = build_candidate_dag(environment, belief)
     oracle = longest_path_oracle(graph)
+    assert len(oracle.covered_report_ids) == len(set(oracle.covered_report_ids))
     assets = {
         "model.mzn": model.read_bytes(),
         "data.dzn": serialize_minizinc_data(graph).encode(),
@@ -70,6 +71,7 @@ def solve_public_plan(environment, belief, model, executable, output):
         assert assignment["parameters"].get("arrival_direction") == candidate.arrival_direction
         assert assignment["start"] == round(candidate.start_s * TIME_SCALE)
         assert assignment["duration"] == round(candidate.duration_s * TIME_SCALE)
+        assert assignment["parameters"]["report_span"] == round(candidate.report_span_s * TIME_SCALE)
         assert assignment["parameters"]["report_ids"] == list(candidate.report_ids)
         assert assignment["parameters"]["utility"] == {
             "recall": round(candidate.recall_utility * SCORE_SCALE),

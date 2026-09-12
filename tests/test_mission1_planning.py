@@ -68,6 +68,133 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     assert not graph.candidates
 
 
+def test_observation_window_recovers_late_reachable_view_and_expires():
+    environment = _environment([_report("a", 1, 9.5, 0, 90)])
+    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["observation_window_seconds"] = 4
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 90, "arrival_direction": 0, "report_ids": ["a"], "observation_delay_s": delay}
+        for delay in (0, 1, 4)
+    ]
+    graph = build_candidate_dag(environment, _belief((1,)))
+    assert sorted(c.start_s for c in graph.candidates) == [10.5, 13.5]
+    environment["mission_time_seconds"] = 12
+    environment["controlled_vehicle"]["position"]["y"] = 90
+    assert [c.start_s for c in build_candidate_dag(environment, _belief((1,))).candidates] == [13.5]
+    environment["world_model_info"]["event_report_checks"] = [{"report_id": "a"}]
+    assert not build_candidate_dag(environment, _belief((1,))).candidates
+    environment["world_model_info"]["event_report_checks"] = []
+    environment["mission_time_seconds"] = 14
+    assert not build_candidate_dag(environment, _belief((1,))).candidates
+
+
+def test_window_alternatives_never_repeat_nonadjacent_reports():
+    environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 2, 11, 0, 0)])
+    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["observation_window_seconds"] = 4
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a", "b"], "observation_delay_s": delay}
+        for delay in (0, 2, 4)
+    ]
+    graph = build_candidate_dag(environment, _belief((1, 2)))
+
+    def visit(node, report_ids):
+        assert len(report_ids) == len(set(report_ids)), report_ids
+        for source, target in graph.arcs:
+            if source == node and target != graph.sink:
+                visit(target, report_ids + graph.candidates[target - 1].report_ids)
+
+    visit(graph.source, ())
+    assert longest_path_oracle(graph).covered_report_ids == ("a", "b")
+
+
+@pytest.mark.parametrize("extra_score", [0.0, 1.0])
+def test_terminal_dominance_preserves_exact_route_and_holding_cost(extra_score):
+    from onr.application.mission1_planning import _prune_terminal_alternatives
+
+    environment = _environment([
+        _report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 3, 20, 5, 0),
+    ], fov=.01)
+    graph = build_candidate_dag(environment, _belief((1, 2, 3)))
+    candidates = tuple(replace(c, recall_utility=c.recall_utility + extra_score,
+                               combined_score=c.combined_score + extra_score)
+                       if c.x == 5 else c for c in graph.candidates)
+    first = next(i for i, c in enumerate(candidates, 1) if c.start_s == 10)
+    leaves = {i for i, c in enumerate(candidates, 1) if c.start_s == 20}
+    arcs = tuple(sorted({(0, graph.sink)} | {(0, i) for i in range(1, graph.sink)}
+                        | {(i, graph.sink) for i in range(1, graph.sink)}
+                        | {(first, i) for i in leaves}))
+    dense = replace(graph, candidates=candidates, arcs=arcs)
+    reduced = replace(dense, arcs=_prune_terminal_alternatives(candidates, arcs))
+    assert longest_path_oracle(reduced) == longest_path_oracle(dense)
+    assert len(reduced.arcs) < len(arcs)
+    assert set(range(1, graph.sink + 1)) <= {target for _, target in reduced.arcs}
+    # Equal utility favors holding the current camera pose; higher utility
+    # outweighs that maneuver-count saving.
+    assert longest_path_oracle(reduced).candidates[-1].x == (5 if extra_score else 0)
+
+
+def test_window_solver_keeps_public_report_span_separate_from_observation_span(tmp_path):
+    environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 2, 15, 0, 0)])
+    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["observation_window_seconds"] = 4
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": [report], "observation_delay_s": delay}
+        for report, delay in (("a", 4), ("b", 0))
+    ]
+    graph = build_candidate_dag(environment, _belief((1, 2)))
+    oracle = longest_path_oracle(graph)
+    assert len(oracle.candidates) == 1
+    assert oracle.candidates[0].report_span_s == 5
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    solution = json.loads(result.stdout.splitlines()[0])
+    selected = solution["assignments"][0]
+    assert selected["candidate_id"] == oracle.candidates[0].candidate_id
+    assert selected["start"] == 28 and selected["duration"] == 3
+    assert selected["parameters"]["report_span"] == 10
+    assert selected["parameters"]["observation_delay"] == {"minimum": 0, "maximum": 8, "time_scale": 2}
+    assert solution["combined_score"] == round(oracle.score * SCORE_SCALE)
+
+
+@pytest.mark.parametrize("delayed_visible", [True, False])
+def test_replan_uses_forecast_for_selected_observation_window(delayed_visible):
+    environment = _environment([_report("a", 1, 10, 0, 0)])
+    environment["mission_time_seconds"] = 12
+    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["observation_window_seconds"] = 4
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a"]},
+        {"x": 0, "y": 0, "arrival_direction": 0,
+         "report_ids": ["a"] if delayed_visible else [], "observation_delay_s": 4},
+    ]
+    context = {"candidate_id": "delayed", "surveillance_mode": "fixed_view",
+               "target_entity_id": None, "target_report_ids": ["a"],
+               "observation_window": {"start": {"seconds": 14}, "duration": {"seconds": .5}},
+               "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": 0}}}
+    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+                      planning_profile="temporal", entry_state="view", states=("view",),
+                      transitions=(), terminal_states=("view",), state_context={"view": context})
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="view", active_state_context=context)
+    decision, _ = Mission1ReplanGate().assess(environment, _belief((1,)), chart, status)
+    assert (decision.reason == "next_assignment_infeasible") != delayed_visible
+    assert (decision.current_score > 0) == delayed_visible
+
+
+@pytest.mark.parametrize("delay", [-1, .1, 5])
+def test_window_rejects_unrepresentable_or_ineligible_delays(delay):
+    environment = _directional_environment()
+    environment["observation_window_seconds"] = 4
+    environment["surveillance_views"][0]["observation_delay_s"] = delay
+    with pytest.raises(ValueError, match="observation delay"):
+        build_candidate_dag(environment, _belief((1, 2, 3)))
+
+
 @pytest.mark.parametrize("direction, seconds", [(0, 0), (1, .5), (2, 1), (3, .5)])
 def test_multigrid_turn_time_uses_discrete_ticks(direction, seconds):
     from onr.application.mission1_planning import _navigation_time

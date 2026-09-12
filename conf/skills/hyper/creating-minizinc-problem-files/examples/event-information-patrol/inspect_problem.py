@@ -128,6 +128,7 @@ def inspect(path: Path) -> dict[str, object]:
         "candidate_x",
         "candidate_y",
         "candidate_arrival_direction",
+        "candidate_observation_delay",
         "candidate_recall",
         "candidate_estimation",
         "candidate_omission",
@@ -153,6 +154,10 @@ def inspect(path: Path) -> dict[str, object]:
     )
 
     modes = _integer_array(values, "candidate_mode")
+    delays = _integer_array(values, "candidate_observation_delay")
+    _require(all(delay >= 0 for delay in delays), "negative observation delay")
+    _require(all(delay == 0 for delay, mode in zip(delays, modes, strict=True) if mode == 2),
+             "pursuit rendezvous must use public report time")
     directions = _integer_array(values, "candidate_arrival_direction")
     _require(all(direction in range(-1, 4) for direction in directions), "invalid arrival direction")
     entities = _integer_array(values, "candidate_entity_id")

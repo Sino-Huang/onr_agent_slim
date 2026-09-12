@@ -21,6 +21,7 @@ candidate_start = [20, 20];
 candidate_duration = [1, 1];
 candidate_x = [11, 10];
 candidate_y = [0, 0];
+candidate_observation_delay = [0, 0];
 candidate_arrival_direction = [-1, -1];
 candidate_recall = [132918, 132918];
 candidate_estimation = [1000000, 1000000];
