@@ -116,7 +116,7 @@ def inspect(path: Path) -> dict[str, object]:
     for node in range(source, sink + 1):
         if node in reachable:
             reachable.update(
-                end for start, end in zip(arc_from, arc_to) if start == node
+                arc_to[outgoing[node - 1] - 1 : outgoing[node] - 1]
             )
     _require(sink in reachable, "candidate DAG has no source-to-sink route")
 

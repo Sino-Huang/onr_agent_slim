@@ -142,6 +142,35 @@ def test_holding_exposure_is_bounded_by_disclosed_activity_span():
     assert holding_exposures(environment, belief) == {}
 
 
+def test_large_graph_inspection_does_not_rescan_all_arcs_per_node(tmp_path, monkeypatch):
+    import importlib.util
+
+    graph = build_candidate_dag(_environment([
+        _report(str(i), 1, 10 + i * 2, i, 0) for i in range(8)
+    ]), _belief((1,)))
+    data = tmp_path / "inspection.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    spec = importlib.util.spec_from_file_location("holding_inspector", EXAMPLE_ROOT / "inspect_problem.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    values = module._assignments(data)
+
+    class CountedArcs(list):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    targets = CountedArcs(values["arc_to"])
+    values["arc_to"] = targets
+    monkeypatch.setattr(module, "_assignments", lambda path: values)
+    assert module.inspect(data)["valid"]
+    # Type checking, bounds checking and oracle construction are linear passes;
+    # reachability must use its already-validated CSR windows, not V*E scans.
+    assert targets.iterations <= 3
+
+
 @pytest.mark.parametrize("options", [[4.5], [.5, .75], [.5, float("inf")]])
 def test_invalid_dwell_choices_are_rejected(options):
     environment = _holding_environment()

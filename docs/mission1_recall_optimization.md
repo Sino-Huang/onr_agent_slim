@@ -317,6 +317,16 @@ coverage, not a native-camera recall corpus. Artifacts are under `attempt-13/`,
 remain in each attempt's `evaluation/`; completed runs are in
 `evaluation-early-presolve/`.
 
+Final large-input inspection exposed a separate quadratic reachability check:
+the compact inspector scanned every arc for every reachable node despite already
+validated CSR offsets. The unchanged Attempt 13 DZN was still consuming a CPU
+after 153 s before eventually completing. Reusing the validated outgoing slices
+reduced the same successful inspection to **6.82 s**, with the same summary.
+A deterministic regression reduces full-array iterations from 91 to three on
+its small graph; **26 inspector/holding/executor tests passed** after this fix.
+This is verification-helper repair, not another optimization attempt or a new
+full-suite run. Planning utility and solver results are unchanged.
+
 **Completed attempts: 14/30. Best verified public-evidence native recall is
 13/39 (33.33%); the above-50% objective remains active.**
 
