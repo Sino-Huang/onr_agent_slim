@@ -44,6 +44,8 @@ the baseline, not part of this new attempt count.
 | 17 | Retained scoring with 750 m nominal/+4 s observation windows and fast native presolve | **12/39**, below no-window 13/39; initial solve now succeeds | Not promoted; expensive gate calculations |
 | 18 | Retained scoring with 750 m group viewpoints and the full scheduled-sensing loop | **12/39**, below 13/39; balanced MSE 0.087468 | No improvement over retained geometry |
 | 19 | 120-degree camera versus 90-degree control, same effective 750 m range and retained scoring | **12/39**, below 13/39; balanced MSE 0.088049 | Offline config only; not promoted |
+| 20 | Continuous native-camera sensing during ideal cardinal transit and early waits, 750 m retained geometry | **11/39**, below scheduled-only 13/39; 74 checks, balanced MSE 0.066142 | Evaluation coverage improvement, not a recall improvement |
+| 21 | Same continuous sensing, 300 m offset-only nominal/+4 s geometry | **1/39**, below scheduled-only 10/39; 46 checks, balanced MSE 0.131002 | Strong regression; no production change promoted |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -406,16 +408,74 @@ claimed for these restored-code/configuration comparisons.
 **Completed attempts: 19/30. Best verified public-evidence native recall is
 13/39 (33.33%); the above-50% objective remains active.**
 
+## Continuous-sensing checkpoint
+
+Physical `115f41d` adds an explicit offline `--sensing continuous` comparison.
+The default remains the historical scheduled-only replay. Continuous execution
+follows a deterministic north/south-then-east/west path, using advertised speed
+and discrete quarter-turn timing. Turns hold position; early arrival waits hold
+the selected heading. Post-pursuit unknown facing starts east, while the planner
+reserves worst-case turning. An unreachable selected appointment fails the
+evaluation rather than teleporting. Movement remains obstacle-free ideal motion,
+not a native command/controller or partition-migration replay. Fixed-camera
+masks are native; pursuit retains its separately disclosed perfect-radius model.
+No AirSim, lifecycle, MiniZinc authority, source scenario or live-default changes.
+
+The same actual discrepancy detector and Bayesian updater consume observations
+during transit, early waits and surveillance. Checks trigger the unchanged exact
+10% gate; replacements require native optimality and exact oracle parity. Logs
+identify each sensing phase, without altering selected appointments or giving
+extra report/utility credit. Raw summary `modes` counts sensing-log segments,
+including transit; the audit reports scheduled-surveillance segments separately.
+
+Attempt 20 starts with exactly Attempt 07's 22 assignments and score, but finishes
+at **11/39**, not 13/39. There are 74 unique checks: 63 clean, five omitted, six
+altered. Four checks occur during transit (including one issue), one clean check
+during early waiting, and 69 during surveillance (including ten issues).
+Sensing covers all 299.5 seconds: 174.5 transit, 60 early wait, 65 surveillance.
+There are 29 scheduled fixed-view segments, 52 gate assessments, and replacements
+at 48, 135 and 247.5 seconds. All four revisions are native-optimal/oracle-equal;
+solver times are 10.96, 9.37, 4.54 and 0.73 seconds. Post-initial-solve rollout:
+335.93 seconds, of which 252.32 seconds are gate assessments. Balanced MSE worsens
+from 0.057244 to 0.066142. Relative to the control, nine issues are newly detected
+and eleven previously detected issues are lost: extra evidence changes later
+route choices substantially, not just sensing coverage on an unchanged route.
+
+Attempt 21 starts with exactly Attempt 12's initial assignments but finishes at
+**1/39**, not 10/39. Its 46 checks include 45 clean and one altered. One clean
+check is during transit, five checks during early waits (including the sole
+issue), and 40 clean checks during surveillance. Sensing covers all 299.5 seconds:
+165.5 transit, 33.5 early wait, 100.5 surveillance. There are eleven scheduled
+fixed-view segments and one pursuit of entity 2. Twenty-nine gate assessments
+produce one replacement at 187 seconds. Both revisions are native-optimal with
+oracle parity; solver times 9.40 and 2.10 seconds. Post-initial-solve rollout:
+159.68 seconds, including 130.56 seconds of gate assessments. Balanced MSE
+worsens from 0.087886 to 0.131002. This is not a successful recall optimization.
+
+Verification: **100 focused Physical tests pass**, including cardinal speed and
+turn timing across all heading pairs, planner-reserve compatibility, and an
+integration test that observes during transit/waits, updates belief, assesses
+the gate and preserves the selected appointment. Changed-file lint passes.
+Both completed artifact audits verify contiguous sensing from time zero, native
+optimality/parity, unique check/report IDs, detector-window eligibility, and
+selected-window/mode/pose preservation. Artifacts: `attempt-20/evaluation/`,
+`attempt-21/evaluation/`, their `audit.json` files, and
+`test-continuous-integration.xml`, under the common optimization root. No full
+Agent suite or corpus rerun is claimed for this offline-only helper change.
+
+**21/30 attempts completed. Best historical scheduled-only recall remains 13/39;
+the new continuous replay reaches 11/39 at 750 m. Neither meets the goal.**
+
 ## Remaining work
 
-Next, close an evaluator coverage gap before further tuning: ADR 0010 specifies
-continuous maneuver-independent perception, whereas the current offline loop
-counts scheduled surveillance only and skips transit/early-arrival waiting.
-Compare continuous perception along an ideal cardinal execution of the same
-native plan, preserving four headings, speed/turn budgets, observed-only belief
-updates and the 10% gate. Attribute any gain to this expanded execution/evaluation
-scope unless a matched control proves a planning improvement. Keep AirSim and
-physical lifecycle ownership unchanged; stop for review if that cannot be done.
+ADR 0010's continuous-perception coverage gap is now testable. These comparisons
+rule out skipped transit/early-wait sensing as a sufficient remedy; they do not
+establish a universal negative effect of extra perception. Next isolate evidence-
+driven route changes with a fixed-initial-plan continuous-sensing control before
+changing utility again. Keep continuous and scheduled-only results distinguished.
+Then revisit route-wide information budgeting and public-only observation-window
+coverage, with exact report uniqueness and solver-limit checks. Do not select
+targets or objective weights from this instance's hidden missed-issue labels.
 
 Of the best Attempt 07's 26 missed issues, **nine
 had no scheduled sensing anywhere in their four-second detection window**;
