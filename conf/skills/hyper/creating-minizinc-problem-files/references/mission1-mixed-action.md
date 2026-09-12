@@ -85,9 +85,22 @@ The rate is zero when the schedule contains fewer than two distinct timestamps.
 
 ## Utility and optimization
 
-Every covered public report contributes the existing utility
-`0.5 * posterior risk + 0.5 * normalized expected variance reduction`. A pursuit
-adds expected hidden-omission yield exactly once for its report interval:
+Every covered public report contributes `0.5 * posterior risk`. Information
+value is grouped by vessel and original report timestamp. For `n` co-timed checks,
+current posterior variance `V`, and one-check expected variance reduction `g`,
+the builder uses the moment-based precision approximation:
+
+`G(n) = V * n * g / (V + (n - 1) * g)`
+
+It preserves `G(1)=g`, gives diminishing increments and saturates at `V`.
+Information utility is `0.5 * G(n) / max_remaining_one_check_gain`, preserving
+the existing normalization. Different vessels have separate uncertainty budgets.
+This applies identically to fixed views and pursuits. Different report-time
+batches still sum values based on the current belief; it is not an exact
+multi-step Bayesian forecast or a route-wide information budget. Actual belief
+updates remain unchanged and consume observed checks only.
+
+A pursuit adds expected hidden-omission yield exactly once for its report interval:
 
 `E[p_i q] * rate_i * (t_last - t_first)`
 

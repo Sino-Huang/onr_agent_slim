@@ -39,6 +39,7 @@ class ObservationOpportunity:
     recall: float
     estimation: float
     utility: float
+    variance: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +302,7 @@ def _opportunities(
             y=y,
             recall=recall,
             estimation=estimation,
+            variance=by_ship[entity_id].variance,
             utility=0.5 * recall
             + 0.5 * (estimation / max_estimation if max_estimation > 0.0 else 0.0),
         )
@@ -319,7 +321,10 @@ def score_candidate_opportunities(
 
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     recall = math.fsum(0.5 * item.recall for item in ordered)
-    estimation = math.fsum(item.utility - 0.5 * item.recall for item in ordered)
+    batches: dict[tuple[int, float], list[ObservationOpportunity]] = {}
+    for item in ordered:
+        batches.setdefault((item.entity_id, item.time_s), []).append(item)
+    estimation = math.fsum(_batch_information_value(items) for items in batches.values())
     report_span = ordered[-1].time_s - ordered[0].time_s if len(ordered) >= 2 else 0.0
     if ordered and observation_start_s is not None:
         report_span = max(0.0, ordered[-1].time_s - observation_start_s)
@@ -329,6 +334,27 @@ def score_candidate_opportunities(
         omission_yield=(
             expected_omission_probability * public_report_rate * report_span
         ),
+    )
+
+
+def _batch_information_value(items: Sequence[ObservationOpportunity]) -> float:
+    """Moment-based precision approximation for co-timed checks of one vessel.
+
+    If V is current variance and g the one-check expected reduction, additive
+    measurement precision gives G(n) = V*n*g / (V + (n-1)*g). It matches g at
+    n=1 and saturates below V. Retain the existing normalization and 50% weight.
+    Different report-time batches still share current belief; this is not an
+    exact route-wide Bayesian lookahead or a cap on accumulated route gain.
+    """
+    first = items[0]
+    one = first.utility - 0.5 * first.recall
+    count = len(items)
+    if count == 1:
+        return one
+    if first.variance <= 0 or first.estimation <= 0:
+        return 0.0
+    return count * one * first.variance / (
+        first.variance + (count - 1) * first.estimation
     )
 
 

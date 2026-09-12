@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,77 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     environment["controlled_vehicle"]["max_velocity"] = 30.0
     graph = build_candidate_dag(environment, _belief((1,)))
     assert not graph.candidates
+
+
+def test_same_time_information_has_diminishing_returns_within_variance_budget():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_candidate_opportunities,
+    )
+
+    belief = _belief((1,))
+    opportunities = _opportunities(_environment([
+        _report(f"r{i}", 1, 20, 0, 0) for i in range(10)
+    ]), belief)
+    values = [0.0] + [score_candidate_opportunities(opportunities[:n]).estimation for n in range(1, 11)]
+    assert values[1] == pytest.approx(.5)
+    marginal = [b - a for a, b in pairwise(values)]
+    assert all(a > b > 0 for a, b in pairwise(marginal))
+    # Undo the existing normalization to compare raw variance reduction.
+    assert values[-1] * 2 * belief.ships[0].expected_variance_reduction < belief.ships[0].variance
+    assert score_candidate_opportunities(opportunities).recall == pytest.approx(5 * belief.ships[0].mean)
+
+
+def test_information_prefers_distinct_vessels_over_repeated_cotimed_checks(tmp_path):
+    environment = _environment([
+        *[_report(f"repeat-{i}", 1, 20, 0, 0) for i in range(5)],
+        *[_report(f"distinct-{i}", i, 20, 100, 0) for i in range(2, 6)],
+    ], fov=1)
+    graph = build_candidate_dag(environment, _belief((1, 2, 3, 4, 5)))
+    oracle = longest_path_oracle(graph)
+    assert set(oracle.covered_report_ids) == {f"distinct-{i}" for i in range(2, 6)}
+    data = tmp_path / "data.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    solution = json.loads(result.stdout.splitlines()[0])
+    assert [a["candidate_id"] for a in solution["assignments"]] == [c.candidate_id for c in oracle.candidates]
+    assert solution["combined_score"] == round(oracle.score * SCORE_SCALE)
+
+
+def test_batch_information_is_shared_with_replan_rescoring():
+    environment = _environment([
+        *[_report(f"a{i}", 1, 20, 0, 0) for i in range(4)], _report("b", 2, 20, 0, 0),
+    ])
+    belief = _belief((1, 2))
+    route = longest_path_oracle(build_candidate_dag(environment, belief))
+    candidate = route.candidates[0]
+    context = {"candidate_id": candidate.candidate_id, "surveillance_mode": "fixed_view",
+               "target_entity_id": None, "target_report_ids": list(candidate.report_ids),
+               "observation_window": {"start": {"seconds": 20}, "duration": {"seconds": .5}},
+               "planner_item": {"parameters": {"x": candidate.x, "y": candidate.y}}}
+    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+                      planning_profile="temporal", entry_state="view", states=("view",),
+                      transitions=(), terminal_states=("view",), state_context={"view": context})
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="view", active_state_context=context)
+    decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert decision.current_score == advisory.score == route.score
+    assert not decision.trigger
+
+
+def test_information_budgets_are_separate_for_other_vessels_and_report_times():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_candidate_opportunities,
+    )
+
+    opportunities = _opportunities(_environment([
+        _report("a", 1, 20, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 1, 21, 0, 0),
+    ]), _belief((1, 2)))
+    assert score_candidate_opportunities(opportunities).estimation == pytest.approx(1.5)
 
 
 def test_observation_window_recovers_late_reachable_view_and_expires():
