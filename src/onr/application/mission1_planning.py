@@ -78,6 +78,7 @@ class SurveillanceCandidate:
     combined_score: float
     arrival_direction: int | None = None
     observation_delay_s: float = 0.0
+    scored_observation_windows: tuple[tuple[float, float], ...] = ()
 
     @property
     def duration_s(self) -> float:
@@ -113,6 +114,7 @@ def _candidate_id(
     mode: str, report_ids: Sequence[str], *, viewpoint: tuple[int, int] | None = None,
     arrival_direction: int | None = None,
     observation_delay_s: float = 0.0,
+    observation_dwell_s: float = OBSERVATION_DWELL_SECONDS,
 ) -> str:
     identity: dict[str, object] = {"mode": mode, "report_ids": list(report_ids)}
     if viewpoint is not None:
@@ -121,6 +123,8 @@ def _candidate_id(
         identity["arrival_direction"] = arrival_direction
     if observation_delay_s:
         identity["observation_delay_s"] = observation_delay_s
+    if observation_dwell_s != OBSERVATION_DWELL_SECONDS:
+        identity["observation_dwell_s"] = observation_dwell_s
     encoded = json.dumps(
         identity,
         sort_keys=True,
@@ -372,6 +376,83 @@ def _fixed_omission_yield(item: ObservationOpportunity, observation_s: float) ->
     return item.omission_rate * duration
 
 
+def merge_time_intervals(intervals):
+    merged = []
+    for start, end in sorted(set(intervals)):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _subtract_intervals(intervals, excluded):
+    pieces = list(intervals)
+    for start, end in excluded:
+        pieces = [(a, b) for left, right in pieces
+                  for a, b in ((left, min(right, start)), (max(left, end), right)) if a < b]
+    return tuple(pieces)
+
+
+def holding_exposures(environment, belief):
+    """Weight public native-visibility forecasts, excluding all report lookbacks.
+
+    Report-owned omission cells keep their existing allocation. Holding only
+    earns exposure outside their union, so even a later check at another pose
+    cannot recredit that interval. Current/future holds exclude elapsed time.
+    """
+    by_ship = {ship.entity_id: ship for ship in belief.ships}
+    rates = public_report_rates(environment, belief)
+    lookback = float(environment.get("event_check_window_seconds", 0))
+    reserved = {}
+    activity_span = {}
+    for report in _public_reports(environment, belief):
+        reserved.setdefault(report.entity_id, []).append((max(0, report.time_s - lookback), report.time_s))
+        first, last = activity_span.get(report.entity_id, (report.time_s, report.time_s))
+        activity_span[report.entity_id] = min(first, report.time_s), max(last, report.time_s)
+    reserved = {ship: merge_time_intervals(rows) for ship, rows in reserved.items()}
+    raw = {}
+    for view in environment.get("surveillance_views", ()):
+        pose = (view["x"], view["y"], view["arrival_direction"])
+        for interval in view.get("holding_intervals", ()):
+            ship = interval["entity_id"]
+            if ship in by_ship:
+                raw.setdefault((pose, ship), []).append((interval["start_s"], interval["end_s"]))
+    result = {}
+    for (pose, ship), intervals in raw.items():
+        rate = by_ship[ship].expected_omission_probability * rates[ship]
+        if rate == 0:
+            continue
+        first, last = activity_span[ship]
+        for start, end in _subtract_intervals(merge_time_intervals(intervals), reserved.get(ship, ())):
+            start, end = max(first, start), min(last, end)
+            if start < end:
+                result.setdefault(pose, []).append((ship, start, end, rate))
+    return result
+
+
+def score_holding_exposure(exposures, windows, *, now=-math.inf, claimed=None):
+    """Round per selected window; its last capture precedes departure by one tick."""
+    if claimed is None:
+        claimed = {}
+    units = 0
+    for start, end in windows:
+        end -= OBSERVATION_DWELL_SECONDS
+        start = max(start, now)
+        gain = 0.0
+        for ship, left, right, rate in exposures:
+            lo, hi = max(start, left), min(end, right)
+            if lo >= hi:
+                continue
+            pieces = _subtract_intervals(((lo, hi),), claimed.get(ship, ()))
+            gain += rate * math.fsum(b - a for a, b in pieces)
+            claimed[ship] = merge_time_intervals((*claimed.get(ship, ()), *pieces))
+        units += round(gain * SCORE_SCALE)
+    return units / SCORE_SCALE
+
+
 def score_candidate_opportunities(
     covered: Sequence[ObservationOpportunity],
     *,
@@ -501,6 +582,8 @@ def _candidate(
     public_report_rate: float = 0.0,
     arrival_direction: int | None = None,
     observation_delay_s: float = 0.0,
+    observation_dwell_s: float = OBSERVATION_DWELL_SECONDS,
+    holding_omission_yield: float = 0.0,
 ) -> SurveillanceCandidate:
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     report_ids = tuple(item.report_id for item in ordered)
@@ -513,17 +596,21 @@ def _candidate(
         )
     )
     report_span = ordered[-1].time_s - ordered[0].time_s
+    utility = replace(utility, omission_yield=utility.omission_yield + holding_omission_yield)
+    start_s = ordered[0].time_s + observation_delay_s
+    end_s = ordered[-1].time_s + observation_delay_s + observation_dwell_s
     return SurveillanceCandidate(
         candidate_id=_candidate_id(
             mode, report_ids,
             viewpoint=(round(x), round(y)) if mode == "fixed_view" else None,
             arrival_direction=arrival_direction,
             observation_delay_s=observation_delay_s,
+            observation_dwell_s=observation_dwell_s,
         ),
         mode=mode,
         entity_id=entity_id,
-        start_s=ordered[0].time_s + observation_delay_s,
-        end_s=ordered[-1].time_s + observation_delay_s + OBSERVATION_DWELL_SECONDS,
+        start_s=start_s,
+        end_s=end_s,
         x=x,
         y=y,
         end_x=end_x,
@@ -539,6 +626,7 @@ def _candidate(
         combined_score=utility.combined,
         arrival_direction=arrival_direction,
         observation_delay_s=observation_delay_s,
+        scored_observation_windows=((start_s, end_s),) if observation_dwell_s > OBSERVATION_DWELL_SECONDS else (),
     )
 
 
@@ -580,7 +668,7 @@ def _candidate_arcs(
             right = candidates[target - 1]
             if chronological_reports and (
                 right.start_s - right.observation_delay_s
-                <= left.end_s - OBSERVATION_DWELL_SECONDS - left.observation_delay_s + 1e-9
+                <= left.start_s - left.observation_delay_s + left.report_span_s + 1e-9
             ):
                 # Window alternatives can otherwise repeat an older report
                 # after an intervening visit. Ordered report epochs preclude
@@ -670,6 +758,8 @@ def _fixed_view_candidates(
     radius: float,
     current_position: tuple[float, float],
     surveillance_views: Sequence[Mapping[str, Any]] | None = None,
+    dwell_options: Sequence[float] = (OBSERVATION_DWELL_SECONDS,),
+    exposures: Mapping | None = None,
 ) -> tuple[SurveillanceCandidate, ...]:
     """Reuse sampled report centres/midpoints and the current viewpoint over time.
 
@@ -697,12 +787,23 @@ def _fixed_view_candidates(
                 if report.report_id in visible_ids:
                     by_time.setdefault(report.time_s, []).append(report)
             for covered in by_time.values():
-                candidate = _candidate(
-                    "fixed_view", covered, x=x, y=y, end_x=x, end_y=y,
-                    entity_id=None, arrival_direction=direction,
-                    observation_delay_s=float(view.get("observation_delay_s", 0.0)),
-                )
-                candidates[candidate.candidate_id] = candidate
+                delay = float(view.get("observation_delay_s", 0.0))
+                start_s = covered[0].time_s + delay
+                for dwell in dwell_options:
+                    extra = 0.0 if dwell == OBSERVATION_DWELL_SECONDS else score_holding_exposure(
+                        (exposures or {}).get((x, y, direction), ()), ((start_s, start_s + dwell),),
+                    )
+                    # Longer occupancy with no extra value cannot beat its short
+                    # counterpart and only removes feasible continuations.
+                    if dwell > OBSERVATION_DWELL_SECONDS and extra == 0:
+                        continue
+                    candidate = _candidate(
+                        "fixed_view", covered, x=x, y=y, end_x=x, end_y=y,
+                        entity_id=None, arrival_direction=direction,
+                        observation_delay_s=delay, observation_dwell_s=dwell,
+                        holding_omission_yield=extra,
+                    )
+                    candidates[candidate.candidate_id] = candidate
         return tuple(candidates.values())
     for x, y in sample_fixed_viewpoints(opportunities, radius, current_position):
         visible = tuple(
@@ -737,6 +838,16 @@ def build_candidate_dag(
     turn_seconds = float(vehicle.get("quarter_turn_seconds", 0.0))
     observation_window = float(cast(Any, environment.get("observation_window_seconds", 0.0)))
     views = environment.get("surveillance_views")
+    dwell_options = sorted(set(cast(Any, environment.get("fixed_view_dwell_options_s", (.5,)))))
+    if not dwell_options or dwell_options[0] != OBSERVATION_DWELL_SECONDS or any(
+        not math.isfinite(d) or d < OBSERVATION_DWELL_SECONDS or d * TIME_SCALE != round(d * TIME_SCALE)
+        for d in dwell_options
+    ):
+        raise ValueError("fixed-view dwell options must include 0.5 and use positive half-second steps")
+    if len(dwell_options) > 1 and (views is None or any("holding_intervals" not in v for v in cast(Any, views))):
+        raise ValueError("long fixed-view dwells require public holding interval forecasts")
+    if len(dwell_options) > 1 and float(cast(Any, environment.get("event_check_window_seconds", 0))) < OBSERVATION_DWELL_SECONDS:
+        raise ValueError("holding requires at least one observation tick of detector lookback")
     if observation_window < 0 or not math.isfinite(observation_window):
         raise ValueError("observation window must be finite and nonnegative")
     if observation_window > 0 and views is None:
@@ -761,6 +872,7 @@ def build_candidate_dag(
     for item in _fixed_view_candidates(
         opportunities, fov, (start_x, start_y),
         cast(Any, environment.get("surveillance_views")),
+        dwell_options, holding_exposures(environment, belief) if len(dwell_options) > 1 else {},
     ):
         if (
             now + _navigation_time(start_x, start_y, item.x, item.y, speed,
@@ -955,6 +1067,9 @@ def _fixed_view_runs(
                            - first.start_s + first.observation_delay_s),
             recall_utility=recall, estimation_utility=estimation,
             omission_yield=omission, combined_score=recall + estimation + omission,
+            scored_observation_windows=(tuple(w for c in group for w in
+                (c.scored_observation_windows or ((c.start_s, c.end_s),)))
+                if any(c.scored_observation_windows for c in group) else ()),
         ))
     return tuple(result)
 
@@ -1057,6 +1172,8 @@ class Mission1ReplanGate:
         now = float(cast(Any, environment["mission_time_seconds"]))
         represented: set[str] = set()
         scored_reports: set[str] = set()
+        scored_holding: dict = {}
+        exposures = holding_exposures(environment, belief)
         current_score = 0.0
         next_feasible = True
         next_start = math.inf
@@ -1125,6 +1242,16 @@ class Mission1ReplanGate:
                     observation_start_s=max(now, start_s) if continuing_pursuit else None,
                 )
             )
+            if mode == "fixed_view" and isinstance(parameters, Mapping):
+                windows = tuple(
+                    (w["start"] / w["time_scale"], (w["start"] + w["duration"]) / w["time_scale"])
+                    for w in parameters.get("scored_observation_windows", ())
+                )
+                extra = score_holding_exposure(
+                    exposures.get((parameters.get("x"), parameters.get("y"), parameters.get("arrival_direction")), ()),
+                    windows, now=now, claimed=scored_holding,
+                )
+                utility = replace(utility, omission_yield=utility.omission_yield + extra)
             current_score += _score_units(utility) / SCORE_SCALE
             scored_reports.update(item.report_id for item in covered)
             key = (
@@ -1336,10 +1463,13 @@ __all__ = [
     "ReplanGateDecision",
     "SurveillanceCandidate",
     "build_candidate_dag",
+    "holding_exposures",
     "longest_path_oracle",
+    "merge_time_intervals",
     "public_report_rates",
     "sample_fixed_viewpoints",
     "score_candidate_opportunities",
     "score_fixed_view_opportunities",
+    "score_holding_exposure",
     "serialize_minizinc_data",
 ]

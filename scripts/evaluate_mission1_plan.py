@@ -73,6 +73,10 @@ def solve_public_plan(environment, belief, model, executable, output):
         assert assignment["duration"] == round(candidate.duration_s * TIME_SCALE)
         assert assignment["parameters"]["report_span"] == round(candidate.report_span_s * TIME_SCALE)
         assert assignment["parameters"]["report_ids"] == list(candidate.report_ids)
+        assert assignment["parameters"].get("scored_observation_windows", []) == [
+            {"start": round(start * TIME_SCALE), "duration": round((end - start) * TIME_SCALE), "time_scale": TIME_SCALE}
+            for start, end in candidate.scored_observation_windows
+        ]
         assert assignment["parameters"]["utility"] == {
             "recall": round(candidate.recall_utility * SCORE_SCALE),
             "estimation": round(candidate.estimation_utility * SCORE_SCALE),

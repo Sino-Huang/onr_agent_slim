@@ -46,6 +46,14 @@ an older report after an intervening view while keeping integral network flow.
 It is not an unrestricted window/set-cover planner or a multi-heading batch scan.
 Pursuit rendezvous remains at the first public report time.
 
+Offline snapshots can also offer `fixed_view_dwell_options_s`, including the
+short 0.5-second choice, and per-view `holding_intervals` of forecast visibility.
+Longer candidates keep the same public anchor reports but occupy their full
+selected dwell. They are offered only when additional omission exposure has
+positive value; timing arcs reserve the full duration. Incidental public checks
+during a longer dwell can update belief, but are not precredited as anchor
+reports. This is still sampled observation planning, not continuous patrol.
+
 Window graphs also remove locally dominated terminal choices: from one
 predecessor, a final observation with no later continuation cannot beat a better
 final observation under the complete lexicographic cost. Candidate indices stay
@@ -114,9 +122,18 @@ expired or checked reports retain their ownership so other reports cannot
 reclaim it. Delaying a view reduces this preceding-interval exposure. The shared
 scorer uses the selected forecast time when rescoring an existing fixed view.
 
-This is a public-schedule rate approximation, not a prediction of hidden events.
-It conservatively omits unanchored/background exposure and holding-gap value;
-visibility with no recorded checks cannot yet establish a searched interval.
+An optional longer dwell adds `E[p_i q] * rate_i * exposure_duration` from public
+native-visibility forecasts. Forecast-visible capture ticks certify only their
+preceding half-second exposure. Clip to the selected window through its last
+capture (one tick before departure), the current Mission time during rescoring,
+and the vessel's disclosed activity span. Exclude the union of every public
+report's lookback interval, so a future fixed view cannot recredit the same
+exposure. Duplicate/overlapping intervals share one credit per vessel. The gate
+retains remaining exposure after the anchor report has been checked.
+
+These are public-schedule rate approximations, not hidden-event predictions.
+They omit unanchored/background patrol value and gaps between selected dwell
+windows; visibility without recorded checks cannot establish a searched interval.
 The public capability comes from the offline physical helper's detector config.
 Absent that field, fixed omission value is zero; no new live-feed contract or
 physical command is introduced. Fixed views have multiple potential vessels,
@@ -141,15 +158,20 @@ assignment, from the first report time through the last dwell. The objective
 counts one maneuver for that run and includes its holding gaps in surveillance
 duration. Other viewpoints and pursuits separate runs. Public utility is rounded
 per report-time block and summed, identically in the model, oracle and active-plan
-rescoring. Fixed omission cells are summed once; holding itself adds no further
-omission yield.
+rescoring. Fixed omission cells and explicitly scored dwell intervals are summed
+once; gaps joining the same-view assignments receive no extra omission credit.
 
 Integer node potentials first reweight network costs by a route-independent
 constant. MiniZinc verifies the longest-prefix potentials against the
 component-derived weights, then uses unit penalties for negative reduced-cost
 or noncanonical predecessor edges. The unique zero-loss path is a lexicographic
-optimum with the deterministic final tie-break; all feasible routes remain
-available. This avoids huge floating-point objective
+optimum with the deterministic final tie-break. Native optimal-face presolve
+creates flow variables only for zero-loss canonical arcs. The model checks
+forward acyclicity and the complete potential recurrence against component
+weights, proving a zero-loss path exists; any positive flow on a penalized arc
+would be nonoptimal. No selected route IDs are supplied. Early variable
+elimination avoids flattening a large LP of provably nonoptimal arcs while
+preserving the exact optimum. This avoids huge floating-point objective
 coefficients while preserving the optimal plans and reported utility. Keep the
 generated potential array with its paired model and data files.
 
@@ -172,6 +194,12 @@ sampled delay in the emitted run using its included time scale. `report_span`
 still describes original public report times; it can differ from the observation
 span. Execute the emitted observation window unchanged. Delay metadata is
 explanatory, not an additional physical command parameter.
+
+Longer fixed views also emit `parameters.scored_observation_windows`, including
+each selected constituent window of a merged assignment. Preserve this metadata
+in `planner_item` for exact rescoring, including after its anchor reports are
+checked. Execute the outer assignment window unchanged; these scoring windows
+are neither separate maneuvers nor additional physical command parameters.
 
 MiniZinc selects the mode. Hyper preserves that mode in the Statechart. Maneuver
 receives the exact selected fixed-view coordinates through the bound

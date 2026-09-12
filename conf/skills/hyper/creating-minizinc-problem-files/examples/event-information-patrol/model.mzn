@@ -50,7 +50,13 @@ array[CANDIDATES] of int: candidate_combined_score = [
   | candidate in CANDIDATES
 ];
 
-array[ARCS] of var 0.0..1.0: flow;
+% The verified recurrence below proves a zero-penalty path exists. Create
+% variables only on its optimal face; late equality constraints still force
+% the flattener to materialize the entire large LP first.
+array[ARCS] of var 0.0..1.0: flow = [
+  if arc_weight[edge] < 0 \/ arc_from[edge] != preferred_predecessor[arc_to[edge]] then 0.0
+  else let { var 0.0..1.0: amount; } in amount endif | edge in ARCS
+];
 array[CANDIDATES] of var 0.0..1.0: selected;
 
 constraint forall(node in NODES)(
@@ -97,8 +103,9 @@ var float: candidate_order_sum = sum(candidate in CANDIDATES)(
 );
 % Apply potentials while coefficients are integers, before floating-point LP
 % conversion. Along ANY source-to-sink unit flow these terms telescope to
-% potential[source] - potential[sink], a constant. The same routes and exact
-% lexicographic preferences remain; no advisory route is imposed as a constraint.
+% potential[source] - potential[sink], a constant. The exact
+% lexicographic preferences are preserved; the verified zero-cost face below
+% supports presolve without supplying any advisory route IDs.
 array[NODES] of int: node_objective_potential;
 array[ARCS] of int: unreduced_arc_weight = [
   if arc_to[e] = sink_node then 0 else
@@ -116,6 +123,7 @@ array[ARCS] of int: arc_weight = [
 % Penalizing each strictly negative edge by one preserves EXACTLY the optimal
 % paths, while avoiding huge floating-point coefficients and tiny tie losses.
 constraint assert(
+  forall(edge in ARCS)(arc_from[edge] < arc_to[edge]) /\
   node_objective_potential[source_node] = 0 /\
   forall(node in NODES where node != source_node)(
     node_objective_potential[node] = max(
@@ -195,6 +203,11 @@ output let {
         ++ ",\"maximum\":" ++ show(max(c in members)(candidate_observation_delay[c]))
         ++ ",\"time_scale\":" ++ show(time_scale) ++ "}" endif)
     ++ ",\"time_scale\":" ++ show(time_scale)
+    ++ (if candidate_mode[candidate] = 1 /\ exists(c in members)(candidate_duration[c] > candidate_report_span[c] + 1) then
+        ",\"scored_observation_windows\":[" ++ join(",", [
+          "{\"start\":" ++ show(candidate_start[c]) ++ ",\"duration\":" ++ show(candidate_duration[c])
+          ++ ",\"time_scale\":" ++ show(time_scale) ++ "}" | c in members
+        ]) ++ "]" else "" endif)
     ++ ",\"report_ids\":["
     ++ join(",", [
       "\"" ++ candidate_report_id[position] ++ "\""

@@ -95,6 +95,7 @@ def build_instance(
     manifest = {
         "candidates": len(graph.candidates),
         "event_check_window_seconds": environment.get("event_check_window_seconds", 0),
+        "fixed_view_dwell_options_s": environment.get("fixed_view_dwell_options_s", [.5]),
         "fixed_candidates_with_omission_value": sum(
             c.mode == "fixed_view" and c.omission_yield > 0 for c in graph.candidates
         ),
