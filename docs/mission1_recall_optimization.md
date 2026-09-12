@@ -37,6 +37,8 @@ the baseline, not part of this new attempt count.
 | 10 | Same augmentation at 300 m with nominal/+4 s windows | Initial solve exceeds 30 s; 11,629 candidates, 1,250,315 arcs | No verified recall; retain failure evidence |
 | 11 | Use only 25 m camera-facing offsets and the current pose, 750 m | **10/39**, below retained 13/39; balanced MSE worsens to 0.084506 | Do not promote globally |
 | 12 | Same offset-only family, 300 m with nominal/+4 s windows | **10/39**, up from 4/39; balanced MSE worsens to 0.087886 | Useful recall tradeoff, retain as optional experiment |
+| 13 | 750 m offset-only views with optional 0.5/4.5 s public-exposure holds | **10/39**, unchanged from Attempt 11; initial timeout repaired by native optimal-face presolve | No recall improvement; longer holds remain optional |
+| 14 | Same hold choices at 300 m with nominal/+4 s windows | **10/39**, unchanged from Attempt 12; initial timeout repaired by the same presolve | No recall improvement; not promoted to live defaults |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -251,13 +253,84 @@ relabelled as new verification. Artifacts: `attempt-09/` through `attempt-12/`,
 `camera-offset-audit.json`, and `test-camera-offset-final.xml` under the experiment
 root. The optional sampling helper remains outside the live defaults.
 
-**Completed attempts: 12/30. Best verified public-evidence native recall is
+## Forecast holding and native presolve
+
+Agent `00b51a4` and Physical `cdd67c6` offer optional fixed-view dwell choices
+from native public-position forecasts. Each forecast-visible capture contributes
+only its preceding half-second exposure. The shared scorer clips this to the
+selected window, current time during rescoring, and the vessel's disclosed
+activity span, excluding all public-report lookback intervals. Duplicate
+intervals share credit per vessel. Thus later fixed views and pursuits cannot
+reclaim the same scored exposure. Holds remain valuable after their anchor
+reports are checked. Merged native assignments emit their constituent scored
+windows so the gate does not invent extra value for gaps between them.
+
+The tested choices are 0.5 and 4.5 s. The short option remains; longer candidates
+with zero extra value are omitted. This is a conservative approximation, not
+full background patrol or credit for every incidental public check during a
+hold. No new command or live-feed contract is introduced. Skill 2.18.0 explains
+the optional metadata and preserves the outer assignment's execution window.
+
+Both initial solves timed out: Attempt 13 had 8,772 candidates / 797,991 arcs;
+Attempt 14 had 10,441 / 1,186,361. A compile-only probe of the exact failed
+Attempt 13 DZN also hit 30 s, locating the bottleneck in flattening rather than
+the COIN solve alone. Late zero-flow constraints still timed out. Early native
+optimal-face presolve reduced compilation to **20.21 s**: the model verifies
+forward acyclicity and all longest-prefix potentials against component weights,
+proving a zero-penalty path exists, and creates variables only for canonical
+zero-loss arcs. It derives the path itself; selected route IDs are not inputs.
+Exact lexicographic preferences and invalid-potential rejection remain tested.
+This is a solver repair/retry of Attempts 13–14, not two additional attempts.
+
+Attempt 13 then completed three optimal/oracle-matching revisions, 40 gate
+assessments and 22 fixed-view segments. It produced 74 checks: 64 clean,
+six altered, four omitted. Recall stayed **10/39**; balanced MSE slightly
+worsened from 0.084506 to 0.084978. Solve times: 19.71, 15.61, 2.54 s;
+rollout excluding the initial solve: 306.56 s; final Mission time 299.5 s.
+
+Attempt 14 completed five optimal/oracle-matching revisions, 30 assessments and
+19 fixed-view segments. Its 40 checks and final belief matched the control:
+30 clean, six altered, four omitted; **10/39**, balanced MSE 0.087886. The
+control's entity-2 pursuit was replaced by fixed views without improving recall.
+Solve times: 29.12, 4.95, 0.80, 0.26, 0.25 s; rollout: 382.95 s; final time
+303.5 s. The initial solve remains close to the limit, and gate assessments
+increased substantially with the larger graphs. Neither hold configuration is
+claimed as a demo-performance or recall improvement.
+
+Verification: **784 Agent non-live tests passed**, 21 deselected, three existing
+warnings, 264.52 s; **88 final planner/holding cases passed** after the final
+metadata condition refinement; **18 focused Physical tests passed**, including
+forecast visibility loss and immutable Statechart metadata preservation. Both
+rollout audits passed window containment/nonoverlap, mode/entity/pose/metadata,
+unique checks and detector eligibility. Decision artifacts are strict JSON.
+Three few-shot DZNs regenerated unchanged; lint/whitespace checks pass with the
+previous Agent TRY004 exclusions. Generic skill validation retains its known
+top-level `version` limitation; role/catalog tests pass.
+
+All 60 seed-100 regression snapshots were optimal with exact oracle parity.
+Maximum solve: **2.14 s**, versus 3.86 s in the previous receipt. Per snapshot
+kind, selected modes remain 120 pursuit / 330 fixed-view assignments and there
+are zero evidence-conditioned route switches. This is radius-only regression
+coverage, not a native-camera recall corpus. Artifacts are under `attempt-13/`,
+`attempt-14/`, `holding-audit.json`, `holding-regression-corpus/summary.json`,
+`test-hold-full.xml` and `test-hold-physical-confirmed.xml`. Original failures
+remain in each attempt's `evaluation/`; completed runs are in
+`evaluation-early-presolve/`.
+
+**Completed attempts: 14/30. Best verified public-evidence native recall is
 13/39 (33.33%); the above-50% objective remains active.**
 
 ## Remaining work
 
-The next experiments should model holding/observation intervals and public-only
-omission exposure during gaps. Of the best Attempt 07's 26 missed issues, **nine
+Next, test information-versus-discovery utility scaling. In the best Attempt 07
+prior route, estimation contributes 28.110008 of 33.443638 total utility
+(**84.05%**), versus 4.718588 recall and 0.615042 omission. The max-single-check
+information normalization may overemphasize estimation relative to discovery;
+that is a hypothesis, not an established cause. Raw posterior-variance reduction
+or metric-calibrated scaling should be compared without hidden labels or
+arbitrary pursuit bonuses. Short holding choices did not improve recall.
+
+Of the best Attempt 07's 26 missed issues, **nine
 had no scheduled sensing anywhere in their four-second detection window**;
 seven earlier and ten final-epoch misses had some sensing but were not detected.
 This evaluator-only timing diagnostic identifies a scheduling limitation; those
