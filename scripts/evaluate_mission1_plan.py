@@ -132,6 +132,11 @@ def score_ideal_plan(solution, converter, radius, step, *, visibility=None):
                 else visibility(assignment, positions)
             )
             converter.update_detected_discrepancies(visible, now)
+    return summarize_detected_discrepancies(converter, assignments)
+
+
+def summarize_detected_discrepancies(converter, assignments):
+    """Score the latched ledger without replaying/resetting an adaptive run."""
     checks = converter.get_event_report_checks()
     realized = Counter()
     corrupted_times = []

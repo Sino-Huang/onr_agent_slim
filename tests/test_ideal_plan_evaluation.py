@@ -88,3 +88,15 @@ def test_ideal_evaluation_rejects_duplicate_report_assignments():
             100,
             0.5,
         )
+
+
+def test_adaptive_ledger_summary_keeps_existing_observations_without_reset():
+    converter = converter_with_two_corrupted_events()
+    first = evaluation.score_ideal_plan({"assignments": [assignment()]}, converter, 100, 0.5)
+    converter.update_detected_discrepancies([1], 1.0)
+    result = evaluation.summarize_detected_discrepancies(converter, [assignment()])
+    assert first["issues_discovered"] == 1
+    assert result["issues_discovered"] == 2
+    assert result["total_corrupted"] == 2
+    assert len(converter.get_event_report_checks()) == 2
+    assert evaluation.summarize_detected_discrepancies(converter, [assignment()]) == result
