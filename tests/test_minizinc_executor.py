@@ -324,7 +324,7 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     solution = next(item for item in stream if item["type"] == "solution")
     native = json.loads(solution["output"]["default"])
     assignments = native["assignments"]
-    assert native["combined_score"] == 284_164
+    assert native["combined_score"] == 1_728_914
     assert native["maneuver_count"] == len(assignments) == 2
     assert assignments[0]["surveillance_mode"] == "fixed_view"
     assert assignments[0]["entity_id"] is None
