@@ -31,6 +31,8 @@ the baseline, not part of this new attempt count.
 | 04 | Same window choices at 300 m, closed-loop evaluation | **1/39**, identical to a matched 300 m no-window closed-loop control; three additional clean checks | No recall improvement; do not promote to live defaults |
 | 05 | Diminishing information value for same-vessel/co-timed checks, 750 m, no window alternatives, closed loop | **11/39** versus 10/39 in Attempt 02; balanced MSE 0.066278 versus 0.077341 | Retain this bounded scoring improvement |
 | 06 | Same information model, 300 m with nominal/+4 s windows, closed loop | **4/39** versus 1/39 in Attempt 04; balanced MSE 0.073206 versus 0.136480 | Improvement against matched control, still below goal |
+| 07 | Add fixed-view omission discovery with disjoint public-epoch exposure cells, 750 m, closed loop | **13/39 (33.33%)** versus 11/39 in Attempt 05; balanced MSE 0.057244 versus 0.066278 | Retain; new best, still below goal |
+| 08 | Same fixed-view omission score, 300 m with nominal/+4 s windows, closed loop | **4/39**, unchanged from Attempt 06; balanced MSE unchanged at 0.073206 | No additional improvement at 300 m |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -136,17 +138,75 @@ Changed-code lint passes; generic skill validation's known top-level-version
 limitation remains, while repository role/catalog tests pass. No AirSim/vLLM,
 physics defaults, source scenarios, or actual belief-update code was changed.
 
-**Completed attempts: 6/30. Best verified public-evidence native recall remains
-11/39 (28.21%); the above-50% objective remains active.**
+## Fixed-view omission checkpoint
+
+Pushed checkpoints: Agent `812ef81`, Physical `ac6d70c`.
+
+Fixed views now receive `E[pq] * public_report_rate * unsearched_exposure` when
+the input advertises the public `event_check_window_seconds` capability. Each
+vessel's distinct public report epoch owns its preceding interval. Intersect
+that cell with the actual selected observation's detector lookback and subtract
+the union of lookbacks established by observed checks for that vessel. Co-timed
+reports share one cell; checked/expired epochs are not reassigned. Delayed views
+receive only their remaining preceding exposure. Existing pursuit interval
+scoring, report uniqueness, lexicographic optimization and the exact 10% gate
+are unchanged. Sustained fixed-view output now sums all three utility components.
+
+The native offline helpers export the detector window from scenario config,
+before any simulated world is built. Inputs without the capability retain zero
+fixed omission value; this is not a new live-feed or physical-command contract.
+Skill 2.17.0 and compact manifests explain the new value and its limitations:
+no unanchored/background exposure, no additional holding-gap credit, and no
+searched-interval evidence from visibility that produced no recorded checks.
+
+Attempt 07 found **13 issues: eight altered, five omitted**, from 55 unique
+checks, versus six altered/five omitted in Attempt 05. Thus the two additional
+discoveries came through changed route/replan choices, not directly from more
+omission detections. There were 24 fixed-view sensing segments, 39 gate
+assessments and two replacements at 36 s and 179 s. All three revisions reached
+OPTIMAL_SOLUTION with exact oracle parity. Solver times were 23.55, 21.44 and
+5.64 s; post-initial-solve rollout took 277.21 s and ended at Mission time 299.5 s.
+Balanced MSE improved to 0.057244, with positive-cohort MSE 0.109054 and a slightly
+worse zero-cohort MSE 0.005434 (Attempt 05: 0.004367).
+
+Attempt 08 remained at **4/39**, with the same 42 checks and final belief as
+Attempt 06: 38 clean, one omitted, three altered. There were 21 fixed-view
+segments and one entity-2 pursuit, three verified revisions and 29 gate
+assessments. Solver times were 19.64, 7.15 and 0.85 s; rollout took 148.27 s,
+ending at 303.5 s. This configuration did not gain recall from the new score.
+
+Both execution audits passed: no overlapping/out-of-window segments; selected
+mode/entity/coordinates/direction preserved; unique check IDs; every check
+within the configured detector window. Artifacts are `attempt-07/evaluation/`,
+`attempt-08/evaluation/` and `fixed-omission-audit.json` under the experiment root.
+Full Agent non-live verification: **776 passed, 21 deselected, three existing
+warnings, 258.06 s**. Physical focused verification: **13 passed**. Seven new
+planner cases cover omission interval ownership, union subtraction, posterior
+response, mixed-mode exposure and native solver/gate parity at three delays.
+Three few-shot DZNs regenerated unchanged. Changed-code lint and whitespace
+checks passed (excluding the previously recorded Agent TRY004 findings).
+Generic skill validation retains the known unsupported top-level `version`
+limitation; repository role/catalog tests pass.
+
+The 30 seed-100 instances / 60 prior-and-evidence snapshots all reached
+OPTIMAL_SOLUTION with exact oracle route parity, maximum solve 3.86 s. Each
+snapshot kind selected 120 pursuit and 330 fixed-view assignments across the
+corpus; there were no evidence-conditioned route switches. These are unchanged
+radius-only regression cases without the new lookback capability, not a native
+camera recall result. Results: `fixed-omission-regression-corpus/summary.json`.
+
+**Completed attempts: 8/30. Best verified public-evidence native recall is
+13/39 (33.33%); the above-50% objective remains active.**
 
 ## Remaining work
 
-The next experiments should address mode-neutral omission discovery. Fixed
-views still receive no omission yield, despite the detector's retrospective
-window. Any new exposure-based value must avoid counting overlapping intervals
-more than once and must use only public schedules, capabilities and observed
-checks. Report-owned time intervals are a possible conservative allocation;
-no hidden event-time locations or corruption labels may enter planning.
+The next experiments should expand camera-offset viewpoints and investigate
+feasible multi-location observation windows. A public-only geometry diagnostic
+at the final crowded epoch found 107 public reports, but both the best existing
+single heading and the best same-pose four-heading union cover only 26 of them.
+Rotation alone is therefore not an established remedy on these sampled poses.
+This is not a global coverage bound or a recall measurement. No hidden event-time
+locations or corruption labels may enter planning.
 
 The co-timed information correction is now implemented, but a full route-wide
 information budget remains more demanding than a stateless per-candidate score.
