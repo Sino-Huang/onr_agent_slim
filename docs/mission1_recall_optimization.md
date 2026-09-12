@@ -46,6 +46,9 @@ the baseline, not part of this new attempt count.
 | 19 | 120-degree camera versus 90-degree control, same effective 750 m range and retained scoring | **12/39**, below 13/39; balanced MSE 0.088049 | Offline config only; not promoted |
 | 20 | Continuous native-camera sensing during ideal cardinal transit and early waits, 750 m retained geometry | **11/39**, below scheduled-only 13/39; 74 checks, balanced MSE 0.066142 | Evaluation coverage improvement, not a recall improvement |
 | 21 | Same continuous sensing, 300 m offset-only nominal/+4 s geometry | **1/39**, below scheduled-only 10/39; 46 checks, balanced MSE 0.131002 | Strong regression; no production change promoted |
+| 22 | Fixed initial MiniZinc route with continuous sensing, 750 m retained geometry | **11/39**, identical issue IDs to the same route with scheduled-only sensing; two extra clean checks | Diagnostic control, not a recall gain or replacement for closed-loop acceptance |
+| 23 | Same fixed-route control, 300 m offset-only nominal/+4 s geometry | **3/39**, identical issue IDs to its scheduled-only control; versus 1/39 with continuous replanning | Replanning effect isolated; disabling it is insufficient |
+| 24 | 250 m camera-facing offset-only viewpoints, 750 m, continuous sensing/full feedback | **10/39**, below retained continuous 11/39; balanced MSE 0.086000 | No gain; not promoted |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -466,16 +469,86 @@ Agent suite or corpus rerun is claimed for this offline-only helper change.
 **21/30 attempts completed. Best historical scheduled-only recall remains 13/39;
 the new continuous replay reaches 11/39 at 750 m. Neither meets the goal.**
 
+## Fixed-route control and wider-standoff checkpoint
+
+Physical `39ccf2b` adds `--planning initial-only` to the offline helper. This is
+an explicit experimental control, not a runtime policy change: MiniZinc selects
+the initial route, actual observations still update belief, and gate/replacement
+work is skipped. Default behavior remains `closed-loop`. Tests verify belief
+updates and appointment preservation in both modes. **101 focused Physical tests
+pass**; changed-file lint passes. No Agent planner, skill, lifecycle or live
+configuration changes are included.
+
+The completed two-factor controls now distinguish sensing from route adaptation:
+
+| Geometry | Fixed initial route, scheduled sensing | Fixed initial route, continuous sensing | Replanning, scheduled sensing | Replanning, continuous sensing |
+| --- | --- | --- | --- | --- |
+| Retained 750 m | 11/39 | 11/39 (Attempt 22) | 13/39 (Attempt 07) | 11/39 (Attempt 20) |
+| 300 m offset-only nominal/+4 s | 3/39 | 3/39 (Attempt 23) | 10/39 (Attempt 12) | 1/39 (Attempt 21) |
+
+Each fixed-route pair has exactly equal native assignments and equal detected
+issue-ID sets. Continuous sensing retains every scheduled-only check and adds
+two clean checks in each case. There is no lost issue in these fixed-route
+controls; they do not support a claim that extra observations inherently lose
+detector evidence. Earlier/different evidence changes subsequent route selection
+in the adaptive cases. Disabling replanning neither reaches the target nor
+consistently improves both geometries, so it is not promoted as a solution.
+
+Attempt 22: 78 checks (67 clean, five omitted, six altered), balanced MSE
+0.067494; 22 scheduled fixed-view segments. Continuous sensing spans 299.5 s:
+137 transit, 59.5 early wait, 103 surveillance. The native solve takes 10.91 s,
+rollout 43.93 s. Its scheduled control has 76 checks, MSE 0.067496, solve 11.00 s,
+rollout 29.15 s. Both are native optimal with exact oracle parity.
+
+Attempt 23: 51 checks (48 clean, three altered), balanced MSE 0.089331;
+12 scheduled fixed-view segments and one pursuit of entity 2. Continuous sensing
+spans 303.5 s: 140.5 transit, 37.5 early wait, 125.5 surveillance. Native solve
+9.14 s, rollout 27.06 s. The scheduled control has 49 checks, MSE 0.089332,
+solve 9.23 s, rollout 18.17 s. Both are native optimal/oracle-equal.
+The scheduled companion controls and individual solver invocations are not
+counted as additional optimization attempts.
+
+Attempt 24 uses existing path-parameterized helpers to sample camera-facing
+positions 250 m from public report anchors. This is an alternative viewpoint
+family, not exact dominance pruning or hidden-truth target selection. It yields
+473 native views in 36.72 s and 6,405 candidates. The largest sampled single-view
+batch at the final public epoch remains 26/107 reports, as in retained geometry;
+this is a public geometry diagnostic, not a global recall bound.
+The full continuous-sensing feedback loop reaches **10/39** from 78 checks:
+68 clean, six altered, four omitted. There are 18 scheduled fixed-view segments,
+46 gate assessments and no accepted replacement. Balanced MSE worsens to
+0.086000 versus retained continuous 0.066142. Native solve 9.67 s with optimality
+and exact oracle parity; rollout 203.88 s, including 160.18 s gate assessments.
+Sensing spans 299.5 s: 158 transit, 41.5 early wait, 100 surveillance.
+
+Artifacts: `attempt-22/evaluation/`, `attempt-23/evaluation/`, each one's
+`control-scheduled/`, `attempt-24/input/`, `attempt-24/evaluation/`, and their
+`audit.json` files, under the common optimization root. All three continuous
+rollout audits pass, including report/check uniqueness, detector windows,
+selected appointment preservation and contiguous sensing. Test receipt:
+`test-initial-only.xml`. No full Agent suite/corpus rerun is claimed for this
+offline-only helper change.
+
+**24/30 attempts completed; best remains historical scheduled-only 13/39 and
+retained continuous 11/39. Neither exceeds 50%.**
+
 ## Remaining work
 
-ADR 0010's continuous-perception coverage gap is now testable. These comparisons
-rule out skipped transit/early-wait sensing as a sufficient remedy; they do not
-establish a universal negative effect of extra perception. Next isolate evidence-
-driven route changes with a fixed-initial-plan continuous-sensing control before
-changing utility again. Keep continuous and scheduled-only results distinguished.
-Then revisit route-wide information budgeting and public-only observation-window
-coverage, with exact report uniqueness and solver-limit checks. Do not select
-targets or objective weights from this instance's hidden missed-issue labels.
+Attempt 25 is running, not yet counted as completed: enlarge the offline world-
+model partition from 100 to 200 cells (1 km to 2 km at unchanged 10 m resolution),
+regenerate the matching native planner views, and run full continuous feedback.
+The experimental YAML and generated inputs are under `attempt-25/`; base/live
+configuration is unchanged. Dataclass comparison confirms only partition size
+differs after applying the shared experimental 750 m range. Geometry generation
+produced 935 views in 71.18 s; the largest final public batch remains 26 reports.
+Early gate assessments take about 28 s, versus about 14 s in the retained case.
+No final recall or robustness claim is made while the rollout is running.
+
+ADR 0010's continuous-perception coverage gap is now testable, and fixed-route
+controls show no lost issue IDs from extra sensing. Keep continuous and scheduled-
+only results distinguished. Revisit route-wide information budgeting and public-
+only observation-window coverage, with exact report uniqueness and solver-limit
+checks. Do not select targets or objective weights from hidden missed-issue labels.
 
 Of the best Attempt 07's 26 missed issues, **nine
 had no scheduled sensing anywhere in their four-second detection window**;
