@@ -54,6 +54,7 @@ the baseline, not part of this new attempt count.
 | 27 | 60 m/s instead of 30 m/s advertised/executed maximum, retained 750 m geometry/continuous feedback | **10/39**, below 11/39; balanced MSE worsens to 0.068823 | Faster travel is not a demonstrated recall fix; not promoted |
 | 28 | Public-schedule information slots, retained 750 m geometry/full continuous feedback | **16/39 (41.03%)**, up from 11/39; balanced MSE improves to 0.017901 | New best; retain scoring improvement pending final comparison |
 | 29 | Same information-slot score, 300 m offset-only nominal/+4 s geometry | **10/39**, up from matched 1/39; balanced MSE improves to 0.085960 | Confirms gain in second geometry; still below target |
+| 30 | Information slots with 200-cell partition, 750 m, continuous feedback | **12/39**, unchanged from partition control; balanced MSE slightly worsens to 0.069487 | No further gain; retain standard-partition best from Attempt 28 |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -693,16 +694,54 @@ measurements or a guarantee of every live instance's behavior.
 
 **29/30 attempts completed. Best verified recall is now 16/39, still below 50%.**
 
-## Remaining work
+## Final comparison and decision
 
-Attempt 30 is running the same score on Attempt 25's larger-partition geometry,
-with matched control 12/39. Reuse the existing run rather than restarting it.
-After its terminal result, audit all thirty experiment records and the chosen
-implementation, publish the final receipt, and report whether the recall target
-or the explicit thirty-attempt stopping condition was reached. The slot score
-has improved both completed comparisons; do not discard it merely because the
-absolute recall target has not yet been met. Keep camera/physics live defaults
-unchanged, and retain the approximation/perfect-execution scope caveats.
+Attempt 30 completes with **12/39**, unchanged from its matched larger-partition
+control (Attempt 25). It produces 82 checks: 70 clean, seven altered, five omitted;
+balanced MSE 0.069487 versus control 0.066672. There are 35 scheduled fixed-view
+segments, 58 gate assessments and one replacement at 141 s. Both native revisions
+reach optimality and exact oracle parity; solver times 16.50/5.72 s. Rollout
+638.80 s, including 566.93 s gate work. Sensing spans 299.5 s: 182.5 transit,
+66 early wait, 51 surveillance. All twelve issues occur during surveillance.
+Its execution audit passes (`attempt-30/audit.json`).
+
+Retain **`cbb2387`**: information slots improve both standard-partition comparisons
+and give the overall best **16/39 (41.03%)**, with balanced MSE **0.017901**, on
+Attempt 28's continuous 750 m replay. The matched pre-slot result was 11/39 with
+MSE 0.066142. This does not justify changing live camera range, partition size,
+speed or lifecycle defaults. The larger partition adds no final recall benefit
+and costs more. The conservative information approximation is documented in
+skill 2.19.0; native planning authority and actual Bayesian updates are preserved.
+
+**The explicit thirty-attempt stopping condition is reached. The >50% recall
+target is not reached. No 31st optimization is included, and issue #58 remains
+open for the unmet performance target. These results are offline, not a claim
+of live Mission 1 completion or perception/controller acceptance.**
+
+## Completion audit
+
+The audit uses the attachment's four recommendations and the user-approved
+stopping condition, not merely a passing test count:
+
+| Requirement | Evidence and conclusion |
+| --- | --- |
+| Directional camera viewpoints with four discrete directions | Physical `prepare_surveillance_views.py` and its native-mask tests; camera-group, offset and standoff experiments 01/09–12/18/24. Exercised without continuous heading commands. |
+| Eligible observation windows | Shared delayed-candidate/forecast/expiry/scoring helpers; experiments 03/04/06/08/12/14/17/26. Native checks and tests preserve report uniqueness. This is sampled, chronological one-view-per-batch planning, not unrestricted set cover. |
+| Omission value and diminishing information | Retained fixed-omission implementation `812ef81`, co-timed saturation and information-slot checkpoint `cbb2387`; tests verify exclusion, ownership, variance bound and shared scoring. Rejected raw-unit experiment remains recoverable in `d18ff77`, reverted by `bf9f7bf`. |
+| Full offline observe/belief/gate/replan loop | Physical `evaluate_surveillance_closed_loop.py`, continuous sensing checkpoint `115f41d`, fixed-route controls `39ccf2b`; actual detector ledger/Bayesian manager/10% gate/native solver used. Truth is opened after the initial public-only solve and is never a planning input. |
+| Thirty genuine attempts or >50% recall | `ledger-audit-final.json` independently matches all thirty records to terminal artifacts. Twenty-seven have native-optimal rollout evidence; attempts 03/09/10 have materialized model/data plus explicit 30-second timeout diagnostics. Companion controls, failed harness setup and per-revision replans are not extra attempts. Best actual unique issue count is 16/39. |
+| Correctness and generality checks | Current `test-slots-full.xml`: 787 Agent non-live tests, zero failures/errors; `test-slots-physical.xml`: 101 focused Physical tests, zero failures/errors. `slots-regression-corpus/summary.json`: 30 instances/60 snapshots all native optimal and exact parity. Corpus checks are radius-only, not native-camera recall measurements. |
+| Few-shot/interface preservation | Full-suite tests rematerialize all three checked-in DZNs and solve them natively; prior/counterexample fixed views and evidence-conditioned pursuit remain. Tests cover Statechart mode/entity/direction preservation and Maneuver command ownership. Main skill workflow unchanged; focused reference explains the approximation. |
+| Preserve scenario, live workflow and caller paths | Git comparisons across the series show no change to Agent launcher/live config or Physical base config/`demo-001`. Runtime experiment artifacts are under Agent var; checked-in DZN examples are intentionally regenerated. User-owned untracked `statechart.json` is untouched. No AirSim or vLLM live run was performed, as requested. |
+| Reversible implementation and receipt | Agent implementation `cbb2387` and Physical `39ccf2b` are pushed; tracked ledger documentation and GitHub #58 receipts record changes, timings, failures and tradeoffs. Experimental configuration stays outside live defaults. |
+
+The remaining limitations are deliberate and disclosed: public-schedule slots
+discount unobserved predecessors, fixed views use sampled public forecasts,
+execution is ideal obstacle-free cardinal motion with perfect radius pursuit,
+and partitions are fresh position-selected views rather than migration replay.
+Generic skill validation still rejects the repository-supported version field;
+repository role loading and behavioral tests pass. None of these is presented
+as live validation or as evidence that recall exceeds 50%.
 
 ADR 0010's continuous-perception coverage gap is now testable, and fixed-route
 controls show no lost issue IDs from extra sensing. Keep continuous and scheduled-
