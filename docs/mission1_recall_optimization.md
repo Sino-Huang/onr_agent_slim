@@ -39,6 +39,11 @@ the baseline, not part of this new attempt count.
 | 12 | Same offset-only family, 300 m with nominal/+4 s windows | **10/39**, up from 4/39; balanced MSE worsens to 0.087886 | Useful recall tradeoff, retain as optional experiment |
 | 13 | 750 m offset-only views with optional 0.5/4.5 s public-exposure holds | **10/39**, unchanged from Attempt 11; initial timeout repaired by native optimal-face presolve | No recall improvement; longer holds remain optional |
 | 14 | Same hold choices at 300 m with nominal/+4 s windows | **10/39**, unchanged from Attempt 12; initial timeout repaired by the same presolve | No recall improvement; not promoted to live defaults |
+| 15 | Raw posterior-variance information units, 750 m retained geometry | **11/39** versus 13/39; balanced MSE worsens to 0.066399 | Rejected and reverted |
+| 16 | Same raw units, 300 m offset-only nominal/+4 s geometry | **10/39**, unchanged; balanced MSE slightly worsens to 0.088357 | Rejected and reverted |
+| 17 | Retained scoring with 750 m nominal/+4 s observation windows and fast native presolve | **12/39**, below no-window 13/39; initial solve now succeeds | Not promoted; expensive gate calculations |
+| 18 | Retained scoring with 750 m group viewpoints and the full scheduled-sensing loop | **12/39**, below 13/39; balanced MSE 0.087468 | No improvement over retained geometry |
+| 19 | 120-degree camera versus 90-degree control, same effective 750 m range and retained scoring | **12/39**, below 13/39; balanced MSE 0.088049 | Offline config only; not promoted |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -327,18 +332,90 @@ its small graph; **26 inspector/holding/executor tests passed** after this fix.
 This is verification-helper repair, not another optimization attempt or a new
 full-suite run. Planning utility and solver results are unchanged.
 
-**Completed attempts: 14/30. Best verified public-evidence native recall is
+## Raw information units: rejected experiment
+
+Agent `d18ff77` tested `0.5 * G(n)` instead of dividing information gain by the
+largest remaining one-check gain. Diminishing returns and recall/omission terms
+were unchanged. An additional test demonstrated that, at unchanged belief,
+removing an unrelated opportunity no longer rescales its information value.
+The diversity test now compared both equal report counts and the tradeoff against
+more expected discoveries; the large-integer test retained its >2^53 condition
+by increasing its test-only scale. Three DZN examples were regenerated with
+unchanged teaching modes. **108 focused planning/holding/executor tests and
+14 role-context tests passed** on this experimental revision.
+
+The full offline comparisons did not support promotion. Attempt 15 found
+11/39 from 66 checks (55 clean, six omitted, five altered), with 26 fixed-view
+segments and one entity-5 pursuit. Balanced MSE worsened from 0.057244 to
+0.066399. Four optimal/oracle-matching solves took 10.98, 9.00, 4.72 and 1.13 s;
+42 gate assessments; rollout 258.78 s; final time 299.5 s.
+
+Attempt 16 stayed at 10/39 with 45 checks (35 clean, four omitted, six altered),
+11 fixed-view segments plus one entity-2 pursuit. Balanced MSE slightly worsened
+from 0.087886 to 0.088357. Four verified solves took 9.11, 1.97, 1.10 and 0.27 s;
+33 assessments; rollout 134.21 s; final time 303.5 s.
+
+Agent `bf9f7bf` reverts `d18ff77`; both commits are pushed, preserving the failed
+experiment without promoting it. `src`, `tests`, `conf` and `scripts` match
+`413367a` exactly after restoration, including skill 2.18.0. **120 restored
+focused tests passed.** This experiment does not show that a high information
+share was the cause of low recall; simply removing normalization was insufficient.
+
+## Combined capabilities and wider-angle visibility
+
+Attempt 17 revisited 750 m observation windows using the retained diminishing
+information/fixed-omission scoring and native optimal-face presolve. This differs
+from the old failed Attempt 03 formulation. All three revisions now solved
+optimally with exact oracle parity: 28.65, 8.19 and 2.39 s. The initial graph had
+13,812 candidates. Recall was **12/39**, from 72 checks (60 clean, seven altered,
+five omitted), 29 fixed-view segments and 48 assessments. Balanced MSE was
+0.066123. The rollout took **1,103.76 s** excluding initial solve, ending at
+299.5 s; the first gate took 70.18 s. Passing the solver limit therefore does
+not make this configuration suitable for a fast demo.
+
+Attempt 18 combined the previously prepared group viewpoints with the retained
+score and full scheduled-sensing feedback. It found **12/39**, from 57 checks
+(45 clean, seven altered, five omitted), 26 fixed-view segments and 43
+assessments. Four verified solves: 14.25, 12.51, 5.23 and 3.25 s; rollout
+393.98 s; end time 299.5 s; balanced MSE 0.087468. More candidate geometry did
+not improve the retained result.
+
+Attempt 19 tested the requested visibility-area direction through a copied
+offline scenario with a **120-degree camera**, holding effective range at 750 m.
+Configuration equality checks verified unchanged scenario/world-model settings
+and all other effective runtime settings. The first copy used absolute data
+paths, which the scenario loader correctly rejected; corrected relative paths
+are in `attempt-19/scenario.yaml`, with generated inputs in `input-valid/`.
+That setup repair is not another optimization attempt. No source scenario,
+live config or AirSim setting was changed.
+
+The wider camera produced 923 usable views (versus 881), in 61.47 s, but still
+reached **12/39**, with 53 checks (41 clean, seven altered, five omitted),
+23 fixed-view segments, 39 assessments and balanced MSE 0.088049. Three verified
+solves: 17.21, 6.76 and 5.97 s; rollout 398.88 s; final time 299.5 s.
+
+A public-only terminal-epoch geometry check found 26/107 reports for both the
+best single view and the best two nominal/+4 s views reachable within the
+3.5-second transition budget. The 120-degree single-view maximum was also 26.
+These are bounds over the sampled public geometry only, not global recall bounds.
+All five rollout audits preserve native windows, nonoverlap, mode/entity/pose,
+unique checks and detector-window eligibility. Artifacts: `attempt-15/` through
+`attempt-19/` and `attempts-15-19-audit.json`. No new full-suite or corpus run is
+claimed for these restored-code/configuration comparisons.
+
+**Completed attempts: 19/30. Best verified public-evidence native recall is
 13/39 (33.33%); the above-50% objective remains active.**
 
 ## Remaining work
 
-Next, test information-versus-discovery utility scaling. In the best Attempt 07
-prior route, estimation contributes 28.110008 of 33.443638 total utility
-(**84.05%**), versus 4.718588 recall and 0.615042 omission. The max-single-check
-information normalization may overemphasize estimation relative to discovery;
-that is a hypothesis, not an established cause. Raw posterior-variance reduction
-or metric-calibrated scaling should be compared without hidden labels or
-arbitrary pursuit bonuses. Short holding choices did not improve recall.
+Next, close an evaluator coverage gap before further tuning: ADR 0010 specifies
+continuous maneuver-independent perception, whereas the current offline loop
+counts scheduled surveillance only and skips transit/early-arrival waiting.
+Compare continuous perception along an ideal cardinal execution of the same
+native plan, preserving four headings, speed/turn budgets, observed-only belief
+updates and the 10% gate. Attribute any gain to this expanded execution/evaluation
+scope unless a matched control proves a planning improvement. Keep AirSim and
+physical lifecycle ownership unchanged; stop for review if that cannot be done.
 
 Of the best Attempt 07's 26 missed issues, **nine
 had no scheduled sensing anywhere in their four-second detection window**;
