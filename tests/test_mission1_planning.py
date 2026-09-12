@@ -69,6 +69,131 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     assert not graph.candidates
 
 
+def test_fixed_omission_owns_disjoint_epochs_and_not_duplicate_reports():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_fixed_view_opportunities,
+    )
+
+    belief = _belief((1,))
+    environment = _environment([_report(name, 1, time, 0, 0)
+                                for name, time in (("a", 10), ("b", 12), ("duplicate", 12), ("c", 14))])
+    environment["event_check_window_seconds"] = 4
+    items = _opportunities(environment, belief)
+    rate = belief.ships[0].expected_omission_probability * public_report_rates(environment, belief)[1]
+    assert score_fixed_view_opportunities(items).omission_yield == pytest.approx(8 * rate, abs=2e-6)
+    assert score_fixed_view_opportunities(items[:1], observation_delay_s=2).omission_yield == pytest.approx(2 * rate, abs=1e-6)
+    assert score_fixed_view_opportunities(items, observation_delay_s=4).omission_yield == 0
+    # Expiring the first report must not extend the second report's owned cell.
+    environment["mission_time_seconds"] = 11
+    assert score_fixed_view_opportunities(_opportunities(environment, belief)).omission_yield == pytest.approx(4 * rate, abs=2e-6)
+
+
+def test_fixed_omission_subtracts_union_of_observed_search_intervals():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_fixed_view_opportunities,
+    )
+
+    belief = _belief((1,))
+    environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 1, 12, 0, 0)])
+    environment.update(event_check_window_seconds=4, mission_time_seconds=9)
+    environment["world_model_info"]["event_report_checks"] = [
+        {"entity_id": 1, "checked_at_s": 8}, {"entity_id": 1, "checked_at_s": 9},
+        {"entity_id": 2, "checked_at_s": 9}, {"entity_id": 1, "checked_at_s": 100},
+    ]
+    items = _opportunities(environment, belief)
+    assert items[0].omission_intervals == ((0.0, 4), (9, 10.0))
+    rate = items[0].omission_rate
+    assert score_fixed_view_opportunities(items).omission_yield == pytest.approx(3 * rate, abs=2e-6)
+    environment["world_model_info"]["event_report_checks"].append({"report_id": "a"})
+    assert [i.report_id for i in _opportunities(environment, belief)] == ["b"]
+
+
+def test_fixed_omission_and_adjacent_pursuit_do_not_reclaim_same_interval():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_candidate_opportunities,
+        score_fixed_view_opportunities,
+    )
+
+    belief = _belief((1,))
+    environment = _environment([_report(str(t), 1, t, 0, 0) for t in (10, 12, 14, 16)])
+    environment["event_check_window_seconds"] = 4
+    items = _opportunities(environment, belief)
+    fixed = score_fixed_view_opportunities((items[0], items[3])).omission_yield
+    pursuit = score_candidate_opportunities(items[1:3],
+        expected_omission_probability=belief.ships[0].expected_omission_probability,
+        public_report_rate=public_report_rates(environment, belief)[1]).omission_yield
+    assert fixed + pursuit == pytest.approx(items[0].omission_rate * 8, abs=2e-6)
+
+
+def test_fixed_omission_value_responds_to_observed_corruption_evidence():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_fixed_view_opportunities,
+    )
+
+    environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 1, 20, 0, 0)])
+    environment["event_check_window_seconds"] = 4
+    values = {}
+    for outcome in ("clean", "altered", "omitted"):
+        manager = ReportingReliabilityManager("mission-1", (1,))
+        manager.update_checks([{
+            "check_id": "evidence", "report_id": "past", "entity_id": 1,
+            "event_time_s": 0, "checked_at_s": 0, "outcome": outcome,
+        }], input_event_id="evidence", input_revision=1, created_at=NOW)
+        belief = manager.snapshot(input_event_id="evidence", input_revision=1, created_at=NOW)
+        values[outcome] = score_fixed_view_opportunities(_opportunities(environment, belief)).omission_yield
+    prior_value = score_fixed_view_opportunities(_opportunities(environment, _belief((1,)))).omission_yield
+    assert values["clean"] < prior_value < values["altered"] < values["omitted"]
+
+
+@pytest.mark.parametrize("delay", [0, 2, 4])
+def test_fixed_omission_native_solver_and_gate_share_delayed_score(tmp_path, delay):
+    environment = _environment([_report("past", 1, 0, 5000, 0), _report("a", 1, 20, 0, 0),
+                                _report("past2", 2, 0, 5000, 0), _report("b", 2, 30, 0, 0)])
+    environment.update(event_check_window_seconds=4, observation_window_seconds=4)
+    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a", "b"], "observation_delay_s": delay},
+    ]
+    belief = _belief((1, 2))
+    graph = build_candidate_dag(environment, belief)
+    route = longest_path_oracle(graph)
+    assert len(route.candidates) == 1
+    candidate = route.candidates[0]
+    assert (candidate.omission_yield > 0) == (delay < 4)
+    context = {"candidate_id": candidate.candidate_id, "surveillance_mode": "fixed_view",
+               "target_entity_id": None, "target_report_ids": list(candidate.report_ids),
+               "observation_window": {"start": {"seconds": candidate.start_s},
+                                      "duration": {"seconds": candidate.duration_s}},
+               "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": 0}}}
+    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+                      planning_profile="temporal", entry_state="view", states=("view",),
+                      transitions=(), terminal_states=("view",), state_context={"view": context})
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="view", active_state_context=context)
+    decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert decision.current_score == advisory.score == route.score
+    assert not decision.trigger
+    data = tmp_path / "omission.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    solution = json.loads(result.stdout.splitlines()[0])
+    assert solution["combined_score"] == round(route.score * SCORE_SCALE)
+    assignment = solution["assignments"][0]
+    assert assignment["parameters"]["utility"]["omission_yield"] == round(candidate.omission_yield * SCORE_SCALE)
+    assert assignment["candidate_id"] == candidate.candidate_id
+    inspected = subprocess.run([
+        "python", str(EXAMPLE_ROOT / "inspect_problem.py"), str(data),
+    ], capture_output=True, text=True, check=True)
+    assert json.loads(inspected.stdout)["valid"]
+
+
 def test_same_time_information_has_diminishing_returns_within_variance_budget():
     from onr.application.mission1_planning import (
         _opportunities,

@@ -104,6 +104,25 @@ A pursuit adds expected hidden-omission yield exactly once for its report interv
 
 `E[p_i q] * rate_i * (t_last - t_first)`
 
+When the snapshot advertises `event_check_window_seconds`, fixed views also
+receive expected omission-discovery value. Each vessel's distinct public report
+epoch owns the interval from its previous public epoch (or Mission time zero).
+Intersect this cell with the selected observation's detector lookback, subtract
+the union of lookbacks evidenced by that vessel's prior checks, and multiply
+the remaining duration by `E[p_i q] * rate_i`. Co-timed reports share one cell;
+expired or checked reports retain their ownership so other reports cannot
+reclaim it. Delaying a view reduces this preceding-interval exposure. The shared
+scorer uses the selected forecast time when rescoring an existing fixed view.
+
+This is a public-schedule rate approximation, not a prediction of hidden events.
+It conservatively omits unanchored/background exposure and holding-gap value;
+visibility with no recorded checks cannot yet establish a searched interval.
+The public capability comes from the offline physical helper's detector config.
+Absent that field, fixed omission value is zero; no new live-feed contract or
+physical command is introduced. Fixed views have multiple potential vessels,
+so their single-target risk/rate output fields remain null; input inspection
+lists the per-vessel risks/rates and the configured lookback.
+
 There is no risk threshold or pursuit bonus. A clustered fixed view can beat a
 pursuit by covering more public evidence efficiently; a sparse or unreachable
 high-risk schedule can likewise leave `fixed_view` preferable.
@@ -122,7 +141,8 @@ assignment, from the first report time through the last dwell. The objective
 counts one maneuver for that run and includes its holding gaps in surveillance
 duration. Other viewpoints and pursuits separate runs. Public utility is rounded
 per report-time block and summed, identically in the model, oracle and active-plan
-rescoring. Holding adds no pursuit-only omission yield.
+rescoring. Fixed omission cells are summed once; holding itself adds no further
+omission yield.
 
 Integer node potentials first reweight network costs by a route-independent
 constant. MiniZinc verifies the longest-prefix potentials against the

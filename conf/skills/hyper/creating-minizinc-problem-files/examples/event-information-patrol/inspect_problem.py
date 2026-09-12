@@ -178,7 +178,6 @@ def inspect(path: Path) -> dict[str, object]:
                 == risks[index]
                 == omission_probabilities[index]
                 == rates[index]
-                == omission[index]
                 == 0,
                 "fixed-view candidate contains pursuit-only inputs",
             )

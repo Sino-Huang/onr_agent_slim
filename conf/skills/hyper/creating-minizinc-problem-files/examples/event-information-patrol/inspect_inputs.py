@@ -38,6 +38,7 @@ def summarize(
         "mission_time_seconds": environment.get("mission_time_seconds"),
         "public_report_count": len(reports),
         "report_check_count": len(checks),
+        "event_check_window_seconds": environment.get("event_check_window_seconds", 0),
         "belief_kind": belief.get("belief_kind"),
         "belief_revision": belief.get("belief_revision"),
         "belief_input_revision": belief.get("input_revision"),

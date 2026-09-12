@@ -411,6 +411,8 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
 
     manifest = json.loads(completed.stdout)
     assert set(manifest) == {
+        "event_check_window_seconds",
+        "fixed_candidates_with_omission_value",
         "candidates",
         "candidate_counts_by_mode",
         "pursuit_ship_ids",
@@ -508,6 +510,7 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
     summary = json.loads(inspected.stdout)
     risk_rate_inputs = summary.pop("risk_rate_inputs")
     assert summary == {
+        "event_check_window_seconds": 0,
         "belief_input_revision": 16,
         "belief_kind": "reporting_reliability",
         "belief_revision": 2,

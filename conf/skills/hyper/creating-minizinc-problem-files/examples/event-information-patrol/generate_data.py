@@ -94,6 +94,10 @@ def build_instance(
     )
     manifest = {
         "candidates": len(graph.candidates),
+        "event_check_window_seconds": environment.get("event_check_window_seconds", 0),
+        "fixed_candidates_with_omission_value": sum(
+            c.mode == "fixed_view" and c.omission_yield > 0 for c in graph.candidates
+        ),
         "candidate_counts_by_mode": candidate_counts_by_mode,
         "pursuit_ship_ids": sorted(pursuit_inputs),
         "pursuit_risk_rate_inputs": [

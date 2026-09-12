@@ -40,6 +40,9 @@ class ObservationOpportunity:
     estimation: float
     utility: float
     variance: float = 0.0
+    omission_rate: float = 0.0
+    omission_lookback_s: float = 0.0
+    omission_intervals: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,19 +186,32 @@ def _fixed_view_report_ids(
     opportunities: Sequence[ObservationOpportunity],
     *, start_s: float | None = None, end_s: float | None = None,
 ) -> set[str]:
+    return set(_fixed_view_observation_times(
+        environment, parameters, opportunities, start_s=start_s, end_s=end_s,
+    ))
+
+
+def _fixed_view_observation_times(
+    environment: Mapping[str, Any], parameters: Mapping[str, Any],
+    opportunities: Sequence[ObservationOpportunity],
+    *, start_s: float | None = None, end_s: float | None = None,
+) -> dict[str, float]:
     views = environment.get("surveillance_views")
     if views is not None:
         by_id = {item.report_id: item for item in opportunities}
-        return {
-            report_id for view in views
-            if all(view[key] == parameters.get(key) for key in ("x", "y", "arrival_direction"))
-            for report_id in view["report_ids"]
-            if report_id in by_id
-            and (start_s is None or by_id[report_id].time_s + view.get("observation_delay_s", 0) >= start_s)
-            and (end_s is None or by_id[report_id].time_s + view.get("observation_delay_s", 0) < end_s)
-        }
+        times: dict[str, float] = {}
+        for view in views:
+            if not all(view[key] == parameters.get(key) for key in ("x", "y", "arrival_direction")):
+                continue
+            for report_id in view["report_ids"]:
+                if report_id not in by_id:
+                    continue
+                time_s = by_id[report_id].time_s + view.get("observation_delay_s", 0)
+                if (start_s is None or time_s >= start_s) and (end_s is None or time_s < end_s):
+                    times[report_id] = min(times.get(report_id, time_s), time_s)
+        return times
     return {
-        item.report_id for item in opportunities
+        item.report_id: item.time_s for item in opportunities
         if math.hypot(item.x - parameters["x"], item.y - parameters["y"])
         <= environment["controlled_vehicle"]["fov_radius"]
     }
@@ -273,8 +289,14 @@ def _opportunities(
     by_ship = {ship.entity_id: ship for ship in belief.ships}
     now = float(cast(Any, environment["mission_time_seconds"]))
     window = float(cast(Any, environment.get("observation_window_seconds", 0.0)))
+    lookback = float(cast(Any, environment.get("event_check_window_seconds", 0.0)))
+    if not math.isfinite(lookback) or lookback < 0:
+        raise ValueError("event_check_window_seconds must be finite and nonnegative")
+    reports = _public_reports(environment, belief)
+    rates = public_report_rates(environment, belief)
+    intervals = _unsearched_report_intervals(reports, checks, now, lookback)
     raw: list[tuple[str, int, float, float, float, float, float]] = []
-    for report in _public_reports(environment, belief):
+    for report in reports:
         if (
             report.report_id in checked
             or report.time_s + window < now
@@ -303,11 +325,51 @@ def _opportunities(
             recall=recall,
             estimation=estimation,
             variance=by_ship[entity_id].variance,
+            omission_rate=by_ship[entity_id].expected_omission_probability * rates[entity_id],
+            omission_lookback_s=lookback,
+            omission_intervals=intervals[(entity_id, time_s)],
             utility=0.5 * recall
             + 0.5 * (estimation / max_estimation if max_estimation > 0.0 else 0.0),
         )
         for report_id, entity_id, time_s, x, y, recall, estimation in raw
     )
+
+
+def _unsearched_report_intervals(
+    reports: Sequence[_PublicReport], checks: Sequence[Any], now: float, lookback: float,
+) -> dict[tuple[int, float], tuple[tuple[float, float], ...]]:
+    """Disjoint public-epoch cells, minus detector lookbacks already evidenced.
+
+    A co-timed batch owns (previous distinct public time, time]. Assigning the
+    whole schedule before excluding checked/expired reports prevents another
+    candidate reclaiming their intervals. Checks establish visibility only for
+    their entity; no hidden event positions or corruption labels are used.
+    """
+    searched: dict[int, list[tuple[float, float]]] = {}
+    for check in checks:
+        if not isinstance(check, Mapping):
+            continue
+        time_s, entity_id = check.get("checked_at_s"), check.get("entity_id")
+        if isinstance(time_s, (int, float)) and time_s <= now and isinstance(entity_id, int):
+            searched.setdefault(entity_id, []).append((max(0.0, time_s - lookback), time_s))
+    previous: dict[int, float] = {}
+    result: dict[tuple[int, float], tuple[tuple[float, float], ...]] = {}
+    for entity_id, time_s in sorted({(r.entity_id, r.time_s) for r in reports}):
+        pieces = [(previous.get(entity_id, 0.0), time_s)]
+        previous[entity_id] = time_s
+        for start, end in searched.get(entity_id, ()):
+            pieces = [(a, b) for left, right in pieces
+                      for a, b in ((left, min(right, start)), (max(left, end), right)) if a < b]
+        result[(entity_id, time_s)] = tuple(pieces)
+    return result
+
+
+def _fixed_omission_yield(item: ObservationOpportunity, observation_s: float) -> float:
+    duration = math.fsum(
+        max(0.0, min(end, observation_s) - max(start, observation_s - item.omission_lookback_s))
+        for start, end in item.omission_intervals
+    )
+    return item.omission_rate * duration
 
 
 def score_candidate_opportunities(
@@ -367,16 +429,28 @@ def _score_units(utility: CandidateUtility) -> int:
 
 def score_fixed_view_opportunities(
     covered: Sequence[ObservationOpportunity],
+    *, observation_delay_s: float = 0.0,
+    observation_times: Mapping[str, float] | None = None,
 ) -> CandidateUtility:
     """Round each report-time block once, also when rescoring a sustained view."""
     by_time: dict[float, list[ObservationOpportunity]] = {}
     for item in covered:
         by_time.setdefault(item.time_s, []).append(item)
     utilities = [score_candidate_opportunities(items) for items in by_time.values()]
+    omission_units = 0
+    for items in by_time.values():
+        # Multiple public reports at one entity/epoch expose the same interval.
+        by_entity: dict[int, float] = {}
+        for item in items:
+            observed = (observation_times[item.report_id] if observation_times is not None
+                        else item.time_s + observation_delay_s)
+            by_entity[item.entity_id] = max(by_entity.get(item.entity_id, 0.0),
+                                            _fixed_omission_yield(item, observed))
+        omission_units += round(math.fsum(by_entity.values()) * SCORE_SCALE)
     return CandidateUtility(
         sum(round(item.recall * SCORE_SCALE) for item in utilities) / SCORE_SCALE,
         sum(round(item.estimation * SCORE_SCALE) for item in utilities) / SCORE_SCALE,
-        0.0,
+        omission_units / SCORE_SCALE,
     )
 
 
@@ -431,7 +505,7 @@ def _candidate(
     ordered = tuple(sorted(covered, key=lambda item: (item.time_s, item.report_id)))
     report_ids = tuple(item.report_id for item in ordered)
     utility = (
-        score_fixed_view_opportunities(ordered)
+        score_fixed_view_opportunities(ordered, observation_delay_s=observation_delay_s)
         if mode == "fixed_view" else score_candidate_opportunities(
             ordered,
             expected_omission_probability=expected_omission_probability,
@@ -872,6 +946,7 @@ def _fixed_view_runs(
             continue
         recall = sum(round(c.recall_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
         estimation = sum(round(c.estimation_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
+        omission = sum(round(c.omission_yield * SCORE_SCALE) for c in group) / SCORE_SCALE
         result.append(replace(
             first, candidate_id=first.candidate_id + "--" + last.candidate_id,
             end_s=last.end_s,
@@ -879,7 +954,7 @@ def _fixed_view_runs(
             report_span_s=(last.start_s - last.observation_delay_s + last.report_span_s
                            - first.start_s + first.observation_delay_s),
             recall_utility=recall, estimation_utility=estimation,
-            combined_score=recall + estimation,
+            omission_yield=omission, combined_score=recall + estimation + omission,
         ))
     return tuple(result)
 
@@ -1024,13 +1099,14 @@ class Mission1ReplanGate:
             parameters = (
                 planner_item.get("parameters") if isinstance(planner_item, Mapping) else None
             )
+            observation_times = None
             if mode == "fixed_view" and "surveillance_views" in environment:
-                visible_ids = (
-                    _fixed_view_report_ids(environment, parameters, covered,
+                observation_times = (
+                    _fixed_view_observation_times(environment, parameters, covered,
                                            start_s=max(now, start_s), end_s=end_s)
-                    if isinstance(parameters, Mapping) else set()
+                    if isinstance(parameters, Mapping) else {}
                 )
-                covered = tuple(item for item in covered if item.report_id in visible_ids)
+                covered = tuple(item for item in covered if item.report_id in observation_times)
             continuing_pursuit = (
                 mode == "pursue_ship"
                 and identity == active_candidate_id
@@ -1039,7 +1115,7 @@ class Mission1ReplanGate:
             )
             ship = by_ship.get(entity_id) if isinstance(entity_id, int) else None
             utility = (
-                score_fixed_view_opportunities(covered)
+                score_fixed_view_opportunities(covered, observation_times=observation_times)
                 if mode == "fixed_view" else score_candidate_opportunities(
                     covered,
                     expected_omission_probability=(
