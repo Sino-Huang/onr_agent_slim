@@ -205,22 +205,24 @@ def test_same_time_information_has_diminishing_returns_within_variance_budget():
         _report(f"r{i}", 1, 20, 0, 0) for i in range(10)
     ]), belief)
     values = [0.0] + [score_candidate_opportunities(opportunities[:n]).estimation for n in range(1, 11)]
-    assert values[1] == pytest.approx(.5)
+    assert values[1] == pytest.approx(.5 * belief.ships[0].expected_variance_reduction)
     marginal = [b - a for a, b in pairwise(values)]
     assert all(a > b > 0 for a, b in pairwise(marginal))
-    # Undo the existing normalization to compare raw variance reduction.
-    assert values[-1] * 2 * belief.ships[0].expected_variance_reduction < belief.ships[0].variance
+    assert values[-1] * 2 < belief.ships[0].variance
     assert score_candidate_opportunities(opportunities).recall == pytest.approx(5 * belief.ships[0].mean)
 
 
-def test_information_prefers_distinct_vessels_over_repeated_cotimed_checks(tmp_path):
+@pytest.mark.parametrize("distinct_count", [4, 5])
+def test_raw_information_diversity_is_balanced_against_expected_issue_count(tmp_path, distinct_count):
     environment = _environment([
         *[_report(f"repeat-{i}", 1, 20, 0, 0) for i in range(5)],
-        *[_report(f"distinct-{i}", i, 20, 100, 0) for i in range(2, 6)],
+        *[_report(f"distinct-{i}", i, 20, 100, 0) for i in range(2, 2 + distinct_count)],
     ], fov=1)
-    graph = build_candidate_dag(environment, _belief((1, 2, 3, 4, 5)))
+    graph = build_candidate_dag(environment, _belief(tuple(range(1, 2 + distinct_count))))
     oracle = longest_path_oracle(graph)
-    assert set(oracle.covered_report_ids) == {f"distinct-{i}" for i in range(2, 6)}
+    expected = ({f"distinct-{i}" for i in range(2, 2 + distinct_count)} if distinct_count == 5
+                else {f"repeat-{i}" for i in range(5)})
+    assert set(oracle.covered_report_ids) == expected
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
     result = subprocess.run([
@@ -262,7 +264,27 @@ def test_information_budgets_are_separate_for_other_vessels_and_report_times():
     opportunities = _opportunities(_environment([
         _report("a", 1, 20, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 1, 21, 0, 0),
     ]), _belief((1, 2)))
-    assert score_candidate_opportunities(opportunities).estimation == pytest.approx(1.5)
+    assert score_candidate_opportunities(opportunities).estimation == pytest.approx(
+        .5 * sum(item.estimation for item in opportunities)
+    )
+
+
+def test_information_units_do_not_change_when_an_unrelated_report_is_checked():
+    from onr.application.mission1_planning import _opportunities
+
+    manager = ReportingReliabilityManager("mission-1", (1, 2))
+    manager.update_checks([{
+        "check_id": "past", "report_id": "past", "entity_id": 1,
+        "event_time_s": 0, "checked_at_s": 0, "outcome": "clean",
+    }], input_event_id="past", input_revision=1, created_at=NOW)
+    belief = manager.snapshot(input_event_id="past", input_revision=1, created_at=NOW)
+    assert belief.ships[0].expected_variance_reduction < belief.ships[1].expected_variance_reduction
+    environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0)])
+    before = _opportunities(environment, belief)[0]
+    environment["world_model_info"]["event_report_checks"] = [{"report_id": "b"}]
+    after = _opportunities(environment, belief)[0]
+    assert before == after
+    assert after.utility - .5 * after.recall == pytest.approx(.5 * belief.ships[0].expected_variance_reduction)
 
 
 def test_observation_window_recovers_late_reachable_view_and_expires():
@@ -805,7 +827,7 @@ def test_large_lexicographic_weights_keep_solver_tie_parity(tmp_path, monkeypatc
 
     # Minimize the observed ~10^15-objective failure to three tied viewpoints.
     # Scaling units changes neither the public evidence nor the utility ratio.
-    monkeypatch.setattr(planning, "SCORE_SCALE", 1_000_000_000_000_000)
+    monkeypatch.setattr(planning, "SCORE_SCALE", 10_000_000_000_000_000)
     graph = planning.build_candidate_dag(_environment([
         _report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0),
     ], fov=100), _belief((1, 2)))

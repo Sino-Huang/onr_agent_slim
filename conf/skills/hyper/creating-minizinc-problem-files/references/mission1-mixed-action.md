@@ -101,8 +101,11 @@ the builder uses the moment-based precision approximation:
 `G(n) = V * n * g / (V + (n - 1) * g)`
 
 It preserves `G(1)=g`, gives diminishing increments and saturates at `V`.
-Information utility is `0.5 * G(n) / max_remaining_one_check_gain`, preserving
-the existing normalization. Different vessels have separate uncertainty budgets.
+This experimental revision uses information utility `0.5 * G(n)` in raw
+posterior-variance units. Removing an unrelated opportunity no longer rescales
+an unchanged opportunity's information value. Recall and omission terms retain
+their previous units, so this is not an exact balanced-MSE/recall metric model.
+Different vessels have separate uncertainty budgets.
 This applies identically to fixed views and pursuits. Different report-time
 batches still sum values based on the current belief; it is not an exact
 multi-step Bayesian forecast or a route-wide information budget. Actual belief

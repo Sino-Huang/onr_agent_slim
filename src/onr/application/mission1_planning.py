@@ -318,7 +318,6 @@ def _opportunities(
                 ship.expected_variance_reduction,
             )
         )
-    max_estimation = max((item[6] for item in raw), default=0.0)
     return tuple(
         ObservationOpportunity(
             report_id=report_id,
@@ -332,8 +331,7 @@ def _opportunities(
             omission_rate=by_ship[entity_id].expected_omission_probability * rates[entity_id],
             omission_lookback_s=lookback,
             omission_intervals=intervals[(entity_id, time_s)],
-            utility=0.5 * recall
-            + 0.5 * (estimation / max_estimation if max_estimation > 0.0 else 0.0),
+            utility=0.5 * recall + 0.5 * estimation,
         )
         for report_id, entity_id, time_s, x, y, recall, estimation in raw
     )
@@ -485,7 +483,7 @@ def _batch_information_value(items: Sequence[ObservationOpportunity]) -> float:
 
     If V is current variance and g the one-check expected reduction, additive
     measurement precision gives G(n) = V*n*g / (V + (n-1)*g). It matches g at
-    n=1 and saturates below V. Retain the existing normalization and 50% weight.
+    n=1 and saturates below V. Use raw variance reduction with the 50% weight.
     Different report-time batches still share current belief; this is not an
     exact route-wide Bayesian lookahead or a cap on accumulated route gain.
     """
