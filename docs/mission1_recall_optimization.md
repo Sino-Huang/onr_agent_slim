@@ -52,6 +52,8 @@ the baseline, not part of this new attempt count.
 | 25 | 200-cell versus 100-cell world-model partition, retained 750 m range, regenerated views/full continuous feedback | **12/39**, up from continuous 11/39; balanced MSE slightly worsens to 0.066672, rollout 678.60 s | Small recall tradeoff, not promoted to live defaults |
 | 26 | Add +2 s observation choices to 300 m offset-only nominal/+4 s windows, continuous feedback | **2/39**, up from matched 1/39; balanced MSE improves to 0.113308 | Small gain, far below target; expensive gate calculations |
 | 27 | 60 m/s instead of 30 m/s advertised/executed maximum, retained 750 m geometry/continuous feedback | **10/39**, below 11/39; balanced MSE worsens to 0.068823 | Faster travel is not a demonstrated recall fix; not promoted |
+| 28 | Public-schedule information slots, retained 750 m geometry/full continuous feedback | **16/39 (41.03%)**, up from 11/39; balanced MSE improves to 0.017901 | New best; retain scoring improvement pending final comparison |
+| 29 | Same information-slot score, 300 m offset-only nominal/+4 s geometry | **10/39**, up from matched 1/39; balanced MSE improves to 0.085960 | Confirms gain in second geometry; still below target |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -618,20 +620,89 @@ This invocation correction is not an optimization attempt or solver failure.
 **27/30 attempts completed. Best historical scheduled-only recall is 13/39;
 best continuous recall is 12/39 with the larger partition. No >50% result.**
 
+## Public-schedule information allocation checkpoint
+
+Pushed Agent checkpoint **`cbb2387`**, based on retained `4aa09b6`, implements
+candidate-additive information slots. For each vessel, remaining valid public
+epochs receive consecutive slots. A batch with k earlier public opportunities
+and n selected checks receives G(k+n)-G(k), using the existing saturating G and
+existing normalization/50% weight. Checked, expired and duplicate reports do not
+consume remaining slots; co-timed reports share a prefix. Separate vessels have
+separate budgets. Disjoint slots cap route information credit at normalized
+posterior variance before integer rounding. Candidate generation, the oracle,
+native component arrays and active-plan rescoring use the common calculation.
+
+This deliberately conservative approximation discounts a later batch even if
+earlier public opportunities were unobserved or unreachable. It is not exact
+route-conditioned Bayesian lookahead. Belief updates still consume actual checks
+only; slots are recomputed from the current public snapshot. Risk/omission terms,
+report uniqueness, the exact 10% gate, native DAG authority and command lifecycle
+are unchanged. No hidden labels choose slots, target ships or objective weights.
+
+Skill 2.19.0 documents the limitation in the focused Mission 1 reference; the
+main workflow is unchanged. All three DZN examples were regenerated. The prior
+now selects two fixed views; altered evidence still selects pursuit of entity 7,
+and the unreachable counterexample still selects fixed view. The clean-evidence
+fixture now starts with one altered check and verifies that one subsequent clean
+check switches pursuit to fixed view. The change affects score expectations, not
+the meaning of that semantic test. The generic skill validator still rejects
+the repository-supported top-level version field; all 14 role/catalog tests pass.
+
+Attempt 28 retains exactly the 750 m geometry and continuous execution setup of
+Attempt 20. It reaches **16/39 (41.03%)**, versus 11/39: 58 unique checks (42 clean,
+seven omitted, nine altered). Balanced MSE improves from 0.066142 to **0.017901**
+(honest cohort 0.005572, deceptive cohort 0.030229). There are 28 scheduled fixed-
+view segments, 44 gate assessments and replacements at 42/47.5/141 s. Four native
+optimal/oracle-equal solves: 10.93/9.71/9.69/3.99 s. Rollout 365.59 s, including
+256.78 s gate work. Continuous sensing spans 299.5 s: 200 transit, 67.5 early wait,
+32 surveillance. One issue is detected in transit, one while waiting, fourteen
+during surveillance. The initial route's component scores change from
+4.718588 recall + 28.110008 information + 0.615042 omission to
+4.984424 + 4.447786 + 0.587351. These are modeled utility units, not measured recall.
+
+Attempt 29 retains the 300 m offset-only nominal/+4 s setup of Attempt 21.
+It reaches **10/39**, versus 1/39, from 56 checks (46 clean, six altered, four
+omitted). Balanced MSE improves from 0.131002 to **0.085960**. Fifteen scheduled
+fixed-view segments, 36 gate assessments, replacements at 15.5/187/296/299.5 s.
+Five native optimal/oracle-equal solves: 9.25/9.33/2.06/0.32/0.29 s. Rollout 191.84 s,
+including 134.16 s gate work; final Mission time 303.5 s. Sensing: 151.5 s transit,
+47 early wait, 105 surveillance. One issue is found while waiting and nine during
+surveillance. The last replacement correctly uses the existing positive-from-zero
+rule after additional eligible reports remain inside their detector window.
+
+Both completed artifact audits pass, including actual unique issue checks,
+denominator 39, native optimality/parity, detector windows, continuous time
+coverage and selected appointment/mode/pose preservation. Artifacts:
+`attempt-28/evaluation/`, `attempt-29/evaluation/`, and each `audit.json`.
+
+Verification on this implementation: **787 Agent non-live tests passed**, 21
+live tests deselected, three existing warnings, 281.74 s (`test-slots-full.xml`);
+**101 focused Physical tests passed**, 6.72 s (`test-slots-physical.xml`). New
+information-slot tests verify first-batch semantics, decreasing later credit,
+the summed variance bound, independent vessels, exclusion and input-order
+invariance. Existing tests cover common gate/native scoring and exact examples.
+Changed-code lint passes apart from the three unchanged TRY004 findings.
+
+All **60 seed-100 snapshots** reach native optimality and exact oracle parity
+(`slots-regression-corpus/summary.json`). Maximum solve 2.1703 s; prior median
+1.9527 s, counterfactual median 1.9681 s. Prior assignments: 90 pursuit/270 fixed;
+counterfactual: 60 pursuit/90 fixed. All thirty counterfactual routes change,
+and each changes target-specific pursuit from absent to present. These are
+radius-only compatibility/evidence-response cases, not native-camera recall
+measurements or a guarantee of every live instance's behavior.
+
+**29/30 attempts completed. Best verified recall is now 16/39, still below 50%.**
+
 ## Remaining work
 
-The remaining objective experiment should address route-wide information
-allocation, rather than repeat the rejected raw-unit weighting. A bounded
-candidate-additive approximation is to assign each vessel's remaining public
-epochs consecutive information slots: a batch with k earlier public opportunities
-and n selected checks receives G(k+n)-G(k), using the existing saturating G.
-Disjoint slots cap route-wide information credit while retaining native DAG
-optimization and common candidate/oracle/gate scoring. This conservatively
-discounts a later batch even if earlier opportunities are not selected; it is
-not exact route-conditioned Bayesian lookahead and must be labeled/tested as
-such. Test with public schedules only, preserve existing risk/omission terms and
-normalization, and archive/revert if the controlled comparison fails. No hidden
-missed-issue labels may choose slots, targets or weights.
+Attempt 30 is running the same score on Attempt 25's larger-partition geometry,
+with matched control 12/39. Reuse the existing run rather than restarting it.
+After its terminal result, audit all thirty experiment records and the chosen
+implementation, publish the final receipt, and report whether the recall target
+or the explicit thirty-attempt stopping condition was reached. The slot score
+has improved both completed comparisons; do not discard it merely because the
+absolute recall target has not yet been met. Keep camera/physics live defaults
+unchanged, and retain the approximation/perfect-execution scope caveats.
 
 ADR 0010's continuous-perception coverage gap is now testable, and fixed-route
 controls show no lost issue IDs from extra sensing. Keep continuous and scheduled-
