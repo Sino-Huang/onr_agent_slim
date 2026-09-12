@@ -33,6 +33,10 @@ the baseline, not part of this new attempt count.
 | 06 | Same information model, 300 m with nominal/+4 s windows, closed loop | **4/39** versus 1/39 in Attempt 04; balanced MSE 0.073206 versus 0.136480 | Improvement against matched control, still below goal |
 | 07 | Add fixed-view omission discovery with disjoint public-epoch exposure cells, 750 m, closed loop | **13/39 (33.33%)** versus 11/39 in Attempt 05; balanced MSE 0.057244 versus 0.066278 | Retain; new best, still below goal |
 | 08 | Same fixed-view omission score, 300 m with nominal/+4 s windows, closed loop | **4/39**, unchanged from Attempt 06; balanced MSE unchanged at 0.073206 | No additional improvement at 300 m |
+| 09 | Add 25 m camera-facing offsets to the existing 750 m view family | Initial solve exceeds 30 s; 11,748 candidates, 1,049,604 arcs | No verified recall; retain failure evidence |
+| 10 | Same augmentation at 300 m with nominal/+4 s windows | Initial solve exceeds 30 s; 11,629 candidates, 1,250,315 arcs | No verified recall; retain failure evidence |
+| 11 | Use only 25 m camera-facing offsets and the current pose, 750 m | **10/39**, below retained 13/39; balanced MSE worsens to 0.084506 | Do not promote globally |
+| 12 | Same offset-only family, 300 m with nominal/+4 s windows | **10/39**, up from 4/39; balanced MSE worsens to 0.087886 | Useful recall tradeoff, retain as optional experiment |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -195,13 +199,70 @@ corpus; there were no evidence-conditioned route switches. These are unchanged
 radius-only regression cases without the new lookback capability, not a native
 camera recall result. Results: `fixed-omission-regression-corpus/summary.json`.
 
-**Completed attempts: 8/30. Best verified public-evidence native recall is
+## Camera-offset comparisons
+
+The nominal 25 m altitude / 45-degree downward pitch puts the centre ray's
+sea-plane intersection 25 m ahead. Attempts 09–12 use this camera-derived
+offset, facing toward public report locations. Native masks remain the coverage
+authority. No hidden event positions, selected corruption labels or tuned risk
+bonuses enter sampling. Model, score, physical speed and solver limit are unchanged.
+
+Augmented inputs produced 1,403 views at 750 m and 2,178 windowed views at 300 m,
+in 90.29 s and 34.78 s respectively. Both exceeded the existing 30-second initial
+solver limit, so no recall is reported for Attempts 09–10. The 750 m final-epoch
+maximum public coverage remained 26/107 despite the additional views.
+
+Physical `7e1d9ac` adds the optional `--offset-views-only` sampling family. It
+retains all camera-facing offsets and all four headings at the current position,
+without report-centre/midpoint sampling. This is an alternative candidate family,
+not dominance-preserving pruning or an imposed oracle route. Its 522 / 1,007
+views are strict subsets of the corresponding augmented inputs, with identical
+other public evidence and capabilities. Geometry took 35.43 / 18.50 s.
+
+Attempt 11: **10/39**, from 73 checks (63 clean, six altered, four omitted).
+More report checks than the retained Attempt 07's 55 did not improve recall.
+It discovered three pre-final and seven final-epoch issues, versus four and nine
+in Attempt 07. There were 17 fixed-view sensing segments, 39 gate assessments,
+three optimal/oracle-matching revisions and an end time of 299.5 s. Solver times:
+14.53, 11.66, 2.20 s; rollout excluding initial solve: 119.60 s. Balanced MSE
+0.084506 is worse than the retained control's 0.057244.
+
+Attempt 12: **10/39**, versus 4/39 in Attempt 08, from 40 checks (30 clean,
+six altered, four omitted). There were 16 fixed-view segments and one entity-2
+pursuit, 30 gate assessments and five optimal/oracle-matching revisions. Solver
+times: 18.88, 3.40, 0.67, 0.22, 0.24 s; rollout: 132.99 s; end time: 303.5 s.
+Balanced MSE worsened from 0.073206 to 0.087886, so this is a recall/estimation
+tradeoff rather than an across-the-board improvement.
+
+The last replan at 299.5 s legitimately had positive advisory utility from a zero
+remaining score. Its original diagnostic JSON contains Python's `Infinity`.
+Physical `748025d` makes future records emit null for that undefined ratio and
+include both scores, without changing the gate. The raw Attempt 12 evidence is
+retained; summary metrics and solver artifacts are unaffected. The logging fix
+is tested with the real zero-baseline and exact-10% gate decisions, not counted
+as another optimization attempt.
+
+Verification: **17 focused Physical tests passed**, including three new sampling
+cases and one gate-serialization case; changed-code lint and whitespace passed.
+Both completed rollout audits preserve native windows, mode/entity/pose, unique
+checks and detector-window eligibility. Agent production code and skill files
+did not change, so its previous full-suite/corpus receipts were not rerun or
+relabelled as new verification. Artifacts: `attempt-09/` through `attempt-12/`,
+`camera-offset-audit.json`, and `test-camera-offset-final.xml` under the experiment
+root. The optional sampling helper remains outside the live defaults.
+
+**Completed attempts: 12/30. Best verified public-evidence native recall is
 13/39 (33.33%); the above-50% objective remains active.**
 
 ## Remaining work
 
-The next experiments should expand camera-offset viewpoints and investigate
-feasible multi-location observation windows. A public-only geometry diagnostic
+The next experiments should model holding/observation intervals and public-only
+omission exposure during gaps. Of the best Attempt 07's 26 missed issues, **nine
+had no scheduled sensing anywhere in their four-second detection window**;
+seven earlier and ten final-epoch misses had some sensing but were not detected.
+This evaluator-only timing diagnostic identifies a scheduling limitation; those
+hidden timestamps may not become planner targets. More viewpoints alone did
+not resolve it. A public-only geometry diagnostic
 at the final crowded epoch found 107 public reports, but both the best existing
 single heading and the best same-pose four-heading union cover only 26 of them.
 Rotation alone is therefore not an established remedy on these sampled poses.
