@@ -43,6 +43,7 @@ class ObservationOpportunity:
     omission_rate: float = 0.0
     omission_lookback_s: float = 0.0
     omission_intervals: tuple[tuple[float, float], ...] = ()
+    information_prefix_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +320,16 @@ def _opportunities(
             )
         )
     max_estimation = max((item[6] for item in raw), default=0.0)
+    batch_sizes: dict[tuple[int, float], int] = {}
+    for _report_id, entity_id, time_s, *_rest in raw:
+        key = (entity_id, time_s)
+        batch_sizes[key] = batch_sizes.get(key, 0) + 1
+    prefixes = {}
+    counts: dict[int, int] = {}
+    for key, size in sorted(batch_sizes.items()):
+        entity_id, _time_s = key
+        prefixes[key] = counts.get(entity_id, 0)
+        counts[entity_id] = prefixes[key] + size
     return tuple(
         ObservationOpportunity(
             report_id=report_id,
@@ -329,6 +340,7 @@ def _opportunities(
             recall=recall,
             estimation=estimation,
             variance=by_ship[entity_id].variance,
+            information_prefix_count=prefixes[(entity_id, time_s)],
             omission_rate=by_ship[entity_id].expected_omission_probability * rates[entity_id],
             omission_lookback_s=lookback,
             omission_intervals=intervals[(entity_id, time_s)],
@@ -481,24 +493,31 @@ def score_candidate_opportunities(
 
 
 def _batch_information_value(items: Sequence[ObservationOpportunity]) -> float:
-    """Moment-based precision approximation for co-timed checks of one vessel.
+    """Allocate saturating information gain to disjoint public-schedule slots.
 
     If V is current variance and g the one-check expected reduction, additive
     measurement precision gives G(n) = V*n*g / (V + (n-1)*g). It matches g at
     n=1 and saturates below V. Retain the existing normalization and 50% weight.
-    Different report-time batches still share current belief; this is not an
-    exact route-wide Bayesian lookahead or a cap on accumulated route gain.
+    A batch after k remaining public opportunities earns G(k+n)-G(k). This
+    caps total route credit but conservatively consumes earlier slots even when
+    unobserved. It is not exact route-conditioned Bayesian lookahead.
     """
     first = items[0]
     one = first.utility - 0.5 * first.recall
     count = len(items)
-    if count == 1:
+    prefix = first.information_prefix_count
+    if count == 1 and prefix == 0:
         return one
     if first.variance <= 0 or first.estimation <= 0:
         return 0.0
-    return count * one * first.variance / (
-        first.variance + (count - 1) * first.estimation
-    )
+    def gain(n: int) -> float:
+        if n == 0:
+            return 0.0
+        return n * one * first.variance / (
+            first.variance + (n - 1) * first.estimation
+        )
+
+    return gain(prefix + count) - gain(prefix)
 
 
 def _score_units(utility: CandidateUtility) -> int:

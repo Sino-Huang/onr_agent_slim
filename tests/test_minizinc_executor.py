@@ -324,22 +324,23 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     solution = next(item for item in stream if item["type"] == "solution")
     native = json.loads(solution["output"]["default"])
     assignments = native["assignments"]
-    assert native["combined_score"] == 1_728_914
+    assert native["combined_score"] == 1_699_377
     assert native["maneuver_count"] == len(assignments) == 2
     assert assignments[0]["surveillance_mode"] == "fixed_view"
     assert assignments[0]["entity_id"] is None
     assert assignments[0]["parameters"]["report_ids"] == ["report-checked"]
-    assert assignments[1]["surveillance_mode"] == "pursue_ship"
-    assert assignments[1]["entity_id"] == 7
+    assert assignments[1]["surveillance_mode"] == "fixed_view"
+    assert assignments[1]["entity_id"] is None
     assert assignments[1]["parameters"]["report_ids"] == [
         "report-future-a",
-        "report-future-b",
+        "report-future-cluster",
     ]
-    assert assignments[1]["parameters"]["target_posterior_risk"] == 132_918
-    assert assignments[1]["parameters"]["public_report_rate"] == 222_222
+    assert assignments[1]["parameters"]["target_posterior_risk"] is None
+    assert assignments[1]["parameters"]["public_report_rate"] is None
+    assert assignments[1]["parameters"]["x"] == 21
     assert assignments[1]["observation_window"] == {
         "start": 24,
-        "duration": 5,
+        "duration": 1,
         "time_scale": 2,
     }
     model_text = assets["model.mzn"].decode()

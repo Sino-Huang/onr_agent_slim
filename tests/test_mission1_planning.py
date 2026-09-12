@@ -253,7 +253,7 @@ def test_batch_information_is_shared_with_replan_rescoring():
     assert not decision.trigger
 
 
-def test_information_budgets_are_separate_for_other_vessels_and_report_times():
+def test_information_slots_span_report_times_but_keep_vessels_separate():
     from onr.application.mission1_planning import (
         _opportunities,
         score_candidate_opportunities,
@@ -262,7 +262,47 @@ def test_information_budgets_are_separate_for_other_vessels_and_report_times():
     opportunities = _opportunities(_environment([
         _report("a", 1, 20, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 1, 21, 0, 0),
     ]), _belief((1, 2)))
-    assert score_candidate_opportunities(opportunities).estimation == pytest.approx(1.5)
+    by_id = {o.report_id: o for o in opportunities}
+    assert by_id["a"].information_prefix_count == by_id["b"].information_prefix_count == 0
+    assert by_id["c"].information_prefix_count == 1
+    assert score_candidate_opportunities([by_id["a"]]).estimation == pytest.approx(.5)
+    assert score_candidate_opportunities([by_id["b"]]).estimation == pytest.approx(.5)
+    assert 0 < score_candidate_opportunities([by_id["c"]]).estimation < .5
+
+
+def test_information_slots_cap_selected_route_even_with_unobserved_batches():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_candidate_opportunities,
+    )
+
+    belief = _belief((1,))
+    opportunities = _opportunities(_environment([
+        _report(f"r{i}", 1, 20 + i // 2, 0, 0) for i in range(20)
+    ]), belief)
+    assert [o.information_prefix_count for o in opportunities] == [i // 2 * 2 for i in range(20)]
+    # Selecting only later epochs does not reclaim their unobserved predecessors.
+    values = [score_candidate_opportunities(opportunities[i:i + 2]).estimation
+              for i in range(0, 20, 2)]
+    assert all(a > b > 0 for a, b in pairwise(values))
+    ship = belief.ships[0]
+    raw = sum(values) * 2 * ship.expected_variance_reduction
+    assert raw == pytest.approx(ship.variance * 20 * ship.expected_variance_reduction /
+                               (ship.variance + 19 * ship.expected_variance_reduction))
+    assert raw < ship.variance
+    assert score_candidate_opportunities(opportunities[10:]).estimation == pytest.approx(sum(values[5:]))
+
+
+def test_information_slots_ignore_checked_expired_duplicates_and_input_order():
+    from onr.application.mission1_planning import _opportunities
+
+    reports = [_report("late", 1, 30, 0, 0), _report("early", 1, 20, 0, 0),
+               _report("checked", 1, 15, 0, 0), _report("expired", 1, 0, 0, 0)]
+    environment = _environment([*reports, reports[1]])
+    environment["mission_time_seconds"] = 10
+    environment["world_model_info"] = {"event_report_checks": [{"report_id": "checked"}]}
+    opportunities = _opportunities(environment, _belief((1,)))
+    assert {o.report_id: o.information_prefix_count for o in opportunities} == {"early": 0, "late": 1}
 
 
 def test_observation_window_recovers_late_reachable_view_and_expires():
@@ -1123,7 +1163,12 @@ def test_clean_evidence_can_change_pursuit_preference_to_fixed_view() -> None:
         ]
     )
     manager = ReportingReliabilityManager("mission-1", (7, 8))
-    prior = manager.snapshot(input_event_id="prior", input_revision=0, created_at=NOW)
+    manager.update_checks(
+        [{"check_id": "altered-7", "report_id": "earlier-7", "entity_id": 7,
+          "event_time_s": -2.0, "checked_at_s": 0.0, "outcome": "altered"}],
+        input_event_id="altered", input_revision=1, created_at=NOW,
+    )
+    prior = manager.snapshot(input_event_id="altered", input_revision=1, created_at=NOW)
     assert (
         longest_path_oracle(build_candidate_dag(environment, prior)).candidates[0].mode
         == "pursue_ship"
@@ -1141,10 +1186,10 @@ def test_clean_evidence_can_change_pursuit_preference_to_fixed_view() -> None:
             },
         ),
         input_event_id="clean",
-        input_revision=1,
+        input_revision=2,
         created_at=NOW,
     )
-    clean = manager.snapshot(input_event_id="clean", input_revision=1, created_at=NOW)
+    clean = manager.snapshot(input_event_id="clean", input_revision=2, created_at=NOW)
     route = longest_path_oracle(build_candidate_dag(environment, clean))
 
     assert clean.ships[0].mean < prior.ships[0].mean
