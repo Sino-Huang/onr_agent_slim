@@ -29,6 +29,8 @@ the baseline, not part of this new attempt count.
 | 02 | Existing 750 m native viewpoints with the full scheduled-sensing observation/belief/10%-gate/replan loop | **10/39**, regression; one accepted replan, 43 gate assessments, 75 unique checks, final Mission time 299.5 s | Retain evaluator; do not claim the existing objective improves recall through adaptation |
 | 03 | Chronological observation-window choices at nominal time or +4 s, 750 m, closed-loop evaluation | Initial solve exceeds 30 s, both before and after local terminal dominance; no recall result | Retain failed artifacts; not a verified route |
 | 04 | Same window choices at 300 m, closed-loop evaluation | **1/39**, identical to a matched 300 m no-window closed-loop control; three additional clean checks | No recall improvement; do not promote to live defaults |
+| 05 | Diminishing information value for same-vessel/co-timed checks, 750 m, no window alternatives, closed loop | **11/39** versus 10/39 in Attempt 02; balanced MSE 0.066278 versus 0.077341 | Retain this bounded scoring improvement |
+| 06 | Same information model, 300 m with nominal/+4 s windows, closed loop | **4/39** versus 1/39 in Attempt 04; balanced MSE 0.073206 versus 0.136480 | Improvement against matched control, still below goal |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -95,18 +97,59 @@ regenerated. Changed code lint passes apart from the pre-existing Agent TRY004
 findings; generic skill validation still rejects the repository-supported
 top-level `version`, while repository role/catalog tests pass.
 
-**Completed attempts: 4/30. Best verified public-evidence native recall remains
+## Diminishing information checkpoint
+
+Agent `8e53468` adds current posterior variance to observation opportunities and
+uses the precision approximation `G(n) = V*n*g/(V+(n-1)*g)` for each vessel's
+co-timed batch. It preserves the exact one-check gain, gives diminishing
+increments, and approaches the available variance. Both modes and active-plan
+rescoring use the same helper. Recall terms, pursuit omission terms, actual
+Bayesian updates, report identities, maneuver boundaries and the 10% gate are
+unchanged. Skill 2.16.0 documents that this is an approximation and not a
+route-wide Bayesian information budget. Different report-time batches still
+sum values computed from the current belief.
+
+Attempt 05: four verified plan revisions, 43 gate assessments, 67 unique checks
+(56 clean, five omitted, six altered), 26 executed fixed-view segments. Solver
+times: 23.38, 14.20, 8.12 and 2.08 s. Final Mission time 299.5 s; post-initial-solve
+rollout 263.99 s. This matches the old static-plan best recall while improving
+the closed-loop control's recall and both estimation-error cohorts.
+
+Attempt 06: three verified plan revisions, 29 gate assessments, 42 unique checks
+(38 clean, one omitted, three altered), 21 fixed-view segments plus one pursuit.
+Solver times: 19.30, 7.10 and 0.95 s. Final Mission time 303.5 s; post-initial-solve
+rollout 147.26 s. Honest-vessel MSE rose slightly (0.008407 -> 0.008738), while
+deceptive-vessel MSE decreased substantially (0.264553 -> 0.137674).
+
+Artifacts: `attempt-05/evaluation/` and `attempt-06/evaluation/`, under the same
+Agent `var/mission1-recall/optimization-30/` root. An execution audit verified
+that all segments stayed within their selected solver windows, preserved
+mode/entity/coordinates/direction, and had no interval overlap; check IDs remain
+unique and every check occurred within its actual event's four-second window.
+
+Verification: full Agent non-live suite **767 passed**, 21 deselected, 257.04 s;
+the final information-focused invocation passed four tests, including two added
+after that full run collected tests. Thirteen focused Physical tests passed.
+All 60 seed-100 snapshots reached native optimality with exact oracle parity;
+maximum solve 4.15 s. The existing three few-shot DZN files regenerated unchanged.
+Changed-code lint passes; generic skill validation's known top-level-version
+limitation remains, while repository role/catalog tests pass. No AirSim/vLLM,
+physics defaults, source scenarios, or actual belief-update code was changed.
+
+**Completed attempts: 6/30. Best verified public-evidence native recall remains
 11/39 (28.21%); the above-50% objective remains active.**
 
 ## Remaining work
 
-The next experiments should address omission discovery and diminishing
-information value. Under the current shared prior, variance is 0.0651542 and
-one-check expected variance reduction is 0.0368334: even two linearly added
-checks promise more reduction than the uncertainty available. This diagnostic
-comes from the public belief snapshot, not hidden vessel labels. A first
-bounded correction can address co-timed batches; a full route-wide information
-budget remains more demanding than a stateless per-candidate score.
+The next experiments should address mode-neutral omission discovery. Fixed
+views still receive no omission yield, despite the detector's retrospective
+window. Any new exposure-based value must avoid counting overlapping intervals
+more than once and must use only public schedules, capabilities and observed
+checks. Report-owned time intervals are a possible conservative allocation;
+no hidden event-time locations or corruption labels may enter planning.
+
+The co-timed information correction is now implemented, but a full route-wide
+information budget remains more demanding than a stateless per-candidate score.
 
 Broader/multi-heading window formulations must preserve unique report credit
 and stay within the executor limit. No successful >50% result is claimed.
