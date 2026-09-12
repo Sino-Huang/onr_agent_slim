@@ -49,6 +49,9 @@ the baseline, not part of this new attempt count.
 | 22 | Fixed initial MiniZinc route with continuous sensing, 750 m retained geometry | **11/39**, identical issue IDs to the same route with scheduled-only sensing; two extra clean checks | Diagnostic control, not a recall gain or replacement for closed-loop acceptance |
 | 23 | Same fixed-route control, 300 m offset-only nominal/+4 s geometry | **3/39**, identical issue IDs to its scheduled-only control; versus 1/39 with continuous replanning | Replanning effect isolated; disabling it is insufficient |
 | 24 | 250 m camera-facing offset-only viewpoints, 750 m, continuous sensing/full feedback | **10/39**, below retained continuous 11/39; balanced MSE 0.086000 | No gain; not promoted |
+| 25 | 200-cell versus 100-cell world-model partition, retained 750 m range, regenerated views/full continuous feedback | **12/39**, up from continuous 11/39; balanced MSE slightly worsens to 0.066672, rollout 678.60 s | Small recall tradeoff, not promoted to live defaults |
+| 26 | Add +2 s observation choices to 300 m offset-only nominal/+4 s windows, continuous feedback | **2/39**, up from matched 1/39; balanced MSE improves to 0.113308 | Small gain, far below target; expensive gate calculations |
+| 27 | 60 m/s instead of 30 m/s advertised/executed maximum, retained 750 m geometry/continuous feedback | **10/39**, below 11/39; balanced MSE worsens to 0.068823 | Faster travel is not a demonstrated recall fix; not promoted |
 
 Attempt 01 geometry generation: 67.48 s; candidate generation: 25.28 s;
 instance check: 0.84 s; executor wall duration: 30.06 s including overhead, with
@@ -532,17 +535,103 @@ offline-only helper change.
 **24/30 attempts completed; best remains historical scheduled-only 13/39 and
 retained continuous 11/39. Neither exceeds 50%.**
 
+## Partition, intermediate-window and speed comparisons
+
+Attempts 25–27 change only caller-provided experiment inputs/configuration using
+the existing helpers; production code, skill, model and live defaults remain
+unchanged. Every case runs full continuous sensing, actual belief updates, the
+existing gate, and native MiniZinc with exact oracle parity. Hidden trajectories
+remain evaluator-only. None starts AirSim or vLLM.
+
+Attempt 25 enlarges the offline world-model partition from 100 to 200 cells
+(1 km to 2 km at unchanged 10 m resolution), regenerating native planner views.
+The experimental YAML and inputs are under `attempt-25/`. Dataclass comparison
+confirms only partition size differs after the common 750 m experimental range
+override. Geometry generation: 935 views, 71.18 s; the largest final public batch
+remains 26/107 reports, not a global bound. Initial graph: 10,007 candidates.
+Result: **12/39**, 86 checks (74 clean, seven altered, five omitted), balanced MSE
+0.066672 versus control 0.066142. There are 31 scheduled fixed-view segments,
+64 gate assessments, and replacements at 71, 165 and 252.5 s. All four revisions
+are optimal/oracle-equal; solver times 16.28/12.16/4.79/0.63 s. Rollout 678.60 s,
+including 575.64 s gate work; early gates take about 28 s versus control 14 s.
+Continuous sensing spans 299.5 s: 142.5 transit, 65 early wait, 92 surveillance.
+All twelve issues are detected during surveillance. This is the best continuous
+result so far, but only a one-issue gain with doubled computational cost.
+
+The 252.5 s replacement is an existing conservative-feasibility trigger, not a
+10% score improvement. From its published pose, the gate reserves 11.5556 s
+against 11.5 s remaining; the deterministic ideal axis order needs 9.6 s.
+Reapplying the worst-axis-order bound mid-navigation can therefore reject a
+route still feasible under this ideal execution. No deadline was silently missed
+or feasibility rule bypassed. The runtime/controller lifecycle and conservative
+policy were not changed to obtain the result; this remains a disclosed modeling
+limitation, not evidence of a physical deadline miss.
+
+Attempt 26 adds +2 s choices to the existing 300 m offset-only 0/+4 s family.
+Input comparison proves all prior rows remain exactly and other environment
+fields are unchanged. It produces 1,528 views in 18.97 s and 8,917 candidates.
+Result: **2/39**, versus matched continuous 1/39; 47 checks (45 clean, one omitted,
+one altered). Balanced MSE improves from 0.131002 to 0.113308. Sixteen scheduled
+fixed-view segments plus one pursuit of entity 16; 30 gate assessments and one
+replacement at 187 s. Both revisions are optimal/oracle-equal; solves 18.75/3.89 s.
+Rollout 358.42 s, including 322.66 s gate work, versus control 159.68 s total.
+Sensing spans 299.5 s: 174 transit, 50.5 early wait, 75 surveillance. Both issues
+are detected during surveillance. This is a small gain, not satisfactory recall.
+
+Attempt 27 copies the retained 750 m public input and changes only maximum speed
+from 30 to 60 m/s. Its copied runtime YAML specifies the same maximum; dataclass
+comparison confirms no other scenario/world-model/runtime differences after the
+shared 750 m range override. Native camera geometry is unchanged. The planner
+still uses 0.9 times the advertised maximum, and ideal execution uses that
+maximum with the same cardinal turn timing. Initial graph: 7,816 candidates.
+Result: **10/39**, below matched 11/39, from 82 checks (72 clean, five omitted,
+five altered). Balanced MSE worsens to 0.068823. There are 27 scheduled fixed-view
+segments, 50 gate assessments and replacements at 96.5/141/195.5 s. All four
+revisions are optimal/oracle-equal; solves 13.87/9.57/5.90/3.07 s. Rollout 304.42 s,
+including 221.16 s gate work. Sensing spans 299.5 s: 151.5 transit, 64 early wait,
+84 surveillance; one issue is detected during early wait and nine during
+surveillance. Speed is an offline sensitivity comparison, not a validated live
+flight capability or a promoted default.
+
+All three `audit.json` files pass: unchanged denominator 39, native optimality
+and exact parity, unique report/check credit, detector-window eligibility,
+continuous time coverage and selected-window/mode/pose preservation. Artifacts
+remain under each `attempt-NN/` in Agent var; no source scenarios changed.
+
+Fresh final compatibility checks: **785 Agent non-live tests passed**, 21 live
+tests deselected, three existing warnings, 275.19 s (`test-final-agent.xml`). This
+includes deterministic regeneration/real solves of all three checked-in few-shot
+examples and Statechart/Maneuver tests. The latest focused Physical checkpoint
+remains **101 passing tests** (`test-initial-only.xml`); no new Physical code was
+introduced in these three configuration comparisons.
+
+The 30 seed-100 instances / 60 prior-and-counterfactual snapshots again all reach
+native OPTIMAL_SOLUTION and exact oracle parity. Maximum solve 2.2194 s; prior
+median 1.9282 s, counterfactual median 1.9176 s. Each snapshot kind selects 120
+pursuit and 330 fixed-view assignments; zero evidence-conditioned route switches
+in this corpus. These are radius-only compatibility cases, not native-camera
+recall evidence. Receipt: `final-regression-corpus-correct-root/summary.json`.
+The first invocation used an incorrect Agent-side corpus root and failed before
+reading a manifest; the corrected input is Physical `var/mission1-benchmarks/seed-100`.
+This invocation correction is not an optimization attempt or solver failure.
+
+**27/30 attempts completed. Best historical scheduled-only recall is 13/39;
+best continuous recall is 12/39 with the larger partition. No >50% result.**
+
 ## Remaining work
 
-Attempt 25 is running, not yet counted as completed: enlarge the offline world-
-model partition from 100 to 200 cells (1 km to 2 km at unchanged 10 m resolution),
-regenerate the matching native planner views, and run full continuous feedback.
-The experimental YAML and generated inputs are under `attempt-25/`; base/live
-configuration is unchanged. Dataclass comparison confirms only partition size
-differs after applying the shared experimental 750 m range. Geometry generation
-produced 935 views in 71.18 s; the largest final public batch remains 26 reports.
-Early gate assessments take about 28 s, versus about 14 s in the retained case.
-No final recall or robustness claim is made while the rollout is running.
+The remaining objective experiment should address route-wide information
+allocation, rather than repeat the rejected raw-unit weighting. A bounded
+candidate-additive approximation is to assign each vessel's remaining public
+epochs consecutive information slots: a batch with k earlier public opportunities
+and n selected checks receives G(k+n)-G(k), using the existing saturating G.
+Disjoint slots cap route-wide information credit while retaining native DAG
+optimization and common candidate/oracle/gate scoring. This conservatively
+discounts a later batch even if earlier opportunities are not selected; it is
+not exact route-conditioned Bayesian lookahead and must be labeled/tested as
+such. Test with public schedules only, preserve existing risk/omission terms and
+normalization, and archive/revert if the controlled comparison fails. No hidden
+missed-issue labels may choose slots, targets or weights.
 
 ADR 0010's continuous-perception coverage gap is now testable, and fixed-route
 controls show no lost issue IDs from extra sensing. Keep continuous and scheduled-
