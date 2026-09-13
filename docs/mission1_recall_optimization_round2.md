@@ -266,7 +266,48 @@ at 25 m standoff, with the same 1,500 m range and 200-cell partition. It reduces
 the geometry to 523 rows (55.49 s preparation), without selecting a route or
 reading hidden events. This is a different sampled candidate family, not a claim
 of dominance-preserving pruning. Input: `preparation/range-1500m-partition200/offset25-input/`;
-output: `attempt-09/evaluation/`. Native solving and recall remain to be checked.
+output: `attempt-09/evaluation/`. Completed results follow below.
+
+### 09/10 — Smaller offset-view families (completed; below retained best)
+
+Attempt 09 completes at **12/39**, balanced MSE **0.08451521**, with 91 checks
+(79 clean, five omitted, seven altered). Its initial route promises 105 public
+checks, compared with 75 in the retained baseline, yet realized issue discovery
+is lower. It detects five earlier and seven final-epoch issues, versus seven/nine
+in the retained control. Larger public coverage is not a recall guarantee.
+All three revisions are optimal/oracle-equal; solves 11.630/3.309/1.181 s,
+initial generation 23.61 s, 8,150 candidates. Rollout 423.84 s; gates 353.64 s;
+61 assessments, replacements at 165/212 s. Sensing: 141 s transit, 55 s wait,
+103.5 s surveillance; one issue while waiting, eleven during surveillance;
+21 scheduled fixed-view segments. Execution audit passes (`attempt-09/audit.json`).
+
+Attempt 10 uses the same 25 m offset-only sampler at **1,000 m** range and the
+same 200-cell partition. Preparation: 522 rows, 44.75 s. Result **14/39**,
+balanced MSE **0.07759304**, 63 checks (49 clean, five omitted, nine altered).
+Four optimal/oracle-equal revisions; solves 10.459/4.333/3.519/3.485 s;
+initial generation 18.83 s, 7,525 candidates. Rollout **337.06 s**, gates 255.57 s;
+44 assessments, replacements at 119/141/151 s. Execution audit passes
+(`attempt-10/audit.json`). Neither offset/range combination beats retained
+16/39 or its estimation quality; neither is promoted to live inputs.
+Attempt 10 sensing is 188.5 s transit, 56.5 s wait, 54.5 s surveillance;
+one issue while waiting and thirteen during surveillance; 17 scheduled
+fixed-view segments.
+
+Attempt 11 tests **250 m** offset-only standoff at 1,500 m range/200-cell
+partition, isolating standoff against Attempt 09. Preparation creates 491 views
+in 60.07 s; native initial solving succeeds and continuous replay is running.
+Input: `preparation/range-1500m-partition200/offset250-input/`; output:
+`attempt-11/evaluation/`. Attempt 07 also remains running. Do not count either
+as complete based on their valid initial plans.
+
+**Nine configurations are terminal (01–06, 08–10); best remains 16/39.**
+`ledger-audit-9.json` verifies terminal results separately
+from concurrent work; the ledger records current completion versus running
+attempts. No new production scoring change has been made during these runs.
+Further route-wide information-allocation experiments should keep a bounded
+budget while addressing the current conservative assumption that unobserved
+earlier public reports have already consumed information slots. That remains
+a proposed next experiment, not a demonstrated fix.
 
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
