@@ -166,11 +166,58 @@ one/one/fourteen respectively. There are 28 scheduled fixed-view segments, no
 pursuit, and 44 gate assessments. Best remains 16/39; **2/30 completed** in this
 renewed series.
 
-Next controlled comparisons vary only the public gap exposure duration: 4.5 s
-to test whether shorter holds fit otherwise unused route gaps, and 16.5 s to
-test whether longer exposure earns enough omission value to justify a stop.
-Preparation paths: `preparation/gap-4s/` and `preparation/gap-16s/`. These are not
-completed optimization attempts until their replay results are inspected.
+### 03/04 — Shorter/longer gap exposure (completed; rejected)
+
+Change only public gap dwell to 4.5 s or 16.5 s. Preparation:
+`preparation/gap-4s/` (415 extra rows, 85.94 s) and `preparation/gap-16s/`
+(332 extra rows, 79.38 s). Outputs and passing audits are under `attempt-03/`
+and `attempt-04/`.
+
+| Attempt | Recall | Balanced MSE | Checks: clean/omitted/altered | Initial candidates | Solver seconds, all four revisions optimal/parity | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 03: 4.5 s | 15/39 | 0.06065219 | 41/6/9 | 7,879 | 12.292/11.200/10.599/4.478 | 421.20 / 300.88 |
+| 04: 16.5 s | 13/39 | 0.07384530 | 62/6/7 | 7,788 | 11.936/10.879/10.703/0.893 | 403.99 / 297.99 |
+
+Attempt 03 selects gap holds in revisions 1 and 3 but replaces them before
+execution. Their inclusion affects the planned route and later feedback; it
+does not produce direct gap detections. Replacements occur at 42/47.5/137.5 s.
+Continuous sensing: 202.5 s transit, 52.5 s wait, 44.5 s surveillance; one issue
+in transit, fourteen during surveillance; 22 scheduled fixed-view segments.
+
+Attempt 04 executes one report-free hold at 231.5–248 s; **no checks occur in
+that hold**. It selects the hold after evidence, not in the prior route.
+Replacements occur at 42/47.5/249.5 s. Sensing: 169 s transit, 61 s wait,
+69.5 s surveillance; one issue in transit and twelve during surveillance;
+30 scheduled fixed-view segments. More total checks do not imply better recall
+or estimation. Neither gap duration should be promoted to live inputs. These
+optional candidates remain an exercised planning capability, not an achieved
+optimization. **4/30 renewed configurations completed; best remains 16/39.**
+
+## In-progress visibility comparisons
+
+The retained 16/39 result detects seven of twenty earlier corrupted outcomes
+and nine of nineteen at the shared final epoch. These are evaluator diagnostics,
+not target selection inputs. The remaining deficit is not confined to startup.
+
+Attempts 05/06 test constant altitude 50/100 m versus the 25 m baseline, with
+750 m range and no gap holds. Both public vehicle altitude and copied scenario
+initial altitude change together; effective config comparison verifies all
+other fields/data and the public schedule remain identical. Native masks are
+regenerated, not reused. Geometry preparation takes 62.54/62.31 s and produces
+881 rows each. Masks differ from baseline, but the largest sampled public
+terminal batch remains 26/107 reports. This is not a global recall bound.
+Artifacts: `preparation/altitude-50m/`, `preparation/altitude-100m/` and
+`attempt-05/`, `attempt-06/`. These assume the drone starts at the given constant
+height; they do not validate a climb maneuver or modify live altitude.
+
+Next preparations vary range to 1,000/1,500 m using the existing 200-cell
+partition control (first series Attempt 30: 12/39 at 750 m). Compare against
+both that matched control and the overall 16/39 best. Paths:
+`preparation/range-1000m-partition200/` and
+`preparation/range-1500m-partition200/`. Source/live configuration remains
+unchanged. Scratch configuration/coverage diagnostics are path-driven under
+Agent `var`; generated scenario paths remain relative. No higher-range recall
+gain is claimed before native solving and continuous feedback evaluation.
 
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
