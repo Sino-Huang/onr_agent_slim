@@ -177,3 +177,68 @@ route-count scoring, report uniqueness, four headings, exact selected-route
 verification, and the eventual lexicographic objective and gate integration.
 The goal remains active at **0/50**; no baseline or diagnostic failure is used
 to exhaust the user-authorized optimization budget.
+
+## Epoch representation and tractable lookahead checkpoint
+
+The experimental epoch representation carries position, heading, available time
+and last public-report epoch between groups of candidate start times. It uses
+binary candidate choices, at most one per start epoch, direct travel constraints,
+explicit report uniqueness and the same selected-count information envelope.
+It avoids constructing the full arc graph. Report epochs must remain on the
+existing half-second grid; unsupported off-grid epochs are rejected rather than
+silently rounded. This is not production integration or a change of planner
+authority. Secondary objective/gate integration remains outstanding.
+
+The MiniZinc turn formula matches Python `_navigation_turns` across all **225**
+combinations of north/east movement signs and known/unknown initial/final
+directions. Native small-graph tests verify the diverse-information branch when
+reachable and its rejection when the same branch is too far away. A separate
+returned-route verifier checks the primary score, actual Python navigation
+budgets, chronology and report uniqueness. It rejects incorrect scores,
+duplicate selections and impossible travel.
+
+Full epoch data generation takes **0.27 s**, versus roughly ten seconds for the
+full flow graph, but its native invocation still exceeds 30 s. Epoch lookahead
+controls at 30/60/90 seconds contain 56/284/582 candidates respectively and all
+also time out. The **30 s epoch compile-only** control completes in **0.97 s**
+(compiler reports about 0.91 s and 20 MB), establishing that its small-window
+failure is search cost, unlike the original full-flow compilation bottleneck.
+Artifacts: `epoch-probe/`, `epoch-horizon-{30,60,90}-probe/`,
+`epoch-horizon-30-compile/`. Do not promote this epoch formulation.
+
+The matched flow model **does** solve the 30-second window, initially in 0.27 s.
+The helper was then changed to build candidates first and construct arcs only
+for the selected time window, avoiding needless full-graph generation. All
+public reports and belief inputs remain available; only candidate finish times
+are bounded. Terminal additive dominance remains disabled for route-dependent
+scoring. Results with the direct bounded build:
+
+| Horizon | Candidates / arcs | Generation seconds | Native seconds | Selected reports | Primary score |
+| --- | --- | --- | --- | --- | --- |
+| 30 s | 56 / 134 | 0.237 | 0.316 | 2 | 1.143677 |
+| 60 s | 284 / 6,285 | 0.265 | 0.669 | 5 | 2.522260 |
+| 90 s | 582 / 15,298 | 0.359 | 1.017 | 7 | 3.314555 |
+
+All three are **OPTIMAL_SOLUTION** and their returned routes pass the independent
+score/travel/unique-credit verifier. Direct lookup (without the envelope) at
+90 s also reaches the same optimum **3.314555** in **1.267 s**. This avoids
+needing a concavity assumption for tables affected by integer rounding.
+Artifacts: `flow-horizon-{30,60,90}-direct-build/` and
+`flow-horizon-90-lookup/`. These are primary-objective lookahead probes, not
+full-Mission recall measurements or executable plans accepted by Hyper.
+
+A posterior-conditioned control at Mission time 165 s with a 150-second horizon
+contains 2,474 candidates and 128,847 arcs and still times out at 30 s
+(`flow-posterior-horizon-150/`). Tractability is demonstrated only for the
+measured windows, not every future state. **101 focused tests pass in 17.61 s**
+(`test-horizon-focused.xml`), including 18 diagnostic tests. Ruff passes.
+
+Next integrate the working bounded route-count formulation into the single
+production model, restore lexicographic maneuver/duration preferences and
+independent oracle/gate consistency, and measure a complete continuous-feedback
+receding-horizon run. Prevent premature termination when a lookahead route ends
+before the public schedule. Do not alter physical lifecycle/evidence contracts
+to obtain that behavior without review. G(n) fixes selected-route information
+allocation but is still not explicit downstream Bayesian decision value.
+The 300 m baseline remains **1/39**; the goal remains active at **0/50** genuine
+optimization configurations. No process remains running.

@@ -154,3 +154,69 @@ def test_compression_preserves_every_candidate_path(monkeypatch, compression):
         compressor = {"suffix": benchmark.compress_arc_suffixes, "interval": benchmark.compress_arc_intervals}[compression]
         _, compressed = compressor(3, arcs)
         assert paths(arcs, 3) == paths(compressed, 3)
+
+
+@pytest.mark.parametrize("speed,expected", [(10.0, {"objective":100,"selected":[2,3]}),
+                                            (.5, {"objective":87,"selected":[1,3]})])
+def test_epoch_model_information_and_travel(tmp_path, monkeypatch, speed, expected):
+    monkeypatch.syspath_prepend(str(Path("scripts").resolve()))
+    import benchmark_mission1_route_information as benchmark
+    model, data = tmp_path / "epoch.mzn", tmp_path / "epoch.dzn"
+    model.write_text(benchmark.EPOCH_MODEL)
+    data.write_text('''
+C=3; S=2; R=3; K=2; E=2; U=3;
+base=[20,0,0]; rc=[1,2,3]; rs=[1,2,1]; ru=[1,2,3];
+gain=array2d(1..2,0..2,[0,50,67,0,50,67]);
+epoch=[1,1,2]; sx=[0.0,10.0,0.0]; sy=[0.0,0.0,0.0];
+ex=[0.0,10.0,0.0]; ey=[0.0,0.0,0.0];
+start=[10.0,10.0,30.0]; finish=[10.5,10.5,30.5];
+direction=[3,3,3]; first_report=[20,20,60]; last_report=[20,20,60];
+initial_x=0.0; initial_y=0.0; initial_time=0.0; initial_direction=3;
+quarter_turn=0.5; chronological=true;
+''' + f"speed={speed};")
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc", str(model), str(data),
+    ], capture_output=True, text=True, check=True, timeout=30)
+    assert json.loads(result.stdout.splitlines()[0]) == expected
+    assert "==========" in result.stdout
+
+
+def test_epoch_turn_formula_matches_python_all_discrete_cases(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path("scripts").resolve()))
+    import benchmark_mission1_route_information as benchmark
+
+    from onr.application.mission1_planning import _navigation_turns
+    cases = [(x,y,a,b) for x in (-1,0,1) for y in (-1,0,1) for a in (-1,0,1,2,3) for b in (-1,0,1,2,3)]
+    expected = [_navigation_turns(None if x==0 else (3 if x>0 else 1),
+                                 None if y==0 else (0 if y>0 else 2),
+                                 None if a==-1 else a,None if b==-1 else b) for x,y,a,b in cases]
+    functions = benchmark.EPOCH_MODEL.split("function var int: turn",1)[1].split("constraint forall(c in CS)",1)[0]
+    expressions = [f"navigation_turns({float(x)},{float(y)},{a},{b})" for x,y,a,b in cases]
+    model = tmp_path / "turns.mzn"
+    model.write_text("function var int: turn"+functions+"\narray[1..225] of var int: values=["
+                     +",".join(expressions)+"]; solve satisfy; output [show(values)];")
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc", str(model),
+    ], capture_output=True, text=True, check=True, timeout=30)
+    assert json.loads(result.stdout.splitlines()[0]) == expected
+
+
+def test_probe_verifier_rejects_wrong_score_duplicate_and_unreachable_routes(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path("scripts").resolve()))
+    import benchmark_mission1_route_information as benchmark
+
+    from onr.application.mission1_planning import _opportunities, build_candidate_dag
+    environment = _environment([_report("a",1,10,0,0)])
+    belief = _belief((1,))
+    candidates = build_candidate_dag(environment,belief).candidates
+    opportunities = _opportunities(environment,belief)
+    c = candidates[0]
+    score = round(c.recall_utility*1_000_000)+round(c.omission_yield*1_000_000)+500_000
+    solution = {"selected":[1],"objective":score}
+    assert benchmark.verify_probe_route(candidates,solution,environment,opportunities,belief)["travel_and_unique_credit_verified"]
+    for bad in ({"selected":[1],"objective":score+1},{"selected":[1,1],"objective":score}):
+        with pytest.raises(AssertionError):
+            benchmark.verify_probe_route(candidates,bad,environment,opportunities,belief)
+    environment["controlled_vehicle"]["position"]["x"]=10_000
+    with pytest.raises(AssertionError):
+        benchmark.verify_probe_route(candidates,solution,environment,opportunities,belief)
