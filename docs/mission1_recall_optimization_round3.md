@@ -1,5 +1,35 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## History-safe arc reduction checkpoint
+
+The history-aware graph can now drop a bypass only through a strictly
+base-positive intermediate that cannot already have been seen in its prefix
+(its earliest report is after the source finishes), and whose report batches
+have no remaining alternatives at or after the bypassed destination. Empty
+source history needs no prefix check. Only retained **direct** successors are
+used; arbitrary transitive reachability could contain an invalid repeated batch.
+Expired alternatives are bounded by the last report epoch plus the largest
+offered observation delay. Information remains nondecreasing in selected counts,
+so the added base reward strictly improves utility despite diminishing gain.
+Other pruning stays after history expansion. No objective, model, sensor or
+physical-workflow change accompanies this reduction.
+
+One new reduction regression failed before the patch. Sixteen deterministic
+small graphs with delayed/multi-report views match independent dense-reference
+score, maneuver count, duration and report route. **132 focused tests pass**;
+full Agent non-live **850 passed**, 21 excluded, 258.11 s; Physical replay
+**101 passed**, 4.89 s. Ruff passes excluding existing TRY004. Initial actual
+H60 graph reduces 871/50,949 candidates/arcs to **866/40,149**, native optimal
+in **1.331 s**, and independently matches an unpruned 636-candidate/84,064-arc
+public graph. At the saved t=71 evidence snapshot, 16,164/667,834 becomes
+**15,666/344,825**, preserving the old score/maneuver/duration optimum and native
+oracle parity; native solve **10.184 s**. Artifacts: `safe-arcs-h60-probe/`,
+`safe-arcs-evidence-h60-probe/`, `safe-arcs-full-agent.xml`.
+
+These are correctness/performance checks, not new recall configurations or proof
+that the later failed snapshot will now finish. Commit the checkpoint before
+rerunning H60; record that rerun as verification of Attempt 15, not Attempt 17.
+
 ## Attempts 15/16 — longer group-view lookahead
 
 Both retain Attempt 12's prepared input, 300 m sensor, group/base/25 m offsets,
@@ -13,12 +43,14 @@ arcs**, then reports `solver timed out after 30.0 seconds`. Its gate calculation
 took 59.193 s before the separate native solve. No completed recall score is
 assigned. Preserve `attempt-15/evaluation/revision-006/solver/` and `audit.json`.
 
-**Attempt 16 (H=75) is still running** at this checkpoint, after a gate at t=71 s
-that took 262.572 s. Its Python process is active, not a missing or idle handle.
-No recall or terminal outcome is claimed. The native 30 s limit does not cover
+**Attempt 16 (H=75) also fails**, at revision 005 after four native-optimal
+revisions. Its last gate at t=71 s took 262.572 s; the failed native graph has
+**68,368 candidates / 7,115,948 arcs** and records the 30 s timeout. Preserve
+its DZN/model/stderr and `attempt-16/audit.json`; no recall is assigned. Both
+original experiments are terminal. The native 30 s limit does not cover
 Python graph construction, scoring or serialization. The experiments expose
 graph-size limitations; do not promote longer horizons or extend the native
-limit to hide them. Attempt 16's terminal evidence still needs inspection.
+limit to hide them. `ledger-audit-16.json` verifies both terminal failures.
 
 ## Attempts 13/14 — larger camera offsets rejected
 
@@ -283,7 +315,7 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 15/50 terminal configurations; best 11/39
+attempts. Current status: **active; 16/50 terminal configurations; best 11/39
 (28.21%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 

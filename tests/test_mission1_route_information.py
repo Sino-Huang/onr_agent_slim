@@ -176,6 +176,68 @@ def test_report_history_keeps_direct_alternative_and_blocks_nonadjacent_batch_re
     assert expanded.duration_s == reference.duration_s
 
 
+def test_history_aware_arcs_reduce_only_after_intermediate_batch_expires():
+    from onr.application.mission1_planning import _candidate_arcs
+
+    graph, _ = history_graph()
+    a = replace(graph.candidates[0], start_s=10, end_s=10.5,
+                observation_delay_s=0, x=0, y=0, end_x=0, end_y=0)
+    b = replace(graph.candidates[1], start_s=14, end_s=14.5,
+                observation_delay_s=4, x=0, y=0, end_x=0, end_y=0)
+    c = replace(graph.candidates[3], start_s=20, end_s=20.5,
+                x=0, y=0, end_x=0, end_y=0)
+    arcs = _candidate_arcs((a, b, c), 30, information_aware=True, report_history_aware=True)
+    # b can still carry a same-epoch alternative: source->b is retained.
+    assert (0, 2) in arcs
+    # a is available from the empty prefix, and has expired before c; adding
+    # it strictly improves utility without restricting anything after c.
+    assert (0, 3) not in arcs
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_history_safe_reduction_matches_dense_independent_reference(seed):
+    import random
+
+    from onr.application.mission1_planning import _candidate_arcs, _navigation_time
+
+    rng = random.Random(seed)
+    environment = _environment([
+        _report(f"r{i}", 1 + i % 2, 5 + 5 * (i // 2), 0, 0) for i in range(6)
+    ], fov=1)
+    belief = _belief((1, 2))
+    opportunities = _opportunities(environment, belief)
+    template = build_candidate_dag(environment, belief).candidates[0]
+    candidates = []
+    for item in opportunities:
+        for delay in (0, 1, 4):
+            x, y = rng.choice((0, 10)), rng.choice((0, 10))
+            covered = ([r for r in opportunities if r.time_s == item.time_s]
+                       if delay == 0 and rng.randrange(2) else [item])
+            recall = .5 * sum(r.recall for r in covered)
+            candidates.append(replace(template, candidate_id=f"{item.report_id}:{delay}",
+                report_ids=tuple(r.report_id for r in covered), start_s=item.time_s + delay,
+                end_s=item.time_s + delay + .5, x=x, y=y, end_x=x, end_y=y,
+                mode="fixed_view", arrival_direction=rng.randrange(4), report_span_s=0,
+                observation_delay_s=delay, recall_utility=recall,
+                omission_yield=0, estimation_utility=0, combined_score=recall))
+    candidates = tuple(sorted(candidates, key=lambda c: (c.start_s, c.end_s, c.candidate_id)))
+    sink = len(candidates) + 1
+    dense = {(0, sink)} | {(0, i) for i in range(1, sink)} | {(i, sink) for i in range(1, sink)}
+    for i, left in enumerate(candidates, 1):
+        for j, right in enumerate(candidates, 1):
+            if i < j and set(left.report_ids).isdisjoint(right.report_ids) and right.start_s >= left.end_s + _navigation_time(
+                left.end_x, left.end_y, right.x, right.y, 30,
+                left.arrival_direction, right.arrival_direction, .5,
+            ):
+                dense.add((i, j))
+    reference = route_information_oracle(CandidateDAG(candidates, tuple(sorted(dense)), 0, sink), opportunities)
+    arcs = _candidate_arcs(candidates, 30, .5, information_aware=True, report_history_aware=True)
+    reduced = route_information_oracle(CandidateDAG(candidates, arcs, 0, sink), opportunities)
+    assert (reduced.score, len(reduced.candidates), reduced.duration_s) == (
+        reference.score, len(reference.candidates), reference.duration_s)
+    assert reduced.covered_report_ids == reference.covered_report_ids
+
+
 def test_route_information_assignment_rounding_telescopes_across_merged_views():
     graph,opportunities = history_graph()
     path = (graph.candidates[0],graph.candidates[2],graph.candidates[3])

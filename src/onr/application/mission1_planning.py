@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cache
@@ -712,8 +712,9 @@ def _candidate_arcs(
 
     Generated candidates end with observation dwell; disjoint time windows
     cannot repeat a report when report epochs are strictly ordered. Otherwise
-    report-history-aware callers defer positive-intermediate reduction until
-    batch histories are lifted; an intermediate can consume a later report.
+    For report-history-aware callers, an intermediate must be new after the
+    source finishes and its batches must expire before the bypassed target.
+    Otherwise defer reduction until batch histories are lifted.
     Backward traversal reuses each target's reachable
     successors: a compatible path through a positive-utility intermediate
     dominates a direct arc to the same successor. Zero-utility candidates
@@ -723,7 +724,19 @@ def _candidate_arcs(
     sink_bit = 1 << sink
     all_nodes = (1 << (sink + 1)) - 1
     reachable = [0] * (sink + 1)
+    direct = [0] * (sink + 1)
     starts = [candidate.start_s + 1e-9 for candidate in candidates]
+    max_delay = max((c.observation_delay_s for c in candidates), default=0.0)
+    # No alternative containing an intermediate's batch can start after its
+    # last report epoch plus the largest offered observation delay. Keep only
+    # direct successors beyond that boundary, not unrestricted reachability:
+    # an indirect path could itself repeat a batch.
+    safe_successors = [0] + [
+        all_nodes & ~((1 << (bisect_right(starts,
+            c.start_s - c.observation_delay_s + c.report_span_s + max_delay + 1e-9) + 1)) - 1)
+        if c.report_ids else all_nodes
+        for c in candidates
+    ]
     reports = [frozenset(candidate.report_ids) for candidate in candidates]
     positive = [False] + [
         (_score_units(replace(_candidate_utility(candidate), estimation=0.0))
@@ -742,6 +755,7 @@ def _candidate_arcs(
             target = bit.bit_length() - 1
             if target == sink:
                 arcs.append((source, sink))
+                direct[source] |= sink_bit
                 break
             right = candidates[target - 1]
             if chronological_reports and (
@@ -761,9 +775,14 @@ def _candidate_arcs(
             ):
                 continue
             arcs.append((source, target))
+            direct[source] |= bit
             successors |= bit | reachable[target]
             if positive[target] and not report_history_aware:
                 pending &= ~reachable[target]
+            elif positive[target] and (
+                not right.report_ids or right.start_s - right.observation_delay_s > left.end_s + 1e-9
+            ):
+                pending &= ~(direct[target] & safe_successors[target])
         reachable[source] = successors
     # Every candidate has already passed initial-pose/time admission.
     pending = all_nodes & ~1
@@ -774,6 +793,9 @@ def _candidate_arcs(
         arcs.append((0, target))
         if positive[target] and not report_history_aware:
             pending &= ~reachable[target]
+        elif positive[target]:
+            # The source has no selected-report history.
+            pending &= ~(direct[target] & safe_successors[target])
     ordered_arcs = tuple(sorted(arcs))
     return (
         _prune_terminal_alternatives(candidates, ordered_arcs)
