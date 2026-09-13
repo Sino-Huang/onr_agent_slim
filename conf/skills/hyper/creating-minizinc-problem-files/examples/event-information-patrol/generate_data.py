@@ -100,6 +100,7 @@ def build_instance(
             c.mode == "fixed_view" and c.omission_yield > 0 for c in graph.candidates
         ),
         "candidate_counts_by_mode": candidate_counts_by_mode,
+        "report_free_fixed_candidates": sum(c.mode == "fixed_view" and not c.report_ids for c in graph.candidates),
         "pursuit_ship_ids": sorted(pursuit_inputs),
         "pursuit_risk_rate_inputs": [
             pursuit_inputs[entity_id] for entity_id in sorted(pursuit_inputs)

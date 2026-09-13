@@ -76,6 +76,11 @@ def inspect(planner_path: Path, statechart_path: Path) -> dict[str, object]:
     for index, (name, item) in enumerate(zip(operational_states, items, strict=True)):
         context = contexts[name]
         _require(
+            context.get("planner_item") == item["planner_item"]
+            and context.get("target_report_ids") == item["report_ids"],
+            "planner item metadata differs",
+        )
+        _require(
             context.get("surveillance_mode") == item["surveillance_mode"]
             and context.get("target_entity_id") == item["entity_id"],
             "assignment mode or target entity differs",

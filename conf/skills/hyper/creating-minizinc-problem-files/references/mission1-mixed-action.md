@@ -54,6 +54,22 @@ positive value; timing arcs reserve the full duration. Incidental public checks
 during a longer dwell can update belief, but are not precredited as anchor
 reports. This is still sampled observation planning, not continuous patrol.
 
+Rows may additionally supply `gap_observation_windows: [{start_s, end_s}]` and
+public `holding_intervals`. These create reachable, positive-value `fixed_view`
+choices with no covered public reports. Their recall/information components are
+zero; omission value uses the same holding-exposure scorer below. Each window
+uses half-second times and at least one second of dwell. Identity includes its
+pose, direction, start and duration; no synthetic report IDs are introduced.
+The offline helper samples windows inside disclosed inter-report gaps, reserves
+the next report's lookback, and forecasts four camera-facing poses. It uses no
+hidden events or trajectories. Unsupplied gap windows add no such candidates.
+
+Gap windows retain the graph's temporal ordering. In delayed-window graphs their
+start acts as a conservative epoch cutoff: later candidates cannot return to
+an older public epoch across the gap node. This may exclude feasible delayed
+observations, but prevents nonadjacent report reuse without changing native
+network-flow optimization.
+
 Window graphs also remove locally dominated terminal choices: from one
 predecessor, a final observation with no later continuation cannot beat a better
 final observation under the complete lexicographic cost. Candidate indices stay
@@ -140,8 +156,9 @@ exposure. Duplicate/overlapping intervals share one credit per vessel. The gate
 retains remaining exposure after the anchor report has been checked.
 
 These are public-schedule rate approximations, not hidden-event predictions.
-They omit unanchored/background patrol value and gaps between selected dwell
-windows; visibility without recorded checks cannot establish a searched interval.
+Only explicitly supplied report-free windows receive background observation
+value; gaps between selected dwell windows remain uncredited. Visibility without
+recorded checks cannot establish a searched interval.
 The public capability comes from the offline physical helper's detector config.
 Absent that field, fixed omission value is zero; no new live-feed contract or
 physical command is introduced. Fixed views have multiple potential vessels,
@@ -208,6 +225,10 @@ each selected constituent window of a merged assignment. Preserve this metadata
 in `planner_item` for exact rescoring, including after its anchor reports are
 checked. Execute the outer assignment window unchanged; these scoring windows
 are neither separate maneuvers nor additional physical command parameters.
+An empty `report_ids` array is intentional for an omission-search hold, not an
+empty plan. Mixed runs retain real report IDs only; report span and delay metadata
+refer only to members covering public reports (span zero when none). Preserve
+the window-end readiness even when the report list is empty or already checked.
 
 MiniZinc selects the mode. Hyper preserves that mode in the Statechart. Maneuver
 receives the exact selected fixed-view coordinates through the bound

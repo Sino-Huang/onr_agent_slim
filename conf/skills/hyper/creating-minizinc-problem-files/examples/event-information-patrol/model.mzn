@@ -169,6 +169,7 @@ output let {
     let {
       int: last_position = if run < length(run_start) then run_start[run + 1] - 1 else length(chosen) endif;
       array[int] of int: members = [chosen[p] | p in run_start[run]..last_position];
+      array[int] of int: reported = [c | c in members where candidate_report_start[c + 1] > candidate_report_start[c]];
       int: candidate = members[1];
       int: last = members[length(members)];
       int: duration = candidate_start[last] + candidate_duration[last] - candidate_start[candidate];
@@ -196,11 +197,12 @@ output let {
     ++ ",\"public_report_rate\":"
     ++ (if candidate_mode[candidate] = 1 then "null" else show(candidate_public_report_rate[candidate]) endif)
     ++ ",\"rate_scale\":" ++ show(score_scale)
-    ++ ",\"report_span\":" ++ show(candidate_start[last] - candidate_observation_delay[last]
-       + candidate_report_span[last] - candidate_start[candidate] + candidate_observation_delay[candidate])
-    ++ (if max(c in members)(candidate_observation_delay[c]) = 0 then "" else
-        ",\"observation_delay\":{\"minimum\":" ++ show(min(c in members)(candidate_observation_delay[c]))
-        ++ ",\"maximum\":" ++ show(max(c in members)(candidate_observation_delay[c]))
+    ++ ",\"report_span\":" ++ show(if length(reported) = 0 then 0 else
+       max(c in reported)(candidate_start[c] - candidate_observation_delay[c] + candidate_report_span[c])
+       - min(c in reported)(candidate_start[c] - candidate_observation_delay[c]) endif)
+    ++ (if not exists(c in reported)(candidate_observation_delay[c] > 0) then "" else
+        ",\"observation_delay\":{\"minimum\":" ++ show(min(c in reported)(candidate_observation_delay[c]))
+        ++ ",\"maximum\":" ++ show(max(c in reported)(candidate_observation_delay[c]))
         ++ ",\"time_scale\":" ++ show(time_scale) ++ "}" endif)
     ++ ",\"time_scale\":" ++ show(time_scale)
     ++ (if candidate_mode[candidate] = 1 /\ exists(c in members)(candidate_duration[c] > candidate_report_span[c] + 1) then

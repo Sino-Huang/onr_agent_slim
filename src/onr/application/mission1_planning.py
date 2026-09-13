@@ -116,6 +116,7 @@ def _candidate_id(
     arrival_direction: int | None = None,
     observation_delay_s: float = 0.0,
     observation_dwell_s: float = OBSERVATION_DWELL_SECONDS,
+    observation_start_s: float | None = None,
 ) -> str:
     identity: dict[str, object] = {"mode": mode, "report_ids": list(report_ids)}
     if viewpoint is not None:
@@ -126,6 +127,8 @@ def _candidate_id(
         identity["observation_delay_s"] = observation_delay_s
     if observation_dwell_s != OBSERVATION_DWELL_SECONDS:
         identity["observation_dwell_s"] = observation_dwell_s
+    if observation_start_s is not None:
+        identity["observation_start_s"] = observation_start_s
     encoded = json.dumps(
         identity,
         sort_keys=True,
@@ -823,6 +826,29 @@ def _fixed_view_candidates(
                         holding_omission_yield=extra,
                     )
                     candidates[candidate.candidate_id] = candidate
+            for window in view.get("gap_observation_windows", ()):
+                start, end = float(window["start_s"]), float(window["end_s"])
+                if (not all(math.isfinite(t) and t * TIME_SCALE == round(t * TIME_SCALE)
+                            for t in (start, end)) or end - start < 2 * OBSERVATION_DWELL_SECONDS):
+                    raise ValueError("gap windows must use half-second times and at least one second of dwell")
+                extra = score_holding_exposure(
+                    (exposures or {}).get((x, y, direction), ()), ((start, end),),
+                )
+                if extra <= 0:
+                    continue
+                identity = _candidate_id(
+                    "fixed_view", (), viewpoint=(round(x), round(y)), arrival_direction=direction,
+                    observation_start_s=start, observation_dwell_s=end - start,
+                )
+                candidates[identity] = SurveillanceCandidate(
+                    candidate_id=identity, mode="fixed_view", entity_id=None,
+                    start_s=start, end_s=end, x=x, y=y, end_x=x, end_y=y,
+                    report_ids=(), target_posterior_risk=0.0,
+                    expected_omission_probability=0.0, public_report_rate=0.0,
+                    report_span_s=0.0, recall_utility=0.0, estimation_utility=0.0,
+                    omission_yield=extra, combined_score=extra,
+                    arrival_direction=direction, scored_observation_windows=((start, end),),
+                )
         return tuple(candidates.values())
     for x, y in sample_fixed_viewpoints(opportunities, radius, current_position):
         visible = tuple(
@@ -857,6 +883,9 @@ def build_candidate_dag(
     turn_seconds = float(vehicle.get("quarter_turn_seconds", 0.0))
     observation_window = float(cast(Any, environment.get("observation_window_seconds", 0.0)))
     views = environment.get("surveillance_views")
+    gap_views = [v for v in cast(Any, views or ()) if v.get("gap_observation_windows")]
+    if any("holding_intervals" not in v for v in gap_views):
+        raise ValueError("gap windows require public holding interval forecasts")
     dwell_options = sorted(set(cast(Any, environment.get("fixed_view_dwell_options_s", (.5,)))))
     if not dwell_options or dwell_options[0] != OBSERVATION_DWELL_SECONDS or any(
         not math.isfinite(d) or d < OBSERVATION_DWELL_SECONDS or d * TIME_SCALE != round(d * TIME_SCALE)
@@ -865,7 +894,7 @@ def build_candidate_dag(
         raise ValueError("fixed-view dwell options must include 0.5 and use positive half-second steps")
     if len(dwell_options) > 1 and (views is None or any("holding_intervals" not in v for v in cast(Any, views))):
         raise ValueError("long fixed-view dwells require public holding interval forecasts")
-    if len(dwell_options) > 1 and float(cast(Any, environment.get("event_check_window_seconds", 0))) < OBSERVATION_DWELL_SECONDS:
+    if (len(dwell_options) > 1 or gap_views) and float(cast(Any, environment.get("event_check_window_seconds", 0))) < OBSERVATION_DWELL_SECONDS:
         raise ValueError("holding requires at least one observation tick of detector lookback")
     if observation_window < 0 or not math.isfinite(observation_window):
         raise ValueError("observation window must be finite and nonnegative")
@@ -891,7 +920,7 @@ def build_candidate_dag(
     for item in _fixed_view_candidates(
         opportunities, fov, (start_x, start_y),
         cast(Any, environment.get("surveillance_views")),
-        dwell_options, holding_exposures(environment, belief) if len(dwell_options) > 1 else {},
+        dwell_options, holding_exposures(environment, belief) if len(dwell_options) > 1 or gap_views else {},
     ):
         if (
             now + _navigation_time(start_x, start_y, item.x, item.y, speed,
@@ -1078,12 +1107,13 @@ def _fixed_view_runs(
         recall = sum(round(c.recall_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
         estimation = sum(round(c.estimation_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
         omission = sum(round(c.omission_yield * SCORE_SCALE) for c in group) / SCORE_SCALE
+        reported = [c for c in group if c.report_ids]
         result.append(replace(
             first, candidate_id=first.candidate_id + "--" + last.candidate_id,
             end_s=last.end_s,
             report_ids=tuple(r for c in group for r in c.report_ids),
-            report_span_s=(last.start_s - last.observation_delay_s + last.report_span_s
-                           - first.start_s + first.observation_delay_s),
+            report_span_s=(max(c.start_s - c.observation_delay_s + c.report_span_s for c in reported)
+                           - min(c.start_s - c.observation_delay_s for c in reported)) if reported else 0.0,
             recall_utility=recall, estimation_utility=estimation,
             omission_yield=omission, combined_score=recall + estimation + omission,
             scored_observation_windows=(tuple(w for c in group for w in
@@ -1286,7 +1316,8 @@ class Mission1ReplanGate:
                 and start_s <= now < end_s
             )
             if (
-                report_ids and not continuing_pursuit and not continuing_fixed_view
+                (report_ids or (mode == "fixed_view" and utility.omission_yield > 0))
+                and not continuing_pursuit and not continuing_fixed_view
                 and start_s < next_start
             ):
                 next_start = start_s

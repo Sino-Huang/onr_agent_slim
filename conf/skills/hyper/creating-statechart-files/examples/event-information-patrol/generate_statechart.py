@@ -195,7 +195,11 @@ def build_statechart(
                 "kind": "arrive_and_observe_fixed_view",
                 "location": {"x": item["x"], "y": item["y"]},
                 "arrival_deadline": scaled_time(item["start_tick"], item["time_scale"]),
-                "visibility_outcome": "target reports are checked from the fixed FoV",
+                "visibility_outcome": (
+                    "check visible reports and observe omission opportunities throughout the selected window"
+                    if item["planner_item"].get("parameters", {}).get("scored_observation_windows")
+                    else "target reports are checked from the fixed FoV"
+                ),
             }
         else:
             desired_outcome = {

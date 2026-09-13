@@ -412,6 +412,7 @@ def test_event_information_generator_manifest_and_dzn_structure(tmp_path: Path) 
 
     manifest = json.loads(completed.stdout)
     assert set(manifest) == {
+        "report_free_fixed_candidates",
         "fixed_view_dwell_options_s",
         "event_check_window_seconds",
         "fixed_candidates_with_omission_value",
@@ -563,6 +564,7 @@ def test_mission1_path_helpers_inspect_and_prepare_replan_inputs(
         text=True,
     )
     assert json.loads(inspected_problem.stdout) == {
+        "report_free_fixed_candidates": 0,
         "advisory_duration_s": 2.5,
         "advisory_maneuvers": 1,
         "advisory_modes": ["pursue_ship"],

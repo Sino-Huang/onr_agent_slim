@@ -226,6 +226,8 @@ def inspect(path: Path) -> dict[str, object]:
         "node_count": node_count,
         "arc_count": arc_count,
         "report_id_count": report_count,
+        "report_free_fixed_candidates": sum(mode == 1 and report_start[i] == report_start[i + 1]
+                                             for i, mode in enumerate(modes)),
         "candidate_counts_by_mode": {
             "fixed_view": modes.count(1),
             "pursue_ship": modes.count(2),

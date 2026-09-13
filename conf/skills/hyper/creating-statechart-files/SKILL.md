@@ -1,7 +1,7 @@
 ---
 name: creating-statechart-files
 description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
-version: '3.4.0'
+version: '3.5.0'
 ---
 
 # Creating Statechart Files
@@ -41,6 +41,11 @@ version: '3.4.0'
    entity where applicable, opaque report identities, observation window, and
    the recall/estimation/omission utility breakdown. Maneuver Control chooses
    `navigate` or `pursue` and its adapter parameters at runtime.
+   An omission-search fixed view can have empty report IDs and nonzero omission
+   utility. Preserve its `scored_observation_windows` in `planner_item` and the
+   existing outgoing `readiness.not_before` at the outer window end. Empty or
+   already-checked report IDs do not complete that observation interval early;
+   this also applies to merged public-report/omission holds.
    For pursuit, expose the public first-report position and observation-start
    deadline as `desired_outcome.acquisition_rendezvous`. This enables initial
    navigation before visibility-based pursuit without changing the selected

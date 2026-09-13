@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.19.0'
+version: '2.20.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -64,7 +64,7 @@ before generating or interpreting this planner shape. Then:
    DZN into model context. The same commands apply to initial planning and
    every replacement revision.
 4. Require `valid: true` from `inspect_problem.py`. Inspect the preparation JSON manifest
-   for candidate counts by mode, pursuit ship IDs and risk/rate inputs,
+   for candidate counts by mode, report-free fixed candidate count, pursuit ship IDs and risk/rate inputs,
    selected advisory modes, component-score consistency, arc count, advisory
    score/maneuvers/duration, `covered_report_count`, and unique covered report
    IDs. Copy its scalar values into the submission reflection. On a replacement,
