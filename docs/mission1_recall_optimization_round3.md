@@ -1,5 +1,42 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempt 12 — broader camera-aware viewpoint family
+
+A report-coverage audit found no missing promised-report signal in completed
+Attempts 04/10/11: respectively 45/45, 37/37 and 38/38 report IDs attached to
+executed surveillance assignments eventually receive checks. This is not a
+claim that every check occurred in its scheduled assignment; early/transit
+checks also count. All three detect seven corrupted outcomes at t=299 s, with
+three/three/two earlier detections. Artifact: `executed-report-coverage.json`.
+
+Attempt 12 keeps corrected 300 m range, H=45, nominal/+4 s observations and
+functional `4cda00e`. It replaces offset-only sampling with the existing
+camera-facing pair/group views plus base centres/midpoints and 25 m offsets.
+Native preparation: **2,266 views in 151.813 s**. The largest single-view terminal
+public-report count stays at 18; no larger geometric coverage bound is claimed.
+
+Completed result: **11/39 (28.21%)**, balanced MSE **0.066891006**, 54 unique
+checks (43 clean, 5 omitted, 6 altered), final time 303.5 s. This is a new best
+for this corrected 300 m series, not a comparison against the historical 750 m
+11/39 run. The initial assignment exactly matches Attempt 10; subsequent
+evidence-conditioned routes differ. The extra issue is at event time 295.5 s;
+terminal corruption detections stay at seven. No pursuit is executed.
+
+All **17 native revisions** are optimal and independently match primary score,
+maneuver count, duration and report route. Maximum/total native solve time:
+**9.745/41.926 s**; rollout **217.094 s**. Execution audit passes: continuous
+transit/wait/surveillance totals 201/79/23.5 s, with 1/1/9 issues. Independent
+audit takes 33.87 s. Artifacts: `attempt-12/{input,evaluation,audit.json,count-state-audit.json}`.
+No production code, sensor parameters, evidence contracts or live workflow
+changes in this experiment; existing 833-test Agent/101-test replay checkpoint
+remains the source verification. All experiment processes are terminal.
+
+Retain Attempt 12 as the realistic-range comparison point. This modest gain
+supports examining viewpoint geometry further, not claiming generality or
+adequate mission recall. The goal remains active at 12/50, requiring 20/39 for
+the recall exit. All 223 completed-replay revisions audited so far match the
+independent reference; `ledger-audit-12.json` is the current count audit.
+
 ## Count-history reduction checkpoint
 
 ### Bounded multi-view implementation checkpoint
@@ -198,8 +235,8 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 11/50 completed configurations; best 10/39
-(25.64%) at 300 m visibility**. The chronological checkpoints below preserve
+attempts. Current status: **active; 12/50 completed configurations; best 11/39
+(28.21%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 
 The user rejected 2,000 m visibility as unrealistic. Primary acceptance uses
