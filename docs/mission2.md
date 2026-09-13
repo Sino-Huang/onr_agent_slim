@@ -10,11 +10,12 @@ unavailable, not zero or certainty. Predictions are not confirmed collisions.
 
 `onr.application.mission2_planning` builds observation candidates from public
 forecast positions, current aircraft position/speed and view range. Candidates
-retain source/run/sequence, pair/target identity, sample age, contact deadline,
+retain source/run/sequence, pair/target identity, sample age, predicted 10 m entry time,
 travel estimate, operational altitude and arrival direction. A currently visible
 target can be pursued; an unseen target needs an observation/acquisition view.
 Travel feasibility is an estimate; runtime path, visibility and lifecycle
-feedback remain authoritative.
+feedback remain authoritative. A predicted 10 m entry ranks urgency; it is not
+an actual-contact timestamp or an expiry for monitoring an active pair.
 
 The Mission 2 replan gate coalesces identical evidence and wakes Hyper on new
 warnings, risk membership/urgency changes, changed observation feasibility and
