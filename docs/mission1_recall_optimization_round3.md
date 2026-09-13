@@ -1,5 +1,25 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempt 21 audited; combined comparison running
+
+Attempt 21 completes at 303.5 s in **156.83 s**, still **11/39**, MSE0.066891006,
+54 checks identical to the control, and no selected report-free assignments.
+All seventeen native revisions are optimal (maximum 4.539 s); execution and
+independent audits pass, including exact report routes (reference 20.74 s).
+The input comparison confirms that only gap-view geometry/exposures changed
+from Attempt 20. The camera, report views and other environment fields match.
+There are now **21 terminal configurations** and **391 independently audited
+completed-replay revisions**; `ledger-audit-21.json` passes.
+
+Neither Attempt 20 nor 21 offers a feasible report-free hold in the initial H45
+graph: the relevant distant holds finish beyond its cutoff. Attempt 22 combines
+Attempt 21's prepared input with information45/route120. Its first native-optimal
+plan selects one report-free hold at (962,-53), heading1, from65.5 to85.5 s,
+omission utility0.266610. This is an advisory choice, not yet verified execution
+or recall improvement. The replay is running under `attempt-22/evaluation/`
+on Agent`8c84d12` / Physical`2b72da1`; no other experiments remain running.
+Do not infer a completed result or count a twenty-second terminal configuration.
+
 ## Attempt 20 audited; gap-view placement checkpoint
 
 Attempts 19 and 20 now both pass continuous-execution and independent full-count
