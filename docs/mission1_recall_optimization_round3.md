@@ -2,6 +2,30 @@
 
 ## Count-history reduction checkpoint
 
+### Completed H=90 verification replay
+
+On Agent `bd70868`, the formerly failing H=90 configuration completes at
+303.5 s with **10/39 recall**, 53 unique checks (43 clean, 4 omitted, 6 altered),
+and balanced MSE **0.0825908824**. This ties H=45 recall and slightly improves
+its estimation error, but does not establish a new recall best. All 17 native
+revisions are optimal; maximum solve time is **22.658 s**, below the unchanged
+30 s limit. Total rollout is **370.083 s**. The formerly failing sixth revision
+now solves in 21.655 s with 30,854 lifted candidates rather than 113,566.
+
+Continuous execution audit verifies unique credit and detector eligibility.
+Transit/wait/surveillance totals are 195.5/67.5/40.5 s; issue counts are 0/1/9.
+All twenty scheduled sensing segments are fixed views. Independent full-count
+oracle auditing matches primary score, maneuver count, duration and report route
+on every revision (56.79 s audit). Artifacts are under
+`h90-count-forgetting-replay/`, including both audits and all native revisions.
+
+This is a verification rerun of existing Attempt 02 after a representation-only
+repair, **not a tenth distinct optimization configuration**. Preserve the old
+timeout evidence. The active count remains 9/50; realistic-range best remains
+10/39. No process remains running. This result rules out the expectation that
+merely enabling this longer horizon would increase recall. Next investigate
+explicit downstream evidence value and within-window multi-view choices.
+
 The bounded information graph now forgets a vessel's count only when that
 vessel is absent from the current and all later candidates. Earned prefix
 utility is retained, and current-observation counts remain available to price
