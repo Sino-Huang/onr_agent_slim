@@ -1,5 +1,30 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## New task: evidence-driven replan demonstrated under ideal tracking
+
+Physical`c66423a` adds the requested versioned synthetic profile; its generator
+tests pass13 cases. Seed11 has23 corrupted outcomes, not the original39. The
+normal production scoring path (no experimental information horizon) produces
+23/23 with replanning versus10/23 for its identical-initial-plan control. At20s,
+one altered check raises vessel4's posterior0.1329→0.6231; the20.5s native replan
+changes future pursuit from vessel3 to4, running68..188.5s. Both execution audits
+pass, all three native solves are optimal with oracle parity. No target or mode
+is forced. Artifacts: `var/mission1-discovery-demo/v1/seed-11/`; further details in
+Physical `docs/mission1_discovery_demo.md` and local `status.json`.
+
+This result is explicitly **ideal tracking with radius-based pursuit**, not
+native-camera or physical-controller acceptance. The simulator directly uses
+the actual target trajectory during pursuit. Further realistic pursuit checking
+is needed before a full demonstration claim. The profile's experimental H45
+information-state run times out at the first native30s solve; it has no recall
+result and is separate from the successful production-scoring comparison.
+
+Original-instance Attempts22/23 now pass their independent audits (12 revisions
+each,1348.29/229.84s). Round3 totals23 terminal configurations and415 independently
+audited completed-replay revisions; `ledger-audit-23.json` passes. Best original
+recall remains11/39. New task results must not replace that record. No processes
+remain running at this checkpoint; no AirSim or live defaults changed.
+
 ## Public GPS anchors and new demonstration-task direction
 
 The operator now explicitly requests a new task demonstrating discovery of a
