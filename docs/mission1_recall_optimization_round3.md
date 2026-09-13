@@ -2,6 +2,51 @@
 
 ## Count-history reduction checkpoint
 
+### Explicit downstream-decision diagnostic
+
+`scripts/inspect_mission1_downstream_value.py` now measures a different quantity
+from G(n): expected optimal future public-recall utility after a hypothetical
+check minus optimal expected utility when the route must be chosen before its
+outcome. The existing conditional-grid posterior supplies clean/altered/omitted
+branch probabilities and updates, including shared omission-rate coupling.
+Public outcome counts reconstruct and verify the posterior; hypothetical checks
+exist only in private diagnostic copies and never become runtime evidence.
+
+This is deliberately **not an executable policy or recall configuration**. It
+assumes one actual-event check can be supplied at the current time/pose. It does
+not price acquisition travel, observation availability, or distinguish the
+conditional outcome distribution of a specifically published report. It scores
+future public recall only, without estimation or hidden-omission rewards. It
+rebuilds graph arcs for that objective rather than retaining pruning justified
+only by the omitted rewards. Four-direction timing and existing report-window
+uniqueness remain unchanged. It does not enact the 10% replacement gate.
+
+At the initial public snapshot with H=90, all twenty vessels have identical
+one-check variance reduction (0.03683335). Yet only entities 2, 9 and 10 have
+positive decision value beyond integer-rounding tolerance: respectively
+0.0237435, 0.0386535 and 0.0149099 weighted recall units. The remaining seventeen
+choose the same route under every outcome. **All sixty branches** have native
+MiniZinc score/report-route parity on the 582-candidate graph. Artifacts:
+`downstream-prior-h90/`. Entity IDs are diagnostic results, not production rules.
+
+At the observed-evidence snapshot at t=71 with H=45, five vessels have positive
+decision value (2, 7, 9, 11, 16); the largest is 0.0287374. This second probe uses
+the Python oracle only, on 285 candidates (`downstream-evidence-h45/`). Because
+pose, time, evidence and horizon differ, this is not a controlled causal claim
+about evidence alone. Both probes leave the 39-outcome recall result unchanged.
+
+Three tests verify positive value when outcome changes the future choice, zero
+decision value despite positive variance reduction when no choice exists,
+posterior martingale consistency, unchanged source belief, and reconstruction
+after mixed evidence. Combined focused suites: **116 passed in 20.01 s**;
+changed-file Ruff passes. No production scoring changes, AirSim or live changes.
+
+Next: evaluate obtaining an actual reachable early check and its remaining
+decision set, including acquisition cost and outcome availability. Do not add
+these diagnostic per-vessel values to every candidate: that would repeatedly
+credit the same downstream benefit. Goal remains active at 9/50 configurations,
+best 10/39 at 300 m; all probes are terminal.
+
 ### Completed H=90 verification replay
 
 On Agent `bd70868`, the formerly failing H=90 configuration completes at
