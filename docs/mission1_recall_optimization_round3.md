@@ -310,3 +310,54 @@ Next genuine configurations: H=60 and H=90 with the fixed 300 m baseline input,
 same prior, corrected camera and continuous-feedback evaluator. Commit the
 shared implementation before running them, preserve all terminal evidence, and
 count a configuration only when its real replay/solver result is inspected.
+
+## First four genuine configurations: terminal and audited
+
+Functional checkpoints **Agent `9afbffc` / Physical `b5fba2b`** are committed
+and pushed. All use the same corrected 300 m camera, baseline offset-only
+nominal/+4 s input, public prior, 30 m/s maximum and continuous feedback.
+Only the information horizon differs; no visibility or score-weight change.
+
+| Attempt / horizon | Recall | Balanced MSE | Checks: clean/omitted/altered | Native revisions | Maximum / total successful solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 01 / 60 s | 5/39 | 0.12795602 | 36/1/4 | 16 | 9.247 / 26.798 | 134.91 / 12.96 |
+| 02 / 90 s | Not evaluated | Not evaluated | Partial run only | 5 optimal, sixth timed out | Sixth reaches 30 s limit | Incomplete |
+| 03 / 30 s | 0/39 | 0.16098488 | 32/0/0 | 19 | 1.461 / 7.290 | 75.45 / 4.62 |
+| 04 / 45 s | **10/39** | **0.08304908** | 44/4/6 | 21 | 2.958 / 17.986 | 102.78 / 9.35 |
+
+Successful runs reach the public schedule's end: 303.5/299.5/303.5 s for
+01/03/04. All **56 revisions** are native optimal with full lifted-graph
+assignment/mode/entity/window/component parity. Independent count-labelled
+reference audits additionally match primary score, maneuver count and duration
+for every revision, and happen to choose the same report routes in all cases.
+Reference audit times: 8.03/3.69/6.65 s. The path-driven scratch auditor is
+`var/mission1-recall/optimization-round-3/audit-count-states.py`.
+
+All three execution audits pass: no duplicate public/check credit, detector
+windows respected, continuous sensing maintained and selected poses/modes
+preserved. Sensing transit/wait/surveillance seconds: 01 = 237.5/53.5/12.5;
+03 = 173/97/29.5; 04 = 176/94.5/33. Detected issues by those phases:
+01 = 1/3/1; 03 = 0/0/0; 04 = 1/0/9. Scheduled fixed-view segments:
+19/18/23; no pursuit in these completed runs. More replans or faster solving
+do not by themselves imply better recall, as the 30-second regression shows.
+
+Attempt 02 fails after its gate assessment at Mission 71 s. Its sixth materialized
+graph contains **113,566 count states and 1,082,392 arcs**; the native executor
+reports `solver timed out after 30.0 seconds`. Five preceding revisions are
+optimal. Preserve `attempt-02/evaluation/revision-006/solver/` and `audit.json`;
+there is no completed recall summary, and no zero or inferred recall is assigned.
+This is one genuine failed optimization configuration, not a diagnostic probe.
+
+Latest full non-live suites pass: **823 Agent tests** (21 live excluded,
+290.67 s) and **463 Physical tests** (13 live-AirSim excluded, 220.44 s).
+Artifacts: `test-bounded-full-agent.xml`, `test-bounded-full-physical.xml`.
+Expected test warnings are not live AirSim activity. No dependency or live
+configuration changes accompany these results.
+
+Four of the fresh fifty configurations are complete. **Current-series best is
+10/39 (25.64%)**, versus its matched uniform-scoring 300 m baseline's 1/39.
+It does not exceed the historical old-camera 300 m information-slot result of
+10/39, and remains far below the required 20/39. Do not compare it as a gain
+over the earlier unrealistic 2,000 m experiment or claim generality from one
+scenario. Attempts 05/06/07 (40/50/55 s) are now running to test nearby horizons
+with identical code and geometry. Keep the goal active and the issue open.
