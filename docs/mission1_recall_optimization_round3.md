@@ -1,5 +1,34 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Requested new demo task: native-runtime validation
+
+Under the operator's explicit new-task direction, the designed synthetic seed11
+now reaches **16/23 (69.57%)** through real standalone `PhysicalRuntime`
+navigation/intercept commands, native300m/90-degree visibility and partition
+migration. Its identical-initial-plan no-replan control reaches **11/23 (47.83%)**.
+This supersedes ideal tracking's23/23 as the demo acceptance score; it is not a
+claim that original `demo-001` improved beyond11/39. Original round3 remains23
+terminal configurations with415 independently audited revisions.
+
+Actual public reset pose is supplied before solving. The initial fixed view
+observes an altered report; vessel4's posterior rises0.1329179→0.6231017. A20.5s
+native replan switches future pursuit3→4 and the actual numeric pursuit command
+begins68s. Both native comparison audits pass: unique checks/reports, native
+optimality/oracle parity, identical initial plans, preserved mode/entity, four
+directions,30m/s maximum observed speed,0.5s contiguous clock, and no failed
+commands or missed navigation deadlines. Adaptive deadlines met4; control7.
+Clock assertions keep the simulator frozen during MiniZinc solving. The native
+controller misses seven events68..116s; it is not perfect tracking.
+
+Artifacts: `var/mission1-discovery-demo/v1/seed-11/native-runtime-verified/`,
+`native-initial-verified/`, `native-comparison-audit.json`. Physical checkpoint
+`78a8561` adds the path-driven runtime evaluator and two integration tests.
+Full Agent non-live878pass/21excluded/313.55s; Physical469pass/13excluded/227.47s,
+plus2 newly added runtime-loop cases pass8.88s. Ruff passes. Detailed time and
+metric receipts/reproduction are in Physical `docs/mission1_discovery_demo.md`.
+No AirSim, LLM, external perception, live shutdown or video validation is claimed.
+All execution jobs are terminal; source instances and live defaults are preserved.
+
 ## New task: evidence-driven replan demonstrated under ideal tracking
 
 Physical`c66423a` adds the requested versioned synthetic profile; its generator
