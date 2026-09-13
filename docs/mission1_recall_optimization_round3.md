@@ -1,5 +1,47 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempts 17/18 — partition-size comparisons
+
+Native report visibility is clipped to the selected partition. The existing
+`resolve_partition_overlap` additionally caps requested overlap at 25 cells;
+requesting more would not create the intended comparison. Keep overlap 25 and
+10 m resolution, and test partition sizes 200 and 150 cells against 100, with
+the **camera still limited to 300 m**. Isolated scenario copies live under
+`preparation/range-300m-partition{200,150}/`; live files remain unchanged.
+Partition placement also changes, so these are not pure boundary-removal tests.
+
+A matched 100-cell H45 control on `d1fbf5d` reproduces 11/39 and MSE0.066891006;
+all 17 native revisions and both audits pass. Its initial assignments match
+Attempt12. This verification is not another optimization configuration.
+
+| Case | Recall | Balanced MSE | Checks clean/omitted/altered | Max/total native solve s | Rollout s |
+| --- | --- | --- | --- | --- | --- |
+| Current 100-cell control | 11/39 | 0.06689101 | 43/5/6 | 5.03/28.66 | 160.30 |
+| 17: 200 cells | 11/39 | 0.06689101 | 43/5/6 | 5.94/31.68 | 171.08 |
+| 18: 150 cells | 10/39 | 0.08459290 | 41/4/6 | 8.38/32.63 | 159.98 |
+
+Both new runs finish at 303.5 s, with 18 native optimal revisions each and exact
+independent score/maneuver/duration/report-route parity. Both execution audits
+pass. Preparation: 2,277 views/153.02 s and 2,276 views/148.07 s. Sensing
+transit/wait/surveillance: 17 = 208.5/71/24 s; 18 = 212/64.5/27 s. No pursuit.
+Reference audits: control 20.94 s, 17 = 22.22 s, 18 = 21.15 s. These were concurrent runs,
+not isolated hardware benchmarks. Artifacts: `h45-safe-arcs-control/` and
+`attempt-{17,18}/`. Existing 850 Agent/101 replay source checks remain applicable;
+no production code changed in these comparisons.
+
+Neither larger partition is preferred. Retain the 100-cell control. Eighteen
+configurations are terminal, 328 completed-replay revisions independently audited,
+and no processes remain running. `ledger-audit-18.json` passes. Best 11/39 still
+falls short of the 20/39 recall exit; the goal remains active.
+
+Next hypothesis: separate the information-credit horizon from the recall route
+horizon. A bounded route currently discards every opportunity after H; a
+full-schedule recall tail could account for later travel/opportunities while
+crediting only near-term information before subsequent evidence-driven replans.
+This would be an explicit approximation, not exact adaptive Bayesian planning.
+It requires consistent candidate/oracle/gate scoring and native verification,
+not an arbitrary per-candidate bonus. It is not implemented at this checkpoint.
+
 ## History-safe arc reduction checkpoint
 
 ### H60 verification completed
@@ -341,7 +383,7 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 16/50 terminal configurations; best 11/39
+attempts. Current status: **active; 18/50 terminal configurations; best 11/39
 (28.21%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 
