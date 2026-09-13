@@ -1195,14 +1195,21 @@ def expand_information_states(
     """Lift a bounded graph by selected counts for the existing additive model.
 
     Each lifted node fixes both its current observation and resulting count
-    vector, making its marginal information a constant. Only identical count
-    histories at the same original candidate merge. No advisory route or
-    additive terminal dominance is used to remove different histories.
+    vector, making its marginal information a constant. Counts for entities
+    absent from this and every later candidate can be forgotten: they cannot
+    affect future rewards, and their earned utility remains in the path prefix.
+    No advisory route or additive terminal dominance removes other histories.
     """
     tables = route_information_tables(opportunities)
     entities = sorted(tables)
     position = {entity: i for i, entity in enumerate(entities)}
     by_id = {item.report_id: item for item in opportunities}
+    relevant: list[set[int]] = [set() for _ in graph.candidates]
+    future: set[int] = set()
+    for index in range(len(graph.candidates) - 1, -1, -1):
+        future = future | {position[by_id[r].entity_id]
+                           for r in graph.candidates[index].report_ids}
+        relevant[index] = future
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
     for source, target in graph.arcs:
         incoming[target].append(source)
@@ -1217,7 +1224,8 @@ def expand_information_states(
         connections: dict[tuple[int, ...], set[int]] = {}
         for previous in incoming[node]:
             for counts, lifted in states[previous].items():
-                after = tuple(a + b for a, b in zip(counts, increment))
+                after = tuple(a + b if i in relevant[node - 1] else 0
+                              for i, (a, b) in enumerate(zip(counts, increment)))
                 connections.setdefault(after, set()).add(lifted)
         for after, previous_nodes in sorted(connections.items()):
             credit = sum(tables[entity][after[i]] - tables[entity][after[i] - increment[i]]

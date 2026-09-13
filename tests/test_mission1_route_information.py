@@ -88,6 +88,34 @@ def test_expanded_graph_existing_model_matches_count_label_reference(tmp_path):
     assert "==========" in native.stdout
 
 
+def test_expanded_graph_forgets_only_future_irrelevant_counts():
+    graph, opportunities = history_graph()
+    expanded = expand_information_states(graph, opportunities)
+    # Ship 2 never appears after branch b; its count must disappear at merge.
+    merges = [c for c in expanded.candidates if c.candidate_id.startswith("merge:counts:")]
+    assert {c.candidate_id for c in merges} == {"merge:counts:0,0", "merge:counts:1,0"}
+    # Ship 1 still appears later, so its distinct histories must survive.
+    assert len(merges) == 2
+    reference = route_information_oracle(graph, opportunities)
+    result = longest_path_oracle(expanded)
+    assert (result.score, result.duration_s, result.covered_report_ids) == (
+        reference.score, reference.duration_s, reference.covered_report_ids,
+    )
+
+
+def test_expanded_graph_merges_histories_after_last_observation():
+    graph, opportunities = history_graph()
+    end = replace(graph.candidates[2], candidate_id="end", start_s=25, end_s=25.5)
+    graph = CandidateDAG((*graph.candidates, end),
+                         (*graph.arcs[:-1], (4, 5), (5, 6)), 0, 6)
+    expanded = expand_information_states(graph, opportunities)
+    assert sum(c.candidate_id.startswith("end:counts:") for c in expanded.candidates) == 1
+    reference = route_information_oracle(graph, opportunities)
+    result = longest_path_oracle(expanded)
+    assert result.score == reference.score
+    assert result.duration_s == reference.duration_s
+
+
 def test_route_information_assignment_rounding_telescopes_across_merged_views():
     graph,opportunities = history_graph()
     path = (graph.candidates[0],graph.candidates[2],graph.candidates[3])

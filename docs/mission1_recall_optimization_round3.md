@@ -1,5 +1,29 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Count-history reduction checkpoint
+
+The bounded information graph now forgets a vessel's count only when that
+vessel is absent from the current and all later candidates. Earned prefix
+utility is retained, and current-observation counts remain available to price
+their marginal information. This changes neither beliefs nor the objective.
+The independent full-count oracle is unchanged. Materialized candidate indices
+can change, so arbitrary final index tie choices are not promised identical.
+
+Two regression tests failed before this change and pass afterward; the focused
+planner/information suites pass **113 tests in 18.74 s**, including native
+MiniZinc parity. Changed-file Ruff passes excluding the existing TRY004 rule.
+The initial H=90 public-snapshot probe shrinks from 4,892 lifted candidates /
+68,176 arcs to **1,837 / 49,293**. Native solving is optimal in **1.567 s**;
+primary score remains 3,314,555 with independent full-count oracle agreement.
+Artifact: `forget-counts-h90-probe/`. This is not a recall configuration or proof
+that the formerly failing later H=90 revision will now solve.
+
+A separate minimal probe confirms the chronological-report restriction rejects
+two distinct co-timed reports observed at 100 and 101 seconds with a feasible
+0.5-second cardinal turn. Removing that restriction alone is unsafe because it
+also protects nonadjacent report uniqueness. Multi-view observation-window
+planning remains future work, not implemented in this checkpoint.
+
 ## Goal and boundaries
 
 Fresh user-authorized limit: **50 genuine optimization configurations**, or
