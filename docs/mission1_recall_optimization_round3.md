@@ -1,5 +1,35 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempt 20 audited; gap-view placement checkpoint
+
+Attempts 19 and 20 now both pass continuous-execution and independent full-count
+audits. Attempt 19's twelve independent revisions take 929.80 s to audit;
+Attempt 20's seventeen take 21.39 s. All report routes and lexicographic scores
+match. Together with the seventeen-revision matched control, this brings the
+independently audited completed-replay total to **374**. `ledger-audit-20.json`
+passes: **20 configurations terminal**, best still **11/39**.
+
+Attempt 20 retains all 2,266 best-control report views exactly and adds 300 gap
+views (20 s holds, one-grid-cell placement). Preparation takes 184.10 s. The
+rollout completes at 303.5 s in 158.76 s, with seventeen native optimal revisions,
+maximum native solve 4.642 s. No report-free assignment is selected in any
+accepted advisory plan, and all 54 checks match the control exactly. The outcome
+is 11/39, MSE 0.066891006, not an improvement. This comparison does not exercise
+the proposed sustained gap sensing because the planner never selects it.
+
+Physical checkpoint **`2b72da1`**, committed and pushed, adds optional
+`--gap-standoff-m` to the existing preparation helper. Default placement remains
+one grid cell. Larger offsets change only the four cardinal viewpoint positions;
+native masks still determine holding exposure and the camera range is unchanged.
+No synthetic report IDs, truth reads, new command or scoring bonus is added.
+The new geometry parameter test fails before implementation; all **23 helper
+tests** pass after it, and Ruff passes. Artifact: `gap-standoff-green.xml`.
+
+Attempt 21 holds all Attempt 20 settings except gap standoff = 200 m. Preparation
+produces 287 gap views plus the same 2,266 report views in 182.89 s. Replay is
+pending at this checkpoint. Keep the 300 m camera, 90-degree view, four headings,
+0.5 s turns, 27 m/s planning travel reserve, and four-second detector window.
+
 ## Attempt 19 result and coverage diagnosis
 
 Paired checkpoints Agent `f43c348` and Physical `dd5b703` are pushed. The final
