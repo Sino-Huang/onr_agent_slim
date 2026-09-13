@@ -31,10 +31,10 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def solve_public_plan(environment, belief, model, executable, output):
+def solve_public_plan(environment, belief, model, executable, output, *, information_horizon_seconds=None):
     """Only public evidence and the supplied posterior enter this function."""
     started = time.perf_counter()
-    graph = build_candidate_dag(environment, belief)
+    graph = build_candidate_dag(environment, belief, information_horizon_seconds=information_horizon_seconds)
     oracle = longest_path_oracle(graph)
     assert len(oracle.covered_report_ids) == len(set(oracle.covered_report_ids))
     assets = {
@@ -88,12 +88,19 @@ def solve_public_plan(environment, belief, model, executable, output):
     write_json(output / "environment.json", environment)
     write_json(output / "belief.json", belief.to_dict())
     write_json(output / "solution.json", solution)
+    if information_horizon_seconds is not None:
+        write_json(output / "planning-context.json", {
+            "information_horizon_seconds": information_horizon_seconds,
+            "information_scoring": "selected_route_counts",
+            "scope": "Bounded planning; not public-schedule completion",
+        })
     return solution, {
         "generation_seconds": generation_seconds,
         "validation_seconds": validation_seconds,
         "solver_seconds": solver_seconds,
         "candidate_count": len(graph.candidates),
         "optimal_oracle_parity": True,
+        "information_horizon_seconds": information_horizon_seconds,
     }
 
 

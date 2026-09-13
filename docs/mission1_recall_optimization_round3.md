@@ -242,3 +242,71 @@ to obtain that behavior without review. G(n) fixes selected-route information
 allocation but is still not explicit downstream Bayesian decision value.
 The 300 m baseline remains **1/39**; the goal remains active at **0/50** genuine
 optimization configurations. No process remains running.
+
+## Shared count-state integration checkpoint
+
+Selected-count curves and integer per-vessel tables now live in
+`onr.application.mission1_planning`. Route assignment information is the
+difference between rounded cumulative budgets before/after each observation,
+so credits telescope exactly even when adjacent fixed views merge. Duplicate
+or unavailable report credit is rejected. Recall and omission components are
+unchanged. The diagnostic and numerical benchmark reuse this shared curve.
+
+An independent count-labelled path reference retains one best prefix per
+original candidate **and observation-count vector**. It preserves primary
+utility, maneuver count and surveillance duration. A regression demonstrates
+why a weaker prefix at a report-free merge can win after a later observation.
+Its 30/60 s real-case primary optima match native solves; reference times are
+0.003/0.085 s.
+
+`expand_information_states` converts reachable count histories into an ordinary
+DAG. At each lifted node the marginal information is fixed; the **unchanged
+production `model.mzn`** can therefore use its existing additive optimization
+proof and lexicographic preferences correctly. Count-state IDs are deterministic
+candidate identities, not target-specific weights or integrity features. State
+expansion changes the final arbitrary candidate-index tie ordering; native
+assignment parity is checked against the lifted graph, while the independent
+count-labelled reference checks the semantic objective.
+
+| Lookahead | Base / lifted candidates | Lifted arcs | Generation / native solve seconds | Independent reference seconds |
+| --- | --- | --- | --- | --- |
+| 60 s | 284 / 974 | 12,508 | 0.402 / 0.921 | 0.088 |
+| 90 s | 582 / 4,892 | 68,176 | 1.360 / 2.319 | 0.479 |
+
+Both are optimal, retain primary scores 2.522260/3.314555, and pass native
+assignment/mode/entity/window/report/component parity plus independent travel,
+unique-credit and primary-reference checks. Artifacts: `lifted-horizon-60/`,
+`lifted-horizon-90/`. This is the route-count representation to integrate; no
+new production model is necessary. It is not a full-Mission optimality claim.
+
+`build_candidate_dag(..., information_horizon_seconds=H)` now bounds candidate
+finish times and lifts count histories. Public schedules remain complete for
+rate and belief normalization. Additive terminal dominance is disabled in this
+mode; intermediate insertion is pruning-safe only with positive recall/omission
+base reward, not merely standalone information. A saturated-information test
+preserves the shorter route when an extra observation adds zero information.
+Without H, existing behavior remains unchanged during controlled evaluation.
+
+`Mission1ReplanGate(information_horizon_seconds=H)` builds the same advisory
+graph and rescores current remaining information jointly across unique covered
+reports, after its existing visibility/time filtering. It retains the exact 10%
+comparison and reachability checks. Tests verify equality with the new planner
+score, bounded report admission, unchanged full public schedule and invalid
+horizon rejection. Agent focused suites: 110 pass before the additional
+saturation test; the final route-information suite has 28 tests.
+
+The Physical offline evaluator accepts `--information-horizon-seconds H`, passes
+it to both solving and the gate, and adds a gate checkpoint when the final
+assignment ends even without a new check. That checkpoint is not an automatic
+replacement or a new physical lifecycle action. If planning stops before the
+last public epoch plus one sensing tick, `public_schedule_complete` is false;
+do not use such a partial result as full-run acceptance. The helper persists
+the explicit planning context beside each native solution. **101 Physical
+replay tests pass in 5.27 s**, including boundary-checkpoint cases. Production
+host/launcher/default configuration, physical commands and evidence contracts
+remain unchanged; live adoption is not claimed.
+
+Next genuine configurations: H=60 and H=90 with the fixed 300 m baseline input,
+same prior, corrected camera and continuous-feedback evaluator. Commit the
+shared implementation before running them, preserve all terminal evidence, and
+count a configuration only when its real replay/solver result is inspected.

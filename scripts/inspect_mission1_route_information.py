@@ -12,18 +12,12 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from onr.application.mission1_planning import _batch_information_value, _opportunities
+from onr.application.mission1_planning import (
+    _batch_information_value,
+    _opportunities,
+    information_curve,
+)
 from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
-
-
-def information_curve(variance: float, gain: float, normalizer: float, count: int) -> list[float]:
-    """Normalized G(k) for k actually selected checks, including G(0)=0."""
-    if variance <= 0 or gain <= 0 or normalizer <= 0:
-        return [0.0] * (count + 1)
-    return [0.0] + [
-        0.5 * variance * k * gain / (variance + (k - 1) * gain) / normalizer
-        for k in range(1, count + 1)
-    ]
 
 
 def inspect_route(environment, belief, solution):

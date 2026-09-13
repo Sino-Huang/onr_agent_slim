@@ -4,11 +4,27 @@ import importlib.util
 import json
 import subprocess
 from collections import Counter
+from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 
 import pytest
 from test_mission1_planning import _belief, _environment, _report
+
+from onr.application.mission1_planning import (
+    SCORE_SCALE,
+    CandidateDAG,
+    Mission1ReplanGate,
+    _fixed_view_runs,
+    _opportunities,
+    allocate_route_information,
+    build_candidate_dag,
+    expand_information_states,
+    longest_path_oracle,
+    route_information_oracle,
+    route_information_tables,
+)
+from onr.contracts.fsm import FSMStatus, Statechart
 
 SPEC = importlib.util.spec_from_file_location(
     "route_information_diagnostic", Path("scripts/inspect_mission1_route_information.py"),
@@ -19,6 +35,132 @@ SPEC.loader.exec_module(diagnostic)
 
 def solution(*reports):
     return {"assignments": [{"parameters": {"report_ids": list(reports)}}]}
+
+
+def history_graph():
+    environment = _environment([_report("a",1,10,0,0),_report("b",2,10,20,0),_report("c",1,20,0,0)],fov=1)
+    belief = _belief((1,2))
+    generated = build_candidate_dag(environment,belief)
+    singles = [next(c for c in generated.candidates if c.mode=="fixed_view" and c.report_ids==(r,))
+               for r in ("a","b","c")]
+    a,b,d = [replace(c,recall_utility=recall,omission_yield=0) for c,recall in zip(singles,(.2,0,0))]
+    merge = replace(d,candidate_id="merge",report_ids=(),start_s=15,end_s=15.5,
+                    recall_utility=0,estimation_utility=0,omission_yield=0,combined_score=0,
+                    scored_observation_windows=((15,15.5),))
+    return CandidateDAG((a,b,merge,d),((0,1),(0,2),(1,3),(2,3),(3,4),(4,5)),0,5), _opportunities(environment,belief)
+
+
+def test_count_label_oracle_keeps_a_weaker_prefix_with_better_future_information():
+    graph,opportunities = history_graph()
+    assert longest_path_oracle(graph).covered_report_ids == ("a","c")
+    # At the report-free merge, observing a has higher score than observing b.
+    # The later c observation makes the b prefix better; both must survive.
+    selected = route_information_oracle(graph,opportunities)
+    assert selected.covered_report_ids == ("b","c")
+    assert selected.score == 1
+    assert sum(round(c.estimation_utility*SCORE_SCALE) for c in selected.candidates)==SCORE_SCALE
+
+
+def test_expanded_graph_existing_model_matches_count_label_reference(tmp_path):
+    from test_mission1_planning import EXAMPLE_ROOT
+
+    from onr.application.mission1_planning import serialize_minizinc_data
+
+    graph,opportunities=history_graph()
+    reference=route_information_oracle(graph,opportunities)
+    expanded=expand_information_states(graph,opportunities)
+    oracle=longest_path_oracle(expanded)
+    assert oracle.covered_report_ids==reference.covered_report_ids
+    assert oracle.score==reference.score
+    assert oracle.duration_s==reference.duration_s
+    assert all(u<v for u,v in expanded.arcs)
+    assert len({c.candidate_id for c in expanded.candidates})==len(expanded.candidates)
+    data=tmp_path/"lifted.dzn"
+    data.write_text(serialize_minizinc_data(expanded))
+    native=subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc","--solver","coin-bc",
+        str(EXAMPLE_ROOT/"model.mzn"),str(data),
+    ],capture_output=True,text=True,check=True,timeout=30)
+    result=json.loads(native.stdout.splitlines()[0])
+    assert result["combined_score"]==round(reference.score*SCORE_SCALE)
+    assert [a["candidate_id"] for a in result["assignments"]]==[c.candidate_id for c in oracle.candidates]
+    assert [r for a in result["assignments"] for r in a["parameters"]["report_ids"]]==list(reference.covered_report_ids)
+    assert "==========" in native.stdout
+
+
+def test_route_information_assignment_rounding_telescopes_across_merged_views():
+    graph,opportunities = history_graph()
+    path = (graph.candidates[0],graph.candidates[2],graph.candidates[3])
+    allocated = allocate_route_information(path,opportunities)
+    table = route_information_tables(opportunities)[1]
+    assert round(allocated[0].estimation_utility*SCORE_SCALE)==table[1]
+    assert allocated[1].estimation_utility==0
+    assert round(allocated[2].estimation_utility*SCORE_SCALE)==table[2]-table[1]
+    assert sum(round(c.estimation_utility*SCORE_SCALE) for c in _fixed_view_runs(allocated))==table[2]
+    assert [(c.recall_utility,c.omission_yield) for c in allocated]==[(c.recall_utility,c.omission_yield) for c in path]
+
+
+def test_route_information_rejects_duplicate_and_unavailable_credit():
+    graph,opportunities = history_graph()
+    with pytest.raises(ValueError,match="repeats"):
+        allocate_route_information((graph.candidates[0],graph.candidates[0]),opportunities)
+    with pytest.raises(ValueError,match="unavailable"):
+        allocate_route_information((graph.candidates[0],),[o for o in opportunities if o.report_id!="a"])
+
+
+def test_count_label_oracle_keeps_lexicographic_preferences_for_equal_information():
+    graph,opportunities = history_graph()
+    a=graph.candidates[0]
+    # Same observation/value; holding one pose beats an extra maneuver.
+    b=replace(a,candidate_id="other-view",x=a.x+1)
+    d=graph.candidates[3]
+    same=CandidateDAG((a,b,d),((0,1),(0,2),(1,3),(2,3),(3,4)),0,4)
+    result=route_information_oracle(same,opportunities)
+    assert len(result.candidates)==1
+    assert result.candidates[0].candidate_id==a.candidate_id+"--"+d.candidate_id
+
+
+def test_bounded_builder_and_gate_share_selected_route_information():
+    environment=_environment([_report("a",1,10,0,0),_report("b",1,20,0,0),_report("later",1,100,0,0)])
+    belief=_belief((1,))
+    route=longest_path_oracle(build_candidate_dag(environment,belief,information_horizon_seconds=30))
+    assert route.covered_report_ids==("a","b")
+    assert len(route.candidates)==1
+    candidate=route.candidates[0]
+    context={"candidate_id":candidate.candidate_id,"surveillance_mode":candidate.mode,
+             "target_entity_id":candidate.entity_id,"target_report_ids":list(candidate.report_ids),
+             "observation_window":{"start":{"seconds":candidate.start_s},"duration":{"seconds":candidate.duration_s}},
+             "planner_item":{"parameters":{"x":candidate.x,"y":candidate.y}}}
+    chart=Statechart(mission_id="mission-1",plan_revision=1,mission_snapshot_id="snapshot-1",
+                     planning_profile="temporal",entry_state="view",states=("view",),transitions=(),
+                     terminal_states=("view",),state_context={"view":context})
+    status=FSMStatus(mission_id="mission-1",plan_revision=1,statechart_revision=1,active_state="view",active_state_context=context)
+    decision,advisory=Mission1ReplanGate(information_horizon_seconds=30).assess(environment,belief,chart,status)
+    assert decision.current_score==pytest.approx(route.score,abs=1e-6)
+    assert advisory.score==route.score
+    assert not decision.trigger
+    assert len(environment["static_info"])==3
+
+
+@pytest.mark.parametrize("horizon", [0,-1,float("nan")])
+def test_invalid_information_horizon_is_rejected(horizon):
+    with pytest.raises(ValueError,match="horizon"):
+        build_candidate_dag(_environment([_report("a",1,10,0,0)]),_belief((1,)),information_horizon_seconds=horizon)
+
+
+def test_information_only_intermediate_cannot_prune_a_shorter_saturated_route():
+    from onr.application.mission1_planning import _candidate_arcs
+
+    graph,opportunities=history_graph()
+    candidates=tuple(replace(c,recall_utility=0,omission_yield=0,estimation_utility=.25)
+                     for c in (graph.candidates[0],graph.candidates[3]))
+    opportunities=tuple(replace(o,variance=.1,estimation=.1) for o in opportunities if o.entity_id==1)
+    arcs=_candidate_arcs(candidates,10,information_aware=True)
+    assert (0,2) in arcs
+    selected=longest_path_oracle(expand_information_states(CandidateDAG(candidates,arcs,0,3),opportunities))
+    assert selected.score==.5
+    assert len(selected.covered_report_ids)==1
+    assert selected.duration_s==.5
 
 
 def test_first_selected_check_does_not_pay_for_unobserved_schedule():

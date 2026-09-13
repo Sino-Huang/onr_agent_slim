@@ -488,6 +488,66 @@ def score_candidate_opportunities(
     )
 
 
+def information_curve(variance: float, gain: float, normalizer: float, count: int) -> list[float]:
+    """Selected-count additive-precision gain G(k), with existing 50% weight.
+
+    This bounds repeated measurements of the same vessel. It is not exact
+    Bayesian lookahead and does not value downstream decisions after evidence.
+    """
+    if variance <= 0 or gain <= 0 or normalizer <= 0:
+        return [0.0] * (count + 1)
+    return [0.0] + [
+        0.5 * variance * k * gain / (variance + (k - 1) * gain) / normalizer
+        for k in range(1, count + 1)
+    ]
+
+
+def route_information_tables(opportunities: Sequence[ObservationOpportunity]) -> dict[int, tuple[int, ...]]:
+    """Integer information budgets indexed by actual selected report counts."""
+    by_ship: dict[int, list[ObservationOpportunity]] = {}
+    for item in opportunities:
+        by_ship.setdefault(item.entity_id, []).append(item)
+    normalizer = max((item.estimation for item in opportunities), default=0.0)
+    return {
+        entity: tuple(round(value * SCORE_SCALE) for value in information_curve(
+            items[0].variance, items[0].estimation, normalizer, len(items),
+        ))
+        for entity, items in by_ship.items()
+    }
+
+
+def allocate_route_information(
+    selected: Sequence[SurveillanceCandidate], opportunities: Sequence[ObservationOpportunity],
+) -> tuple[SurveillanceCandidate, ...]:
+    """Assign each route item its marginal information, with no duplicate credit.
+
+    Round cumulative vessel budgets before differencing so assignment credits
+    telescope exactly to the integer route score, including after view merging.
+    Existing recall and omission components remain untouched.
+    """
+    by_id = {item.report_id: item for item in opportunities}
+    tables = route_information_tables(opportunities)
+    counts = dict.fromkeys(tables, 0)
+    seen: set[str] = set()
+    result = []
+    for candidate in selected:
+        credit = 0
+        for report_id in candidate.report_ids:
+            if report_id in seen:
+                raise ValueError("selected route repeats a public report")
+            if report_id not in by_id:
+                raise ValueError("selected route references unavailable public reports")
+            seen.add(report_id)
+            entity = by_id[report_id].entity_id
+            before = counts[entity]
+            counts[entity] += 1
+            credit += tables[entity][before + 1] - tables[entity][before]
+        estimation = credit / SCORE_SCALE
+        result.append(replace(candidate, estimation_utility=estimation,
+                              combined_score=candidate.recall_utility + estimation + candidate.omission_yield))
+    return tuple(result)
+
+
 def _batch_information_value(items: Sequence[ObservationOpportunity]) -> float:
     """Share a saturating information budget across remaining public reports.
 
@@ -646,6 +706,7 @@ def _candidate_arcs(
     candidates: Sequence[SurveillanceCandidate], speed: float,
     quarter_turn_seconds: float = 0.0,
     chronological_reports: bool = False,
+    *, information_aware: bool = False,
 ) -> tuple[tuple[int, int], ...]:
     """Build the same reduced arcs without materializing the dense closure.
 
@@ -662,7 +723,9 @@ def _candidate_arcs(
     starts = [candidate.start_s + 1e-9 for candidate in candidates]
     reports = [frozenset(candidate.report_ids) for candidate in candidates]
     positive = [False] + [
-        _score_units(_candidate_utility(candidate)) > 0 for candidate in candidates
+        (_score_units(replace(_candidate_utility(candidate), estimation=0.0))
+         if information_aware else _score_units(_candidate_utility(candidate))) > 0
+        for candidate in candidates
     ] + [False]
     arcs: list[tuple[int, int]] = []
     for source in range(sink - 1, 0, -1):
@@ -711,7 +774,7 @@ def _candidate_arcs(
     ordered_arcs = tuple(sorted(arcs))
     return (
         _prune_terminal_alternatives(candidates, ordered_arcs)
-        if chronological_reports else ordered_arcs
+        if chronological_reports and not information_aware else ordered_arcs
     )
 
 
@@ -857,9 +920,15 @@ def _fixed_view_candidates(
 
 
 def build_candidate_dag(
-    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
+    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
+    *, information_horizon_seconds: float | None = None,
 ) -> CandidateDAG:
-    """Build feasible sampled fixed views and contiguous pursuits in one DAG."""
+    """Build sampled fixed views and pursuits, optionally with bounded route information.
+
+    A supplied horizon bounds candidate finish times and expands count histories;
+    public schedules and belief normalization remain complete. The default
+    retains the existing full-schedule additive planner during evaluation.
+    """
 
     if belief.belief_kind != "reporting_reliability":
         raise ValueError("Mission 1 planning requires a reporting reliability belief")
@@ -902,6 +971,10 @@ def build_candidate_dag(
     direction = _vehicle_direction(vehicle)
     fov = float(vehicle["fov_radius"])
     now = float(cast(Any, environment["mission_time_seconds"]))
+    if information_horizon_seconds is not None and (
+        not math.isfinite(information_horizon_seconds) or information_horizon_seconds <= 0
+    ):
+        raise ValueError("information planning horizon must be finite and positive")
     start_x, start_y = float(position["x"]), float(position["y"])
     opportunities = _opportunities(environment, belief)
     report_rates = public_report_rates(environment, belief)
@@ -964,18 +1037,21 @@ def build_candidate_dag(
 
     ordered_candidates = tuple(
         sorted(
-            candidates.values(),
+            (candidate for candidate in candidates.values()
+             if information_horizon_seconds is None or candidate.end_s <= now + information_horizon_seconds),
             key=lambda item: (item.start_s, item.end_s, item.mode, item.candidate_id),
         )
     )
     source = 0
     sink = len(ordered_candidates) + 1
-    return CandidateDAG(
+    graph = CandidateDAG(
         ordered_candidates,
-        _candidate_arcs(ordered_candidates, speed, turn_seconds, observation_window > 0),
+        _candidate_arcs(ordered_candidates, speed, turn_seconds, observation_window > 0,
+                        information_aware=information_horizon_seconds is not None),
         source,
         sink,
     )
+    return expand_information_states(graph, opportunities) if information_horizon_seconds is not None else graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -1113,6 +1189,108 @@ def _fixed_view_runs(
     return tuple(result)
 
 
+def expand_information_states(
+    graph: CandidateDAG, opportunities: Sequence[ObservationOpportunity],
+) -> CandidateDAG:
+    """Lift a bounded graph by selected counts for the existing additive model.
+
+    Each lifted node fixes both its current observation and resulting count
+    vector, making its marginal information a constant. Only identical count
+    histories at the same original candidate merge. No advisory route or
+    additive terminal dominance is used to remove different histories.
+    """
+    tables = route_information_tables(opportunities)
+    entities = sorted(tables)
+    position = {entity: i for i, entity in enumerate(entities)}
+    by_id = {item.report_id: item for item in opportunities}
+    incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
+    for source, target in graph.arcs:
+        incoming[target].append(source)
+    states: list[dict[tuple[int, ...], int]] = [{} for _ in range(graph.sink + 1)]
+    states[graph.source][(0,) * len(entities)] = 0
+    candidates = []
+    arcs = []
+    for node, candidate in enumerate(graph.candidates, start=1):
+        increment = [0] * len(entities)
+        for report in candidate.report_ids:
+            increment[position[by_id[report].entity_id]] += 1
+        connections: dict[tuple[int, ...], set[int]] = {}
+        for previous in incoming[node]:
+            for counts, lifted in states[previous].items():
+                after = tuple(a + b for a, b in zip(counts, increment))
+                connections.setdefault(after, set()).add(lifted)
+        for after, previous_nodes in sorted(connections.items()):
+            credit = sum(tables[entity][after[i]] - tables[entity][after[i] - increment[i]]
+                         for i, entity in enumerate(entities))
+            estimation = credit / SCORE_SCALE
+            label = ",".join(map(str, after))
+            candidates.append(replace(candidate, candidate_id=f"{candidate.candidate_id}:counts:{label}",
+                                      estimation_utility=estimation,
+                                      combined_score=candidate.recall_utility + estimation + candidate.omission_yield))
+            lifted = len(candidates)
+            states[node][after] = lifted
+            arcs.extend((previous, lifted) for previous in sorted(previous_nodes))
+    sink = len(candidates) + 1
+    for previous in incoming[graph.sink]:
+        arcs.extend((lifted, sink) for lifted in states[previous].values())
+    return CandidateDAG(tuple(candidates), tuple(sorted(set(arcs))), 0, sink)
+
+
+def route_information_oracle(
+    graph: CandidateDAG, opportunities: Sequence[ObservationOpportunity],
+) -> AdvisoryRoute:
+    """Exact count-labelled path reference for a bounded candidate graph.
+
+    The graph must preserve alternatives for history-dependent rewards: do not
+    use additive terminal dominance or additive objective-potential pruning.
+    Generated graph paths already enforce public-report uniqueness. Retain one
+    best lexicographic prefix per node AND count vector, never per node alone.
+    """
+    tables = route_information_tables(opportunities)
+    entities = sorted(tables)
+    positions = {entity: i for i, entity in enumerate(entities)}
+    by_id = {item.report_id: item for item in opportunities}
+    increments = []
+    for candidate in graph.candidates:
+        counts = [0] * len(entities)
+        for report in candidate.report_ids:
+            counts[positions[by_id[report].entity_id]] += 1
+        increments.append(tuple(counts))
+    nodes = tuple(replace(node, score=round(candidate.recall_utility * SCORE_SCALE)
+                          + round(candidate.omission_yield * SCORE_SCALE))
+                  for node, candidate in zip(_route_nodes(graph.candidates), graph.candidates))
+    incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
+    for source, target in graph.arcs:
+        incoming[target].append(source)
+    frontiers: list[dict] = [{} for _ in range(graph.sink + 1)]
+    frontiers[graph.source][(0,) * len(entities)] = (0, 0, 0, 0, ())
+    def priority(record):
+        return record[0], -record[1], -record[2], -record[3], tuple(-i for i in reversed(record[4]))
+    for node in range(graph.source + 1, graph.sink + 1):
+        for previous in incoming[node]:
+            for counts, prior in frontiers[previous].items():
+                next_counts = counts
+                record = prior
+                if node != graph.sink:
+                    next_counts = tuple(a + b for a, b in zip(counts, increments[node - 1]))
+                    score, maneuvers, duration, order = _route_cost(nodes, previous, node)
+                    score += sum(tables[entity][next_counts[i]] - tables[entity][counts[i]]
+                                 for i, entity in enumerate(entities))
+                    record = (prior[0] + score, prior[1] + maneuvers, prior[2] + duration,
+                              prior[3] + order, prior[4] + (node - 1,))
+                incumbent = frontiers[node].get(next_counts)
+                if incumbent is None or priority(record) > priority(incumbent):
+                    frontiers[node][next_counts] = record
+    if not frontiers[graph.sink]:
+        raise ValueError("Mission 1 candidate graph has no route")
+    best = max(frontiers[graph.sink].values(), key=priority)
+    selected = _fixed_view_runs(allocate_route_information(
+        tuple(graph.candidates[i] for i in best[4]), opportunities,
+    ))
+    return AdvisoryRoute(selected, best[0] / SCORE_SCALE, best[2] / TIME_SCALE,
+                         tuple(report for candidate in selected for report in candidate.report_ids))
+
+
 def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
     result = _best_route(_route_nodes(graph.candidates), graph.arcs)
     selected = _fixed_view_runs(tuple(graph.candidates[index] for index in result[4]))
@@ -1130,8 +1308,10 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
 class Mission1ReplanGate:
     """Cheap advisory comparison; it never creates planning authority."""
 
-    def __init__(self, relative_improvement_threshold: float = 0.10) -> None:
+    def __init__(self, relative_improvement_threshold: float = 0.10, *,
+                 information_horizon_seconds: float | None = None) -> None:
         self.relative_improvement_threshold = float(relative_improvement_threshold)
+        self.information_horizon_seconds = information_horizon_seconds
 
     def evaluate(
         self,
@@ -1175,7 +1355,7 @@ class Mission1ReplanGate:
         *,
         explicit_request: bool = False,
     ) -> tuple[ReplanGateDecision, AdvisoryRoute]:
-        graph = build_candidate_dag(environment, belief)
+        graph = build_candidate_dag(environment, belief, information_horizon_seconds=self.information_horizon_seconds)
         advisory = longest_path_oracle(graph)
         active_context = status.active_state_context
         active_target = active_context.get("target_entity_id")
@@ -1291,7 +1471,8 @@ class Mission1ReplanGate:
                     windows, now=now, claimed=scored_holding,
                 )
                 utility = replace(utility, omission_yield=utility.omission_yield + extra)
-            current_score += _score_units(utility) / SCORE_SCALE
+            current_score += _score_units(replace(utility, estimation=0.0)
+                                          if self.information_horizon_seconds is not None else utility) / SCORE_SCALE
             scored_reports.update(item.report_id for item in covered)
             key = (
                 str(mode),
@@ -1335,6 +1516,12 @@ class Mission1ReplanGate:
                     )
                 else:
                     next_feasible = key in candidate_keys
+        if self.information_horizon_seconds is not None:
+            tables = route_information_tables(tuple(opportunities.values()))
+            counts = dict.fromkeys(tables, 0)
+            for report in scored_reports:
+                counts[opportunities[report].entity_id] += 1
+            current_score += sum(tables[entity][count] for entity, count in counts.items()) / SCORE_SCALE
         return (
             self.evaluate(
                 current_score,
@@ -1502,11 +1689,16 @@ __all__ = [
     "ObservationOpportunity",
     "ReplanGateDecision",
     "SurveillanceCandidate",
+    "allocate_route_information",
     "build_candidate_dag",
+    "expand_information_states",
     "holding_exposures",
+    "information_curve",
     "longest_path_oracle",
     "merge_time_intervals",
     "public_report_rates",
+    "route_information_oracle",
+    "route_information_tables",
     "sample_fixed_viewpoints",
     "score_candidate_opportunities",
     "score_fixed_view_opportunities",

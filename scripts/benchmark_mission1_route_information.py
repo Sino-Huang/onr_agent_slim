@@ -17,9 +17,8 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
-from inspect_mission1_route_information import information_curve
-
 from onr.application import mission1_planning as planning
+from onr.application.mission1_planning import information_curve
 from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 
 MODEL = r'''
@@ -276,13 +275,19 @@ def main():
     parser.add_argument("--information-encoding", choices=("lookup", "envelope"), default="lookup")
     parser.add_argument("--arc-compression", choices=("none", "suffix", "interval"), default="none")
     parser.add_argument("--no-flatten-optimize", action="store_true", help="Measure without MiniZinc's optional flattening optimizations")
-    parser.add_argument("--representation", choices=("flow", "epoch"), default="flow")
+    parser.add_argument("--representation", choices=("flow", "epoch", "lifted"), default="flow")
+    parser.add_argument("--model", type=Path, help="Existing production model for lifted-state verification")
     parser.add_argument("--horizon-seconds", type=float, help="Experimental epoch lookahead; does not truncate public beliefs or schedules")
+    parser.add_argument("--verify-oracle", action="store_true", help="Check the native primary optimum against exact count-labelled path search")
     args = parser.parse_args()
     if args.horizon_seconds is not None and args.horizon_seconds <= 0:
         parser.error("horizon must be positive")
     if args.representation == "epoch" and (args.information_encoding != "envelope" or args.arc_compression != "none"):
         parser.error("epoch representation uses envelope information and no arc compression")
+    if args.verify_oracle and args.representation == "epoch":
+        parser.error("the count-labelled reference requires a flow graph")
+    if args.representation == "lifted" and args.model is None:
+        parser.error("lifted representation requires the caller-provided production model")
     if args.agent_var.resolve().name != "var" or not args.output.resolve().is_relative_to(args.agent_var.resolve()):
         parser.error("output must be inside the caller-provided Agent var directory")
     args.output.mkdir(parents=True, exist_ok=False)
@@ -293,7 +298,7 @@ def main():
     # additive score therefore cannot prove local terminal dominance.
     candidates_only = args.representation == "epoch" or args.horizon_seconds is not None
     patched = "_candidate_arcs" if candidates_only else "_prune_terminal_alternatives"
-    replacement = (lambda *args: ()) if candidates_only else (lambda candidates, arcs: arcs)
+    replacement = (lambda *args, **kwargs: ()) if candidates_only else (lambda candidates, arcs: arcs)
     with patch.object(planning, patched, side_effect=replacement):
         graph = planning.build_candidate_dag(environment, belief)
     if args.horizon_seconds is not None:
@@ -301,7 +306,7 @@ def main():
         candidates = tuple(c for c in graph.candidates if c.end_s <= end)
         vehicle = environment["controlled_vehicle"]
         arcs = ()
-        if args.representation == "flow":
+        if args.representation != "epoch":
             with patch.object(planning,"_prune_terminal_alternatives",side_effect=lambda candidates,arcs:arcs):
                 arcs = planning._candidate_arcs(candidates,vehicle["max_velocity"],vehicle.get("quarter_turn_seconds",0),
                                            environment.get("observation_window_seconds",0)>0)
@@ -311,6 +316,9 @@ def main():
     if any(c.recall_utility <= 0 for c in graph.candidates):
         raise ValueError("probe requires positive candidate recall for intermediate reduction")
     opportunities = planning._opportunities(environment, belief)
+    base_graph = graph
+    if args.representation == "lifted":
+        graph = planning.expand_information_states(graph,opportunities)
     by_id = {o.report_id: o for o in opportunities}
     ships = sorted({o.entity_id for o in opportunities})
     ship_index = {ship: i + 1 for i, ship in enumerate(ships)}
@@ -352,8 +360,11 @@ def main():
         dzn += [f"{name}={json.dumps(arrays[name])};" for name in ("base","rc","rs")]
         dzn += [f"gain=array2d(1..S,0..K,{json.dumps(gains)});"]
         dzn += epoch_data(graph.candidates, environment, by_id)
+    if args.representation == "lifted":
+        dzn = planning.serialize_minizinc_data(graph).splitlines()
     model, data = args.output / "probe.mzn", args.output / "data.dzn"
-    model.write_text(EPOCH_MODEL if args.representation == "epoch" else information_model(args.information_encoding))
+    model.write_text(args.model.read_text() if args.representation == "lifted" else
+                     (EPOCH_MODEL if args.representation == "epoch" else information_model(args.information_encoding)))
     data.write_text("\n".join(dzn) + "\n")
     result = {"scope": "Solver feasibility probe only; not an executable Mission plan or recall result",
               "compile_only": args.compile_only,
@@ -365,6 +376,7 @@ def main():
               "uncompressed_arc_count": len(graph.arcs),
               "node_count": node_count,
               "candidate_count": len(graph.candidates), "arc_count": len(arcs),
+              "base_candidate_count":len(base_graph.candidates),
               "generation_seconds": time.perf_counter() - started}
     started = time.perf_counter()
     command = [str(args.minizinc.resolve()), "--solver", "coin-bc", "--json-stream", "--statistics"]
@@ -387,7 +399,31 @@ def main():
                  if json.loads(line).get("type") == "solution"]
     if solutions:
         solution = json.loads(solutions[-1]["output"]["default"])
-        result["route_verification"] = verify_probe_route(graph.candidates,solution,environment,opportunities,belief)
+        verification_candidates = graph.candidates
+        if args.representation == "lifted":
+            expected = planning.longest_path_oracle(graph)
+            assert solution["combined_score"] == round(expected.score*planning.SCORE_SCALE)
+            assert len(solution["assignments"]) == len(expected.candidates)
+            for actual,candidate in zip(solution["assignments"],expected.candidates):
+                assert actual["candidate_id"] == candidate.candidate_id
+                assert actual["surveillance_mode"] == candidate.mode
+                assert actual["entity_id"] == candidate.entity_id
+                assert actual["start"] == round(candidate.start_s*planning.TIME_SCALE)
+                assert actual["duration"] == round(candidate.duration_s*planning.TIME_SCALE)
+                assert actual["parameters"]["report_ids"] == list(candidate.report_ids)
+                assert actual["parameters"]["utility"]["estimation"] == round(candidate.estimation_utility*planning.SCORE_SCALE)
+            result["production_model_parity"] = True
+            verification_candidates = expected.candidates
+            solution = {"objective":solution["combined_score"],"selected":list(range(1,len(expected.candidates)+1))}
+        result["route_verification"] = verify_probe_route(verification_candidates,solution,environment,opportunities,belief)
+        if args.verify_oracle:
+            print(json.dumps({"phase":"count_label_oracle","candidate_count":len(graph.candidates)}),flush=True)
+            oracle_started = time.perf_counter()
+            oracle = planning.route_information_oracle(base_graph,opportunities)
+            assert round(oracle.score*planning.SCORE_SCALE) == solution["objective"]
+            result["oracle_verification"] = {"primary_score_matches":True,
+                                             "seconds":time.perf_counter()-oracle_started,
+                                             "covered_reports":list(oracle.covered_report_ids)}
     (args.output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
 
