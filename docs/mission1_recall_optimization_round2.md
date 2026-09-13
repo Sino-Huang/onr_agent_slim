@@ -193,11 +193,13 @@ or estimation. Neither gap duration should be promoted to live inputs. These
 optional candidates remain an exercised planning capability, not an achieved
 optimization. **4/30 renewed configurations completed; best remains 16/39.**
 
-## In-progress visibility comparisons
+## Visibility comparisons
 
 The retained 16/39 result detects seven of twenty earlier corrupted outcomes
 and nine of nineteen at the shared final epoch. These are evaluator diagnostics,
 not target selection inputs. The remaining deficit is not confined to startup.
+
+### 05/06 — Constant altitude (completed; no recall gain)
 
 Attempts 05/06 test constant altitude 50/100 m versus the 25 m baseline, with
 750 m range and no gap holds. Both public vehicle altitude and copied scenario
@@ -210,7 +212,23 @@ Artifacts: `preparation/altitude-50m/`, `preparation/altitude-100m/` and
 `attempt-05/`, `attempt-06/`. These assume the drone starts at the given constant
 height; they do not validate a climb maneuver or modify live altitude.
 
-Next preparations vary range to 1,000/1,500 m using the existing 200-cell
+Both finish at **16/39**, with all 58 check IDs/outcomes/timestamps identical to
+the 25 m control and the same balanced MSE **0.01790063**. Both execution audits
+pass. Each has 44 gate assessments, four optimal/oracle-equal revisions and
+28 scheduled fixed-view segments. Replacements: 42/47.5/141 s. Continuous
+sensing remains 200 s transit, 67.5 s wait, 32 s surveillance.
+
+| Attempt | Initial candidates / generation seconds | Solver seconds | Rollout / gate seconds |
+| --- | --- | --- | --- |
+| 05: 50 m | 7,497 / 17.71 | 10.940/9.720/9.718/3.911 | 369.15 / 258.79 |
+| 06: 100 m | 7,497 / 18.05 | 11.070/9.826/9.576/4.100 | 379.49 / 266.86 |
+
+Do not promote higher altitude as a demonstrated recall fix. **6/30 renewed
+configurations completed; best remains 16/39.**
+
+### 07/08 — Longer range with matched partition
+
+These comparisons vary range to 1,000/1,500 m using the existing 200-cell
 partition control (first series Attempt 30: 12/39 at 750 m). Compare against
 both that matched control and the overall 16/39 best. Paths:
 `preparation/range-1000m-partition200/` and
@@ -218,6 +236,37 @@ both that matched control and the overall 16/39 best. Paths:
 unchanged. Scratch configuration/coverage diagnostics are path-driven under
 Agent `var`; generated scenario paths remain relative. No higher-range recall
 gain is claimed before native solving and continuous feedback evaluation.
+
+Effective dataclass comparison confirms only range differs from the matched
+750 m/200-cell control. Native preparation creates 1,165/1,345 views in
+109.84/162.89 s. The best sampled terminal single-view public coverage grows
+from 26 to 30/37 reports. Same-pose four-heading unions grow from 36 to 46/54;
+unlike the 100-cell baseline (26-report union), this suggests a possible later
+cardinal-sweep experiment. These are sampled public geometry counts, not
+timing-feasible sweep plans or truth-based recall bounds. Current delayed-window
+arcs conservatively allow only one view per co-timed epoch to prevent report
+reuse; do not relax that guard without preserving route-wide uniqueness.
+
+Attempt 07 (1,000 m) is running with native initial solving complete. Its gate
+work is substantially slower (about 69 s for each of the first two checks), so
+larger coverage also has a computational cost. Do not confuse unchanged wall
+output during a gate calculation with a stopped Mission clock.
+
+Attempt 08 (1,500 m) **fails the initial 30-second native executor limit**:
+17,614 candidates and 1,659,651 arcs. Candidate validation passes, but no native
+optimal plan is returned; the evaluator does not start world/trajectory replay.
+There is **no recall result** for this configuration. Failure artifacts and audit:
+`attempt-08/evaluation/revision-001/` and `attempt-08/audit.json`. Count the
+terminal failure as one genuine configuration, not as a successful rollout.
+Thus seven renewed configurations are terminal (01–06 and 08), while 07 is still
+running. The solver deadline and source model remain unchanged.
+
+Attempt 09 tests the already-supported public camera-facing offset-only sampler
+at 25 m standoff, with the same 1,500 m range and 200-cell partition. It reduces
+the geometry to 523 rows (55.49 s preparation), without selecting a route or
+reading hidden events. This is a different sampled candidate family, not a claim
+of dominance-preserving pruning. Input: `preparation/range-1500m-partition200/offset25-input/`;
+output: `attempt-09/evaluation/`. Native solving and recall remain to be checked.
 
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
