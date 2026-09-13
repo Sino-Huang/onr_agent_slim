@@ -539,9 +539,13 @@ pass** (13 live-AirSim tests excluded, 206.35 s), **795 Agent tests pass**
 Agent `8ce91d5` score/native model and its 60-snapshot corpus remain unchanged.
 
 Regenerate native planning visibility before evaluating this correction; old
-tables reflect the undersampled camera. Preparations for 26/27 are underway:
+tables reflect the undersampled camera. Preparations for 26/27 are complete:
 `attempt-26/input/` matches the historical 1,500 m/200-cell/offset25 best, while
 `attempt-27/input/` matches the uniform-score 750 m/100-cell full-sampler control.
+They produce 523/883 views in **229.57/273.88 s**, respectively. The historical
+wide preparation took 55.49 s, so the corrected sampling has a measurable cost.
+Sampled terminal public coverage is 43/107 for 26 (previously 40) and remains
+26/107 for 27. Both closed-loop replays are running with regenerated visibility.
 Neither is a completed optimization attempt or a proven recall gain yet.
 
 No recall gain for the structural change is claimed.
