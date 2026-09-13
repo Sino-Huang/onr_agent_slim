@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
-description: Apply when observed execution facts may invalidate the current plan and an evidence-based replan decision is required.
-version: '1.2.1'
+description: Apply when observed evidence affects plan feasibility or a Mission 1 utility gate identifies a better route, requiring a replan decision.
+version: '1.2.2'
 ---
 
 # Detect And Replan
@@ -10,7 +10,7 @@ version: '1.2.1'
 
 1. Correlate the evidence to the active Mission and plan, then inspect authoritative source health, revisions, and freshness.
 2. Compare the evidence with Mission Input and PlanningIntent provenance, the current plan reference, scene/belief, lifecycle, and FSM execution artifacts.
-3. Identify a concrete blocker or inconsistency. Replan only when a meaningful mission, plan, environment, or source-constraint change affects feasibility or execution.
+3. Identify a concrete feasibility problem or evidence-driven utility gain. A changed belief can justify replanning while the current route remains executable; compare the gate's remaining-route scores and current constraints.
 4. Preserve Mission Input authority and the current plan while replanning is evaluated.
 5. Accept a replacement only after a validated durable replan result is published through the authoritative path; that result then supersedes the prior plan according to its revision contract.
 6. Communicate and record the outcome as a new plan reference, no-change result, or decline with the relevant request and observed artifact references.
@@ -18,6 +18,20 @@ version: '1.2.1'
 ## Mission 1 reliability replans
 
 Treat a Mission 1 gate trigger as advisory evidence for the heartbeat decision.
+For a fresh `score_improvement` trigger (at least 10% combined utility), evaluate
+the proposed gain and any concrete ongoing-observation cost. Request `replan`
+when that gain remains justified; the next workflow verifies the replacement.
+The absence of an already-validated replacement is expected at this decision
+stage. An executable current route alone is not a reason to reject the gain.
+Use `no_change` when specific evidence defeats it, recording that tradeoff.
+
+For example, altered checks can raise one vessel's posterior corruption risk
+while future reports remain dense. A gate-supported utility gain can justify
+replanning toward pursuit even though the existing fixed-view route is still
+feasible. The belief manager infers risk; MiniZinc selects the replacement mode
+and target. The ship posterior is corruption risk, distinct from the shared
+omission probability.
+
 When the disposition is `replan`, the replacement Hyper Workflow runs all
 planning stages against the latest Mission Snapshot, physical planning view,
 and reporting-reliability snapshot. A snapshot that already names an active

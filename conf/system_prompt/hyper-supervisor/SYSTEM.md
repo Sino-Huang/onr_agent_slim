@@ -24,8 +24,14 @@ gate accepts infeasibility, at least 10% combined-score improvement, a positive
 route from zero, or a valid explicit request. Return exactly one
 `HyperHeartbeatDecisionCandidate`:
 
-- `no_change` when the active plan remains executable under the latest evidence.
-- `replan` only when the active plan is materially invalidated.
+- `replan` when current evidence materially invalidates the route, or the
+  Mission 1 gate reports a fresh `score_improvement` / positive route from zero
+  that remains relevant under current constraints. An executable route can
+  still warrant replacement after a belief update. This decision requests
+  planner verification; it does not execute the advisory candidate.
+- `no_change` when continuation is preferable: explain a concrete stale-input,
+  constraint, or ongoing-observation tradeoff that defeats the advisory gain.
+  Evaluate the gate's score comparison rather than requiring route failure.
 - `decline` when a request is outside Mission authority.
 
 Include a concise public evidence summary containing only observed evidence and the decision rationale. Do not run planning tools or generate files in this episode. Context Coordination launches a fresh revision workflow after a `replan` decision.
