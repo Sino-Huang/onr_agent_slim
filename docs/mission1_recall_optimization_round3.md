@@ -6,7 +6,9 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Status: **active; 0/50 completed optimization configurations**.
+attempts. Current status: **active; 7/50 completed configurations; best 10/39
+(25.64%) at 300 m visibility**. The chronological checkpoints below preserve
+their original intermediate counts; the ledger is authoritative.
 
 The user rejected 2,000 m visibility as unrealistic. Primary acceptance uses
 the existing configured **300 m** range and 90-degree camera, with corrected
@@ -361,3 +363,36 @@ It does not exceed the historical old-camera 300 m information-slot result of
 over the earlier unrealistic 2,000 m experiment or claim generality from one
 scenario. Attempts 05/06/07 (40/50/55 s) are now running to test nearby horizons
 with identical code and geometry. Keep the goal active and the issue open.
+
+### 05–07 — Nearby horizons (completed; no new best)
+
+These retain the same source checkpoints, corrected camera and baseline native
+views. Compare with the 45-second Attempt 04, not a different sensor profile.
+
+| Attempt / horizon | Recall | Balanced MSE | Checks: clean/omitted/altered | Native revisions | Maximum / total solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 05 / 40 s | 10/39 | 0.08356133 | 30/4/6 | 19 | 1.715 / 10.133 | 91.28 / 6.18 |
+| 06 / 50 s | 10/39 | 0.08304908 | 44/4/6 | 21 | 4.568 / 24.128 | 122.24 / 11.72 |
+| 07 / 55 s | 5/39 | 0.12797510 | 36/1/4 | 18 | 3.805 / 20.747 | 120.89 / 10.14 |
+
+All three complete the public schedule at 303.5 s. Execution audits and
+independent count-state audits pass for every revision. Across all six completed
+replays, **114 native revisions** match the independent semantic lexicographic
+reference and report routes. The separate 90-second failure remains recorded,
+not assigned a recall value. `ledger-audit-07.json` verifies seven terminal
+configurations; baselines and numerical probes remain excluded.
+
+Sensing transit/wait/surveillance: 05 = 213.5/59/31 s, 06 = 201/76.5/26 s,
+07 = 245/45/13.5 s. Issue counts by those phases: 0/0/10, 0/1/9 and 0/5/0.
+Scheduled fixed-view segments: 20/22/19; no pursuit. Solver/gate durations are
+nested inside rollout; concurrent-run timings are observations, not isolated
+hardware benchmarks. The 40-second case ties recall with fewer clean checks
+but slightly worse estimation; the 50-second case adds no recall/MSE gain.
+Keep 45 seconds as the current experimental control, not a universal optimum.
+
+Next configurations 08/09 retain H=45 and 300 m range, adding respectively
+the already-supported 4.5-second public gap holds and 0.5/4.5-second fixed-view
+dwell choices. Native preparation and replay are chained under each attempt's
+directory. No new scoring weights, fabricated report targets or longer sensor
+range are introduced. Preparation alone does not count as an optimization
+attempt. Both are in progress; no result is claimed yet.
