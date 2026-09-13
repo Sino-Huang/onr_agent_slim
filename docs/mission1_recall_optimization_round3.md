@@ -4,6 +4,37 @@
 
 ### Bounded multi-view implementation checkpoint
 
+#### Attempts 10 and 11 completed
+
+On `4cda00e`, H=45 with the unchanged nominal/+4 s input completes at 303.5 s:
+**10/39**, balanced MSE **0.0693578436**, 50 checks (40 clean, 5 omitted, 5
+altered). Twenty native revisions are optimal and independently match score,
+maneuver count, duration and report route. Maximum solve **3.531 s**, rollout
+**122.190 s**. Both execution and count-state audits pass. The final revision
+selects multiple views of the 299 s epoch, but total recall ties the old control.
+Transit/wait/surveillance seconds: 216.5/67.5/19.5; issues: 1/8/1. No pursuit.
+
+Full Agent non-live suite: **833 passed**, 21 deselected, 277.36 s. Physical
+replay tests: **101 passed**, 6.18 s. Artifacts: `multiview-full-agent.xml`,
+`attempt-10/{audit,count-state-audit}.json`. All 188 completed-replay revisions
+audited so far match the independent reference. `ledger-audit-10.json` passes.
+
+Attempt 11 keeps H=45 and 300 m, offering observation delays 0/1/2/3/4 s rather
+than only 0/4 s. Native preparation produces 2,548 views in 66.503 s. The replay
+completes at 303.5 s with **9/39**, balanced MSE **0.0840205066**, 50 checks
+(41 clean, 4 omitted, 5 altered). Its 18 native revisions match independent
+score/maneuver/duration/report-route audits; continuous execution audit passes.
+Maximum/total solver time is **17.400/54.935 s**, rollout **254.962 s**.
+Transit/wait/surveillance is 219/64.5/20 s, with 1/7/1 issues. This is worse in
+recall, estimation and cost than Attempt 10; do not retain the finer sampling as
+the preferred configuration. Its artifacts are under `attempt-11/`.
+
+Eleven configurations are now terminal and audited, with 206 independently
+audited completed-replay revisions. No jobs remain running. Further timing
+sweeps are not justified by this result; next inspect missed planned public
+observations and camera candidate coverage. Neither graph correctness nor
+more candidate choices guarantees higher realized corrupted-event recall.
+
 Bounded information-aware planning now admits physically reachable visits to
 different vessels within the same report epoch. It tracks selected vessel/epoch
 batches until their last alternative, preventing nonadjacent report reuse and
@@ -167,7 +198,7 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 9/50 completed configurations; best 10/39
+attempts. Current status: **active; 11/50 completed configurations; best 10/39
 (25.64%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 
