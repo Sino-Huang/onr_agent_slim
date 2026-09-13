@@ -2,6 +2,8 @@
 
 # Start the Mission 1 physical runtime and Agent Slim in a new two-pane
 # workspace inside an existing herdr session.
+# Optional ONR_DEMO_SCENARIO_CONFIG and ONR_DEMO_MISSION1_INSTANCE select a
+# caller-supplied task without changing the default harbor demo or CLI arguments.
 
 set -euo pipefail
 
@@ -10,7 +12,8 @@ readonly PHYSICAL_ROOT="/data/ccu/sukaih/ONR/onr_physical_runtime"
 readonly CONDA_INIT="/home/sukaih/miniconda3/etc/profile.d/conda.sh"
 readonly MISSION_ID="mission:demo"
 readonly VEHICLE_ID="drone-1"
-readonly MISSION_INSTANCE="$PHYSICAL_ROOT/data/harbor_world/mission1_instances/demo-001"
+readonly SCENARIO_CONFIG="${ONR_DEMO_SCENARIO_CONFIG:-$PHYSICAL_ROOT/config/harbor_world.yaml}"
+readonly MISSION_INSTANCE="${ONR_DEMO_MISSION1_INSTANCE:-$PHYSICAL_ROOT/data/harbor_world/mission1_instances/demo-001}"
 readonly WORKSPACE_LABEL="mission1-live-demo"
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -19,6 +22,11 @@ if [ "$#" -ne 1 ] || [ -z "$1" ]; then
 fi
 
 sessname="$1"
+
+if [ ! -r "$SCENARIO_CONFIG" ] || [ ! -r "$MISSION_INSTANCE/events_report.json" ]; then
+    echo "Scenario configuration or Mission 1 report stream is missing." >&2
+    exit 1
+fi
 
 session_list="$(herdr session list)"
 status="$(printf '%s\n' "$session_list" | awk -v session="$sessname" '$1 == session {print $2}')"
@@ -65,7 +73,7 @@ sed \
 
 initial_event="$transport_root/identity/event-environment-update%3Amission%3Ademo%3Ainitial.json"
 
-physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec python -m onr_physical_runtime.agent.service --scenario-config '$PHYSICAL_ROOT/config/harbor_world.yaml' --transport-root '$transport_root' --state-root '$physical_state_root' --mission-id '$MISSION_ID' --vehicle-id '$VEHICLE_ID' --mission1-instance-dir '$MISSION_INSTANCE' --viewer-host 127.0.0.1 --viewer-port 5066"
+physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec python -m onr_physical_runtime.agent.service --scenario-config '$SCENARIO_CONFIG' --transport-root '$transport_root' --state-root '$physical_state_root' --mission-id '$MISSION_ID' --vehicle-id '$VEHICLE_ID' --mission1-instance-dir '$MISSION_INSTANCE' --viewer-host 127.0.0.1 --viewer-port 5066"
 printf -v physical_command 'bash -lc %q' "$physical_inner"
 
 agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; exec python -m onr.runtime.cli --mission-file '$AGENT_ROOT/examples/mission.json' --repo-root '$AGENT_ROOT' --config-path '$agent_config' --skip-runtime-artifact-rollover"
@@ -95,5 +103,7 @@ HERDR_SESSION="$sessname" herdr pane run "$agent_pane" "$agent_command"
 
 echo "Created workspace '$WORKSPACE_LABEL' ($workspace_id) in herdr session '$sessname'."
 echo "Run data: $run_root"
+echo "Scenario: $SCENARIO_CONFIG"
+echo "Mission 1 instance: $MISSION_INSTANCE"
 echo "World-model frame stream: http://127.0.0.1:5066"
 echo "Attach with: herdr --session $sessname"
