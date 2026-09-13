@@ -1,5 +1,9 @@
 # Mission 1 recall optimization: renewed series
 
+**Final status: 30/30 renewed configurations completed. Best verified recall
+with corrected visibility: 17/39 (43.59%), Attempt 28. The >50% target remains
+unmet; this series stops at the agreed attempt limit. Issue #58 stays open.**
+
 The user requested another optimization series after the first thirty attempts.
 Treat this as a fresh limit of thirty genuine configurations, or verified recall
 above 50%, starting from the retained **16/39 (41.03%)** result. The first series
@@ -618,3 +622,81 @@ The existing `fixed_view` navigation/window interface appears sufficient; stop
 for review if actual implementation requires a physical lifecycle/evidence-contract
 change. Continue to distinguish ideal motion/perfect radius pursuit/fresh
 partitions from live perception or controller acceptance.
+
+## Final corrected-camera comparisons and stopping-condition audit
+
+Attempts 28–30 are now terminal; their earlier running status is historical.
+All use Agent `8ce91d5` scoring and Physical `ef05954` visibility. Inputs and
+complete solver/evaluation artifacts are under the corresponding `attempt-N/`
+directories in Agent `var/mission1-recall/optimization-round-2/`.
+
+| Attempt | Recall / corrected control | Balanced MSE | Checks: clean/omitted/altered | Native solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- |
+| 28: 2,000 m range | 17/39 / 16/39 | 0.03013028 | 69/7/10 | 12.567/3.498 | 623.35/399.46 |
+| 29: optional 4.5 s gap holds | 16/39 / 16/39 | 0.06509501 | 98/7/9 | 13.727/4.857 | 636.80/470.86 |
+| 30: +4 s fixed observations | 14/39 / 16/39 | 0.07277144 | 88/4/10 | 9.925/3.631/2.074/0.258/0.246 | 568.73/394.46 |
+
+All nine revisions are native optimal and exactly match the oracle. Each
+execution audit verifies unique report/check credit, four-direction poses,
+selected observation windows, detector eligibility, uninterrupted sensing and
+mode/entity preservation. Effective input comparisons establish that 28 changes
+only range and regenerated visibility, 29 changes only visibility/candidate
+rows, and 30 changes observation-window availability and regenerated rows.
+Scenario comparison excludes only the copied configuration's own source path;
+all effective fields other than 28's camera range match the 1,500 m control.
+
+Initial candidates/generation seconds: 8,626/25.68, 8,833/29.35, 8,107/23.33.
+Gate counts: 52/67/54. Replacement times: 28 = 165 s; 29 = 141 s;
+30 = 141/187.5/284.5/299.5 s. Final times: 299.5/299.5/303.5 s.
+Sensing transit/wait/surveillance seconds: 181.5/43.5/74.5,
+155.5/46.5/97.5 and 166/53/84.5. Issues by those phases: 2/2/13, 2/0/14,
+1/12/1. Scheduled fixed-view segments: 14/26/18; no pursuit.
+Attempt 29 selects and executes one report-free hold at 256–260.5 s; it
+produces **zero checks**. Its initial assignments match 26, but the subsequent
+route differs; equal recall does not imply identical execution.
+
+Attempt 28 is the retained **corrected-camera recall-best configuration**:
+
+- Agent functional checkpoint `8ce91d5`; Physical checkpoint `ef05954`.
+- Environment: `optimization-round-2/attempt-28/input/environment.json`.
+- Scenario: `optimization-round-2/preparation/range-2000m-partition200/scenario.yaml`.
+- Prior: `fixed-runs-integrated-demo-001/case-2/belief.json`.
+- Use the existing closed-loop helper with continuous sensing and the unchanged
+  single event-information-patrol MiniZinc model, reports and evaluator truth.
+- Preparation costs 262.65 s. Initial generation/validation/solve costs
+  25.68/0.77/12.57 s; subsequent rollout costs 623.35 s, including gate work and
+  its replacement solve. Do not add nested gate/solver times again to rollout.
+
+It catches eight of twenty earlier issues and nine of nineteen at the final
+epoch. The 17 detected issue IDs equal historical Attempt 14's, but this result
+uses corrected visibility. Its balanced MSE 0.030130 is worse than historical
+14's 0.027082 and the older information-slot best's 0.017901. Retain those
+separate checkpoints for comparison; do not claim universal improvement or
+restore faulty visibility to recover an old score. These are explicit offline
+experimental inputs, not promoted live defaults or a new full live Mission run.
+
+`ledger-audit-30.json` verifies all **30 genuine renewed configurations**:
+**29 completed continuous-feedback replays, one initial 30 s solver timeout**.
+All **79 successful native plan revisions** reach OPTIMAL_SOLUTION and exact
+oracle parity. Maximum successful solve is **29.782 s**; the existing timeout
+remains unchanged. Successful revisions total 724.46 s solver and 1,404.84 s
+generation work; successful rollouts total 16,088.06 s. These are summed
+per-experiment durations, **not elapsed wall time**, because jobs overlapped,
+and rollout already includes replacement generation/solving. Preparations and
+regression tests are not counted as optimization attempts. No jobs remain.
+
+Latest code verification remains **447 Physical non-live tests** and
+**795 Agent non-live tests**, with 13/21 live tests excluded respectively;
+150 focused Physical tests include the 26 camera regression cases. The unchanged
+Agent scoring/model also passed 60/60 prior/counterfactual seed-100 snapshots,
+all optimal with exact oracle parity (maximum 2.400 s). That corpus remains a
+radius-only planner regression, not native-camera recall acceptance.
+
+The **attempt-limit branch** of the user goal is satisfied. The **recall branch
+is not**: exceeding 50% requires at least 20/39, three more detections than the
+best verified route. Keep #58 open. No AirSim/vLLM, hidden planner inputs,
+source scenario, live launcher, physical command lifecycle, belief evidence
+contract, planner authority, four-heading constraint, 0.9 speed reserve or 10%
+replacement threshold was changed by this series. User-owned `statechart.json`
+remains untouched. Next research should test the stated early-evidence and
+route-conditioned information hypothesis, not present it as already solved.
