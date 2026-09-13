@@ -53,9 +53,9 @@ Do not promote this delayed-window combination. Best remains 16/39. This is
 
 ## Public gap-forecast helper checkpoint
 
-Physical **`7ac9867`** implements the forecast preparation portion, not yet
-planner selection of report-free windows. Existing planner/model code remained
-unchanged throughout Experiment 01.
+Physical **`7ac9867`** implements the forecast preparation portion. Agent
+**`bc1ed04`** implements selection and interpretation of report-free windows.
+Existing planner/model code remained unchanged throughout Experiment 01.
 
 `prepare_surveillance_views.py --gap-hold-seconds D` adds optional public-only
 forecasts. For each vessel's consecutive distinct public timestamps, reserve
@@ -81,20 +81,18 @@ rows**, in **87.37 s**. Public reports are unchanged and every interval referenc
 a real public entity. Artifacts: `preparation/gap-8s/` and `test-gap-forecast.xml`.
 This preparation is not a completed recall attempt or a demonstrated gain.
 
-No Agent planner integration is claimed at this checkpoint: current candidate
-construction ignores the new report-free rows. The next step below is required
-before evaluating them as an optimization. No AirSim, command lifecycle or live
-defaults changed; no new dependencies were installed.
+No AirSim, command lifecycle or live defaults changed; no new dependencies were
+installed. Preparation alone is not a demonstrated recall gain.
 
-## Next structural experiment: report-free omission observation windows
+## Report-free omission observation windows: implemented
 
-Inspection confirms a gap: `_fixed_view_candidates` constructs holds only from
+Inspection confirmed a gap: `_fixed_view_candidates` constructed holds only from
 nonempty public-report batches. `holding_exposures` already values forecast
 exposure outside all public-report lookbacks, and active-plan rescoring already
 supports `scored_observation_windows` after anchors are checked. This leaves
 between-report omission opportunities underrepresented.
 
-Complete planner integration using the prepared public-only gap forecasts:
+Agent `bc1ed04` integrates the prepared public-only gap forecasts:
 
 1. Use the implemented observation-window sampler inside disclosed inter-report gaps, using public
    position interpolation and native four-heading camera masks. Use configured
@@ -114,30 +112,67 @@ Complete planner integration using the prepared public-only gap forecasts:
    feasibility parity, exclusion/deduplication, and absence of fabricated report
    credit. Use the real solver and observed-only feedback for the comparison.
 
-Forecast preparation is now implemented and tested; candidate/model/gate and
-Statechart interpretation integration remain pending. Additional integration
-details found by source inspection:
+Candidate/model/gate and Statechart interpretation integration are implemented
+and tested. Important details:
 
 - Gap candidate identity must include its explicit start and dwell, since
   report IDs are empty. Preserve existing identities when the new fields are
   absent. `_candidate` currently requires a nonempty report sequence, so use
   explicit construction or an explicit empty-report branch, never a fake report.
-- `_fixed_view_runs` and native JSON output currently infer report span from
-  first/last member times. Compute public report span from nonempty members only,
-  or zero for a report-free run. Keep scored constituent windows intact.
-- The gate already scores holding windows with no remaining anchors, but its
-  future-feasibility guard requires `report_ids`. Include positive remaining
-  holding value in that guard so the selected pose/heading deadline is checked.
+- `_fixed_view_runs` and native JSON output compute public report span and
+  observation-delay bounds from nonempty members only, or zero report span for
+  a report-free run. Scored constituent windows remain intact.
+- The gate scores holding windows with no remaining anchors. Its future-pose
+  feasibility guard now includes positive remaining holding value, not just
+  `report_ids`, so a future report-free hold must also be reachable.
 - Preserve temporal/report-epoch ordering across gap nodes; simply bypassing
   epoch ordering for empty report lists can permit nonadjacent report reuse in
   delayed-window graphs. Any conservative gap-time ordering must be disclosed.
 - Maneuver's derived transition facts report zero required/unconfirmed IDs for
-  an empty list; those facts are not a completion decision. Verify the Statechart
-  readiness retains the observation-window end for omission holds, including
-  merged holds with public reports. Use existing timed readiness/command fields;
-  inspect current skills before adding any instruction.
+  an empty list; those facts are not a completion decision. The existing
+  Statechart generator already enforces observation-window end readiness. No
+  lifecycle change was needed. Its inspector now detects dropped planner-item
+  metadata, including scored windows. MiniZinc skill 2.20.0 and Statechart skill
+  3.5.0 explain timed holds without fabricated report IDs or early completion.
 
-No recall gain for the structural change is claimed yet.
+Verification: **794 Agent non-live tests passed**, 21 live tests deselected,
+295.09 s (`test-gap-full.xml`). **60/60** seed-100 prior/counterfactual snapshots
+remain optimal with exact native/oracle candidate-route parity; maximum solve
+**2.2762 s** (`gap-regression-corpus/`). This is a radius-only planner regression
+corpus, not native-camera recall acceptance. Target-pursuit selection switches
+false-to-true in all 30 counterfactual snapshots; first mode remains pursuit in
+both conditions. Focused holding tests verify empty global report arrays,
+reachability, elapsed exposure, mixed merged metadata, delayed-epoch uniqueness
+and Statechart window-end readiness. Generic Codex skill validation still
+rejects the repository's supported `version` frontmatter; repository role tests
+pass. Changed-code Ruff passes with only the pre-existing TRY004 rule excluded.
+
+### 02 — Eight-second gap exposure (completed; no recall gain)
+
+Add optional 8.5 s report-free holds to the retained 750 m native geometry and
+information-slot score. Input: `preparation/gap-8s/environment.json`; output:
+`attempt-02/evaluation/`. Initial graph has **7,854 candidates**, including
+**358 report-free fixed candidates**, and **477,761 arcs**. All four revisions
+are native optimal and exactly match the oracle. Solver times:
+12.158/10.823/10.776/4.227 s. Post-initial-solve rollout: **411.32 s**.
+
+Result remains **16/39 (41.03%)**, balanced MSE **0.01790063**. All 58 checks
+(42 clean, seven omitted, nine altered) are identical to the control, including
+their timestamps. **No gap hold is selected in any revision.** This is not a
+recall improvement, despite the additional supported candidate family. Initial
+assignments also match the control. Execution audit passes: `attempt-02/audit.json`.
+Sensing: 200 s transit, 67.5 s early wait, 32 s surveillance; detected issues:
+one/one/fourteen respectively. There are 28 scheduled fixed-view segments, no
+pursuit, and 44 gate assessments. Best remains 16/39; **2/30 completed** in this
+renewed series.
+
+Next controlled comparisons vary only the public gap exposure duration: 4.5 s
+to test whether shorter holds fit otherwise unused route gaps, and 16.5 s to
+test whether longer exposure earns enough omission value to justify a stop.
+Preparation paths: `preparation/gap-4s/` and `preparation/gap-16s/`. These are not
+completed optimization attempts until their replay results are inspected.
+
+No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
 for review if actual implementation requires a physical lifecycle/evidence-contract
 change. Continue to distinguish ideal motion/perfect radius pursuit/fresh
