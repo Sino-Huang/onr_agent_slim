@@ -6,6 +6,16 @@ version: '1.2.2'
 
 # Physical Maneuver Selection
 
+For a Mission 2 observation assignment, retain its ship-pair, target, source/run,
+forecast sequence and observation window. Navigate to a planner-authorized
+observation location at the drone's operational altitude; forecast `z: null`
+does not supply an altitude. Pursue only after target visibility/acquisition
+permits it, and use visibility/measurement feedback to determine whether the
+view is useful. A risk pair alone grants neither visibility nor a confirmed
+collision. Refresh or ask Hyper to reconsider an expired/unreachable assignment
+using the newest snapshot, while retaining separate Mission 1 objectives in a
+joint run.
+
 ## Allowed Physical Actions
 
 These are the only typed physical actions:

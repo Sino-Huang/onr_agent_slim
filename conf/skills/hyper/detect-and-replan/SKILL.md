@@ -6,6 +6,15 @@ version: '1.2.2'
 
 # Detect And Replan
 
+For Mission 2 or joint missions, assess the current
+`world_model_info.perception_predictions` and any `mission2-gate:*` trigger.
+New warnings, changed/cleared risks and expired forecasts can warrant a new
+observation plan independently of Mission 1's score gate. Read the Mission 2
+reference in `creating-minizinc-problem-files` for candidates and separate joint
+mission priorities. Correlate alerts by run and event ID; a repeated ledger is
+not a new incident. A short observation's completion returns to monitoring;
+whole-mission completion follows Mission Intent and the recorded mission end.
+
 ## Procedure
 
 1. Correlate the evidence to the active Mission and plan, then inspect authoritative source health, revisions, and freshness.

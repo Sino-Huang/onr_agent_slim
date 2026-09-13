@@ -13,6 +13,7 @@ from typing import Any, cast
 from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
 from onr.application.maneuver_wakeups import ManeuverWakeups
 from onr.application.mission1_planning import Mission1ReplanGate
+from onr.application.mission2_planning import Mission2ReplanGate
 from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import (
@@ -468,6 +469,7 @@ class ContextCoordination:
             else None
         )
         last_gate_signature: tuple[object, ...] | None = None
+        mission2_gate = Mission2ReplanGate()
         maneuver_wakeups = ManeuverWakeups()
 
         environment_started = False
@@ -568,6 +570,9 @@ class ContextCoordination:
                             )
                         )
                         coalesced_update_count += coalesced
+                    collision_trigger = mission2_gate.assess(environment.planning_view().environment_event.payload)
+                    if collision_trigger is not None:
+                        gate_trigger = collision_trigger if gate_trigger is None else gate_trigger + ";" + collision_trigger
                     if periodic_hyper is not None or gate_trigger is not None or requested_hyper:
                         hyper_triggers = []
                         if periodic_hyper is not None:
@@ -851,7 +856,6 @@ class ContextCoordination:
             "FSM Runner": self._fsm_runner,
             "Maneuver Control": self._maneuver_control,
             "Hyper supervisor": self._hyper_supervisor,
-            "belief service": self._belief_service,
             "replan workflow": self._replan_workflow,
         }
         missing = [name for name, dependency in required.items() if dependency is None]
@@ -995,6 +999,8 @@ class ContextCoordination:
         )
 
     def _append_belief_revisions(self, revisions: list[int]) -> None:
+        if self._belief_service is None:
+            return
         current = cast(Any, self._belief_service).load_current_snapshot()
         if current is None:
             return

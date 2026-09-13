@@ -251,9 +251,14 @@ def run_closed_loop_demo(
         if isinstance(world_model_info, Mapping)
         else None
     )
-    if not isinstance(report_streams, Mapping):
+    mode = world_model_info.get("mission_mode", "mission1") if isinstance(world_model_info, Mapping) else "mission1"
+    if mode != "mission2" and not isinstance(report_streams, Mapping):
         raise TypeError("environment planning view has no ship roster")
-    ship_ids = tuple(sorted(int(entity_id) for entity_id in report_streams))
+    roster = (world_model_info["perception_predictions"]["trajectories"]
+              if mode in {"mission2", "joint"} else report_streams)
+    ship_ids = tuple(sorted(int(entity_id) for entity_id in roster))
+    if mode in {"mission2", "joint"}:
+        simulation_limit_seconds = min(simulation_limit_seconds, float(world_model_info["mission_end_time_s"]))
     planning_backend_root = Path(
         os.path.commonpath(
             (
@@ -263,7 +268,7 @@ def run_closed_loop_demo(
             )
         )
     )
-    belief_service = runtime.create_bayesian_belief_service(
+    belief_service = None if mode == "mission2" else runtime.create_bayesian_belief_service(
         mission_id=mission_input.mission_id,
         keys=tuple(
             BeliefKey(entity_id, "reporting-corruption")
@@ -273,7 +278,7 @@ def run_closed_loop_demo(
         context_topic="planning-evidence",
         clock=lambda: "2026-08-23T00:00:00+10:00",
     )
-    belief = belief_service.load_current_snapshot()
+    belief = None if belief_service is None else belief_service.load_current_snapshot()
     with runtime.transport.open_consumer(
         context_coordination.subscription
     ) as context_consumer:
@@ -297,7 +302,7 @@ def run_closed_loop_demo(
         environment_event=planning_view.environment_event,
         environment_file=planning_view.environment_file,
         belief_snapshot=belief,
-        belief_file=belief_service.current_snapshot_path(),
+        belief_file=None if belief_service is None else belief_service.current_snapshot_path(),
         revision=1,
         recursion_limit=recursion_limit,
     )
@@ -354,8 +359,8 @@ def run_closed_loop_demo(
             planning_snapshot=snapshot,
             environment_event=latest_planning_view.environment_event,
             environment_file=latest_planning_view.environment_file,
-            belief_snapshot=belief_service.load_current_snapshot(),
-            belief_file=belief_service.current_snapshot_path(),
+            belief_snapshot=None if belief_service is None else belief_service.load_current_snapshot(),
+            belief_file=None if belief_service is None else belief_service.current_snapshot_path(),
             revision=revision,
             recursion_limit=recursion_limit,
         )

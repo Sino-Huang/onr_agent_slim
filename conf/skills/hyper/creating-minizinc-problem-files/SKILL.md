@@ -6,6 +6,12 @@ version: '2.21.0'
 
 # Creating MiniZinc Problem Files
 
+For Mission 2 or joint Mission 1/2 collision monitoring, first read
+[Mission 2 ship observation planning](references/mission2-collision.md).
+Use its source-independent candidate procedure and the generic submission route
+below. The Mission 1-only procedure requires a reporting-reliability belief;
+Mission 2-only planning does not.
+
 ## Choose the generation route
 
 After `record_planning_intent`, inspect the returned environment file with
