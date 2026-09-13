@@ -516,8 +516,18 @@ def route_information_tables(opportunities: Sequence[ObservationOpportunity]) ->
     }
 
 
+def _information_capture_eligible(observation_s: float, deadline_s: float | None) -> bool:
+    return deadline_s is None or observation_s + OBSERVATION_DWELL_SECONDS <= deadline_s + 1e-9
+
+
+def _information_reports(candidate, by_id, deadline_s):
+    return tuple(r for r in candidate.report_ids if _information_capture_eligible(
+        by_id[r].time_s + candidate.observation_delay_s, deadline_s))
+
+
 def allocate_route_information(
     selected: Sequence[SurveillanceCandidate], opportunities: Sequence[ObservationOpportunity],
+    *, information_deadline_s: float | None = None,
 ) -> tuple[SurveillanceCandidate, ...]:
     """Assign each route item its marginal information, with no duplicate credit.
 
@@ -538,6 +548,10 @@ def allocate_route_information(
             if report_id not in by_id:
                 raise ValueError("selected route references unavailable public reports")
             seen.add(report_id)
+            if not _information_capture_eligible(
+                by_id[report_id].time_s + candidate.observation_delay_s, information_deadline_s,
+            ):
+                continue
             entity = by_id[report_id].entity_id
             before = counts[entity]
             counts[entity] += 1
@@ -724,13 +738,14 @@ def _candidate_arcs(
     sink_bit = 1 << sink
     all_nodes = (1 << (sink + 1)) - 1
     reachable = [0] * (sink + 1)
-    direct = [0] * (sink + 1)
+    history_reachable = [0] * (sink + 1)
     starts = [candidate.start_s + 1e-9 for candidate in candidates]
     max_delay = max((c.observation_delay_s for c in candidates), default=0.0)
     # No alternative containing an intermediate's batch can start after its
-    # last report epoch plus the largest offered observation delay. Keep only
-    # direct successors beyond that boundary, not unrestricted reachability:
-    # an indirect path could itself repeat a batch.
+    # last report epoch plus the largest offered observation delay. Witness
+    # chains must also introduce reports strictly after each preceding finish;
+    # unrestricted reachability could itself repeat a batch. Intersecting each
+    # witness's expiry mask protects all inserted batches from the suffix.
     safe_successors = [0] + [
         all_nodes & ~((1 << (bisect_right(starts,
             c.start_s - c.observation_delay_s + c.report_span_s + max_delay + 1e-9) + 1)) - 1)
@@ -749,13 +764,13 @@ def _candidate_arcs(
         first = bisect_left(starts, left.end_s) + 1
         pending = all_nodes & ~((1 << first) - 1)
         successors = sink_bit
+        history_successors = sink_bit
         while pending:
             bit = pending & -pending
             pending ^= bit
             target = bit.bit_length() - 1
             if target == sink:
                 arcs.append((source, sink))
-                direct[source] |= sink_bit
                 break
             right = candidates[target - 1]
             if chronological_reports and (
@@ -775,15 +790,17 @@ def _candidate_arcs(
             ):
                 continue
             arcs.append((source, target))
-            direct[source] |= bit
             successors |= bit | reachable[target]
+            history_successors |= bit
             if positive[target] and not report_history_aware:
                 pending &= ~reachable[target]
             elif positive[target] and (
                 not right.report_ids or right.start_s - right.observation_delay_s > left.end_s + 1e-9
             ):
-                pending &= ~(direct[target] & safe_successors[target])
+                history_successors |= history_reachable[target]
+                pending &= ~history_reachable[target]
         reachable[source] = successors
+        history_reachable[source] = history_successors & safe_successors[source]
     # Every candidate has already passed initial-pose/time admission.
     pending = all_nodes & ~1
     while pending:
@@ -795,7 +812,7 @@ def _candidate_arcs(
             pending &= ~reachable[target]
         elif positive[target]:
             # The source has no selected-report history.
-            pending &= ~(direct[target] & safe_successors[target])
+            pending &= ~history_reachable[target]
     ordered_arcs = tuple(sorted(arcs))
     return (
         _prune_terminal_alternatives(candidates, ordered_arcs)
@@ -947,12 +964,15 @@ def _fixed_view_candidates(
 def build_candidate_dag(
     environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
     *, information_horizon_seconds: float | None = None,
+    route_horizon_seconds: float | None = None,
 ) -> CandidateDAG:
     """Build sampled fixed views and pursuits, optionally with bounded route information.
 
-    A supplied horizon bounds candidate finish times and expands count histories;
-    public schedules and belief normalization remain complete. The default
-    retains the existing full-schedule additive planner during evaluation.
+    A supplied information horizon normally bounds candidate finish times. An
+    optional longer route horizon retains later recall/omission opportunities,
+    but only captures finishing within the information horizon earn information
+    credit. Public schedules and belief normalization remain complete. The
+    unconfigured default retains full-schedule additive scoring.
     """
 
     if belief.belief_kind != "reporting_reliability":
@@ -996,6 +1016,12 @@ def build_candidate_dag(
     direction = _vehicle_direction(vehicle)
     fov = float(vehicle["fov_radius"])
     now = float(cast(Any, environment["mission_time_seconds"]))
+    if route_horizon_seconds is not None and (
+        information_horizon_seconds is None or not math.isfinite(route_horizon_seconds)
+        or route_horizon_seconds < information_horizon_seconds
+    ):
+        raise ValueError("route horizon requires a finite horizon at least as long as the information horizon")
+    planning_horizon = route_horizon_seconds if route_horizon_seconds is not None else information_horizon_seconds
     if information_horizon_seconds is not None and (
         not math.isfinite(information_horizon_seconds) or information_horizon_seconds <= 0
     ):
@@ -1063,7 +1089,7 @@ def build_candidate_dag(
     ordered_candidates = tuple(
         sorted(
             (candidate for candidate in candidates.values()
-             if information_horizon_seconds is None or candidate.end_s <= now + information_horizon_seconds),
+             if planning_horizon is None or candidate.end_s <= now + planning_horizon),
             key=lambda item: (item.start_s, item.end_s, item.mode, item.candidate_id),
         )
     )
@@ -1078,7 +1104,12 @@ def build_candidate_dag(
         source,
         sink,
     )
-    return expand_information_states(graph, opportunities) if information_horizon_seconds is not None else graph
+    return expand_information_states(
+        graph, opportunities,
+        information_deadline_s=now + information_horizon_seconds,
+    ) if route_horizon_seconds is not None else (
+        expand_information_states(graph, opportunities) if information_horizon_seconds is not None else graph
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1218,6 +1249,7 @@ def _fixed_view_runs(
 
 def expand_information_states(
     graph: CandidateDAG, opportunities: Sequence[ObservationOpportunity],
+    *, information_deadline_s: float | None = None,
 ) -> CandidateDAG:
     """Lift a bounded graph by selected counts for the existing additive model.
 
@@ -1231,6 +1263,7 @@ def expand_information_states(
     entities = sorted(tables)
     position = {entity: i for i, entity in enumerate(entities)}
     by_id = {item.report_id: item for item in opportunities}
+    credited = [_information_reports(c, by_id, information_deadline_s) for c in graph.candidates]
     relevant: list[set[int]] = [set() for _ in graph.candidates]
     # Reports of one vessel at one epoch share a sensing/omission cell. Keep
     # their batch identity until its final alternative to prevent nonadjacent
@@ -1240,10 +1273,11 @@ def expand_information_states(
     masks = [sum({batch_bits[(by_id[r].entity_id, by_id[r].time_s)] for r in c.report_ids})
              for c in graph.candidates]
     future_masks = [0] * (len(graph.candidates) + 1)
+    observation_starts = [c.start_s + 1e-9 for c in graph.candidates]
     future: set[int] = set()
     for index in range(len(graph.candidates) - 1, -1, -1):
         future = future | {position[by_id[r].entity_id]
-                           for r in graph.candidates[index].report_ids}
+                           for r in credited[index]}
         relevant[index] = future
         future_masks[index] = future_masks[index + 1] | masks[index]
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
@@ -1255,8 +1289,11 @@ def expand_information_states(
     arcs = []
     for node, candidate in enumerate(graph.candidates, start=1):
         increment = [0] * len(entities)
-        for report in candidate.report_ids:
+        for report in credited[node - 1]:
             increment[position[by_id[report].entity_id]] += 1
+        # Later indices at the same observation time cannot follow this node.
+        # Keep history only for batches with a temporally possible successor.
+        future_mask = future_masks[bisect_left(observation_starts, candidate.end_s)]
         connections: dict[tuple[tuple[int, ...], int], set[int]] = {}
         for previous in incoming[node]:
             for (counts, seen), lifted in states[previous].items():
@@ -1264,7 +1301,7 @@ def expand_information_states(
                     continue
                 after = tuple(a + b if i in relevant[node - 1] else 0
                               for i, (a, b) in enumerate(zip(counts, increment)))
-                remaining = (seen | masks[node - 1]) & future_masks[node]
+                remaining = (seen | masks[node - 1]) & future_mask
                 connections.setdefault((after, remaining), set()).add(lifted)
         for (after, remaining), previous_nodes in sorted(connections.items()):
             credit = sum(tables[entity][after[i]] - tables[entity][after[i] - increment[i]]
@@ -1288,6 +1325,7 @@ def expand_information_states(
 
 def route_information_oracle(
     graph: CandidateDAG, opportunities: Sequence[ObservationOpportunity],
+    *, information_deadline_s: float | None = None,
 ) -> AdvisoryRoute:
     """Exact count-labelled path reference for a bounded candidate graph.
 
@@ -1305,7 +1343,7 @@ def route_information_oracle(
     last_batch_node = {}
     for candidate in graph.candidates:
         counts = [0] * len(entities)
-        for report in candidate.report_ids:
+        for report in _information_reports(candidate, by_id, information_deadline_s):
             counts[positions[by_id[report].entity_id]] += 1
         increments.append(tuple(counts))
         batches = frozenset((by_id[r].entity_id, by_id[r].time_s) for r in candidate.report_ids)
@@ -1348,6 +1386,7 @@ def route_information_oracle(
     best = max(frontiers[graph.sink].values(), key=priority)
     selected = _fixed_view_runs(allocate_route_information(
         tuple(graph.candidates[i] for i in best[4]), opportunities,
+        information_deadline_s=information_deadline_s,
     ))
     return AdvisoryRoute(selected, best[0] / SCORE_SCALE, best[2] / TIME_SCALE,
                          tuple(report for candidate in selected for report in candidate.report_ids))
@@ -1371,9 +1410,11 @@ class Mission1ReplanGate:
     """Cheap advisory comparison; it never creates planning authority."""
 
     def __init__(self, relative_improvement_threshold: float = 0.10, *,
-                 information_horizon_seconds: float | None = None) -> None:
+                 information_horizon_seconds: float | None = None,
+                 route_horizon_seconds: float | None = None) -> None:
         self.relative_improvement_threshold = float(relative_improvement_threshold)
         self.information_horizon_seconds = information_horizon_seconds
+        self.route_horizon_seconds = route_horizon_seconds
 
     def evaluate(
         self,
@@ -1417,7 +1458,8 @@ class Mission1ReplanGate:
         *,
         explicit_request: bool = False,
     ) -> tuple[ReplanGateDecision, AdvisoryRoute]:
-        graph = build_candidate_dag(environment, belief, information_horizon_seconds=self.information_horizon_seconds)
+        graph = build_candidate_dag(environment, belief, information_horizon_seconds=self.information_horizon_seconds,
+                                    route_horizon_seconds=self.route_horizon_seconds)
         advisory = longest_path_oracle(graph)
         active_context = status.active_state_context
         active_target = active_context.get("target_entity_id")
@@ -1453,6 +1495,7 @@ class Mission1ReplanGate:
         now = float(cast(Any, environment["mission_time_seconds"]))
         represented: set[str] = set()
         scored_reports: set[str] = set()
+        scored_information_reports: set[str] = set()
         scored_holding: dict = {}
         exposures = holding_exposures(environment, belief)
         current_score = 0.0
@@ -1536,6 +1579,11 @@ class Mission1ReplanGate:
             current_score += _score_units(replace(utility, estimation=0.0)
                                           if self.information_horizon_seconds is not None else utility) / SCORE_SCALE
             scored_reports.update(item.report_id for item in covered)
+            deadline = (now + self.information_horizon_seconds
+                        if self.route_horizon_seconds is not None else None)
+            scored_information_reports.update(item.report_id for item in covered if _information_capture_eligible(
+                observation_times[item.report_id] if observation_times is not None
+                else max(now, start_s, item.time_s), deadline))
             key = (
                 str(mode),
                 entity_id if isinstance(entity_id, int) else None,
@@ -1581,7 +1629,7 @@ class Mission1ReplanGate:
         if self.information_horizon_seconds is not None:
             tables = route_information_tables(tuple(opportunities.values()))
             counts = dict.fromkeys(tables, 0)
-            for report in scored_reports:
+            for report in scored_information_reports:
                 counts[opportunities[report].entity_id] += 1
             current_score += sum(tables[entity][count] for entity, count in counts.items()) / SCORE_SCALE
         return (

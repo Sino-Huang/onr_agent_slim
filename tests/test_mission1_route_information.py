@@ -194,8 +194,136 @@ def test_history_aware_arcs_reduce_only_after_intermediate_batch_expires():
     assert (0, 3) not in arcs
 
 
+def test_history_safe_pruning_uses_valid_chains_not_only_direct_neighbors():
+    from onr.application.mission1_planning import _candidate_arcs
+
+    graph, _ = history_graph()
+    candidates = tuple(replace(graph.candidates[0], candidate_id=str(i), report_ids=(str(i),),
+                              start_s=10 * i, end_s=10 * i + .5, x=0, y=0, end_x=0, end_y=0)
+                       for i in range(1, 7))
+    arcs = _candidate_arcs(candidates, 30, information_aware=True, report_history_aware=True)
+    assert arcs == tuple((i, i + 1) for i in range(7))
+
+
+def test_separate_route_horizon_retains_late_recall_without_late_information():
+    environment = _environment([_report("early", 1, 10, 0, 0), _report("late", 1, 30, 0, 0)], fov=1)
+    belief = _belief((1,))
+    bounded = build_candidate_dag(environment, belief, information_horizon_seconds=15)
+    assert "late" not in longest_path_oracle(bounded).covered_report_ids
+    extended = build_candidate_dag(environment, belief, information_horizon_seconds=15,
+                                   route_horizon_seconds=40)
+    route = longest_path_oracle(extended)
+    assert set(route.covered_report_ids) == {"early", "late"}
+    late = [c for c in extended.candidates if c.report_ids == ("late",)]
+    assert late and all(c.estimation_utility == 0 and c.recall_utility > 0 for c in late)
+
+
+def test_information_deadline_uses_capture_finish_not_report_epoch():
+    graph, opportunities = history_graph()
+    a = graph.candidates[0]
+    late = replace(a, observation_delay_s=4, start_s=a.start_s + 4, end_s=a.end_s + 4)
+    deadline = a.end_s
+    timely = allocate_route_information((a,), opportunities, information_deadline_s=deadline)
+    delayed = allocate_route_information((late,), opportunities, information_deadline_s=deadline)
+    assert timely[0].estimation_utility > 0
+    assert delayed[0].estimation_utility == 0
+    assert delayed[0].recall_utility == a.recall_utility
+
+
+def test_batch_history_ignores_temporally_unreachable_alternatives():
+    graph, opportunities = history_graph()
+    a = replace(graph.candidates[0], arrival_direction=0)
+    b = replace(graph.candidates[1], candidate_id="b", start_s=11, end_s=11.5,
+                x=0, y=0, end_x=0, end_y=0, arrival_direction=1, observation_delay_s=1)
+    c = replace(a, candidate_id="late-a", start_s=11, end_s=11.5, observation_delay_s=1)
+    graph = CandidateDAG((a, b, c), ((0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (1, 4), (2, 4), (3, 4)), 0, 4)
+    expanded = expand_information_states(graph, opportunities, information_deadline_s=0)
+    # Once b finishes, c cannot follow: both started at 11. No report history
+    # needs to distinguish the direct-b prefix from a->b any longer.
+    assert sum(c.candidate_id.startswith("b:counts:") for c in expanded.candidates) == 1
+    reference = route_information_oracle(graph, opportunities, information_deadline_s=0)
+    actual = longest_path_oracle(expanded)
+    assert actual.score == reference.score
+    assert actual.covered_report_ids == reference.covered_report_ids
+
+
+def test_route_tail_native_oracle_and_gate_share_information_deadline(tmp_path):
+    from unittest.mock import patch
+
+    from test_mission1_planning import EXAMPLE_ROOT
+
+    from onr.application import mission1_planning as planning
+
+    environment = _environment([_report("early", 1, 10, 0, 0), _report("late", 1, 30, 0, 0)], fov=1)
+    belief = _belief((1,))
+    kwargs = {"information_horizon_seconds": 15, "route_horizon_seconds": 40}
+    graph = build_candidate_dag(environment, belief, **kwargs)
+    route = longest_path_oracle(graph)
+    with patch.object(planning, "expand_information_states", side_effect=lambda g, o, **kw: g):
+        base = build_candidate_dag(environment, belief, **kwargs)
+    reference = route_information_oracle(base, _opportunities(environment, belief), information_deadline_s=15)
+    assert (route.score, route.duration_s, route.covered_report_ids) == (
+        reference.score, reference.duration_s, reference.covered_report_ids)
+    contexts = {}
+    for index, candidate in enumerate(route.candidates):
+        contexts[str(index)] = {"candidate_id": candidate.candidate_id, "surveillance_mode": candidate.mode,
+            "target_entity_id": candidate.entity_id, "target_report_ids": list(candidate.report_ids),
+            "observation_window": {"start": {"seconds": candidate.start_s}, "duration": {"seconds": candidate.duration_s}},
+            "planner_item": {"parameters": {"x": candidate.x, "y": candidate.y}}}
+    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+        planning_profile="temporal", entry_state="0", states=tuple(contexts), transitions=(),
+        terminal_states=tuple(contexts), state_context=contexts)
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="0", active_state_context=contexts["0"])
+    decision, advisory = Mission1ReplanGate(**kwargs).assess(environment, belief, chart, status)
+    assert decision.current_score == pytest.approx(route.score, abs=1e-6)
+    assert advisory.score == route.score
+    assert not decision.trigger
+    data = tmp_path / "tail.dzn"
+    data.write_text(planning.serialize_minizinc_data(graph))
+    native = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True, timeout=30)
+    result = json.loads(native.stdout.splitlines()[0])
+    assert "==========" in native.stdout
+    assert result["combined_score"] == round(reference.score * SCORE_SCALE)
+    assert [r for a in result["assignments"] for r in a["parameters"]["report_ids"]] == list(route.covered_report_ids)
+
+
+@pytest.mark.parametrize("route_horizon", [0, 14, float("nan"), float("inf")])
+def test_invalid_route_horizon_rejected(route_horizon):
+    with pytest.raises(ValueError, match="horizon"):
+        build_candidate_dag(_environment([_report("a", 1, 10, 0, 0)]), _belief((1,)),
+                            information_horizon_seconds=15, route_horizon_seconds=route_horizon)
+
+
+def test_failed_generation_preserves_public_horizon_inputs(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("plan_evaluation", Path("scripts/evaluate_mission1_plan.py"))
+    evaluation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(evaluation)
+    environment = _environment([_report("a", 1, 10, 0, 0)])
+    belief = _belief((1,))
+    output = tmp_path / "new-evaluation"
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("generation failed")
+
+    monkeypatch.setattr(evaluation, "build_candidate_dag", fail)
+    with pytest.raises(RuntimeError, match="generation failed"):
+        evaluation.solve_public_plan(environment, belief, Path("unused"), Path("unused"), output,
+                                     information_horizon_seconds=15, route_horizon_seconds=40)
+    assert json.loads((output / "environment.json").read_text()) == environment
+    context = json.loads((output / "planning-context.json").read_text())
+    assert context["route_horizon_seconds"] == 40
+    assert context["information_deadline_s"] == environment["mission_time_seconds"] + 15
+    assert (output / "belief.json").is_file()
+    assert not (output / "solution.json").exists()
+
+
 @pytest.mark.parametrize("seed", range(16))
-def test_history_safe_reduction_matches_dense_independent_reference(seed):
+@pytest.mark.parametrize("information_deadline", [None, 10.5])
+def test_history_safe_reduction_matches_dense_independent_reference(seed, information_deadline):
     import random
 
     from onr.application.mission1_planning import _candidate_arcs, _navigation_time
@@ -230,9 +358,11 @@ def test_history_safe_reduction_matches_dense_independent_reference(seed):
                 left.arrival_direction, right.arrival_direction, .5,
             ):
                 dense.add((i, j))
-    reference = route_information_oracle(CandidateDAG(candidates, tuple(sorted(dense)), 0, sink), opportunities)
+    reference = route_information_oracle(CandidateDAG(candidates, tuple(sorted(dense)), 0, sink), opportunities,
+                                         information_deadline_s=information_deadline)
     arcs = _candidate_arcs(candidates, 30, .5, information_aware=True, report_history_aware=True)
-    reduced = route_information_oracle(CandidateDAG(candidates, arcs, 0, sink), opportunities)
+    reduced = route_information_oracle(CandidateDAG(candidates, arcs, 0, sink), opportunities,
+                                       information_deadline_s=information_deadline)
     assert (reduced.score, len(reduced.candidates), reduced.duration_s) == (
         reference.score, len(reference.candidates), reference.duration_s)
     assert reduced.covered_report_ids == reference.covered_report_ids

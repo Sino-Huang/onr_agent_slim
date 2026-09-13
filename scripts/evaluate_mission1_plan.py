@@ -31,10 +31,26 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def solve_public_plan(environment, belief, model, executable, output, *, information_horizon_seconds=None):
+def solve_public_plan(environment, belief, model, executable, output, *, information_horizon_seconds=None,
+                      route_horizon_seconds=None):
     """Only public evidence and the supplied posterior enter this function."""
+    output.mkdir(parents=True, exist_ok=True)
+    # Preserve the exact public snapshot even when graph generation or native
+    # solving fails; it is diagnostic input, not an accepted planning result.
+    write_json(output / "environment.json", environment)
+    write_json(output / "belief.json", belief.to_dict())
+    if information_horizon_seconds is not None:
+        write_json(output / "planning-context.json", {
+            "information_horizon_seconds": information_horizon_seconds,
+            "information_scoring": "selected_route_counts",
+            "scope": "Bounded planning; not public-schedule completion",
+            **({"route_horizon_seconds": route_horizon_seconds,
+                "information_deadline_s": environment["mission_time_seconds"] + information_horizon_seconds}
+               if route_horizon_seconds is not None else {}),
+        })
     started = time.perf_counter()
-    graph = build_candidate_dag(environment, belief, information_horizon_seconds=information_horizon_seconds)
+    graph = build_candidate_dag(environment, belief, information_horizon_seconds=information_horizon_seconds,
+                                route_horizon_seconds=route_horizon_seconds)
     oracle = longest_path_oracle(graph)
     assert len(oracle.covered_report_ids) == len(set(oracle.covered_report_ids))
     assets = {
@@ -85,15 +101,7 @@ def solve_public_plan(environment, belief, model, executable, output, *, informa
                 candidate.recall_utility, candidate.estimation_utility, candidate.omission_yield)),
             "scale": SCORE_SCALE,
         }
-    write_json(output / "environment.json", environment)
-    write_json(output / "belief.json", belief.to_dict())
     write_json(output / "solution.json", solution)
-    if information_horizon_seconds is not None:
-        write_json(output / "planning-context.json", {
-            "information_horizon_seconds": information_horizon_seconds,
-            "information_scoring": "selected_route_counts",
-            "scope": "Bounded planning; not public-schedule completion",
-        })
     return solution, {
         "generation_seconds": generation_seconds,
         "validation_seconds": validation_seconds,
@@ -101,6 +109,7 @@ def solve_public_plan(environment, belief, model, executable, output, *, informa
         "candidate_count": len(graph.candidates),
         "optimal_oracle_parity": True,
         "information_horizon_seconds": information_horizon_seconds,
+        **({"route_horizon_seconds": route_horizon_seconds} if route_horizon_seconds is not None else {}),
     }
 
 

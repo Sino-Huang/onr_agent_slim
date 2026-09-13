@@ -1,5 +1,52 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Separate route and information horizons — implementation checkpoint
+
+The shared builder and gate accept an optional `route_horizon_seconds` at least
+as long as `information_horizon_seconds`. The default retains the old coupled
+horizon. With separate horizons, later candidates retain recall and omission
+utility, but information is credited only for captures finishing within the
+near-term information horizon. The complete public schedule still normalizes
+information budgets. Actual later observations still update beliefs normally;
+their learning is not disabled. This is a receding-horizon approximation, not
+exact outcome-conditioned Bayesian planning or an arbitrary pursuit bonus.
+
+Candidate expansion, marginal allocation, independent oracle and active-plan
+rescoring share capture-deadline semantics. Counts with no remaining credited
+observations can merge while report/batch uniqueness remains enforced. The
+single production `model.mzn` and physical command boundaries are unchanged.
+The offline evaluator passes both horizons to solving and the gate and records
+them in planning context. It now saves public environment/belief/context before
+generation so failures preserve their exact inputs without an accepted plan.
+
+Two graph reductions are verified separately: forget batch alternatives that
+cannot start after the current observation finishes; and propagate bypass
+witnesses only through positive observations new after each predecessor's end,
+intersecting expiry masks at every step. This extends the earlier direct-witness
+reduction without using unrestricted, potentially duplicate-report reachability.
+Thirty-two small dense-reference cases cover both full and bounded information
+credit, including delayed and multi-report views. Native fixture and gate tests
+check late recall, zero late information, capture-finish boundaries and both
+horizon arguments. Public failure artifacts have a regression test as well.
+
+Full-schedule initial probes (information 45 s, route 303.5 s, derived from the
+public schedule/window) fail at the unchanged native 30 s limit:
+`route-tail-full-prior-probe/` = 16,675 candidates / 4,023,571 arcs;
+`route-tail-temporal-prior-probe/` = 15,144 / 3,664,932;
+`route-tail-chain-prior-probe/` = 15,144 / 1,894,675. These are feasibility probes,
+not recall configurations. A shorter **120 s route / 45 s information** probe
+is native optimal in **4.277 s**, generation 4.379 s, 2,208 lifted candidates.
+It matches an unpruned 2,208-candidate/1,119,715-arc public reference in score,
+maneuver count, duration and report route (`route-tail-120-prior-probe/`).
+
+Latest focused route-information tests: **75 passed**. The full Physical
+non-live suite passes **465 tests**, 13 excluded, 209.78 s. The final full Agent
+suite is still running at this checkpoint; the earlier pre-chain full suite
+passed 859 tests. No recall improvement or live adoption is claimed. Commit
+the paired Agent/Physical helper changes before Attempt 19, then compare the
+45/120 configuration against a matched current-code 45/45 control. The count
+remains 18/50 until a genuine replay is inspected.
+
 ## Attempts 17/18 — partition-size comparisons
 
 Native report visibility is clipped to the selected partition. The existing
