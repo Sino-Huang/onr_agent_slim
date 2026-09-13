@@ -38,6 +38,8 @@ class CollisionObservationCandidate:
 def collision_observation_candidates(environment: Mapping) -> tuple[CollisionObservationCandidate, ...]:
     """Rank feasible refresh opportunities using public positions and travel time."""
     world = environment.get("world_model_info", {})
+    if world.get("mission_mode") not in {"mission2", "joint"}:
+        return ()
     predictions = world.get("perception_predictions")
     if not isinstance(predictions, Mapping):
         return ()
@@ -53,14 +55,16 @@ def collision_observation_candidates(environment: Mapping) -> tuple[CollisionObs
         return ()
     visible = set(world.get("visible_ship_ids", ()))
     end = min(now + 30.0, float(world["mission_end_time_s"]))
-    standoff = min(50.0, float(vehicle["fov_radius"]) / 2)
+    standoff = min(25.0, float(vehicle["fov_radius"]) / 2)
     candidates = []
     for pair in predictions["active_pairs"]:
         probability = pair["probability"]
         if probability is not None and (not math.isfinite(probability) or not 0 <= probability <= 1):
             raise ValueError("invalid collision probability")
         contact = float(pair["predicted_contact_at_s"])
-        deadline = min(end, contact if contact > now else now + 1.0)
+        # A producer can retain a pair after its first 10 m crossing. That
+        # timestamp is urgency evidence, not an expiry for ongoing monitoring.
+        deadline = min(end, contact) if contact > now else end
         for ship in pair["ship_ids"]:
             trajectory = predictions["trajectories"].get(str(ship))
             if not trajectory or not trajectory["ready"]:

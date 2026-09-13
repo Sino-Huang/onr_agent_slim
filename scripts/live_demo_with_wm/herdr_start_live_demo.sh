@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Start the Mission 1 physical runtime and Agent Slim in a new two-pane
+# Start the physical runtime and Agent Slim in a new two-pane
 # workspace inside an existing herdr session.
 # Optional ONR_DEMO_SCENARIO_CONFIG and ONR_DEMO_MISSION1_INSTANCE select a
 # caller-supplied task without changing the default harbor demo or CLI arguments.
@@ -14,7 +14,17 @@ readonly MISSION_ID="mission:demo"
 readonly VEHICLE_ID="drone-1"
 readonly SCENARIO_CONFIG="${ONR_DEMO_SCENARIO_CONFIG:-$PHYSICAL_ROOT/config/harbor_world.yaml}"
 readonly MISSION_INSTANCE="${ONR_DEMO_MISSION1_INSTANCE:-$PHYSICAL_ROOT/data/harbor_world/mission1_instances/demo-001}"
-readonly WORKSPACE_LABEL="mission1-live-demo"
+readonly MISSION_MODE="${ONR_DEMO_MISSION_MODE:-mission1}"
+readonly MISSION2_SCENARIO="${ONR_DEMO_MISSION2_SCENARIO:-/data/ccu/sukaih/ONR/onr_scenario/offshore_dock_1/collision/0}"
+readonly DRY_RUN="${ONR_DEMO_DRY_RUN:-0}"
+readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
+case "$MISSION_MODE" in
+    mission1) default_mission_file="$AGENT_ROOT/examples/mission.json" ;;
+    mission2) default_mission_file="$AGENT_ROOT/examples/mission2.json" ;;
+    joint) default_mission_file="$AGENT_ROOT/examples/mission1-and-2.json" ;;
+    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2 or joint." >&2; exit 2 ;;
+esac
+readonly MISSION_FILE="${ONR_DEMO_MISSION_FILE:-$default_mission_file}"
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
     echo "Usage: $0 <herdr-session-name>" >&2
@@ -23,11 +33,28 @@ fi
 
 sessname="$1"
 
-if [ ! -r "$SCENARIO_CONFIG" ] || [ ! -r "$MISSION_INSTANCE/events_report.json" ]; then
-    echo "Scenario configuration or Mission 1 report stream is missing." >&2
+if [ ! -r "$SCENARIO_CONFIG" ] || [ ! -r "$MISSION_FILE" ]; then
+    echo "Scenario configuration or Mission Input file is missing." >&2
     exit 1
 fi
+mission_args=()
+if [ "$MISSION_MODE" != "mission2" ]; then
+    if [ ! -r "$MISSION_INSTANCE/events_report.json" ]; then
+        echo "Mission 1 report stream is missing." >&2; exit 1
+    fi
+    mission_args+=(--mission1-instance-dir "$MISSION_INSTANCE")
+fi
+if [ "$MISSION_MODE" != "mission1" ]; then
+    if [ ! -r "$MISSION2_SCENARIO/ships/events.json" ]; then
+        echo "Mission 2 scenario is missing." >&2; exit 1
+    fi
+    if [ "$MISSION_MODE" = "joint" ] && [ -z "${ONR_DEMO_MISSION1_INSTANCE:-}" ]; then
+        echo "Joint mode requires ONR_DEMO_MISSION1_INSTANCE with reports for the selected moving scenario." >&2; exit 1
+    fi
+    mission_args+=(--mission-mode "$MISSION_MODE" --mission2-scenario-dir "$MISSION2_SCENARIO")
+fi
 
+if [ "$DRY_RUN" != "1" ]; then
 session_list="$(herdr session list)"
 status="$(printf '%s\n' "$session_list" | awk -v session="$sessname" '$1 == session {print $2}')"
 if [ -z "$status" ]; then
@@ -39,6 +66,7 @@ if [ "$status" != "running" ]; then
     echo "Herdr session '$sessname' is not running (status: $status)." >&2
     echo "Start it first with: herdr --session $sessname" >&2
     exit 1
+fi
 fi
 
 # Keep each live demo isolated while retaining all generated state under the
@@ -73,11 +101,24 @@ sed \
 
 initial_event="$transport_root/identity/event-environment-update%3Amission%3Ademo%3Ainitial.json"
 
-physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec python -m onr_physical_runtime.agent.service --scenario-config '$SCENARIO_CONFIG' --transport-root '$transport_root' --state-root '$physical_state_root' --mission-id '$MISSION_ID' --vehicle-id '$VEHICLE_ID' --mission1-instance-dir '$MISSION_INSTANCE' --viewer-host 127.0.0.1 --viewer-port 5066"
+physical_args=(python -u -m onr_physical_runtime.agent.service --scenario-config "$SCENARIO_CONFIG"
+    --transport-root "$transport_root" --state-root "$physical_state_root" --mission-id "$MISSION_ID"
+    --vehicle-id "$VEHICLE_ID" "${mission_args[@]}" --viewer-host 127.0.0.1 --viewer-port 5066)
+printf -v physical_python '%q ' "${physical_args[@]}"
+physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec $physical_python"
 printf -v physical_command 'bash -lc %q' "$physical_inner"
 
-agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; exec python -m onr.runtime.cli --mission-file '$AGENT_ROOT/examples/mission.json' --repo-root '$AGENT_ROOT' --config-path '$agent_config' --skip-runtime-artifact-rollover"
+agent_args=(python -u -m onr.runtime.cli --mission-file "$MISSION_FILE" --repo-root "$AGENT_ROOT"
+    --config-path "$agent_config" --skip-runtime-artifact-rollover)
+printf -v agent_python '%q ' "${agent_args[@]}"
+agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; exec $agent_python"
 printf -v agent_command 'bash -lc %q' "$agent_inner"
+
+if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY RUN: mode=%s; no services started\nRun configuration: %s\nPhysical command: %s\nAgent command: %s\n' \
+        "$MISSION_MODE" "$run_root" "$physical_command" "$agent_command"
+    exit 0
+fi
 
 # A live demo owns one workspace label. Closing any prior matching workspace
 # also terminates its pane processes while preserving its run data under var.
@@ -104,6 +145,8 @@ HERDR_SESSION="$sessname" herdr pane run "$agent_pane" "$agent_command"
 echo "Created workspace '$WORKSPACE_LABEL' ($workspace_id) in herdr session '$sessname'."
 echo "Run data: $run_root"
 echo "Scenario: $SCENARIO_CONFIG"
-echo "Mission 1 instance: $MISSION_INSTANCE"
+echo "Mission mode: $MISSION_MODE; Mission Input: $MISSION_FILE"
+if [ "$MISSION_MODE" != "mission2" ]; then echo "Mission 1 instance: $MISSION_INSTANCE"; fi
+if [ "$MISSION_MODE" != "mission1" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
 echo "World-model frame stream: http://127.0.0.1:5066"
 echo "Attach with: herdr --session $sessname"

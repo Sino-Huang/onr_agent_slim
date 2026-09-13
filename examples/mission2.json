@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Monitor ship collision risks until the scenario recording ends. Use periodic fleet GPS and actively choose drone views or vessel pursuits to obtain fresher observations and improve early warnings. Prioritize feasible observations of approaching or ongoing risk pairs. Continue monitoring when no risk is currently predicted, and reconsider the plan when risks or observation feasibility change. Report detected collision pairs, false alerts and warning lead times separately. This mission concerns collision monitoring only.",
+  "source_authority": "demo-operator"
+}

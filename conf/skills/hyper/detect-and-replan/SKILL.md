@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
-description: Apply when observed evidence affects plan feasibility or a Mission 1 utility gate identifies a better route, requiring a replan decision.
-version: '1.2.2'
+description: Apply when evidence affects plan feasibility, a Mission 1 utility gate identifies a better route, or Mission 2 collision risks and warnings change.
+version: '1.3.0'
 ---
 
 # Detect And Replan

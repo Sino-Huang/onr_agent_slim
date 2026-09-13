@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Perform vessel event-report reliability monitoring and ship collision-risk monitoring together until the scenario recording ends. Share the drone's observations between both missions. Use balanced scheduling: alternate feasible opportunities when the missions compete, and exploit observations that serve both. Keep report-discovery and probability-estimation results separate from collision detection, false-alert and warning-lead results. Use the supplied reports and current public predictions to choose observation locations and pursuits, and reconsider plans as evidence changes.",
+  "source_authority": "demo-operator"
+}

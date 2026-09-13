@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
 description: Use when selecting or preserving a physical maneuver, including rendezvous navigation, pursuit acquisition, and recovery after losing a target.
-version: '1.2.2'
+version: '1.3.0'
 ---
 
 # Physical Maneuver Selection

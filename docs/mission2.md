@@ -47,3 +47,26 @@ Run the runtime's documented `mission2_interaction` command for a bounded actual
 runtime/Agent-service interaction. Its deterministic decision provider is labelled
 explicitly and does not claim an LLM-generated plan. Full model-based missions
 use the normal runtime CLI/model configuration and updated role skills.
+
+## Launch an actual model-based standalone mission
+
+The existing launcher defaults to Mission 1. For Mission 2, use an explicit mode:
+
+```bash
+ONR_DEMO_MISSION_MODE=mission2 ONR_DEMO_DRY_RUN=1 \
+  bash scripts/live_demo_with_wm/herdr_start_live_demo.sh onr
+```
+
+The dry-run validates input paths, writes isolated run configuration, and prints
+the exact commands without starting herdr panes, runtime or models. Remove
+`ONR_DEMO_DRY_RUN=1` for the actual run in an existing `onr` herdr session with the
+configured model service available. Both panes use unbuffered Python and display
+progress; all state stays under the printed run directory. This route uses
+standalone world-model predictions and needs no AirSim or solution checkout.
+
+Set `ONR_DEMO_MISSION2_SCENARIO` to another original scenario directory. For joint
+mode set `ONR_DEMO_MISSION_MODE=joint` and explicitly supply
+`ONR_DEMO_MISSION1_INSTANCE` for that moving scenario. `ONR_DEMO_MISSION_FILE`
+can select another Mission Input (retain the launcher's `mission:demo` identity),
+including a different joint scheduling preference. The defaults are the committed
+Mission 2-only and balanced joint Mission Input examples.
