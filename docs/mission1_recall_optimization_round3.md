@@ -1,5 +1,25 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempts 15/16 — longer group-view lookahead
+
+Both retain Attempt 12's prepared input, 300 m sensor, group/base/25 m offsets,
+nominal/+4 s windows and functional `4cda00e`. Only information lookahead changes
+from H=45 to H=60 and H=75. These are genuine full-loop configurations, not
+initial-snapshot feasibility probes.
+
+**Attempt 15 (H=60) fails** after the gate at t=86 s. Five preceding revisions
+are native optimal; revision 006 materializes **26,487 candidates / 2,247,831
+arcs**, then reports `solver timed out after 30.0 seconds`. Its gate calculation
+took 59.193 s before the separate native solve. No completed recall score is
+assigned. Preserve `attempt-15/evaluation/revision-006/solver/` and `audit.json`.
+
+**Attempt 16 (H=75) is still running** at this checkpoint, after a gate at t=71 s
+that took 262.572 s. Its Python process is active, not a missing or idle handle.
+No recall or terminal outcome is claimed. The native 30 s limit does not cover
+Python graph construction, scoring or serialization. The experiments expose
+graph-size limitations; do not promote longer horizons or extend the native
+limit to hide them. Attempt 16's terminal evidence still needs inspection.
+
 ## Attempts 13/14 — larger camera offsets rejected
 
 These change only the additional camera-facing offset distance from Attempt
@@ -263,7 +283,7 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 14/50 completed configurations; best 11/39
+attempts. Current status: **active; 15/50 terminal configurations; best 11/39
 (28.21%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 
