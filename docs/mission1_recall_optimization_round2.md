@@ -346,10 +346,71 @@ MiniZinc skill **2.21.0** explains the allocation and its limitations in the
 existing focused reference; the main workflow is unchanged. Generic Codex skill
 validation still rejects the repository-supported `version` key; repository
 role tests pass. Changed-file Ruff passes (pre-existing TRY004 excluded).
-Full non-live Agent tests, Physical helper tests and the 60-snapshot corpus are
-being verified. This checkpoint is an experimental scoring change, not a recall
-gain. Next replay comparisons retain the 750 m baseline, the 300 m offset/window
-control and the 1,500 m offset control, changing only information allocation.
+Checkpoint **`8ce91d5`** is committed and pushed. **795 non-live Agent tests
+passed**, 21 live deselected, 313.22 s; **107 Physical helper/replay tests passed**,
+7.75 s. **60/60 seed-100 snapshots** reach native optimal with exact oracle route
+parity; max solve **2.4001 s**. All thirty altered-evidence snapshots switch
+target pursuit from unselected to selected. First mode remains pursuit in both
+conditions; this is a radius-only regression corpus, not native-camera recall.
+Artifacts: `test-uniform-full.xml`, `test-uniform-physical.xml`,
+`uniform-regression-corpus/`.
+
+Attempts 12/13/14 retain respectively the 750 m baseline
+(control 16/39), the 300 m offset/window control (10/39), and the 1,500 m
+offset control (12/39), changing only information allocation. Inputs are time-zero
+public snapshots with empty check ledgers and the same prior. No geometry
+regeneration, belief truth, or native model edit is part of these comparisons.
+
+### 12–14 — Uniform budget recall comparisons (completed)
+
+| Attempt / geometry | Recall / matched control | Balanced MSE | Checks: clean/omitted/altered | Initial candidates | Native solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 12: 750 m baseline | 13/39 / 16/39 | 0.07430925 | 72/6/7 | 7,496 | 11.104 | 305.19 / 259.63 |
+| 13: 300 m offset/window | 1/39 / 10/39 | 0.13100216 | 45/0/1 | 6,170 | 9.292/2.580 | 161.57 / 131.25 |
+| 14: 1,500 m, 200 cells, offset 25 m | **17/39 / 12/39** | **0.02708237** | 67/7/10 | 8,150 | 12.361/4.208 | 428.49 / 349.43 |
+
+All native revisions are optimal/oracle-equal and all execution audits pass.
+Artifacts: `attempt-12/`, `attempt-13/`, `attempt-14/`. Attempt 12 has 53 gate
+assessments and no replacements; sensing 153.5 s transit, 85 s wait, 61 s
+surveillance; issues one/one/eleven respectively; 32 scheduled fixed-view
+segments. Attempt 13 has 29 assessments and one replacement at 165 s; sensing
+165 s transit, 34 s wait, 100.5 s surveillance; its only issue is during
+surveillance; eleven fixed-view and one pursuit segment. Pursuit is not forced
+and its selection alone is not success.
+
+Attempt 14 has 51 assessments and one replacement at 135 s. Sensing:
+178 s transit, 52 s wait, 69.5 s surveillance; issues two/two/thirteen;
+thirteen scheduled fixed-view segments. It detects eight earlier issues and
+nine final-epoch issues. **17/39 (43.59%) is the new highest verified recall**,
+but its balanced MSE 0.027082 is worse than the older 16/39 result's 0.017901.
+Against its matched wide-camera control, both recall (12→17) and balanced MSE
+(0.084515→0.027082) improve.
+
+This gain is **configuration-dependent**: uniform allocation regresses sharply
+in the two other geometries. Retain `8ce91d5` plus Attempt 14's input/scenario as
+the current recall-best experimental combination, and preserve `70b12dc` (the
+previous information-slot implementation) plus first-series Attempt 28 as the
+16/39, lower-MSE checkpoint. This is not a universally better scoring policy or
+live perception acceptance. No source scenario or live configuration file was
+changed. Fourteen renewed configurations are terminal; the >50% goal remains
+unmet. Three additional detections would give 20/39 (51.28%).
+
+### 15–17 — Wider horizontal view (running)
+
+Use the current uniform scoring checkpoint throughout. Attempt 15 changes the
+750 m baseline FoV from 90 to 120 degrees, reusing the existing prepared
+first-series `attempt-19/input-valid/` and its scenario; compare with Attempt 12.
+Attempt 16 changes the new recall-best 1,500 m offset view to 120 degrees;
+compare with Attempt 14. Attempt 17 reduces that 120-degree offset-view range to
+1,000 m, allowing a range comparison against Attempt 16.
+
+Prepared inputs: `preparation/fov120-range1500-partition200/input/` (523 views,
+55.66 s) and `preparation/fov120-range1000-partition200/input/` (523 views,
+44.73 s). Effective config/public-source equality checks verify only camera FoV
+differs from each respective 90-degree range control. Native visibility rows are
+regenerated; all other sensor and flight settings, including four headings,
+stay unchanged. Outputs: `attempt-15/` through `attempt-17/`. These are not
+completed attempts or demonstrated gains yet.
 
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
