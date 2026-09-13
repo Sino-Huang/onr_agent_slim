@@ -125,3 +125,55 @@ active-plan gate and explainability consistently. Verify a full 300 m replay
 before counting an optimization attempt or claiming improvement. Consider a
 compact time/choice formulation if explicit arc flow is the bottleneck; no
 physical workflow or evidence contract change is implied.
+
+## Equivalent encodings and network compression controls
+
+The next controls keep the same public candidate family and selected-count
+primary objective. They are solver feasibility probes, not completed Mission
+optimization configurations or recall measurements.
+
+- **Concave envelope**: replace variable-indexed G(k) lookup with linear upper
+  bounds on information credit. For a discretely concave table these bounds
+  equal G(k) at every integer count. A native assertion rejects a table whose
+  rounded increments are not concave; no lower envelope is silently substituted.
+- **Shared suffixes**: factor identical successor-list suffixes through
+  zero-utility, report-free network hubs. This preserves candidate paths but
+  unexpectedly expands this instance because its suffixes rarely coincide.
+- **Shared intervals**: factor consecutive successor ranges through a balanced
+  tree of candidate leaves. This reduces edges without pruning candidate paths.
+- **Compiler control**: retain the direct envelope formulation but disable
+  optional MiniZinc flattening optimizations (`-O0`). Production executor flags
+  and its 30 s limit remain unchanged.
+
+| Probe directory | Nodes | Edges | Generation seconds | Native result |
+| --- | --- | --- | --- | --- |
+| `envelope-probe` | 6,194 | 444,856 | 9.93 | 30 s timeout |
+| `suffix-envelope-probe` | 334,584 | 662,973 | 10.79 | 30 s timeout |
+| `interval-envelope-probe` | 12,386 | 334,017 | 10.84 | 30 s timeout |
+| `direct-envelope-o0-probe` | 6,194 | 444,856 | 9.84 | 30 s timeout |
+
+The suffix benchmark was launched before its CLI was consolidated; reproduce
+it with `--arc-compression suffix`. Current choices are `none`, `suffix`, and
+`interval`. All above use `--information-encoding envelope`; the last additionally
+uses `--no-flatten-optimize`. No variant produced an optimal full-size result.
+Only the earlier direct compile-only control proves compilation alone exceeds
+the limit; do not report a measured compilation/search split for these timeout
+runs. The interval reduction is about 25%, insufficient for the full invocation.
+
+Verification: both encodings and all three network representations agree with
+exhaustive enumeration on the native diamond fixture. Each compressor also
+preserves every candidate path across all 1,024 edge subsets of a five-node
+ordered graph. **14 diagnostic tests pass**; combined with existing planner
+tests, **97 pass in 17.86 s** (`test-compressed-focused.xml`). Changed-file Ruff
+passes. These tests prove the stated small-fixture semantics, not integration
+with the live planner or full-size recall. Runtime planner/scorer/gate and
+Physical code remain unchanged. No jobs remain running.
+
+Keep the envelope and compression controls as reproducible benchmark options,
+not promoted production mechanisms. Next investigate a representation that
+avoids expanding the large explicit arc network (for example, choices ordered
+by observation epoch with direct travel constraints), while preserving true
+route-count scoring, report uniqueness, four headings, exact selected-route
+verification, and the eventual lexicographic objective and gate integration.
+The goal remains active at **0/50**; no baseline or diagnostic failure is used
+to exhaust the user-authorized optimization budget.

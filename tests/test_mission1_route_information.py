@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import subprocess
+from collections import Counter
 from itertools import pairwise
 from pathlib import Path
 
@@ -93,3 +94,63 @@ output ["{\\"chosen\\":" ++ show(chosen) ++ ",\\"score\\":" ++ show(score) ++ "}
     assert tuple(native["chosen"]) == max(paths, key=route_score)
     assert native["score"] == 100
     assert "==========" in result.stdout
+
+
+@pytest.mark.parametrize("encoding", ["lookup", "envelope"])
+@pytest.mark.parametrize("compress", ["none", "suffix", "interval"])
+def test_benchmark_native_encodings_match_exhaustive_diamond(tmp_path, monkeypatch, encoding, compress):
+    monkeypatch.syspath_prepend(str(Path("scripts").resolve()))
+    import benchmark_mission1_route_information as benchmark
+
+    model = tmp_path / "probe.mzn"
+    data = tmp_path / "data.dzn"
+    model.write_text(benchmark.information_model(encoding))
+    arcs = [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4)]
+    nodes = 5
+    if compress != "none":
+        compressor = {"suffix": benchmark.compress_arc_suffixes, "interval": benchmark.compress_arc_intervals}[compress]
+        nodes, arcs = compressor(3, arcs)
+    arrays = {"af": [u for u, _ in arcs], "at": [v for _, v in arcs],
+              "ie": [i+1 for i in sorted(range(len(arcs)), key=lambda i: (arcs[i][1], arcs[i][0]))]}
+    lines = [f"C=3; A={len(arcs)}; S=2; R=3; K=2; N={nodes};",
+             "base=[20,0,0]; rc=[1,2,3]; rs=[1,2,1];",
+             "gain=array2d(1..2,0..2,[0,50,67,0,50,67]);"]
+    lines.extend(f"{key}={json.dumps(value)};" for key, value in arrays.items())
+    for name, counts in (("os", Counter(arrays["af"])), ("ins", Counter(arrays["at"]))):
+        offsets = [1]
+        for node in range(nodes):
+            offsets.append(offsets[-1] + counts[node])
+        lines.append(f"{name}=array1d(0..N,{json.dumps(offsets)});")
+    data.write_text("\n".join(lines))
+    result = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(model), str(data),
+    ], capture_output=True, text=True, check=True, timeout=30)
+    native = json.loads(result.stdout.splitlines()[0])
+    assert native == {"objective": 100, "selected": [2, 3]}
+    assert "==========" in result.stdout
+
+
+@pytest.mark.parametrize("compression", ["suffix", "interval"])
+def test_compression_preserves_every_candidate_path(monkeypatch, compression):
+    monkeypatch.syspath_prepend(str(Path("scripts").resolve()))
+    import benchmark_mission1_route_information as benchmark
+
+    def paths(arcs, count):
+        outgoing = {}
+        for u, v in arcs:
+            outgoing.setdefault(u, []).append(v)
+        def walk(node, visited):
+            if node == count + 1:
+                return {visited}
+            return set().union(*(walk(v, visited + ((v,) if 1 <= v <= count else ()))
+                                 for v in outgoing.get(node, [])))
+        return walk(0, ())
+
+    # Enumerate all edge subsets of a small ordered graph, including no route.
+    edges = [(u, v) for u in range(4) for v in range(u + 1, 5)]
+    for mask in range(1 << len(edges)):
+        arcs = [edge for i, edge in enumerate(edges) if mask & (1 << i)]
+        compressor = {"suffix": benchmark.compress_arc_suffixes, "interval": benchmark.compress_arc_intervals}[compression]
+        _, compressed = compressor(3, arcs)
+        assert paths(arcs, 3) == paths(compressed, 3)
