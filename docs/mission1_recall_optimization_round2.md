@@ -548,6 +548,71 @@ Sampled terminal public coverage is 43/107 for 26 (previously 40) and remains
 26/107 for 27. Both closed-loop replays are running with regenerated visibility.
 Neither is a completed optimization attempt or a proven recall gain yet.
 
+### 26/27 — Corrected-camera recall measurements (completed)
+
+Both regenerated inputs now have terminal continuous-feedback results and
+passing execution audits. Agent scoring stays at `8ce91d5`; Physical camera
+is `ef05954`. These results supersede the pending status immediately above.
+
+| Attempt | Recall / old-camera control | Balanced MSE | Checks: clean/omitted/altered | Native solve seconds | Rollout seconds |
+| --- | --- | --- | --- | --- | --- |
+| 26: 1,500 m / 200-cell / offset25 | 16/39 / 17/39 | 0.06509499 | 99/7/9 | 12.439/4.292 | 569.95 |
+| 27: 750 m / 100-cell / full sampler | 13/39 / 13/39 | 0.07430925 | 72/6/7 | 11.181 | 366.76 |
+
+All three native revisions are optimal and exactly match the oracle. Initial
+candidates/generation: 8,450/24.61 s and 7,559/18.34 s. Attempt 26 has 68 gate
+assessments, replacing the route at 141 s; 27 has 53 assessments and no
+replacement. Attempt 27's initial assignments and all check IDs, outcomes and
+timestamps match its old-camera control. Sensing transit/wait/surveillance:
+26 = 149/57/93.5 s; 27 = 153.5/85/61 s. Detected issues by those phases:
+2/0/14 and 1/1/11. Scheduled fixed-view segments: 26/32; no pursuit.
+
+The correction removes false blind cells, but it is **not a demonstrated recall
+improvement**. Historical best remains 17/39 with the old camera; the best
+verified corrected-camera result so far is 16/39. Do not restore the camera bug
+to recover one favorable route. The 750 m control shows unchanged detection,
+not a universal invariance of visibility. `ledger-audit-27.json` verifies 27
+terminal configurations, leaving only 28–30 in progress.
+
+### Remaining trials and what the misses indicate
+
+Final three configurations keep corrected visibility and current scoring:
+28 = 2,000 m range; 29 = optional 4.5 s public gap holds at 1,500 m;
+30 = +4 s fixed observations at 1,500 m. Each uses 200-cell partitions,
+25 m offset-only sampling, unchanged detector lookback and four headings.
+Prepared rows/seconds: 523/262.65, 938/401.19 (415 gap rows), 503/227.60.
+Inputs and replays are under `attempt-28/`–`attempt-30/`; compare with 26.
+These preparations are not completed recall attempts.
+
+The corrected wide-camera route checks **115 events**, versus the historical
+best's **84**, yet detects one fewer issue. It gains 32 clean checks, no net
+omitted detections, and loses one net altered detection. More total coverage
+therefore does not establish better issue recall.
+
+The evidence histories differ substantially. Historical 14 finds four issues
+on vessel 1 and ten on vessel 17; corrected 26 never checks either vessel,
+leaving both at the population prior (mean 0.1329). Instead it finds six issues
+on vessel 9, seven on 13 and three on 5. Attempt 26 catches six of twenty
+earlier issues and ten of nineteen at the final epoch. These IDs/counts are
+retrospective diagnostics only, never planner-specific weights or targets.
+The two routes' detected-issue union is 30/39, but **that union is not one
+feasible route's recall**, nor evidence that 30/39 is attainable.
+
+This supports investigating the value of early evidence before another broad
+parameter sweep. Current `_batch_information_value` shares each vessel's
+bounded information budget uniformly across its remaining public schedule;
+it does not value an early check's effect on subsequent route choices. Its
+docstring explicitly acknowledges subset undervaluation and absence of
+route-conditioned Bayesian lookahead. The earlier information-slot policy has
+a different bias: unobserved earlier reports consume information slots. Neither
+surrogate is exact sequential information gain. A future comparison should
+measure route-conditioned diminishing information and the downstream value of
+early risk discovery using public beliefs, keeping MiniZinc authority and the
+10% gate. This is a hypothesis, not a verified improvement or authorization to
+change the mission's recall/estimation weighting. Faster flight, altitude and
+wider FoV controls above do not support treating those settings as the sole
+remaining cause.
+
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
 for review if actual implementation requires a physical lifecycle/evidence-contract
