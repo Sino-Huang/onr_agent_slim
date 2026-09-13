@@ -1,5 +1,50 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempt 19 result and coverage diagnosis
+
+Paired checkpoints Agent `f43c348` and Physical `dd5b703` are pushed. The final
+full non-live suites pass: Agent **876 tests** (21 excluded, 284.34 s), Physical
+**465 tests** (13 excluded, 209.78 s). The 45 s information / 120 s route replay
+finishes at 303.5 s with **11/39**, MSE 0.066891006 and 54 checks (43 clean,
+5 omitted, 6 altered). All twelve native revisions are optimal with production
+oracle parity. The continuous-execution audit passes. The additional independent
+count-state audit is pending at this checkpoint; do not count its revisions yet.
+Artifacts: `attempt-19/evaluation/`, `attempt-19/audit.json`.
+
+The matched current-code coupled H45 control also gives 11/39, but takes
+158.88 s versus **598.51 s** for Attempt 19. All seventeen control revisions
+pass the independent audit. The longer route horizon is not a preferred recall
+configuration. These timing comparisons are concurrent-process measurements,
+not isolated hardware benchmarks. Both runs use fixed-view sensing only.
+
+Evaluator-only classification using the existing world-model report pairings
+finds the following actual/detected issue counts: entity 1 = 4/0, 5 = 5/1,
+9 = 7/5, 13 = 9/5, 17 = 14/0. Entities 1 and 17 receive no checks at all.
+Their eighteen issues explain eighteen of the twenty-eight misses, but cannot
+be treated as eighteen independently recoverable gains: nineteen issues occur
+simultaneously at 299 s in separated locations. Current detections are 4/20
+before 299 s and 7/19 at 299 s. Private labels remain evaluation-only.
+
+All public reports of entities 1 and 17 have prepared native views (12 and 8
+respectively), so missing input geometry is not the explanation. None survives
+the combined reachability/horizon constraints at any of the seventeen H45
+accepted snapshots. The 120 s route experiment does offer some distant fixed
+views, but does not execute them. This distinguishes candidate exclusion in
+the short-horizon control from route selection in the longer-horizon run.
+
+The public schedule also exposes a pursuit restriction: entity 17's first report
+at 15 s is unreachable from the initial pose; its next reports at 120 and 249 s
+are 129 s apart. Existing pursuit windows must start at a report and include at
+least two reports, so a useful bounded between-report tracking segment is not
+offered by either horizon. This is a general candidate-design hypothesis, not
+authorization to target an entity using truth or proof of a recall improvement.
+
+The next configuration uses existing report-free fixed-view gap holds of 20 s
+with the best group/base/25 m views, H45 and the unchanged camera. Unlike the
+earlier 4.5 s hold comparison, this tests sustained omission-search exposure.
+It requires no command lifecycle or evidence-contract change. Preparation is
+under `attempt-20/input/`; no recall result is assigned before replay completion.
+
 ## Separate route and information horizons — implementation checkpoint
 
 The shared builder and gate accept an optional `route_horizon_seconds` at least
