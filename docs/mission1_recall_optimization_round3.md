@@ -2,6 +2,34 @@
 
 ## Count-history reduction checkpoint
 
+### Bounded multi-view implementation checkpoint
+
+Bounded information-aware planning now admits physically reachable visits to
+different vessels within the same report epoch. It tracks selected vessel/epoch
+batches until their last alternative, preventing nonadjacent report reuse and
+double credit for a shared report-owned omission cell. Reports within one
+vessel/epoch remain an atomic batch; this is not unrestricted report-subset
+scheduling. Counts still forget only future-irrelevant vessels. The independent
+oracle uses batch sets and full count vectors; native graph expansion uses bit
+masks and reduced counts. Source choices and positive-intermediate arcs remain
+unpruned until histories are lifted, when ordinary positive-node dominance is
+safe again. No production MiniZinc model or physical command changes.
+
+The existing optional information-horizon API enables this bounded behavior;
+unconfigured full-horizon/live behavior remains unchanged. Both advisory solving
+and the gate use the shared builder. The exact 10% gate is unchanged. The small
+cardinal-turn fixture now schedules two distinct-vessel reports at the same
+epoch and refuses a nonadjacent repeat. A separate same-vessel/epoch report
+test protects shared omission-cell ownership. Real MiniZinc matches the fixture.
+
+**121 focused tests pass in 19.79 s**; changed-file Ruff passes excluding the
+existing TRY004 rule. Initial actual H=45 public snapshot: 172 lifted candidates,
+0.263 s generation, 0.335 s native optimal solve with oracle parity. Artifact:
+`multiview-h45-probe/`. Full Agent non-live and Physical replay tests are running;
+no full-suite or recall result is claimed at this checkpoint. Next genuine
+configuration is Attempt 10: same corrected 300 m input and H=45, changing only
+bounded multi-view semantics, compared against Attempt 04.
+
 ### Explicit downstream-decision diagnostic
 
 #### Acquisition-aware extension

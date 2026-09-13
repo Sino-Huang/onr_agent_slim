@@ -706,12 +706,15 @@ def _candidate_arcs(
     candidates: Sequence[SurveillanceCandidate], speed: float,
     quarter_turn_seconds: float = 0.0,
     chronological_reports: bool = False,
-    *, information_aware: bool = False,
+    *, information_aware: bool = False, report_history_aware: bool = False,
 ) -> tuple[tuple[int, int], ...]:
     """Build the same reduced arcs without materializing the dense closure.
 
     Generated candidates end with observation dwell; disjoint time windows
-    cannot repeat a report. Backward traversal reuses each target's reachable
+    cannot repeat a report when report epochs are strictly ordered. Otherwise
+    report-history-aware callers defer positive-intermediate reduction until
+    batch histories are lifted; an intermediate can consume a later report.
+    Backward traversal reuses each target's reachable
     successors: a compatible path through a positive-utility intermediate
     dominates a direct arc to the same successor. Zero-utility candidates
     must not erase a shorter equivalent route.
@@ -759,7 +762,7 @@ def _candidate_arcs(
                 continue
             arcs.append((source, target))
             successors |= bit | reachable[target]
-            if positive[target]:
+            if positive[target] and not report_history_aware:
                 pending &= ~reachable[target]
         reachable[source] = successors
     # Every candidate has already passed initial-pose/time admission.
@@ -769,7 +772,7 @@ def _candidate_arcs(
         pending ^= bit
         target = bit.bit_length() - 1
         arcs.append((0, target))
-        if positive[target]:
+        if positive[target] and not report_history_aware:
             pending &= ~reachable[target]
     ordered_arcs = tuple(sorted(arcs))
     return (
@@ -1046,8 +1049,10 @@ def build_candidate_dag(
     sink = len(ordered_candidates) + 1
     graph = CandidateDAG(
         ordered_candidates,
-        _candidate_arcs(ordered_candidates, speed, turn_seconds, observation_window > 0,
-                        information_aware=information_horizon_seconds is not None),
+        _candidate_arcs(ordered_candidates, speed, turn_seconds,
+                        observation_window > 0 and information_horizon_seconds is None,
+                        information_aware=information_horizon_seconds is not None,
+                        report_history_aware=information_horizon_seconds is not None),
         source,
         sink,
     )
@@ -1205,43 +1210,58 @@ def expand_information_states(
     position = {entity: i for i, entity in enumerate(entities)}
     by_id = {item.report_id: item for item in opportunities}
     relevant: list[set[int]] = [set() for _ in graph.candidates]
+    # Reports of one vessel at one epoch share a sensing/omission cell. Keep
+    # their batch identity until its final alternative to prevent nonadjacent
+    # report or interval reuse, without excluding other vessels at that epoch.
+    batches = sorted({(item.entity_id, item.time_s) for item in opportunities})
+    batch_bits = {batch: 1 << index for index, batch in enumerate(batches)}
+    masks = [sum({batch_bits[(by_id[r].entity_id, by_id[r].time_s)] for r in c.report_ids})
+             for c in graph.candidates]
+    future_masks = [0] * (len(graph.candidates) + 1)
     future: set[int] = set()
     for index in range(len(graph.candidates) - 1, -1, -1):
         future = future | {position[by_id[r].entity_id]
                            for r in graph.candidates[index].report_ids}
         relevant[index] = future
+        future_masks[index] = future_masks[index + 1] | masks[index]
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
     for source, target in graph.arcs:
         incoming[target].append(source)
-    states: list[dict[tuple[int, ...], int]] = [{} for _ in range(graph.sink + 1)]
-    states[graph.source][(0,) * len(entities)] = 0
+    states: list[dict[tuple[tuple[int, ...], int], int]] = [{} for _ in range(graph.sink + 1)]
+    states[graph.source][((0,) * len(entities), 0)] = 0
     candidates = []
     arcs = []
     for node, candidate in enumerate(graph.candidates, start=1):
         increment = [0] * len(entities)
         for report in candidate.report_ids:
             increment[position[by_id[report].entity_id]] += 1
-        connections: dict[tuple[int, ...], set[int]] = {}
+        connections: dict[tuple[tuple[int, ...], int], set[int]] = {}
         for previous in incoming[node]:
-            for counts, lifted in states[previous].items():
+            for (counts, seen), lifted in states[previous].items():
+                if seen & masks[node - 1]:
+                    continue
                 after = tuple(a + b if i in relevant[node - 1] else 0
                               for i, (a, b) in enumerate(zip(counts, increment)))
-                connections.setdefault(after, set()).add(lifted)
-        for after, previous_nodes in sorted(connections.items()):
+                remaining = (seen | masks[node - 1]) & future_masks[node]
+                connections.setdefault((after, remaining), set()).add(lifted)
+        for (after, remaining), previous_nodes in sorted(connections.items()):
             credit = sum(tables[entity][after[i]] - tables[entity][after[i] - increment[i]]
                          for i, entity in enumerate(entities))
             estimation = credit / SCORE_SCALE
             label = ",".join(map(str, after))
+            if remaining:
+                label += f":seen:{remaining:x}"
             candidates.append(replace(candidate, candidate_id=f"{candidate.candidate_id}:counts:{label}",
                                       estimation_utility=estimation,
                                       combined_score=candidate.recall_utility + estimation + candidate.omission_yield))
             lifted = len(candidates)
-            states[node][after] = lifted
+            states[node][after, remaining] = lifted
             arcs.extend((previous, lifted) for previous in sorted(previous_nodes))
     sink = len(candidates) + 1
     for previous in incoming[graph.sink]:
         arcs.extend((lifted, sink) for lifted in states[previous].values())
-    return CandidateDAG(tuple(candidates), tuple(sorted(set(arcs))), 0, sink)
+    return CandidateDAG(tuple(candidates),
+                        _prune_dominated_arcs(set(arcs), candidates, sink), 0, sink)
 
 
 def route_information_oracle(
@@ -1251,19 +1271,25 @@ def route_information_oracle(
 
     The graph must preserve alternatives for history-dependent rewards: do not
     use additive terminal dominance or additive objective-potential pruning.
-    Generated graph paths already enforce public-report uniqueness. Retain one
-    best lexicographic prefix per node AND count vector, never per node alone.
+    Track vessel/epoch batches independently of counts to prevent reusing a
+    report or its omission cell across delayed observation alternatives.
     """
     tables = route_information_tables(opportunities)
     entities = sorted(tables)
     positions = {entity: i for i, entity in enumerate(entities)}
     by_id = {item.report_id: item for item in opportunities}
     increments = []
+    node_batches = []
+    last_batch_node = {}
     for candidate in graph.candidates:
         counts = [0] * len(entities)
         for report in candidate.report_ids:
             counts[positions[by_id[report].entity_id]] += 1
         increments.append(tuple(counts))
+        batches = frozenset((by_id[r].entity_id, by_id[r].time_s) for r in candidate.report_ids)
+        node_batches.append(batches)
+        for batch in batches:
+            last_batch_node[batch] = len(increments)
     nodes = tuple(replace(node, score=round(candidate.recall_utility * SCORE_SCALE)
                           + round(candidate.omission_yield * SCORE_SCALE))
                   for node, candidate in zip(_route_nodes(graph.candidates), graph.candidates))
@@ -1271,24 +1297,30 @@ def route_information_oracle(
     for source, target in graph.arcs:
         incoming[target].append(source)
     frontiers: list[dict] = [{} for _ in range(graph.sink + 1)]
-    frontiers[graph.source][(0,) * len(entities)] = (0, 0, 0, 0, ())
+    frontiers[graph.source][((0,) * len(entities), frozenset())] = (0, 0, 0, 0, ())
     def priority(record):
         return record[0], -record[1], -record[2], -record[3], tuple(-i for i in reversed(record[4]))
     for node in range(graph.source + 1, graph.sink + 1):
         for previous in incoming[node]:
-            for counts, prior in frontiers[previous].items():
+            for (counts, seen), prior in frontiers[previous].items():
                 next_counts = counts
+                next_seen = frozenset()
                 record = prior
                 if node != graph.sink:
+                    if seen & node_batches[node - 1]:
+                        continue
+                    next_seen = frozenset(batch for batch in seen | node_batches[node - 1]
+                                          if last_batch_node[batch] > node)
                     next_counts = tuple(a + b for a, b in zip(counts, increments[node - 1]))
                     score, maneuvers, duration, order = _route_cost(nodes, previous, node)
                     score += sum(tables[entity][next_counts[i]] - tables[entity][counts[i]]
                                  for i, entity in enumerate(entities))
                     record = (prior[0] + score, prior[1] + maneuvers, prior[2] + duration,
                               prior[3] + order, prior[4] + (node - 1,))
-                incumbent = frontiers[node].get(next_counts)
+                key = next_counts, next_seen
+                incumbent = frontiers[node].get(key)
                 if incumbent is None or priority(record) > priority(incumbent):
-                    frontiers[node][next_counts] = record
+                    frontiers[node][key] = record
     if not frontiers[graph.sink]:
         raise ValueError("Mission 1 candidate graph has no route")
     best = max(frontiers[graph.sink].values(), key=priority)

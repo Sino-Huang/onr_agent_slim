@@ -116,6 +116,66 @@ def test_expanded_graph_merges_histories_after_last_observation():
     assert result.duration_s == reference.duration_s
 
 
+def multi_view_environment():
+    environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 2, 10, 0, 0)], fov=1)
+    environment["observation_window_seconds"] = 4
+    environment["controlled_vehicle"]["quarter_turn_seconds"] = 0.5
+    environment["surveillance_views"] = [
+        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a"], "observation_delay_s": 0},
+        {"x": 0, "y": 0, "arrival_direction": 1, "report_ids": ["b"], "observation_delay_s": 1},
+        {"x": 0, "y": 0, "arrival_direction": 2, "report_ids": ["a"], "observation_delay_s": 2},
+    ]
+    return environment
+
+
+def test_bounded_multi_view_native_route_observes_two_vessels_at_one_epoch(tmp_path):
+    from test_mission1_planning import EXAMPLE_ROOT
+
+    from onr.application.mission1_planning import serialize_minizinc_data
+
+    environment = multi_view_environment()
+    belief = _belief((1, 2))
+    graph = build_candidate_dag(environment, belief, information_horizon_seconds=20)
+    route = longest_path_oracle(graph)
+    assert set(route.covered_report_ids) == {"a", "b"}
+    assert len(route.covered_report_ids) == 2
+    assert len(route.candidates) == 2
+    data = tmp_path / "multi-view.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    native = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True, timeout=30)
+    result = json.loads(native.stdout.splitlines()[0])
+    assert "==========" in native.stdout
+    assert result["combined_score"] == round(route.score * SCORE_SCALE)
+    assert [r for a in result["assignments"] for r in a["parameters"]["report_ids"]] == list(route.covered_report_ids)
+
+
+def test_report_history_keeps_direct_alternative_and_blocks_nonadjacent_batch_reuse():
+    from unittest.mock import patch
+
+    from onr.application import mission1_planning as planning
+
+    environment = multi_view_environment()
+    # A different report from the same vessel/epoch still owns the same
+    # omission cell. It cannot be credited as a second batch after visiting b.
+    environment["static_info"].append(_report("c", 1, 10, 0, 0))
+    environment["surveillance_views"][-1]["report_ids"] = ["c"]
+    belief = _belief((1, 2))
+    with patch.object(planning, "expand_information_states", side_effect=lambda g, o: g):
+        graph = build_candidate_dag(environment, belief, information_horizon_seconds=20)
+    assert all((0, i) in graph.arcs for i in range(1, graph.sink))
+    opportunities = _opportunities(environment, belief)
+    reference = route_information_oracle(graph, opportunities)
+    expanded = longest_path_oracle(expand_information_states(graph, opportunities))
+    for route in (reference, expanded):
+        assert "b" in route.covered_report_ids
+        assert len(set(route.covered_report_ids) & {"a", "c"}) == 1
+    assert expanded.score == reference.score
+    assert expanded.duration_s == reference.duration_s
+
+
 def test_route_information_assignment_rounding_telescopes_across_merged_views():
     graph,opportunities = history_graph()
     path = (graph.candidates[0],graph.candidates[2],graph.candidates[3])
