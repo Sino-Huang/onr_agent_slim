@@ -143,6 +143,65 @@ def test_holding_exposure_is_bounded_by_disclosed_activity_span():
     assert holding_exposures(environment, belief) == {}
 
 
+def test_public_fix_opens_early_exposure_without_becoming_a_report():
+    from onr.application.mission1_planning import public_report_rates
+
+    environment, belief = _holding_environment(), _belief((1,))
+    environment["static_info"] = environment["static_info"][1:]
+    view = environment["surveillance_views"][0]
+    view["holding_intervals"] = [{"entity_id": 1, "start_s": 0, "end_s": 10}]
+    assert holding_exposures(environment, belief) == {}
+    fix = {"entity_id": 1, "sampled_at_s": 0, "position": {"x": 0, "y": 0}}
+    environment["world_model_info"]["public_position_fixes"] = [fix, fix]
+    rate = belief.ships[0].expected_omission_probability * .1
+    assert holding_exposures(environment, belief)[(0, 0, 0)] == [(1, 0, 6, rate)]
+    assert public_report_rates(environment, belief) == {1: .1}
+    assert [r["report_id"] for r in environment["static_info"]] == ["anchor", "future"]
+    environment["world_model_info"]["public_position_fixes"] = [
+        {**fix, "sampled_at_s": 1}, {**fix, "entity_id": 999},
+    ]
+    assert holding_exposures(environment, belief) == {}
+
+
+def test_early_gps_gap_matches_native_and_gate(tmp_path):
+    environment, belief = _holding_environment(), _belief((1,))
+    environment["static_info"] = environment["static_info"][1:]
+    environment["world_model_info"]["public_position_fixes"] = [
+        {"entity_id": 1, "sampled_at_s": 0, "position": {"x": 0, "y": 0}},
+    ]
+    environment["surveillance_views"] = [{
+        "x": 0, "y": 0, "arrival_direction": 0, "report_ids": [],
+        "holding_intervals": [{"entity_id": 1, "start_s": 0, "end_s": 6}],
+        "gap_observation_windows": [{"start_s": 1, "end_s": 5.5}],
+    }]
+    graph = build_candidate_dag(environment, belief, information_horizon_seconds=15)
+    route = longest_path_oracle(graph)
+    assert len(route.candidates) == 1
+    assert route.covered_report_ids == ()
+    assert route.score == pytest.approx(4 * belief.ships[0].expected_omission_probability * .1, abs=1e-6)
+    data = tmp_path / "early-gap.dzn"
+    data.write_text(serialize_minizinc_data(graph))
+    native = subprocess.run([
+        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
+        str(EXAMPLE_ROOT / "model.mzn"), str(data),
+    ], capture_output=True, text=True, check=True)
+    result = json.loads(native.stdout.splitlines()[0])
+    assert result["combined_score"] == round(route.score * SCORE_SCALE)
+    assignment = result["assignments"][0]
+    assert assignment["parameters"]["report_ids"] == []
+    context = {"candidate_id": assignment["candidate_id"], "surveillance_mode": "fixed_view",
+               "target_entity_id": None, "target_report_ids": [],
+               "observation_window": {"start": {"seconds": 1}, "duration": {"seconds": 4.5}},
+               "planner_item": assignment}
+    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
+                      planning_profile="temporal", entry_state="view", states=("view",),
+                      transitions=(), terminal_states=("view",), state_context={"view": context})
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="view", active_state_context=context)
+    decision, advisory = Mission1ReplanGate(information_horizon_seconds=15).assess(environment, belief, chart, status)
+    assert decision.current_score == advisory.score == route.score
+
+
 def test_large_graph_inspection_does_not_rescan_all_arcs_per_node(tmp_path, monkeypatch):
     import importlib.util
 

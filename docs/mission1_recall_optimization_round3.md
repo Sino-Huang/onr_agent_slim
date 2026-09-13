@@ -1,5 +1,46 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Public GPS anchors and new demonstration-task direction
+
+The operator now explicitly requests a new task demonstrating discovery of a
+suspicious vessel followed by evidence-conditioned MiniZinc pursuit and high
+recall. Keep `demo-001` and its unchanged39-outcome results separate; a new
+task's score is not an improvement on that denominator. Do not force a mode,
+publish hidden vessel labels, or inject ground-truth targets into planner inputs.
+The task should provide reachable early joint observations followed by sustained,
+spatially separated vessel activity. Events must agree with the generated vessel
+kinematics. Acceptance needs a prior fixed-view choice, actual discrepancy
+evidence, raised posterior, a native verified pursuit replan, unique issue recall,
+and explicit disclosure of offline pursuit-simulation limitations.
+
+The small pending GPS correction is retained as a reversible checkpoint before
+that task work. `public_position_fix_anchors` shares already sampled public fix
+geometry between preparation and omission scoring. GPS fixes are not reports:
+they do not enter report-rate calculations or information/report counts. They
+can extend the beginning (not the ending) of a disclosed activity span. Unknown
+vessels and future fixes are ignored. Both early-forecast and exposure regression
+tests fail before the change. Agent focused suites pass175 tests; the final
+holding suite including a new native/oracle/gate early-GPS parity case passes18.
+Physical preparation passes24 tests; Ruff passes (Agent excludes existingTRY004).
+No live defaults, belief likelihoods, commands or source instance changed.
+
+Attempt22 completes at303.5 with11/39,MSE0.066891006,54checks and12native optimal
+revisions, maxnative22.777s, rollout636.22s. Its three advisory gap assignments
+are all replaced before surveillance execution (match revision/candidate IDs,
+not emptied report-ID lists on executed ticks). Execution audit passes;
+independent audit is pending. Attempt23 (information15/route120, same gap input)
+also completes at11/39,56checks,MSE0.066584392,12native optimal revisions,
+maxnative14.064s,rollout531.28s. It executes ideal-radius pursuit of entity5 at
+141.5..145.5s. This is not native-camera pursuit acceptance or improved recall.
+Execution audit passes; independent audit is pending. Their inputs predate the
+GPS-anchor correction; no new early-gap comparison is claimed yet.
+
+Evaluator-only `inspect-pairwise-capacity.py` / `pairwise-capacity.json` gives
+radial pairwise relaxation bounds20,20,21,24 at radii300,350,450,600m, with30m/s
+Euclidean travel and4s capture windows. These are not achievable routes. Native
+raster-mask enclosure is unverified, so they do not prove a native upper bound
+or that50% is impossible. This diagnostic is not an optimization configuration.
+
 ## Attempt 21 audited; combined comparison running
 
 Attempt 21 completes at 303.5 s in **156.83 s**, still **11/39**, MSE0.066891006,

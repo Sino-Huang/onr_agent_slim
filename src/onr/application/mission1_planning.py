@@ -266,6 +266,26 @@ def _public_reports(
     return tuple(valid)
 
 
+def public_position_fix_anchors(environment, belief):
+    """Known public geometry, not reports, checks, or future trajectory samples.
+
+    Return (entity, sampled time, north, east) anchors shared by forecast
+    preparation and omission-exposure bounds. Duplicate fixes add no credit.
+    """
+    known = {ship.entity_id for ship in belief.ships}
+    now = float(environment["mission_time_seconds"])
+    result = set()
+    for fix in environment.get("world_model_info", {}).get("public_position_fixes", ()):
+        entity = fix["entity_id"]
+        sampled = float(fix["sampled_at_s"])
+        if entity not in known or isinstance(entity, bool) or not 0 <= sampled <= now:
+            continue
+        x, y = float(fix["position"]["x"]), float(fix["position"]["y"])
+        if math.isfinite(x) and math.isfinite(y):
+            result.add((entity, sampled, x, y))
+    return tuple(sorted(result))
+
+
 def public_report_rates(
     environment: Mapping[str, object], belief: ReportingReliabilitySnapshot
 ) -> dict[int, float]:
@@ -420,6 +440,10 @@ def holding_exposures(environment, belief):
         reserved.setdefault(report.entity_id, []).append((max(0, report.time_s - lookback), report.time_s))
         first, last = activity_span.get(report.entity_id, (report.time_s, report.time_s))
         activity_span[report.entity_id] = min(first, report.time_s), max(last, report.time_s)
+    for ship, sampled, _x, _y in public_position_fix_anchors(environment, belief):
+        if ship in activity_span:
+            first, last = activity_span[ship]
+            activity_span[ship] = min(first, sampled), last
     reserved = {ship: merge_time_intervals(rows) for ship, rows in reserved.items()}
     raw = {}
     for view in environment.get("surveillance_views", ()):
