@@ -395,7 +395,7 @@ live perception acceptance. No source scenario or live configuration file was
 changed. Fourteen renewed configurations are terminal; the >50% goal remains
 unmet. Three additional detections would give 20/39 (51.28%).
 
-### 15–17 — Wider horizontal view (running)
+### 15–17 — Wider horizontal view (completed; no new best)
 
 Use the current uniform scoring checkpoint throughout. Attempt 15 changes the
 750 m baseline FoV from 90 to 120 degrees, reusing the existing prepared
@@ -409,8 +409,140 @@ Prepared inputs: `preparation/fov120-range1500-partition200/input/` (523 views,
 44.73 s). Effective config/public-source equality checks verify only camera FoV
 differs from each respective 90-degree range control. Native visibility rows are
 regenerated; all other sensor and flight settings, including four headings,
-stay unchanged. Outputs: `attempt-15/` through `attempt-17/`. These are not
-completed attempts or demonstrated gains yet.
+stay unchanged. Outputs and passing execution audits: `attempt-15/` through
+`attempt-17/`.
+
+| Attempt | Recall / matched control | Balanced MSE | Checks: clean/omitted/altered | Initial candidates | Native solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 15: 750 m / 120 degrees | 13/39 / 13/39 | 0.07428903 | 73/6/7 | 9,564 | 17.974 | 521.46 / 473.57 |
+| 16: 1,500 m offset / 120 degrees | 16/39 / 17/39 | 0.03090396 | 62/6/10 | 10,219 | 17.247/5.703 | 632.77 / 550.10 |
+| 17: 1,000 m offset / 120 degrees | 14/39 / 16/39 | 0.07749663 | 54/5/9 | 9,448 | 16.108/5.144/4.095 | 539.84 / 459.79 |
+
+All six revisions reach native optimal and exact oracle parity. Attempt 15 has
+53 assessments and no replacement; 16 has 53 assessments and replacement at
+142 s; 17 has 48 assessments and replacements at 135/165 s. Sensing seconds
+(transit/wait/surveillance): 15 = 152.5/75/72, 16 = 179/49/71.5,
+17 = 184.5/45/70. Detected issues by those phases: 1/0/12, 1/2/13, 1/1/12.
+Scheduled fixed-view segments: 29/14/14; no pursuit. Initial generation:
+34.41/38.25/33.96 s. The wider FoV does not improve the current recall-best
+configuration; keep the 90-degree Attempt 14 as the best at 17/39. Seventeen
+renewed configurations are terminal; the goal remains active.
+
+### 18–19 — Range and standoff controls (completed)
+
+Attempt 18 increases only the current recall-best profile's range from 1,500 to
+2,000 m, retaining 90-degree FoV, 200-cell partitions, uniform scoring and 25 m
+offset-only sampling. Prepared native input: `preparation/range-2000m-partition200/input/`,
+523 rows in 62.83 s. Attempt 19 uses the same 1,500 m setup with 250 m rather
+than 25 m standoff; its geometry already exists under
+`preparation/range-1500m-partition200/offset250-input/`. The earlier standoff
+comparison used the preceding information-slot score, not current uniform
+allocation. Compare both with Attempt 14. Outputs are `attempt-18/` and
+`attempt-19/`; both execution audits pass.
+No source/configuration defaults or production scoring change accompanies them.
+
+Attempt 18 finishes at **12/39**, balanced MSE **0.08419880**, with 125 checks
+(113 clean, five omitted, seven altered). Its sampled terminal public maximum
+increased from 40 to 48, but issue discovery regressed against 17/39. Two native
+optimal/oracle-equal revisions; initial 8,261 candidates, generation 23.72 s;
+solves 12.081/4.443 s. Rollout/gate **463.58/386.61 s**, 70 assessments,
+replacement 142 s. Sensing transit/wait/surveillance: 139.5/62.5/97.5 s;
+issues 0/1/11; 23 scheduled fixed-view segments.
+
+Attempt 19 finishes at **12/39**, balanced MSE **0.08442230**, 110 checks
+(98 clean, five omitted, seven altered). One optimal/oracle-equal revision;
+10,840 candidates, generation 48.94 s, solve 19.602 s. Rollout/gate
+**746.11/689.17 s**, 66 assessments, no replacement. Sensing:
+138.5/46/115 s; issues 1/0/11; 19 fixed-view segments. Neither control is
+promoted over the historical 17/39 combination.
+
+### 20–21 — Faster ideal execution (completed; rejected)
+
+Both compare with Attempt 14, changing only maximum speed in the copied public
+vehicle state and scenario: 45/60 rather than 30 m/s. Effective dataclass and
+full public-input equality checks verify that all other fields, including
+native visibility rows, are unchanged. Planner reachability keeps the 0.9
+reserve; the offline cardinal transit uses the advertised cap. This is not
+AirSim speed calibration or a change to live velocity configuration.
+
+| Attempt | Recall | Balanced MSE | Checks: clean/omitted/altered | Native solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- |
+| 20: 45 m/s | 15/39 | 0.06203272 | 73/6/9 | 13.617/11.921/5.577/4.966 | 441.79 / 327.12 |
+| 21: 60 m/s | 16/39 | 0.04534478 | 79/7/9 | 14.208/12.595 | 414.34 / 324.98 |
+
+All six revisions are optimal/oracle-equal; execution audits pass. Initial
+candidates/generation: 8,353/20.20 s and 8,523/18.36 s. Replacements:
+42.5/130/142 s and 42 s; assessments 54/59. Sensing transit/wait/surveillance:
+115.5/33.5/150.5 s and 116/36.5/147 s; issues 2/0/13 and 2/0/14.
+Scheduled modes: fifteen/eighteen fixed segments respectively and one pursuit
+each. Pursuit uses the disclosed perfect-radius evaluation assumption; selecting
+it does not establish higher recall. Inputs: `preparation/speed-45mps/` and
+`preparation/speed-60mps/`; outputs/audits: `attempt-20/`, `attempt-21/`.
+
+### 22–25 — Broad camera and delayed-window controls (completed)
+
+Attempts 22/23 use 150-degree FoV at 1,500/2,000 m, retaining uniform scoring,
+200-cell partitions and 25 m offset-only views. Each preparation produces 523
+view rows in 54.42/63.42 s; sampled terminal coverage is 46/49 public reports.
+Attempts 24/25 retain the 1,500 m/90-degree camera but sample fixed observations
+only at +2/+4 seconds. The four-second discrepancy window is unchanged. The
+public-only forecast interpolates disclosed locations and holds the last one
+after the final public report, as in earlier window experiments. Preparation:
+521/500 rows, 57.94/54.64 s. These are distinct timing choices, not additional
+sensor history or hidden event targets.
+
+| Attempt | Recall / control | Balanced MSE | Checks: clean/omitted/altered | Native solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- |
+| 22: 1,500 m / 150 degrees | 16/39 / 17/39 | 0.06875735 | 107/7/9 | 20.460 | 811.71 / 748.01 |
+| 23: 2,000 m / 150 degrees | 16/39 / 12/39 | 0.05297181 | 102/6/10 | 19.870/5.236 | 797.05 / 712.88 |
+| 24: +2 seconds | 13/39 / 17/39 | 0.07382598 | 67/4/9 | 10.209/3.088/2.053/0.267 | 490.81 / 416.67 |
+| 25: +4 seconds | 15/39 / 17/39 | 0.06570064 | 104/6/9 | 9.354/1.384/0.299 | 411.93 / 345.74 |
+
+All ten revisions are optimal/oracle-equal; all execution audits pass. Initial
+candidates/generation: 11,038/47.70 s, 11,164/47.08 s, 8,136/25.32 s,
+7,796/21.51 s. Assessments: 68/65/58/64. Replacements: none; 165 s;
+149/187/282.5 s; 210.5/299.5 s. Final times: 299.5/299.5/301.5/303.5 s.
+Sensing transit/wait/surveillance: 141.5/41.5/116.5, 177/36.5/86,
+151/49.5/101, 158/54/91.5 s. Issues by those phases: 1/0/15, 1/1/14,
+0/11/2, 2/10/3. Continuous early-wait detections remain credited once, even
+when they arrive before the selected delayed observation. Scheduled fixed-view
+segments: 21/18/18/26; no pursuit. Outputs/audits: `attempt-22/`–`attempt-25/`.
+
+**Twenty-five configurations are terminal**, verified by `ledger-audit-25.json`.
+Historical best remains 17/39. These trials use Physical `7ac9867`'s camera;
+the camera correction below has not yet received a recall measurement.
+
+## Native camera ray-sampling defect and correction
+
+Physical **`ef05954`** fixes a reproduced false-visibility defect. Native triangle
+generation traced `camera_width // 5` rays: only 128 for the configured 640-column
+camera. A flat-water test at 1,500 m range/10 m grid spacing found **138 of 451**
+unoccluded interior grid cells invisible. A minimized one-cell test also failed
+without actor creation or partition clipping (4.81 s).
+
+Diagnostic controls held geometry fixed: wider sampling produced zero missing
+cells, while disabling occlusion still left 134 missing cells. This isolates
+angular undersampling rather than terrain LOS or coordinate conversion. The fix
+traces every configured column, retaining the existing 100-ray minimum. It
+introduces no camera parameter, FoV/range increase, evidence schema, hidden
+input or physical command change. The original probe now has **0/451 missing**
+cells in both heightmap-occlusion and lightweight modes. It remains a finite-ray
+approximation, not exact continuous geometry or live perception validation.
+
+Verification: **150 focused Physical tests pass**, including 26 camera tests
+across four directions, 750/1,500/2,000 m ranges and 90/150-degree FoV, plus real
+occlusion and out-of-view exclusions. Full non-live suites: **447 Physical tests
+pass** (13 live-AirSim tests excluded, 206.35 s), **795 Agent tests pass**
+(21 live tests excluded, 271.26 s). Artifacts: `test-ray-sampling-red.xml`,
+`test-ray-sampling-focused.xml`, `test-ray-physical-full.xml`,
+`test-ray-agent-full.xml`, `ray-sampling-probe*`. No AirSim started. Existing
+Agent `8ce91d5` score/native model and its 60-snapshot corpus remain unchanged.
+
+Regenerate native planning visibility before evaluating this correction; old
+tables reflect the undersampled camera. Preparations for 26/27 are underway:
+`attempt-26/input/` matches the historical 1,500 m/200-cell/offset25 best, while
+`attempt-27/input/` matches the uniform-score 750 m/100-cell full-sampler control.
+Neither is a completed optimization attempt or a proven recall gain yet.
 
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
