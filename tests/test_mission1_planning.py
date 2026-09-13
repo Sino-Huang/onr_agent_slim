@@ -201,16 +201,16 @@ def test_same_time_information_has_diminishing_returns_within_variance_budget():
     )
 
     belief = _belief((1,))
-    opportunities = _opportunities(_environment([
-        _report(f"r{i}", 1, 20, 0, 0) for i in range(10)
-    ]), belief)
-    values = [0.0] + [score_candidate_opportunities(opportunities[:n]).estimation for n in range(1, 11)]
+    batches = [_opportunities(_environment([
+        _report(f"r{i}", 1, 20, 0, 0) for i in range(n)
+    ]), belief) for n in range(1, 11)]
+    values = [0.0] + [score_candidate_opportunities(batch).estimation for batch in batches]
     assert values[1] == pytest.approx(.5)
     marginal = [b - a for a, b in pairwise(values)]
     assert all(a > b > 0 for a, b in pairwise(marginal))
     # Undo the existing normalization to compare raw variance reduction.
     assert values[-1] * 2 * belief.ships[0].expected_variance_reduction < belief.ships[0].variance
-    assert score_candidate_opportunities(opportunities).recall == pytest.approx(5 * belief.ships[0].mean)
+    assert score_candidate_opportunities(batches[-1]).recall == pytest.approx(5 * belief.ships[0].mean)
 
 
 def test_information_prefers_distinct_vessels_over_repeated_cotimed_checks(tmp_path):
@@ -253,7 +253,22 @@ def test_batch_information_is_shared_with_replan_rescoring():
     assert not decision.trigger
 
 
-def test_information_slots_span_report_times_but_keep_vessels_separate():
+def test_information_allocation_does_not_discount_unobserved_earlier_epochs():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_candidate_opportunities,
+    )
+
+    opportunities = _opportunities(_environment([
+        _report("early", 1, 20, 0, 0), _report("late", 1, 200, 0, 0),
+    ]), _belief((1,)))
+    early, late = sorted(opportunities, key=lambda item: item.time_s)
+    assert score_candidate_opportunities([early]).estimation == pytest.approx(
+        score_candidate_opportunities([late]).estimation,
+    )
+
+
+def test_information_budget_is_shared_across_times_but_vessels_are_separate():
     from onr.application.mission1_planning import (
         _opportunities,
         score_candidate_opportunities,
@@ -263,14 +278,16 @@ def test_information_slots_span_report_times_but_keep_vessels_separate():
         _report("a", 1, 20, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 1, 21, 0, 0),
     ]), _belief((1, 2)))
     by_id = {o.report_id: o for o in opportunities}
-    assert by_id["a"].information_prefix_count == by_id["b"].information_prefix_count == 0
-    assert by_id["c"].information_prefix_count == 1
-    assert score_candidate_opportunities([by_id["a"]]).estimation == pytest.approx(.5)
+    assert by_id["a"].information_schedule_count == by_id["c"].information_schedule_count == 2
+    assert by_id["b"].information_schedule_count == 1
+    assert score_candidate_opportunities([by_id["a"]]).estimation == pytest.approx(
+        score_candidate_opportunities([by_id["c"]]).estimation,
+    )
     assert score_candidate_opportunities([by_id["b"]]).estimation == pytest.approx(.5)
     assert 0 < score_candidate_opportunities([by_id["c"]]).estimation < .5
 
 
-def test_information_slots_cap_selected_route_even_with_unobserved_batches():
+def test_uniform_information_caps_selected_route_even_with_unobserved_batches():
     from onr.application.mission1_planning import (
         _opportunities,
         score_candidate_opportunities,
@@ -280,21 +297,25 @@ def test_information_slots_cap_selected_route_even_with_unobserved_batches():
     opportunities = _opportunities(_environment([
         _report(f"r{i}", 1, 20 + i // 2, 0, 0) for i in range(20)
     ]), belief)
-    assert [o.information_prefix_count for o in opportunities] == [i // 2 * 2 for i in range(20)]
-    # Selecting only later epochs does not reclaim their unobserved predecessors.
+    assert {o.information_schedule_count for o in opportunities} == {20}
+    # Subsets share the same full-schedule budget, without favoring earlier epochs.
     values = [score_candidate_opportunities(opportunities[i:i + 2]).estimation
               for i in range(0, 20, 2)]
-    assert all(a > b > 0 for a, b in pairwise(values))
+    assert all(value > 0 and value == pytest.approx(values[0]) for value in values)
     ship = belief.ships[0]
     raw = sum(values) * 2 * ship.expected_variance_reduction
     assert raw == pytest.approx(ship.variance * 20 * ship.expected_variance_reduction /
                                (ship.variance + 19 * ship.expected_variance_reduction))
     assert raw < ship.variance
     assert score_candidate_opportunities(opportunities[10:]).estimation == pytest.approx(sum(values[5:]))
+    assert sum(score_candidate_opportunities([o]).estimation for o in opportunities) == pytest.approx(sum(values))
 
 
-def test_information_slots_ignore_checked_expired_duplicates_and_input_order():
-    from onr.application.mission1_planning import _opportunities
+def test_information_budget_ignores_checked_expired_duplicates_and_input_order():
+    from onr.application.mission1_planning import (
+        _opportunities,
+        score_candidate_opportunities,
+    )
 
     reports = [_report("late", 1, 30, 0, 0), _report("early", 1, 20, 0, 0),
                _report("checked", 1, 15, 0, 0), _report("expired", 1, 0, 0, 0)]
@@ -302,7 +323,13 @@ def test_information_slots_ignore_checked_expired_duplicates_and_input_order():
     environment["mission_time_seconds"] = 10
     environment["world_model_info"] = {"event_report_checks": [{"report_id": "checked"}]}
     opportunities = _opportunities(environment, _belief((1,)))
-    assert {o.report_id: o.information_prefix_count for o in opportunities} == {"early": 0, "late": 1}
+    assert {o.report_id: o.information_schedule_count for o in opportunities} == {"early": 2, "late": 2}
+    environment["static_info"].reverse()
+    assert {o.report_id: o for o in _opportunities(environment, _belief((1,)))} == {o.report_id: o for o in opportunities}
+    environment["mission_time_seconds"] = 25
+    remaining = _opportunities(environment, _belief((1,)))
+    assert len(remaining) == 1 and remaining[0].information_schedule_count == 1
+    assert score_candidate_opportunities(remaining).estimation == pytest.approx(.5)
 
 
 def test_observation_window_recovers_late_reachable_view_and_expires():

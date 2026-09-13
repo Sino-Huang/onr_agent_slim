@@ -117,20 +117,22 @@ the builder uses the moment-based precision approximation:
 `G(n) = V * n * g / (V + (n - 1) * g)`
 
 It preserves `G(1)=g`, gives diminishing increments and saturates at `V`.
-For a batch with `k` earlier remaining public opportunities of the same vessel,
-information utility is `0.5 * (G(k+n)-G(k)) / max_remaining_one_check_gain`, with
-`G(0)=0`. Co-timed reports share the same prefix; checked, expired and duplicate
-reports consume no remaining slots. Disjoint chronological slots cap total
-route information credit at the vessel's normalized variance budget, before
-integer rounding. Separate vessels have separate budgets. Candidate scoring,
-the oracle and gate use this same allocation for both modes.
+For a vessel with `N` remaining valid public reports, allocate its full-schedule
+budget uniformly: a selected batch of `n` reports earns
+`0.5 * (n/N) * G(N) / max_remaining_one_check_gain`. Checked, expired and duplicate
+reports are excluded from `N`. Earlier and later reports share equal per-report
+credit; unobserved earlier epochs are not treated as consumed measurements.
+Unique report credit caps the route's information utility at the vessel's
+normalized variance budget, before integer rounding. Separate vessels have
+separate budgets. Candidate scoring, the oracle and gate share this allocation
+for both modes.
 
-This is a conservative public-schedule approximation: it discounts later
-observations as if earlier slots had been consumed even when the route did not
-observe them. It is not exact route-conditioned Bayesian lookahead. Recompute
-slots from the current public snapshot on replanning; actual belief updates
-remain unchanged and consume observed checks only. Treat the information cap
-as modeled utility, not a guarantee of improved recall or estimation error.
+This is still a conservative public-schedule approximation, not exact
+route-conditioned Bayesian lookahead. A selected subset earns its fraction of
+the full-schedule budget, which can undervalue a small number of informative
+checks. Recompute counts from the current public snapshot on replanning; actual
+belief updates remain unchanged and consume observed checks only. Treat the
+information cap as modeled utility, not a guarantee of better recall or MSE.
 
 A pursuit adds expected hidden-omission yield exactly once for its report interval:
 

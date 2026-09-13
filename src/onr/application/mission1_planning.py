@@ -43,7 +43,7 @@ class ObservationOpportunity:
     omission_rate: float = 0.0
     omission_lookback_s: float = 0.0
     omission_intervals: tuple[tuple[float, float], ...] = ()
-    information_prefix_count: int = 0
+    information_schedule_count: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,16 +323,9 @@ def _opportunities(
             )
         )
     max_estimation = max((item[6] for item in raw), default=0.0)
-    batch_sizes: dict[tuple[int, float], int] = {}
-    for _report_id, entity_id, time_s, *_rest in raw:
-        key = (entity_id, time_s)
-        batch_sizes[key] = batch_sizes.get(key, 0) + 1
-    prefixes = {}
     counts: dict[int, int] = {}
-    for key, size in sorted(batch_sizes.items()):
-        entity_id, _time_s = key
-        prefixes[key] = counts.get(entity_id, 0)
-        counts[entity_id] = prefixes[key] + size
+    for _report_id, entity_id, *_rest in raw:
+        counts[entity_id] = counts.get(entity_id, 0) + 1
     return tuple(
         ObservationOpportunity(
             report_id=report_id,
@@ -343,7 +336,7 @@ def _opportunities(
             recall=recall,
             estimation=estimation,
             variance=by_ship[entity_id].variance,
-            information_prefix_count=prefixes[(entity_id, time_s)],
+            information_schedule_count=counts[entity_id],
             omission_rate=by_ship[entity_id].expected_omission_probability * rates[entity_id],
             omission_lookback_s=lookback,
             omission_intervals=intervals[(entity_id, time_s)],
@@ -496,31 +489,28 @@ def score_candidate_opportunities(
 
 
 def _batch_information_value(items: Sequence[ObservationOpportunity]) -> float:
-    """Allocate saturating information gain to disjoint public-schedule slots.
+    """Share a saturating information budget across remaining public reports.
 
     If V is current variance and g the one-check expected reduction, additive
     measurement precision gives G(n) = V*n*g / (V + (n-1)*g). It matches g at
     n=1 and saturates below V. Retain the existing normalization and 50% weight.
-    A batch after k remaining public opportunities earns G(k+n)-G(k). This
-    caps total route credit but conservatively consumes earlier slots even when
-    unobserved. It is not exact route-conditioned Bayesian lookahead.
+    With N remaining reports, a batch of n earns n/N of G(N). This keeps the
+    same full-schedule cap without discounting later unobserved epochs. A subset
+    can still be undervalued; this is not route-conditioned Bayesian lookahead.
     """
     first = items[0]
     one = first.utility - 0.5 * first.recall
     count = len(items)
-    prefix = first.information_prefix_count
-    if count == 1 and prefix == 0:
+    # Standalone opportunities default to a one-report schedule; a supplied
+    # batch itself establishes a lower bound on that schedule's size.
+    total = max(count, first.information_schedule_count)
+    if total == 1:
         return one
     if first.variance <= 0 or first.estimation <= 0:
         return 0.0
-    def gain(n: int) -> float:
-        if n == 0:
-            return 0.0
-        return n * one * first.variance / (
-            first.variance + (n - 1) * first.estimation
-        )
-
-    return gain(prefix + count) - gain(prefix)
+    return count * one * first.variance / (
+        first.variance + (total - 1) * first.estimation
+    )
 
 
 def _score_units(utility: CandidateUtility) -> int:

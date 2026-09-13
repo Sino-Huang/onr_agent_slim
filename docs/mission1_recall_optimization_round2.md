@@ -247,10 +247,16 @@ timing-feasible sweep plans or truth-based recall bounds. Current delayed-window
 arcs conservatively allow only one view per co-timed epoch to prevent report
 reuse; do not relax that guard without preserving route-wide uniqueness.
 
-Attempt 07 (1,000 m) is running with native initial solving complete. Its gate
-work is substantially slower (about 69 s for each of the first two checks), so
-larger coverage also has a computational cost. Do not confuse unchanged wall
-output during a gate calculation with a stopped Mission clock.
+Attempt 07 (1,000 m) completes at **14/39**, balanced MSE **0.06172225**, 94
+checks (80 clean, seven omitted, seven altered). This improves on its matched
+200-cell/750 m control (12/39) but not the retained 100-cell/750 m best (16/39).
+Four native optimal/oracle-equal revisions; initial graph 14,134 candidates,
+87.99 s generation. Solves: **29.782/24.539/8.152/4.720 s**, narrowly within the
+unchanged executor limit. Rollout **1,530.52 s**, gates **1,335.46 s**, 56
+assessments; replacements 45.5/155.5/190.5 s. Sensing: 196 s transit, 49 s wait,
+54.5 s surveillance; two/one/eleven detected issues respectively; 34 scheduled
+fixed-view segments. Execution audit passes (`attempt-07/audit.json`). Larger
+coverage has a substantial computational cost and is not promoted globally.
 
 Attempt 08 (1,500 m) **fails the initial 30-second native executor limit**:
 17,614 candidates and 1,659,651 arcs. Candidate validation passes, but no native
@@ -258,8 +264,8 @@ optimal plan is returned; the evaluator does not start world/trajectory replay.
 There is **no recall result** for this configuration. Failure artifacts and audit:
 `attempt-08/evaluation/revision-001/` and `attempt-08/audit.json`. Count the
 terminal failure as one genuine configuration, not as a successful rollout.
-Thus seven renewed configurations are terminal (01–06 and 08), while 07 is still
-running. The solver deadline and source model remain unchanged.
+This was the seventh terminal result while 07 was still running. The solver
+deadline and source model remain unchanged.
 
 Attempt 09 tests the already-supported public camera-facing offset-only sampler
 at 25 m standoff, with the same 1,500 m range and 200-cell partition. It reduces
@@ -295,19 +301,55 @@ fixed-view segments.
 
 Attempt 11 tests **250 m** offset-only standoff at 1,500 m range/200-cell
 partition, isolating standoff against Attempt 09. Preparation creates 491 views
-in 60.07 s; native initial solving succeeds and continuous replay is running.
+in 60.07 s. It finishes at **12/39**, balanced MSE **0.08442416**, with 103 checks
+(91 clean, five omitted, seven altered). More clean checks still do not improve
+recall. Three native optimal/oracle-equal revisions; 10,840 initial candidates,
+49.60 s generation; solves 20.197/4.135/4.025 s. Rollout **787.71 s**, gate work
+**709.85 s**, 67 assessments; replacements at 180/180.5 s (first infeasibility,
+then score improvement). Sensing: 128 s transit, 39 s wait, 132.5 s surveillance;
+one issue in transit and eleven during surveillance; 21 scheduled fixed-view
+segments. Execution audit passes (`attempt-11/audit.json`); do not promote.
 Input: `preparation/range-1500m-partition200/offset250-input/`; output:
-`attempt-11/evaluation/`. Attempt 07 also remains running. Do not count either
-as complete based on their valid initial plans.
+`attempt-11/evaluation/`.
 
-**Nine configurations are terminal (01–06, 08–10); best remains 16/39.**
-`ledger-audit-9.json` verifies terminal results separately
+**Eleven configurations are terminal (01–11); best remains 16/39.**
+`ledger-audit-11.json` verifies terminal results separately
 from concurrent work; the ledger records current completion versus running
 attempts. No new production scoring change has been made during these runs.
 Further route-wide information-allocation experiments should keep a bounded
 budget while addressing the current conservative assumption that unobserved
 earlier public reports have already consumed information slots. That remains
 a proposed next experiment, not a demonstrated fix.
+
+## Uniform information-budget experiment
+
+The next implementation shares the existing saturating full-schedule information
+budget uniformly across each vessel's `N` remaining public reports. A batch of
+`n` earns `0.5 * (n/N) * G(N) / max_remaining_one_check_gain`, with the same
+`G(N)=V*N*g/(V+(N-1)*g)`. This preserves total modeled budget while removing
+report-order preference. Checked/expired/duplicate reports are excluded from
+`N`; a selected subset can still be undervalued. It is not exact Bayesian
+lookahead. Actual belief updates, recall/omission formulas, native model,
+geometry, exact 10% gate and all execution interfaces stay unchanged.
+
+A new focused test first reproduced the temporal bias: otherwise equivalent
+unobserved reports received information values 0.500 and 0.139. The revised
+test passes with equal allocation. Budget tests verify additivity across batch
+partitions, full-schedule saturation, independent vessel budgets, permutation
+invariance and checked/expired/duplicate exclusion. **130 focused Agent tests
+pass**, including real native solver/oracle/gate cases. Three few-shot DZN
+artifacts were regenerated; prior first mode remains fixed, altered-evidence
+replan pursuit, unreachable counterexample fixed. The changed prior example
+score is 1.518799; the existing native golden expectation was updated accordingly.
+
+MiniZinc skill **2.21.0** explains the allocation and its limitations in the
+existing focused reference; the main workflow is unchanged. Generic Codex skill
+validation still rejects the repository-supported `version` key; repository
+role tests pass. Changed-file Ruff passes (pre-existing TRY004 excluded).
+Full non-live Agent tests, Physical helper tests and the 60-snapshot corpus are
+being verified. This checkpoint is an experimental scoring change, not a recall
+gain. Next replay comparisons retain the 750 m baseline, the 300 m offset/window
+control and the 1,500 m offset control, changing only information allocation.
 
 No recall gain for the structural change is claimed.
 The existing `fixed_view` navigation/window interface appears sufficient; stop
