@@ -2,6 +2,32 @@
 
 ## History-safe arc reduction checkpoint
 
+### H60 verification completed
+
+On pushed `d1fbf5d`, the Attempt 15 verification completes at 303.5 s with
+**11/39**, balanced MSE **0.066891006**, 54 checks (43 clean, 5 omitted, 6
+altered). This ties the H45 control's recall and estimation rather than improving
+them. All sixteen native solves are optimal. The formerly failing sixth graph
+shrinks from 26,487 candidates / 2,247,831 arcs to **20,779 / 969,374** and solves
+in **25.246 s**; its gate calculation falls from 59.193 to **15.004 s**. The
+complete rollout takes **350.043 s**, slower than H45's 217.094 s.
+
+Execution and independent count/batch audits pass on all sixteen revisions
+(reference audit 81.85 s). Additionally, an **unpruned** 2,137-candidate /
+525,501-arc public base graph matches the native result's score, maneuver count,
+duration and report route at the critical sixth snapshot. Artifact:
+`h60-safe-arcs-verification/dense-critical-audit.json`; reproduction helper is
+`audit-dense-public.py`. Transit/wait/surveillance totals 202.5/85.5/15.5 s;
+issues 1/1/9. All scheduled sensing is fixed-view. No duplicate credit or changed
+sensor/evidence/workflow semantics are used to get past the timeout.
+
+Retain the proven graph reduction, but keep H45/Attempt 12 as the preferred
+comparison point. This is verification of an existing configuration, not a
+seventeenth attempt. Original H60/H75 timeout artifacts remain intact; H75 has
+not been rerun after this reduction. The goal remains active at **16/50**, best
+11/39, with 275 independently audited completed-replay revisions. No process
+remains running at this checkpoint.
+
 The history-aware graph can now drop a bypass only through a strictly
 base-positive intermediate that cannot already have been seen in its prefix
 (its earliest report is after the source finishes), and whose report batches
