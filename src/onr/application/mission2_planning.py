@@ -62,9 +62,9 @@ def collision_observation_candidates(environment: Mapping) -> tuple[CollisionObs
         if probability is not None and (not math.isfinite(probability) or not 0 <= probability <= 1):
             raise ValueError("invalid collision probability")
         contact = float(pair["predicted_contact_at_s"])
-        # A producer can retain a pair after its first 10 m crossing. That
-        # timestamp is urgency evidence, not an expiry for ongoing monitoring.
-        deadline = min(end, contact) if contact > now else end
+        # The 10 m entry is urgency evidence, not the 1 m actual-contact truth
+        # or an expiry. Monitoring remains useful after that first risk entry.
+        deadline = end
         for ship in pair["ship_ids"]:
             trajectory = predictions["trajectories"].get(str(ship))
             if not trajectory or not trajectory["ready"]:

@@ -68,6 +68,14 @@ def test_active_pair_is_not_expired_by_its_original_ten_metre_crossing():
     assert candidates[0].predicted_contact_at_s == 4
 
 
+def test_ten_metre_entry_is_urgency_not_an_actual_contact_deadline():
+    env = environment()
+    env["world_model_info"]["perception_predictions"]["active_pairs"][0]["predicted_contact_at_s"] = 6
+    candidates = collision_observation_candidates(env)
+    assert candidates
+    assert candidates[0].start_s > 6
+
+
 def test_gate_coalesces_duplicates_and_detects_changed_cleared_and_stale_risks():
     gate = Mission2ReplanGate()
     env = environment()
