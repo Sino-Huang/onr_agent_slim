@@ -1,5 +1,33 @@
 # Mission 1: realistic-range, route-dependent information investigation
 
+## Attempts 13/14 — larger camera offsets rejected
+
+These change only the additional camera-facing offset distance from Attempt
+12's 25 m to 100 m and 200 m. Group/base views, H=45, nominal/+4 s observations,
+300 m camera range, four headings, speed/turn budgets and exact gate are retained.
+No production code or live-default changes. Both use functional `4cda00e`.
+
+| Attempt / offset | Recall | Balanced MSE | Checks: clean/omitted/altered | Views / preparation s | Native maximum/total solve s | Rollout s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 12 / 25 m control | 11/39 | 0.06689101 | 43/5/6 | 2,266 / 151.81 | 9.75 / 41.93 | 217.09 |
+| 13 / 100 m | 10/39 | 0.06813206 | 46/5/5 | 2,302 / 146.59 | 10.03 / 55.71 | 262.70 |
+| 14 / 200 m | 10/39 | 0.06808838 | 45/5/5 | 2,253 / 145.38 | 16.65 / 53.33 | 256.36 |
+
+Both complete at 303.5 s with 18 native optimal revisions each. Every revision
+matches independent score/maneuver/duration/report-route verification, and both
+continuous-execution audits pass. Neither repeats report/check credit. The
+maximum terminal public-report count per single view remains 18. Both lose the
+295.5 s issue captured by the control, retaining three earlier and seven terminal
+issues. All scheduled sensing is fixed-view. Transit/wait/surveillance seconds:
+13 = 202.5/81.5/19.5; 14 = 195.5/89.5/18.5. Independent audit seconds:
+50.04/45.37. These runs were concurrent; timings are observations, not isolated
+hardware benchmarks. Artifacts: `attempt-{13,14}/{input,evaluation,audit.json,count-state-audit.json}`.
+
+Reject both as preferred configurations: more clean checks did not improve
+corruption recall or estimation. Retain Attempt 12. Fourteen configurations are
+terminal, with 259 independently audited completed-replay revisions and no jobs
+running. `ledger-audit-14.json` passes. The goal remains active, not achieved.
+
 ## Attempt 12 — broader camera-aware viewpoint family
 
 A report-coverage audit found no missing promised-report signal in completed
@@ -235,7 +263,7 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 12/50 completed configurations; best 11/39
+attempts. Current status: **active; 14/50 completed configurations; best 11/39
 (28.21%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 
