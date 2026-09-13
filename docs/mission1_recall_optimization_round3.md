@@ -6,7 +6,7 @@ Fresh user-authorized limit: **50 genuine optimization configurations**, or
 verified recall **at least 50%**. Keep the same 39 corrupted outcomes, so the
 recall condition requires 20 detections. Previous series do not count. Baseline
 measurements, diagnostic probes and unit tests do not count as optimization
-attempts. Current status: **active; 7/50 completed configurations; best 10/39
+attempts. Current status: **active; 9/50 completed configurations; best 10/39
 (25.64%) at 300 m visibility**. The chronological checkpoints below preserve
 their original intermediate counts; the ledger is authoritative.
 
@@ -396,3 +396,37 @@ dwell choices. Native preparation and replay are chained under each attempt's
 directory. No new scoring weights, fabricated report targets or longer sensor
 range are introduced. Preparation alone does not count as an optimization
 attempt. Both are in progress; no result is claimed yet.
+
+### 08/09 — Extra observation windows (completed; rejected)
+
+Both retain H=45, 300 m range and source checkpoints `9afbffc`/`b5fba2b`.
+08 adds 415 native public gap rows (1,422 total, preparation 111.95 s);
+09 regenerates 1,007 rows with 0.5/4.5 s dwell choices (66.74 s).
+
+| Attempt | Recall / control | Balanced MSE | Checks: clean/omitted/altered | Revisions | Maximum / total solve seconds | Rollout / gate seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 08: gap holds | 4/39 / 10/39 | 0.12794667 | 35/1/3 | 18 | 1.741 / 9.564 | 96.98 / 6.47 |
+| 09: long dwell choice | 4/39 / 10/39 | 0.12831211 | 37/1/3 | 19 | 5.055 / 26.911 | 142.61 / 19.00 |
+
+Both reach 303.5 s and complete the public schedule. Execution and independent
+count-state audits pass. Across all eight completed replays, **151 revisions**
+match the independent semantic lexicographic reference and report routes.
+The single 90-second native failure is separate. `ledger-audit-09.json` verifies
+nine terminal configurations, and no jobs remain running.
+
+08 selects three pure report-free assignments across its plan revisions, but
+none executes as a surveillance segment. All seventeen executed surveillance
+segments last 0.5 s. 09 executes 0.5 s and 4.5 s surveillance segments. Neither
+case detects an issue during scheduled surveillance: each finds one in transit
+and three during early waiting. Total transit/wait/surveillance seconds:
+08 = 248.5/46.5/8.5; 09 = 239.5/37/27. More offered dwell/exposure did not
+increase realized recall; do not promote either variant over the control.
+
+An evaluator-only raw source comparison also rules out one hypothesis for this
+dataset: all 234 published reports retain their paired true event's position
+and timestamp; twenty alter event attributes. Private source indices were used
+only to align this diagnostic and never enter planner inputs. This does **not**
+validate coordinate transforms or GPS freshness. Further work should examine
+early evidence and graph growth rather than assume more range, more holds or
+another tiny horizon adjustment will solve the deficit. The goal remains active;
+no >=50% result or live adoption is claimed.
