@@ -3,7 +3,9 @@
 Assume a hypothetical actual-event check is supplied at the current pose/time.
 Compare choosing a future route before versus after its outcome. This isolates
 recall decision value, excluding estimation rewards, hidden-omission yield and
-the cost/availability of acquiring that check. No executable plan is published.
+the cost/availability of acquiring that check by default. Acquisition-aware
+mode instead prices one reachable singleton published-report observation and
+conditions its outcomes on report presence. No executable plan is published.
 """
 from __future__ import annotations
 
@@ -52,23 +54,38 @@ def recall_graph(graph, opportunities, belief):
     return replace(graph, candidates=tuple(candidates))
 
 
-def inspect_entity(graph, opportunities, manager, entity_id, stamp, verify=None):
+def outcome_branches(manager, entity_id, stamp, *, published=False):
     prior = snapshot(manager, stamp)
     ship = next(s for s in prior.ships if s.entity_id == entity_id)
     probabilities = {"clean": 1 - ship.mean,
                      "altered": ship.mean - ship.expected_omission_probability,
                      "omitted": ship.expected_omission_probability}
-    branches = []
-    weighted_candidates = [0.0] * len(graph.candidates)
-    adaptive = 0.0
+    if published:
+        # A known published report cannot itself be omitted. Its clean/altered
+        # likelihoods condition on report presence, not an invented omission.
+        presence = 1 - ship.expected_omission_probability
+        probabilities = {key: value / presence for key, value in probabilities.items()
+                         if key != "omitted"}
+    result = []
     for outcome in OUTCOMES:
-        probability = probabilities[outcome]
+        probability = probabilities.get(outcome, 0)
         if probability <= 0:
             continue
         branch = copy.deepcopy(manager)
         branch._update_one({"check_id": f"hypothetical:{entity_id}:{outcome}",
                             "entity_id": entity_id, "outcome": outcome})
         posterior = snapshot(branch, stamp)
+        result.append((outcome, probability, posterior))
+    return prior, result
+
+
+def inspect_entity(graph, opportunities, manager, entity_id, stamp, verify=None, *, prepared=None):
+    prior, outcomes = prepared if prepared is not None else outcome_branches(manager, entity_id, stamp)
+    ship = next(s for s in prior.ships if s.entity_id == entity_id)
+    branches = []
+    weighted_candidates = [0.0] * len(graph.candidates)
+    adaptive = 0.0
+    for outcome, probability, posterior in outcomes:
         scored = recall_graph(graph, opportunities, posterior)
         route = planning.longest_path_oracle(scored)
         if verify is not None:
@@ -98,6 +115,61 @@ def inspect_entity(graph, opportunities, manager, entity_id, stamp, verify=None)
             "branches": branches}
 
 
+def acquisition_suffix(graph, first, vehicle, chronological):
+    """Remaining decisions after actually reaching and observing first."""
+    reports = set(first.report_ids)
+    candidates = tuple(c for c in graph.candidates
+                       if reports.isdisjoint(c.report_ids)
+                       and (not chronological or c.start_s - c.observation_delay_s
+                            > first.start_s - first.observation_delay_s + first.report_span_s + 1e-9)
+                       and first.end_s + planning._navigation_time(
+                           first.end_x, first.end_y, c.x, c.y, vehicle["max_velocity"],
+                           first.arrival_direction, c.arrival_direction,
+                           vehicle.get("quarter_turn_seconds", 0)) <= c.start_s + 1e-9)
+    return planning.CandidateDAG(candidates, planning._candidate_arcs(
+        candidates, vehicle["max_velocity"], vehicle.get("quarter_turn_seconds", 0),
+        chronological, information_aware=True), 0, len(candidates) + 1)
+
+
+def inspect_acquisitions(graph, opportunities, manager, stamp, vehicle, chronological, verify=None):
+    """One reachable published check, then outcome-conditioned future routes.
+
+    Restrict the first observation to singleton fixed views; incidental checks
+    and later evidence adaptation are not modeled. The fixed horizon is shared
+    by every first choice, so travel/dwell consume future opportunities.
+    """
+    by_id = {r.report_id: r for r in opportunities}
+    prepared = {}
+    rows = []
+    for index, first in enumerate(graph.candidates):
+        if first.mode != "fixed_view" or len(first.report_ids) != 1:
+            continue
+        entity = by_id[first.report_ids[0]].entity_id
+        if entity not in prepared:
+            prepared[entity] = outcome_branches(manager, entity, stamp, published=True)
+        suffix = acquisition_suffix(graph, first, vehicle, chronological)
+        row = inspect_entity(suffix, opportunities, manager, entity, stamp,
+                             prepared=prepared[entity])
+        immediate = 0.5 * next(probability for outcome, probability, _ in prepared[entity][1]
+                               if outcome == "altered")
+        row.update(candidate_id=first.candidate_id, candidate_index=index,
+                   first_report_ids=list(first.report_ids), start_s=first.start_s,
+                   end_s=first.end_s, x=first.x, y=first.y,
+                   arrival_direction=first.arrival_direction,
+                   suffix_candidates=len(suffix.candidates), immediate_recall_utility=immediate,
+                   adaptive_total=immediate + row["adaptive_expected_recall_utility"],
+                   fixed_total=immediate + row["fixed_expected_recall_utility"])
+        rows.append(row)
+    if rows:
+        best = max(rows, key=lambda r: (r["adaptive_total"], -r["end_s"], -r["candidate_index"]))
+        if verify is not None:
+            first = graph.candidates[best["candidate_index"]]
+            suffix = acquisition_suffix(graph, first, vehicle, chronological)
+            inspect_entity(suffix, opportunities, manager, best["entity_id"], stamp, verify,
+                           prepared=prepared[best["entity_id"]])
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("environment", "belief", "agent-var", "output"):
@@ -105,6 +177,8 @@ def main():
     parser.add_argument("--horizon-seconds", type=float, required=True)
     parser.add_argument("--minizinc", type=Path)
     parser.add_argument("--model", type=Path)
+    parser.add_argument("--acquisition-aware", action="store_true",
+                        help="Price one reachable singleton published check before future routing")
     args = parser.parse_args()
     if args.agent_var.resolve().name != "var" or not args.output.resolve().is_relative_to(args.agent_var.resolve()):
         parser.error("output must be under caller-provided Agent var")
@@ -139,13 +213,24 @@ def main():
         assert result["combined_score"] == round(route.score * planning.SCORE_SCALE)
         assert [r for a in result["assignments"] for r in a["parameters"]["report_ids"]] == list(route.covered_report_ids)
 
-    rows = []
-    for ship in belief.ships:
-        row = inspect_entity(graph, opportunities, manager, ship.entity_id, belief.created_at,
-                             verify if args.minizinc else None)
-        rows.append(row)
-        print(json.dumps({k: v for k, v in row.items() if k != "branches"}), flush=True)
+    if args.acquisition_aware:
+        rows = inspect_acquisitions(graph, opportunities, manager, belief.created_at, vehicle,
+                                    environment.get("observation_window_seconds", 0) > 0,
+                                    verify if args.minizinc else None)
+        best_adaptive = max(rows, key=lambda r: r["adaptive_total"], default=None)
+        best_fixed = max(rows, key=lambda r: r["fixed_total"], default=None)
+        print(json.dumps({"first_choices": len(rows), "best_adaptive": best_adaptive,
+                          "best_fixed": best_fixed}), flush=True)
+    else:
+        rows = []
+        for ship in belief.ships:
+            row = inspect_entity(graph, opportunities, manager, ship.entity_id, belief.created_at,
+                                 verify if args.minizinc else None)
+            rows.append(row)
+            print(json.dumps({k: v for k, v in row.items() if k != "branches"}), flush=True)
     result = {"scope": __doc__, "horizon_seconds": args.horizon_seconds,
+              "acquisition_aware": args.acquisition_aware,
+              "native_verification_scope": "best acquisition branches only" if args.acquisition_aware else "all entity branches",
               "candidate_count": len(graph.candidates), "native_verified": bool(args.minizinc),
               "ships": rows}
     (args.output / "summary.json").write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")

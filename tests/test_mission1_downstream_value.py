@@ -55,3 +55,40 @@ def test_reconstructs_shared_omission_posterior_from_public_counts():
     belief = diagnostic.snapshot(manager, STAMP)
     rebuilt = diagnostic.snapshot(diagnostic.reconstruct(belief), STAMP)
     assert rebuilt.omission.mean == pytest.approx(belief.omission.mean)
+
+
+def test_published_check_conditions_on_presence_and_cannot_be_omitted():
+    _, _, manager = fixture()
+    prior, branches = diagnostic.outcome_branches(manager, 1, STAMP, published=True)
+    probabilities = {outcome: probability for outcome, probability, _ in branches}
+    ship = prior.ships[0]
+    assert set(probabilities) == {"clean", "altered"}
+    assert sum(probabilities.values()) == pytest.approx(1)
+    assert probabilities["altered"] == pytest.approx(
+        (ship.mean - ship.expected_omission_probability) / (1 - ship.expected_omission_probability))
+
+
+def test_acquisition_suffix_reserves_turns_and_excludes_spent_reports():
+    graph, _, _ = fixture()
+    first = replace(graph.candidates[0], arrival_direction=0)
+    later = replace(graph.candidates[1], start_s=11, end_s=11.5, x=first.x, y=first.y,
+                    end_x=first.x, end_y=first.y, arrival_direction=1)
+    duplicate = replace(later, candidate_id="repeat", report_ids=first.report_ids)
+    too_early = replace(later, candidate_id="early", start_s=10.5, end_s=11)
+    candidates = (first, too_early, duplicate, later)
+    graph = planning.CandidateDAG(candidates, (), 0, 5)
+    vehicle = {"max_velocity": 30, "quarter_turn_seconds": 0.5}
+    suffix = diagnostic.acquisition_suffix(graph, first, vehicle, True)
+    assert suffix.candidates == (later,)
+    # Even staying at the same location requires the quarter-turn budget.
+    assert diagnostic.acquisition_suffix(graph, first, {**vehicle, "quarter_turn_seconds": 1}, True).candidates == ()
+
+
+def test_late_acquisition_cannot_collect_past_decision_value():
+    graph, opportunities, manager = fixture()
+    rows = diagnostic.inspect_acquisitions(graph, opportunities, manager, STAMP,
+                                           {"max_velocity": 30}, True)
+    assert len(rows) == 2
+    assert all(row["suffix_candidates"] == 0 for row in rows)
+    assert all(row["decision_value"] == 0 for row in rows)
+    assert all(row["adaptive_total"] == row["immediate_recall_utility"] for row in rows)

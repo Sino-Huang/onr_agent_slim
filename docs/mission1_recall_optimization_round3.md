@@ -4,6 +4,46 @@
 
 ### Explicit downstream-decision diagnostic
 
+#### Acquisition-aware extension
+
+The helper's `--acquisition-aware` mode evaluates each reachable singleton
+fixed-view first observation, then filters the suffix by its actual end time,
+position, heading, turn/travel budget, report chronology and already consumed
+report. All alternatives share one absolute horizon. Branch probabilities for
+this known published report condition on presence: clean `(1-E[p])/(1-E[pq])`
+and altered `(E[p]-E[pq])/(1-E[pq])`; omission of that report is impossible.
+Branch posteriors use the existing actual-outcome likelihoods. No synthetic
+check enters a runtime snapshot. Future rewards retain the diagnostic's existing
+public-recall utility, not a newly calibrated full-mission success objective.
+
+| Public snapshot / horizon | Feasible singleton first views | Adaptive versus fixed first choice | Best first choice's downstream decision value |
+| --- | ---: | --- | ---: |
+| Prior / 90 s | 580 | Same | Approximately zero |
+| Prior / 120 s | 1,030 | Same | 0.0301651 |
+| Observed evidence at 71 s / 45 s | 285 | Same | Zero |
+
+The prior probes choose the same view of entity 15 at 25–25.5 s; the observed
+snapshot chooses entity 18 at 89.5–90 s. These are derived results, not rules.
+At H=120 the optimal suffix changes between clean/altered outcomes, but the
+acquisition decision does not. Artifacts: `acquisition-prior-h90/`,
+`acquisition-prior-h120/`, `acquisition-evidence-h45/`. Both outcome branches of
+each selected best acquisition have real MiniZinc score/report-route parity
+(six native verifications total); other acquisitions use the Python oracle.
+
+This removes the free-check assumption but remains limited: singleton first
+views, no incidental transit checks, no later evidence branching, no estimation
+or omission-exposure reward, and no enacted replacement gate. It does not
+establish live feasibility or improved recall. The three probes are diagnostics,
+not added optimization configurations. Three additional tests cover conditional
+presence, turn/chronology/consumed-report filtering and zero future value after
+all opportunities have passed. **119 focused tests pass in 19.53 s**; Ruff clean.
+
+Do not promote a per-candidate information bonus on this evidence. The next
+coverage change should address the independently reproduced single-view-per-
+report-epoch restriction while preserving nonadjacent report uniqueness.
+Downstream adaptation remains a possible later extension, not disproven by
+these restricted probes. Best remains 10/39 at 300 m; active count 9/50.
+
 `scripts/inspect_mission1_downstream_value.py` now measures a different quantity
 from G(n): expected optimal future public-recall utility after a hypothetical
 check minus optimal expected utility when the route must be chosen before its
