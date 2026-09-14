@@ -44,7 +44,8 @@ fixed view per co-timed report batch. Arcs require the next original report epoc
 to follow the previous candidate's last original epoch. This prevents reuse of
 an older report after an intervening view while keeping integral network flow.
 It is not an unrestricted window/set-cover planner or a multi-heading batch scan.
-Pursuit rendezvous remains at the first public report time.
+Pursuit may begin at a report rendezvous or an earlier public GPS acquisition
+location, as described below.
 
 Offline snapshots can also offer `fixed_view_dwell_options_s`, including the
 short 0.5-second choice, and per-view `holding_intervals` of forecast visibility.
@@ -95,6 +96,18 @@ the same builder. The physical speed cap is unchanged. The 10% reserve allows
 early arrival but does not bound arbitrary obstacle detours; new observations
 can still require replanning.
 
+When the snapshot includes public position fixes, the builder also retains an
+early-start alternative for each feasible pursuit window. It uses the latest
+valid fix for that ship, rounds the rendezvous to integer metres, and starts at
+the earliest conservatively reachable half-second. It checks both the trip to
+that location and onward travel to the original first report; all original
+report-start alternatives remain. No synthetic reports or ship-specific risk
+thresholds are introduced. A GPS location is an uncertain acquisition hint,
+not a guarantee that the moving ship remains there. Maneuver Control handles
+visibility-based handoff, bounded search, and recovery from newer GPS fixes.
+These candidates let evidence-driven replanning value pursuit before the next
+public report rather than waiting through a potentially informative gap.
+
 During active-plan rescoring, an executing pursuit may have only one unchecked
 report left. The gate treats that tail as continuation, with hidden yield from
 the current Mission time to the last remaining report, excluding elapsed time
@@ -134,9 +147,16 @@ checks. Recompute counts from the current public snapshot on replanning; actual
 belief updates remain unchanged and consume observed checks only. Treat the
 information cap as modeled utility, not a guarantee of better recall or MSE.
 
-A pursuit adds expected hidden-omission yield exactly once for its report interval:
+A pursuit adds expected hidden-omission yield exactly once for its planned
+observation interval through the last covered report, excluding final dwell:
 
-`E[p_i q] * rate_i * (t_last - t_first)`
+`E[p_i q] * rate_i * (t_last - observation_start)`
+
+For ordinary report-start windows, `observation_start = t_first`. An early GPS
+window includes its additional observation time using the same rate and risk,
+not an arbitrary pursuit bonus. `report_span` still describes the original
+public report times; use the emitted observation window for execution and
+hidden-yield interpretation. During active rescoring, elapsed time is excluded.
 
 When the snapshot advertises `event_check_window_seconds`, fixed views also
 receive expected omission-discovery value. Each vessel's distinct public report
@@ -190,14 +210,20 @@ once; gaps joining the same-view assignments receive no extra omission credit.
 
 Integer node potentials first reweight network costs by a route-independent
 constant. MiniZinc verifies the longest-prefix potentials against the
-component-derived weights, then uses unit penalties for negative reduced-cost
-or noncanonical predecessor edges. The unique zero-loss path is a lexicographic
-optimum with the deterministic final tie-break. Native optimal-face presolve
-creates flow variables only for zero-loss canonical arcs. The model checks
+component-derived weights. Negative reduced-cost or noncanonical predecessor
+edges cannot carry flow. The unique zero-loss path is a lexicographic
+optimum with the deterministic final tie-break. Represent each node's admitted
+incoming flow once, using the existing outgoing adjacency to conserve flow
+through its preferred-predecessor children. This is the same canonical network,
+without materializing zero-valued flow expressions for every rejected arc.
+The model checks
 forward acyclicity and the complete potential recurrence against component
 weights, proving a zero-loss path exists; any positive flow on a penalized arc
-would be nonoptimal. No selected route IDs are supplied. Early variable
-elimination avoids flattening a large LP of provably nonoptimal arcs while
+would be nonoptimal. All original candidates and arcs remain in that validation;
+no zero-utility monitoring alternatives are removed. No selected route IDs are
+supplied. The admitted objective loss is identically zero, while component
+utility, maneuver count, and duration are computed from selected node flows.
+Early variable elimination avoids flattening a large LP of provably nonoptimal arcs while
 preserving the exact optimum. This avoids huge floating-point objective
 coefficients while preserving the optimal plans and reported utility. Keep the
 generated potential array with its paired model and data files.
@@ -245,7 +271,7 @@ continuous yaw angles.
 Maneuver
 Control alone turns `fixed_view` into navigation or calls
 `pursue(entity_id=<numeric target>)` for `pursue_ship`. An unseen pursuit target
-may first require navigation to the public first-report rendezvous, and later
+may first require navigation to the emitted public acquisition rendezvous, and later
 public-position-guided reacquisition. Those physical phases remain within the
 same pursuit assignment and do not change its mode or evidence window.
 

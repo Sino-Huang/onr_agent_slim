@@ -69,6 +69,44 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
     assert not graph.candidates
 
 
+def test_public_gps_adds_early_pursuit_without_replacing_report_windows():
+    belief = _belief((1,))
+    environment = _environment([_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)])
+    original = build_candidate_dag(environment, belief)
+    environment["world_model_info"]["public_position_fixes"] = [
+        {"entity_id": 1, "sampled_at_s": 0, "source": "gps", "position": {"x": 18, "y": 0, "z": 0}}]
+    graph = build_candidate_dag(environment, belief)
+    assert set(c.candidate_id for c in original.candidates) <= set(c.candidate_id for c in graph.candidates)
+    early = [c for c in graph.candidates if c.mode == "pursue_ship" and c.start_s < 20]
+    assert len(early) == 1
+    candidate = early[0]
+    assert (candidate.start_s, candidate.end_s, candidate.x, candidate.y) == (2, 30.5, 18, 0)
+    assert candidate.report_ids == ("a", "b")
+    assert candidate.omission_yield == pytest.approx(belief.ships[0].expected_omission_probability * .1 * 28)
+
+
+@pytest.mark.parametrize("fix_time,x", [(1,18), (0,1000), (0,-90)])
+def test_future_or_unreachable_gps_does_not_add_early_pursuit(fix_time, x):
+    environment = _environment([_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)])
+    environment["world_model_info"]["public_position_fixes"] = [
+        {"entity_id": 1, "sampled_at_s": fix_time, "source": "gps", "position": {"x": x, "y": 0, "z": 0}}]
+    assert not any(c.mode == "pursue_ship" and c.start_s < 20
+                   for c in build_candidate_dag(environment, _belief((1,))).candidates)
+
+
+def test_early_gps_pursuit_cannot_recredit_reports_across_delayed_views():
+    environment = _environment([_report("a", 1, 20, 0, 0), _report("b", 1, 30, 0, 0),
+                                _report("bridge", 2, 15, 0, 0)])
+    environment["controlled_vehicle"]["quarter_turn_seconds"] = .5
+    environment["observation_window_seconds"] = 20
+    environment["surveillance_views"] = [{"x": 0, "y": 0, "arrival_direction": 0,
+        "observation_delay_s": 20, "report_ids": ["bridge", "a"]}]
+    environment["world_model_info"]["public_position_fixes"] = [
+        {"entity_id": 1, "sampled_at_s": 0, "position": {"x": 0, "y": 0, "z": 0}}]
+    route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2))))
+    assert len(route.covered_report_ids) == len(set(route.covered_report_ids))
+
+
 def test_fixed_omission_owns_disjoint_epochs_and_not_duplicate_reports():
     from onr.application.mission1_planning import (
         _opportunities,

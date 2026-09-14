@@ -50,30 +50,17 @@ array[CANDIDATES] of int: candidate_combined_score = [
   | candidate in CANDIDATES
 ];
 
-% The verified recurrence below proves a zero-penalty path exists. Create
-% variables only on its optimal face; late equality constraints still force
-% the flattener to materialize the entire large LP first.
-array[ARCS] of var 0.0..1.0: flow = [
-  if arc_weight[edge] < 0 \/ arc_from[edge] != preferred_predecessor[arc_to[edge]] then 0.0
-  else let { var 0.0..1.0: amount; } in amount endif | edge in ARCS
-];
-array[CANDIDATES] of var 0.0..1.0: selected;
-
+% The checked canonical optimal face below admits one predecessor per node.
+% Represent its incoming flow once, avoiding millions of zero arc expressions.
+% Every original arc remains available to the complete potential validation.
+array[NODES] of var 0.0..1.0: prefix_flow;
+constraint prefix_flow[source_node] = 1.0;
 constraint forall(node in NODES)(
-  sum(edge in outgoing_start[node]..outgoing_start[node + 1] - 1)(flow[edge])
-  - sum(position in incoming_start[node]..incoming_start[node + 1] - 1)(
-      flow[incoming_edge[position]]
-    )
-  = if node = source_node then 1.0 elseif node = sink_node then -1.0 else 0.0 endif
+  sum(child in {arc_to[edge] | edge in outgoing_start[node]..outgoing_start[node + 1] - 1
+                where preferred_predecessor[arc_to[edge]] = node})(prefix_flow[child])
+  = prefix_flow[node] - (if node = sink_node then 1.0 else 0.0 endif)
 );
-
-constraint forall(candidate in CANDIDATES)(
-  selected[candidate] = sum(
-    position in incoming_start[candidate + 1]..incoming_start[candidate + 2] - 1
-  )(
-    flow[incoming_edge[position]]
-  )
-);
+array[CANDIDATES] of var 0.0..1.0: selected = [prefix_flow[c + 1] | c in CANDIDATES];
 
 var float: combined_score = sum(candidate in CANDIDATES)(
   candidate_combined_score[candidate] * selected[candidate]
@@ -96,8 +83,16 @@ array[ARCS] of int: run_duration = [
       - candidate_start[arc_from[e] - 1] - candidate_duration[arc_from[e] - 1] else 0 endif)
   endif | e in ARCS
 ];
-var float: maneuver_count = sum(e in ARCS)(run_maneuvers[e] * flow[e]);
-var float: surveillance_duration = sum(e in ARCS)(run_duration[e] * flow[e]);
+array[CANDIDATES] of bool: preferred_continues = [
+  if preferred_predecessor[c + 1] = source_node then false else
+    same_fixed_view(preferred_predecessor[c + 1] - 1, c) endif | c in CANDIDATES
+];
+var float: maneuver_count = sum(c in CANDIDATES)(bool2int(not preferred_continues[c]) * selected[c]);
+var float: surveillance_duration = sum(c in CANDIDATES)(
+  (candidate_duration[c] + (if preferred_continues[c] then candidate_start[c]
+    - candidate_start[preferred_predecessor[c + 1] - 1]
+    - candidate_duration[preferred_predecessor[c + 1] - 1] else 0 endif)) * selected[c]
+);
 var float: candidate_order_sum = sum(candidate in CANDIDATES)(
   candidate * selected[candidate]
 );
@@ -146,10 +141,9 @@ array[NODES] of NODES: preferred_predecessor = [
     )
   endif | node in NODES
 ];
-var float: objective = -sum(edge in ARCS)(
-  bool2int(arc_weight[edge] < 0 \/
-    arc_from[edge] != preferred_predecessor[arc_to[edge]]) * flow[edge]
-);
+% All admitted flows have exactly zero loss under the verified lexicographic
+% objective. Keeping that objective avoids large floating-point coefficients.
+var float: objective = 0.0;
 
 solve maximize objective;
 

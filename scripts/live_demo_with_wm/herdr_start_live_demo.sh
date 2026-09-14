@@ -4,6 +4,8 @@
 # workspace inside an existing herdr session.
 # Optional ONR_DEMO_SCENARIO_CONFIG and ONR_DEMO_MISSION1_INSTANCE select a
 # caller-supplied task without changing the default harbor demo or CLI arguments.
+# ONR_DEMO_DIAGNOSTIC_PRIOR optionally installs an explicit oracle/flattening
+# control bundle through the existing initial-belief store and outbox.
 
 set -euo pipefail
 
@@ -17,6 +19,7 @@ readonly MISSION_INSTANCE="${ONR_DEMO_MISSION1_INSTANCE:-$PHYSICAL_ROOT/data/har
 readonly MISSION_MODE="${ONR_DEMO_MISSION_MODE:-mission1}"
 readonly MISSION2_SCENARIO="${ONR_DEMO_MISSION2_SCENARIO:-/data/ccu/sukaih/ONR/onr_scenario/offshore_dock_1/collision/0}"
 readonly DRY_RUN="${ONR_DEMO_DRY_RUN:-0}"
+readonly DIAGNOSTIC_PRIOR="${ONR_DEMO_DIAGNOSTIC_PRIOR:-}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
 case "$MISSION_MODE" in
     mission1) default_mission_file="$AGENT_ROOT/examples/mission.json" ;;
@@ -35,6 +38,10 @@ sessname="$1"
 
 if [ ! -r "$SCENARIO_CONFIG" ] || [ ! -r "$MISSION_FILE" ]; then
     echo "Scenario configuration or Mission Input file is missing." >&2
+    exit 1
+fi
+if [ -n "$DIAGNOSTIC_PRIOR" ] && { [ "$MISSION_MODE" = "mission2" ] || [ ! -r "$DIAGNOSTIC_PRIOR/manifest.json" ]; }; then
+    echo "A readable diagnostic prior bundle requires Mission 1 mode (alone or joint)." >&2
     exit 1
 fi
 mission_args=()
@@ -100,6 +107,15 @@ sed \
     "$AGENT_ROOT/conf/environment_physical.yaml" > "$environment_config"
 
 initial_event="$transport_root/identity/event-environment-update%3Amission%3Ademo%3Ainitial.json"
+
+if [ -n "$DIAGNOSTIC_PRIOR" ]; then
+    (
+    source "$CONDA_INIT"
+    conda activate onr
+    python "$AGENT_ROOT/scripts/prepare_reporting_prior.py" --agent-var "$AGENT_ROOT/var" install \
+        --bundle "$DIAGNOSTIC_PRIOR" --storage-root "$agent_storage_root" --mission-id "$MISSION_ID"
+    )
+fi
 
 physical_args=(python -u -m onr_physical_runtime.agent.service --scenario-config "$SCENARIO_CONFIG"
     --transport-root "$transport_root" --state-root "$physical_state_root" --mission-id "$MISSION_ID"

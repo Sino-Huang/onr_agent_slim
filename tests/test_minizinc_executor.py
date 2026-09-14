@@ -349,7 +349,8 @@ def test_event_information_patrol_example_chooses_stops_schedule_and_locations(
     assert "network_flow_cost" not in model_text
     assert "outgoing_start[node]..outgoing_start[node + 1] - 1" in model_text
     assert "incoming_start[node]..incoming_start[node + 1] - 1" in model_text
-    assert "flow[incoming_edge[position]]" in model_text
+    assert "array[NODES] of var 0.0..1.0: prefix_flow" in model_text
+    assert "prefix_flow[child]" in model_text
     assert "array[CANDIDATES] of var 0.0..1.0: selected" in model_text
     assert "candidate_combined_score[candidate] * selected[candidate]" in model_text
     assert "candidate_recall[candidate]" in model_text

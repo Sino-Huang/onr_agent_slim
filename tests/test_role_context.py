@@ -71,12 +71,12 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.7.0",
         "1.5.0",
-        "2.21.0",
+        "2.23.0",
         "2.0.0",
-        "1.2.1",
+        "1.3.0",
         "3.5.0",
         "2.2.1",
-        "1.2.2",
+        "1.3.0",
         "1.1.0",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [
@@ -556,7 +556,7 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "substituting the two labeled execute paths verbatim" in minizinc_skill
     assert "Do not author an ad-hoc inspection script" in minizinc_skill
     assert "DZN into model context" in minizinc_skill
-    assert "version: '2.21.0'" in minizinc_skill
+    assert "version: '2.23.0'" in minizinc_skill
     assert "references/mission1-mixed-action.md" in minizinc_skill
     assert "example values are teaching values only" in mission1_guidance
     assert "replan-environment.json" in mission1_reference
@@ -585,7 +585,7 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "nondecreasing" in mission1_reference
     assert "empty adjacency windows" in mission1_reference
     assert "0.9 * controlled_vehicle.max_velocity" in mission1_reference
-    assert "E[p_i q] * rate_i * (t_last - t_first)" in mission1_reference
+    assert "E[p_i q] * rate_i * (t_last - observation_start)" in mission1_reference
     assert "no risk threshold or pursuit bonus" in mission1_reference
     assert "bypasses `initialize_event_data_materialization`" in minizinc_skill
     assert 'minizinc_solver: "coin-bc"' in minizinc_skill

@@ -13,8 +13,50 @@ from onr.application.reporting_reliability import (
 from onr.contracts.environment import EnvironmentTickResult
 from onr.ports.transport import Subscription
 
-
 NOW = "2026-09-03T00:00:00+10:00"
+
+
+def test_diagnostic_prior_endpoints_and_gradual_flattening() -> None:
+    targets = {1: 0.0, 2: 0.9}
+    ordinary = ReportingReliabilityManager("mission-1", targets).snapshot(
+        input_event_id="initial", input_revision=0, created_at=NOW)
+    for flattening in (0.0, 0.25, 0.5, 0.75, 1.0):
+        manager = ReportingReliabilityManager.with_diagnostic_prior(
+            "mission-1", targets, flattening=flattening)
+        snapshot = manager.snapshot(input_event_id="initial", input_revision=0, created_at=NOW)
+        for ship, shared in zip(snapshot.ships, ordinary.ships):
+            assert ship.mean == pytest.approx((1 - flattening) * targets[ship.entity_id] + flattening * shared.mean)
+            if flattening == 0:
+                assert ship.variance == pytest.approx(0, abs=1e-14)
+        assert snapshot.omission == ordinary.omission
+        if flattening == 1:
+            assert snapshot == ordinary
+
+
+def test_diagnostic_prior_updates_and_checkpoint_provenance(tmp_path: Path) -> None:
+    manager = ReportingReliabilityManager.with_diagnostic_prior(
+        "mission-1", {1: 0.0, 2: 0.9}, flattening=0.5)
+    before = manager.snapshot(input_event_id="initial", input_revision=0, created_at=NOW)
+    after = manager.update_checks([_check("clean", 1, "clean"), _check("bad", 2, "altered")],
+                                  input_event_id="tick-1", input_revision=1, created_at=NOW)
+    assert after.ships[0].mean < before.ships[0].mean
+    assert after.ships[1].mean > before.ships[1].mean
+    store = FileReportingReliabilityStore(tmp_path)
+    store.save(after, manager.checkpoint(), None)
+    saved, checkpoint, _ = store.load("mission-1")
+    restored = ReportingReliabilityManager.from_checkpoint(checkpoint)
+    assert restored.checkpoint() == manager.checkpoint()
+    assert checkpoint.configuration["diagnostic_prior"]["flattening"] == 0.5
+    assert saved == after
+    assert restored.update_checks([_check("bad", 2, "altered")], input_event_id="tick-2",
+                                  input_revision=2, created_at=NOW) is None
+
+
+@pytest.mark.parametrize("targets,flattening", [({1: 0.9}, -0.1), ({1: 0.9}, 1.1),
+                                               ({1: float("nan")}, 0.5), ({1: -1.0}, 0.5)])
+def test_diagnostic_prior_rejects_invalid_probabilities(targets, flattening) -> None:
+    with pytest.raises(ValueError):
+        ReportingReliabilityManager.with_diagnostic_prior("mission-1", targets, flattening=flattening)
 
 
 def _check(check_id: str, entity_id: int, outcome: str) -> dict[str, object]:

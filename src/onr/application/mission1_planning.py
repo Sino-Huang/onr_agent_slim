@@ -85,6 +85,13 @@ class SurveillanceCandidate:
     def duration_s(self) -> float:
         return self.end_s - self.start_s
 
+    @property
+    def last_report_time_s(self) -> float:
+        """Original report epoch; GPS acquisition can precede the first report."""
+        if self.mode == "pursue_ship":
+            return self.end_s - OBSERVATION_DWELL_SECONDS
+        return self.start_s - self.observation_delay_s + self.report_span_s
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateDAG:
@@ -772,7 +779,7 @@ def _candidate_arcs(
     # witness's expiry mask protects all inserted batches from the suffix.
     safe_successors = [0] + [
         all_nodes & ~((1 << (bisect_right(starts,
-            c.start_s - c.observation_delay_s + c.report_span_s + max_delay + 1e-9) + 1)) - 1)
+            c.last_report_time_s + max_delay + 1e-9) + 1)) - 1)
         if c.report_ids else all_nodes
         for c in candidates
     ]
@@ -799,7 +806,7 @@ def _candidate_arcs(
             right = candidates[target - 1]
             if chronological_reports and (
                 right.start_s - right.observation_delay_s
-                <= left.start_s - left.observation_delay_s + left.report_span_s + 1e-9
+                <= left.last_report_time_s + 1e-9
             ):
                 # Window alternatives can otherwise repeat an older report
                 # after an intervening visit. Ordered report epochs preclude
@@ -1109,6 +1116,38 @@ def build_candidate_dag(
                     public_report_rate=report_rates[entity_id],
                 )
                 candidates[item.candidate_id] = item
+
+    # A public GPS fix is an acquisition/search hint, not a synthetic report
+    # or a guaranteed future ship position. Retain the report-start windows
+    # and also value starting pursuit at an earlier reachable GPS rendezvous.
+    # Actual acquisition and recovery remain Maneuver Control's responsibility.
+    latest_fixes = {}
+    for entity, sampled, x, y in public_position_fix_anchors(environment, belief):
+        if entity not in latest_fixes or sampled > latest_fixes[entity][0]:
+            latest_fixes[entity] = sampled, round(x), round(y)
+    opportunities_by_id = {item.report_id: item for item in opportunities}
+    for item in tuple(candidates.values()):
+        if item.mode != "pursue_ship" or item.entity_id not in latest_fixes:
+            continue
+        _sampled, x, y = latest_fixes[item.entity_id]
+        arrival = math.ceil((now + _navigation_time(
+            start_x, start_y, x, y, speed, direction, None, turn_seconds,
+        )) * TIME_SCALE) / TIME_SCALE
+        if arrival >= item.start_s or arrival + _navigation_time(
+            x, y, item.x, item.y, speed, None, None, turn_seconds,
+        ) > item.start_s + 1e-9:
+            continue
+        utility = score_candidate_opportunities(
+            tuple(opportunities_by_id[report] for report in item.report_ids),
+            expected_omission_probability=item.expected_omission_probability,
+            public_report_rate=item.public_report_rate,
+            observation_start_s=arrival,
+        )
+        identity = _candidate_id("pursue_ship", item.report_ids,
+                                 viewpoint=(x, y), observation_start_s=arrival)
+        candidates[identity] = replace(item, candidate_id=identity, start_s=arrival,
+            x=x, y=y, recall_utility=utility.recall, estimation_utility=utility.estimation,
+            omission_yield=utility.omission_yield, combined_score=utility.combined)
 
     ordered_candidates = tuple(
         sorted(

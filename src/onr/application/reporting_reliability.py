@@ -6,10 +6,10 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote
 
 from onr.contracts.bayesian_belief import canonical_json, canonical_sha256
@@ -20,7 +20,6 @@ from onr.contracts.reporting_reliability import (
     ShipReportingReliability,
 )
 from onr.contracts.transport import TransportEvent
-
 
 P_BIN_COUNT = 201
 Q_BIN_COUNT = 101
@@ -108,12 +107,12 @@ class ReportingReliabilityCheckpoint:
         return {**self.content_dict(), "content_sha256": self.content_sha256}
 
     @classmethod
-    def create(cls, **kwargs: Any) -> "ReportingReliabilityCheckpoint":
+    def create(cls, **kwargs: Any) -> ReportingReliabilityCheckpoint:
         temporary = cls(content_sha256="", **kwargs)
         return cls(**kwargs, content_sha256=canonical_sha256(temporary.content_dict()))
 
     @classmethod
-    def from_dict(cls, value: object) -> "ReportingReliabilityCheckpoint":
+    def from_dict(cls, value: object) -> ReportingReliabilityCheckpoint:
         if not isinstance(value, Mapping):
             raise ValueError("reporting reliability checkpoint must be an object")
         checkpoint = cls(
@@ -175,11 +174,56 @@ class ReportingReliabilityManager:
         self.belief_revision = 1
         self.last_input_event_id = "reporting-reliability:initial"
         self.last_input_revision = 0
+        self.configuration: dict[str, object] = {
+            "honest_prior_mass": HONEST_PRIOR_MASS,
+            "p_alpha": P_ALPHA,
+            "p_beta": P_BETA,
+            "p_bins": P_BIN_COUNT,
+            "q_alpha": 1.0,
+            "q_beta": 1.0,
+            "q_bins": Q_BIN_COUNT,
+        }
+
+    @classmethod
+    def with_diagnostic_prior(
+        cls, mission_id: str, probabilities: Mapping[int, float], *, flattening: float,
+    ) -> ReportingReliabilityManager:
+        """Opt-in oracle-to-population control; never used by default startup.
+
+        Mix each supplied point mass with the existing population distribution.
+        Keep q unchanged to isolate vessel-prior informativeness. A fully flat
+        control returns the exact default manager, without retaining truth.
+        """
+        if isinstance(flattening, bool) or not math.isfinite(flattening) or not 0 <= flattening <= 1:
+            raise ValueError("diagnostic flattening must lie in [0, 1]")
+        if any(isinstance(p, bool) or not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values()):
+            raise ValueError("diagnostic vessel probabilities must lie in [0, 1]")
+        manager = cls(mission_id, probabilities)
+        if flattening == 1:
+            return manager
+        original_grid = manager.p_grid
+        base = dict(zip(original_grid, next(iter(manager.ship_weights.values()))[0], strict=True))
+        manager.p_grid = tuple(sorted(set(original_grid) | set(probabilities.values())))
+        manager.ship_weights = {
+            entity: tuple(
+                tuple(flattening * base.get(p, 0.0) + (1 - flattening) * (p == target)
+                      for p in manager.p_grid)
+                for _ in manager.q_grid
+            )
+            for entity, target in probabilities.items()
+        }
+        manager.configuration["diagnostic_prior"] = {
+            "kind": "point_mass_population_mixture",
+            "flattening": flattening,
+            "point_probabilities": {str(entity): float(p) for entity, p in sorted(probabilities.items())},
+            "scope": "Explicitly supplied diagnostic information, not observed evidence",
+        }
+        return manager
 
     @classmethod
     def from_checkpoint(
         cls, checkpoint: ReportingReliabilityCheckpoint
-    ) -> "ReportingReliabilityManager":
+    ) -> ReportingReliabilityManager:
         manager = cls(checkpoint.mission_id, checkpoint.ship_weights)
         manager.p_grid = checkpoint.p_grid
         manager.q_grid = checkpoint.q_grid
@@ -193,6 +237,7 @@ class ReportingReliabilityManager:
         manager.belief_revision = checkpoint.belief_revision
         manager.last_input_event_id = checkpoint.last_input_event_id
         manager.last_input_revision = checkpoint.last_input_revision
+        manager.configuration = dict(checkpoint.configuration)
         return manager
 
     def update_checks(
@@ -343,15 +388,7 @@ class ReportingReliabilityManager:
             ship_weights=self.ship_weights,
             outcome_counts=self.outcome_counts,
             processed_check_ids=tuple(self.processed_check_ids),
-            configuration={
-                "honest_prior_mass": HONEST_PRIOR_MASS,
-                "p_alpha": P_ALPHA,
-                "p_beta": P_BETA,
-                "p_bins": P_BIN_COUNT,
-                "q_alpha": 1.0,
-                "q_beta": 1.0,
-                "q_bins": Q_BIN_COUNT,
-            },
+            configuration=self.configuration,
         )
 
 
@@ -476,7 +513,7 @@ class ReportingReliabilityService:
         observation_topic: str = "belief-observations",
         context_topic: str = "normalized-plans",
         clock: Callable[[], str],
-    ) -> "ReportingReliabilityService":
+    ) -> ReportingReliabilityService:
         loaded = store.load(mission_id)
         if loaded is not None:
             snapshot, checkpoint, pending = loaded
@@ -515,13 +552,14 @@ class ReportingReliabilityService:
     def _reference(snapshot: ReportingReliabilitySnapshot) -> str:
         return reporting_reliability_reference(snapshot)
 
-    def _pending(self, snapshot: ReportingReliabilitySnapshot) -> dict[str, object]:
+    @staticmethod
+    def _pending(snapshot: ReportingReliabilitySnapshot) -> dict[str, object]:
         return {
             "event_id": f"belief.updated:{snapshot.mission_id}:{snapshot.belief_revision}:{snapshot.content_sha256}",
             "payload": {
                 "source": "bayesian_belief_snapshot",
                 "revision": snapshot.belief_revision,
-                "reference": self._reference(snapshot),
+                "reference": reporting_reliability_reference(snapshot),
                 "content_sha256": snapshot.content_sha256,
                 "health": "healthy",
                 "fresh": True,
