@@ -1,7 +1,7 @@
 ---
 name: hyper-coordination
 description: Use when Maneuver needs a replan evaluation, a planning-authority answer, or a correlated report to Hyper while preserving the active Mission objectives and plan authority.
-version: '1.1.0'
+version: '1.1.1'
 ---
 
 # Hyper Coordination
@@ -10,7 +10,7 @@ version: '1.1.0'
 
 - Send every replan request, Hyper query, and report through the correlated `CommunicationPort` envelope.
 - Preserve the exact Mission ID, active plan revision, source revisions, correlation ID, sender, recipient, and message kind required by the envelope. Do not correlate by prose.
-- Keep messages factual and bounded to Mission Snapshot, FSM Status, normalized lifecycle feedback, and the current execution constraint.
+- Before reporting physical progress, check the submitted action ID and latest normalized lifecycle. Describe an unsubmitted action as a proposal. When no physical tool was called, state that no new physical command was issued; a recovery intention is not navigation underway.
 - Send environment lifecycle facts through their normalized Context Coordination path. Report their planning implications to Hyper only with the same Mission and action correlation.
 
 ## Replan Requests
