@@ -1,7 +1,7 @@
 ---
 name: decision-cycle
 description: Use for Maneuver intent bootstrap, transitions, retargeting, belief ingestion, or communication. Routine fixed-view waiting is covered by the system prompt; pursuit continuity requires physical-maneuver-selection.
-version: '2.2.1'
+version: '2.2.2'
 ---
 
 # Decision Cycle
@@ -41,9 +41,11 @@ version: '2.2.1'
    to a later heartbeat.
 6. After the FSM decision and target selection, preserve a suitable nonterminal
    active action when the target is unchanged;
-   submitting it again would replace it. When replacement is warranted, choose
-   the physical action and parameters at runtime from current outcome facts and
-   environment evidence.
+   submitting it again would replace it. When replacement is warranted, call
+   the chosen physical tool with parameters from current outcome facts and
+   environment evidence, then inspect its submission result before finishing
+   the heartbeat. Selection is complete only with that tool result; a proposed
+   action written in `ManeuverHeartbeatResponse` submits no command.
    For a pursuit assignment or active pursuit, read
    `/conf/skills/maneuver-control/physical-maneuver-selection/SKILL.md` and its
    acquisition reference before judging the action suitable, including on
@@ -61,7 +63,10 @@ version: '2.2.1'
    `hyper_evaluation` is sent with its exact kind, reason, evaluation ID, and
    delivery policy. Unmarked queries, reports, and replans remain unrestricted.
 8. Complete any todos you created and call `ManeuverHeartbeatResponse` with one
-   concise public summary. A no-effect cycle needs no bookkeeping call. Python supplies
+   concise public summary grounded in actual tool results. Identify a newly
+   submitted maneuver by its returned identity; otherwise state that no new
+   physical command was submitted. Submission does not prove execution.
+   A no-effect cycle needs no bookkeeping call. Python supplies
    the authoritative identities in `ManeuverHeartbeatCompletion`. Durable tool
    records distinguish tool-free, rejected-tool, intent-only, and effectful
    cycles.
