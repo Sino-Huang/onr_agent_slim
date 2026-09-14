@@ -1626,7 +1626,9 @@ class Mission1ReplanGate:
                         ship.expected_omission_probability if ship is not None else 0.0
                     ),
                     public_report_rate=(report_rates[ship.entity_id] if ship is not None else 0.0),
-                    observation_start_s=max(now, start_s) if continuing_pursuit else None,
+                    # Future GPS windows already own their earlier planned
+                    # interval, even before acquisition or observation starts.
+                    observation_start_s=max(now, start_s),
                 )
             )
             if mode == "fixed_view" and isinstance(parameters, Mapping):

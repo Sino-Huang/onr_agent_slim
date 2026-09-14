@@ -83,6 +83,19 @@ def test_public_gps_adds_early_pursuit_without_replacing_report_windows():
     assert (candidate.start_s, candidate.end_s, candidate.x, candidate.y) == (2, 30.5, 18, 0)
     assert candidate.report_ids == ("a", "b")
     assert candidate.omission_yield == pytest.approx(belief.ships[0].expected_omission_probability * .1 * 28)
+    context = {"candidate_id": candidate.candidate_id, "surveillance_mode": candidate.mode,
+               "target_entity_id": 1, "target_report_ids": list(candidate.report_ids),
+               "observation_window": {"start": {"seconds": candidate.start_s},
+                                      "duration": {"seconds": candidate.duration_s}}}
+    chart = Statechart(mission_id="mission-1", plan_revision=1,
+        mission_snapshot_id="test", planning_profile="temporal", entry_state="active",
+        states=("active",), transitions=(), terminal_states=("active",),
+        state_context={"active": context})
+    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
+                       active_state="active", active_state_context=context)
+    decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
+    assert decision.current_score == advisory.score
+    assert not decision.trigger
 
 
 @pytest.mark.parametrize("fix_time,x", [(1,18), (0,1000), (0,-90)])
