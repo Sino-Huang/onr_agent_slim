@@ -292,6 +292,30 @@ class BayesianBeliefCheckpoint:
 class BayesianBeliefManager:
     """Sequential-importance-resampling filter over generic binary risk keys."""
 
+    @staticmethod
+    def categorical_update(prior: Mapping[str, float], observed: str, uncertainty: float) -> dict[str, float] | None:
+        """Mission 4 categorical sensor update; independent of binary-risk SIR.
+
+        The producer explicitly declares symmetric categorical error, not an
+        arbitrary detector confidence. None means contradictory zero-likelihood
+        evidence, which must not manufacture a confident match.
+        """
+        uncertainty = _probability(uncertainty, "local categorical uncertainty")
+        if observed not in prior:
+            raise ValueError("observation is outside the declared vocabulary")
+        if len(prior) == 1:
+            return dict(prior)
+        weights = {value: probability * (1-uncertainty if value == observed else uncertainty/(len(prior)-1))
+                   for value, probability in prior.items()}
+        total = math.fsum(weights.values())
+        return None if total == 0 else {value: weight/total for value,weight in weights.items()}
+
+    @staticmethod
+    def for_object_search(mission_id: str, package: Mapping[str, object], state=None):
+        """Construct the categorical object-search extension owned by Agent."""
+        from onr.application.object_search_belief import ObjectSearchBeliefManager
+        return ObjectSearchBeliefManager(mission_id, package, state)
+
     def __init__(
         self,
         mission_id: str,
