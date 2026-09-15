@@ -40,6 +40,7 @@ def test_shipped_physical_profile_is_explicit_and_composes_transport_source(
     assert profile.external.coordinate_frame == "local_ned"
     assert profile.external.mission_epoch == "environment_reset"
     assert profile.external.altitude_convention == "ned_down_metres"
+    assert profile.external.mission1_planning_input_path is None
 
     config = load_runtime_config(repo_root=root)
     transport_root = tmp_path / "transport"
@@ -142,6 +143,23 @@ def test_external_profile_accepts_both_update_ownership_modes(
     profile = load_environment_profile(profile_path, repo_root=root)
 
     assert profile.update_ownership == ownership
+
+
+def test_external_profile_resolves_mission1_planning_input(tmp_path: Path) -> None:
+    root = Path(__file__).parents[1]
+    planning_input = tmp_path / "mission1-planning.json"
+    planning_input.write_text("{}\n", encoding="utf-8")
+    values = yaml.safe_load(
+        (root / "conf/environment_physical.yaml").read_text(encoding="utf-8")
+    )
+    values["external"]["mission1_planning_input_path"] = str(planning_input)
+    profile_path = tmp_path / "environment.yaml"
+    profile_path.write_text(yaml.safe_dump(values), encoding="utf-8")
+
+    profile = load_environment_profile(profile_path, repo_root=root)
+
+    assert profile.external is not None
+    assert profile.external.mission1_planning_input_path == planning_input
 
 
 def test_external_profile_rejects_implicit_frames(

@@ -1,11 +1,12 @@
 """Verify launcher mode selection without creating herdr panes or services."""
 import os
-from pathlib import Path
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
+import yaml
 
 
 @pytest.mark.parametrize("mode", ["mission1", "mission2", "joint"])
@@ -33,6 +34,10 @@ def test_launcher_dry_run_preserves_default_and_selects_mission2(tmp_path, mode)
     env = {k: v for k, v in os.environ.items() if not k.startswith("ONR_DEMO_")}
     env.update(ONR_DEMO_DRY_RUN="1", ONR_DEMO_SCENARIO_CONFIG=str(config),
                ONR_DEMO_MISSION2_SCENARIO=str(scenario))
+    planning_input = tmp_path / "mission1-planning.json"
+    planning_input.write_text("{}")
+    if mode != "mission2":
+        env["ONR_DEMO_MISSION1_PLANNING_INPUT"] = str(planning_input)
     if mode != "mission1":
         env["ONR_DEMO_MISSION_MODE"] = mode
     if mode == "joint":
@@ -57,4 +62,14 @@ def test_launcher_dry_run_preserves_default_and_selects_mission2(tmp_path, mode)
     expected = {"mission1": "mission.json", "mission2": "mission2.json", "joint": "mission1-and-2.json"}[mode]
     agent_argv = commands["Agent command"]
     assert agent_argv[agent_argv.index("--mission-file") + 1].endswith(expected)
+    run_root = Path(next(
+        line.removeprefix("Run configuration: ")
+        for line in result.stdout.splitlines()
+        if line.startswith("Run configuration: ")
+    ))
+    generated_profile = yaml.safe_load(
+        (run_root / "environment_physical.yaml").read_text()
+    )
+    expected_planning_input = str(planning_input) if mode != "mission2" else None
+    assert generated_profile["external"]["mission1_planning_input_path"] == expected_planning_input
     assert "no services started" in result.stdout

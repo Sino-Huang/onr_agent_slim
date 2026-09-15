@@ -20,6 +20,7 @@ readonly MISSION_MODE="${ONR_DEMO_MISSION_MODE:-mission1}"
 readonly MISSION2_SCENARIO="${ONR_DEMO_MISSION2_SCENARIO:-/data/ccu/sukaih/ONR/onr_scenario/offshore_dock_1/collision/0}"
 readonly DRY_RUN="${ONR_DEMO_DRY_RUN:-0}"
 readonly DIAGNOSTIC_PRIOR="${ONR_DEMO_DIAGNOSTIC_PRIOR:-}"
+readonly MISSION1_PLANNING_INPUT="${ONR_DEMO_MISSION1_PLANNING_INPUT:-}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
 case "$MISSION_MODE" in
     mission1) default_mission_file="$AGENT_ROOT/examples/mission.json" ;;
@@ -42,6 +43,10 @@ if [ ! -r "$SCENARIO_CONFIG" ] || [ ! -r "$MISSION_FILE" ]; then
 fi
 if [ -n "$DIAGNOSTIC_PRIOR" ] && { [ "$MISSION_MODE" = "mission2" ] || [ ! -r "$DIAGNOSTIC_PRIOR/manifest.json" ]; }; then
     echo "A readable diagnostic prior bundle requires Mission 1 mode (alone or joint)." >&2
+    exit 1
+fi
+if [ -n "$MISSION1_PLANNING_INPUT" ] && { [ "$MISSION_MODE" = "mission2" ] || [ ! -r "$MISSION1_PLANNING_INPUT" ]; }; then
+    echo "A readable Mission 1 planning input requires Mission 1 mode (alone or joint)." >&2
     exit 1
 fi
 mission_args=()
@@ -104,6 +109,7 @@ sed \
 
 sed \
     -e "s|^  planning_artifact_root: var/environment$|  planning_artifact_root: $environment_artifacts_root|" \
+    -e "s|^  mission1_planning_input_path: null$|  mission1_planning_input_path: ${MISSION1_PLANNING_INPUT:-null}|" \
     "$AGENT_ROOT/conf/environment_physical.yaml" > "$environment_config"
 
 initial_event="$transport_root/identity/event-environment-update%3Amission%3Ademo%3Ainitial.json"

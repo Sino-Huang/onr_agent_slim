@@ -208,6 +208,7 @@ class ExternalEnvironmentConfig:
     max_retries: int
     update_stale_after_seconds: int | float
     advance_timeout_seconds: int | float = 30.0
+    mission1_planning_input_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,7 +488,7 @@ def load_environment_profile(
                 "update_stale_after_seconds",
             },
             "environment.external",
-            optional={"advance_timeout_seconds"},
+            optional={"advance_timeout_seconds", "mission1_planning_input_path"},
         )
         coordinate_frame = _text(
             external_values["coordinate_frame"],
@@ -553,6 +554,15 @@ def load_environment_profile(
             advance_timeout_seconds=_positive_duration(
                 external_values.get("advance_timeout_seconds", 30.0),
                 "environment.external.advance_timeout_seconds",
+            ),
+            mission1_planning_input_path=(
+                _path(
+                    external_values["mission1_planning_input_path"],
+                    "environment.external.mission1_planning_input_path",
+                    root,
+                )
+                if external_values.get("mission1_planning_input_path") is not None
+                else None
             ),
         )
     return EnvironmentProfile(

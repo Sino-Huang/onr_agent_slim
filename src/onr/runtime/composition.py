@@ -686,6 +686,7 @@ class RuntimeComposition:
                 max_retries=external.max_retries,
                 coordinate_frame=external.coordinate_frame,
                 update_ownership=selected.value,
+                mission1_planning_input_path=external.mission1_planning_input_path,
             )
         if profile.adapter_kind != "fake" or profile.fake is None:
             raise ValueError("unsupported environment adapter kind")

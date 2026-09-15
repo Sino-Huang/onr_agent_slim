@@ -31,6 +31,9 @@ external:
   update_topic: environment-updates
   control_topic: environment-control
   planning_artifact_root: var/environment
+  # Optional public, precomputed Mission 1 sensor-view input. Live observations
+  # remain authoritative and never receive this planning-only data.
+  mission1_planning_input_path: null
   coordinate_frame: local_ned
   mission_epoch: environment_reset
   altitude_convention: ned_down_metres
