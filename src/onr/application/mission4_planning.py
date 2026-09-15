@@ -158,7 +158,7 @@ class Mission4AdaptivePlanner:
             dn,de=match.position[0]-target[0],match.position[1]-target[1]
             direction=(0 if de>0 else 2) if abs(de)>=abs(dn) else (3 if dn>0 else 1)
             return Mission4Decision("navigate","additional_useful_view",
-                {"target":dict(zip(("x","y","z"),target)),"arrival_direction":direction,"speed_mps":2.5,"deadline_s":section["deadline_s"]},targets)
+                {**dict(zip(("x","y","z"),target)),"arrival_direction":direction,"speed":2.5,"deadline_time":section["deadline_s"]},targets)
         areas=[]
         for aid,area in section["package"]["areas"].items():
             targets=tuple(t for t in unresolved if aid in section["objectives"][t]["area_ids"])
@@ -174,7 +174,7 @@ class Mission4AdaptivePlanner:
             self.data["active_choice"]={"kind":"area","id":aid,"targets":list(targets),
                                         "objectives":{t:section["objectives"][t] for t in targets}}
             return Mission4Decision("search_area","joint_area_search",
-                {"polygon":[{"x":n,"y":e} for n,e in area["polygon"]],"speed_mps":2.5,"deadline_s":section["deadline_s"]},targets)
+                {"polygon":[{"x":n,"y":e} for n,e in area["polygon"]],"speed":2.5,"deadline_time":section["deadline_s"]},targets)
         return self.final_report(section,"search_exhausted")
 
     def final_report(self,section,reason):
