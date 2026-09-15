@@ -485,7 +485,7 @@ class Mission3AdaptivePlanner:
         return Mission3Decision(
             "investigate",
             ship_id,
-            {"entity_id": ship_id, "standoff_distance": 30.0},
+            {"entity_id": ship_id, "standoff_distance": 3.0, "speed": 10.0},
             reason,
             tuple(cast(Sequence[str], ship.get("evidence_ids", ()))),
         )
