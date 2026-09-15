@@ -210,6 +210,35 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
         [1]
     )
 
+    planning_view.environment_event.payload = {
+        "static_info": [],
+        "world_model_info": {
+            "mission_mode": "mission3",
+            "mission_end_time_s": 30.0,
+            "ship_event_reports": {},
+            "mission3": {
+                "schema_version": 1,
+                "selected_ship_ids": [1],
+                "ships": [],
+            },
+        },
+    }
+    belief_requests.clear()
+    workflow_belief_files.clear()
+
+    mission3_result = runtime_cli.run_closed_loop_demo(
+        FakeRuntime(),  # type: ignore[arg-type]
+        MissionInput("mission:demo", "Inspect selected ships.", "operator"),
+        repo_root=tmp_path,
+        planner_artifacts=tmp_path / "planner-artifacts",
+        recursion_limit=120,
+        simulation_limit_seconds=60,
+    )
+
+    assert mission3_result is closed_loop_result
+    assert belief_requests == []
+    assert workflow_belief_files == [None, None]
+
 
 def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
     mission = runtime_cli.load_mission_file(_mission_file(tmp_path))

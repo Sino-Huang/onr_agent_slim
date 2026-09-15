@@ -1,7 +1,7 @@
 ---
 name: mission-parsing
 description: Apply when deriving PlanningIntent from MissionInput while preserving source authority.
-version: '1.7.0'
+version: '1.8.0'
 ---
 
 # Mission Parsing
@@ -50,6 +50,17 @@ A mission to maximize field-of-view observation coverage weighted directly by
 per-ship risk is temporal optimization, so select MiniZinc. Risk scores must be
 supplied by authorized evidence or an explicit code-owned derivation; do not
 invent them.
+
+### Selected-fleet attached-object inspection
+
+A Mission 3 inspection is a temporal adaptive-tour problem. Select MiniZinc and
+use `world_model_info.mission3.selected_ship_ids` as the fixed task roster. The
+runtime has already normalized the Mission-description ID/area filters; visible
+incidental ships never expand it. Use public target estimates for travel and
+`ships[]` evidence state for variable service time. Record a capture rule that
+only a producer's explicit sufficient normal/abnormal verdict resolves a ship,
+and a value rule that prioritizes resolving the remaining roster within the
+recording/budget limit. Mission 3 has no reporting-reliability belief input.
 
 ## Gotchas
 

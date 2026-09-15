@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
 description: Use when selecting or preserving a physical maneuver, including pursuit acquisition and recovery.
-version: '1.3.0'
+version: '1.4.0'
 ---
 
 # Physical maneuver selection
@@ -34,3 +34,13 @@ An unseen target away from its rendezvous needs navigation first. Arrival or an
 exact current target sighting requires pursuit in that heartbeat. An acquisition/search deadline can require GPS
 recovery or Hyper escalation even while the assignment's final evidence gate is
 future. Replacing an active recovery navigation every heartbeat defeats recovery.
+
+For Mission 3, target only `world_model_info.mission3.selected_ship_ids` and use
+its current public target estimate. Obtain a screening view with `navigate` or
+`pursue`; use `investigate` when usable evidence is suspicious or inconclusive.
+Preserve an active action until new evidence, meaningful target movement or
+terminal feedback changes it. Either sufficient verdict permits immediate
+replacement, which cancels an active orbit through the normal lifecycle. Orbit
+completion, no detection, unavailable perception and absent confidence leave the
+ship unresolved. After a failed or inconclusive attempt, screen other feasible
+ships before a bounded revisit; report the reason when no recovery evidence arrives.

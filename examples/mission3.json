@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Inspect the runtime-selected fleet for abnormal objects attached to ships. Use only public Mission 3 evidence, interleave screening and investigation, adapt to moving targets and report every selected ship as normal, abnormal or explicitly incomplete.",
+  "source_authority": "demo-operator"
+}

@@ -21,12 +21,15 @@ readonly MISSION2_SCENARIO="${ONR_DEMO_MISSION2_SCENARIO:-/data/ccu/sukaih/ONR/o
 readonly DRY_RUN="${ONR_DEMO_DRY_RUN:-0}"
 readonly DIAGNOSTIC_PRIOR="${ONR_DEMO_DIAGNOSTIC_PRIOR:-}"
 readonly MISSION1_PLANNING_INPUT="${ONR_DEMO_MISSION1_PLANNING_INPUT:-}"
+readonly MISSION3_DESCRIPTION="${ONR_DEMO_MISSION3_DESCRIPTION:-$AGENT_ROOT/examples/mission3_description.json}"
+readonly MISSION3_FIXTURE="${ONR_DEMO_MISSION3_FIXTURE:-}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
 case "$MISSION_MODE" in
     mission1) default_mission_file="$AGENT_ROOT/examples/mission.json" ;;
     mission2) default_mission_file="$AGENT_ROOT/examples/mission2.json" ;;
+    mission3) default_mission_file="$AGENT_ROOT/examples/mission3.json" ;;
     joint) default_mission_file="$AGENT_ROOT/examples/mission1-and-2.json" ;;
-    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2 or joint." >&2; exit 2 ;;
+    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2, mission3 or joint." >&2; exit 2 ;;
 esac
 readonly MISSION_FILE="${ONR_DEMO_MISSION_FILE:-$default_mission_file}"
 
@@ -41,22 +44,22 @@ if [ ! -r "$SCENARIO_CONFIG" ] || [ ! -r "$MISSION_FILE" ]; then
     echo "Scenario configuration or Mission Input file is missing." >&2
     exit 1
 fi
-if [ -n "$DIAGNOSTIC_PRIOR" ] && { [ "$MISSION_MODE" = "mission2" ] || [ ! -r "$DIAGNOSTIC_PRIOR/manifest.json" ]; }; then
+if [ -n "$DIAGNOSTIC_PRIOR" ] && { { [ "$MISSION_MODE" != "mission1" ] && [ "$MISSION_MODE" != "joint" ]; } || [ ! -r "$DIAGNOSTIC_PRIOR/manifest.json" ]; }; then
     echo "A readable diagnostic prior bundle requires Mission 1 mode (alone or joint)." >&2
     exit 1
 fi
-if [ -n "$MISSION1_PLANNING_INPUT" ] && { [ "$MISSION_MODE" = "mission2" ] || [ ! -r "$MISSION1_PLANNING_INPUT" ]; }; then
+if [ -n "$MISSION1_PLANNING_INPUT" ] && { { [ "$MISSION_MODE" != "mission1" ] && [ "$MISSION_MODE" != "joint" ]; } || [ ! -r "$MISSION1_PLANNING_INPUT" ]; }; then
     echo "A readable Mission 1 planning input requires Mission 1 mode (alone or joint)." >&2
     exit 1
 fi
 mission_args=()
-if [ "$MISSION_MODE" != "mission2" ]; then
+if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then
     if [ ! -r "$MISSION_INSTANCE/events_report.json" ]; then
         echo "Mission 1 report stream is missing." >&2; exit 1
     fi
     mission_args+=(--mission1-instance-dir "$MISSION_INSTANCE")
 fi
-if [ "$MISSION_MODE" != "mission1" ]; then
+if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ]; then
     if [ ! -r "$MISSION2_SCENARIO/ships/events.json" ]; then
         echo "Mission 2 scenario is missing." >&2; exit 1
     fi
@@ -64,6 +67,18 @@ if [ "$MISSION_MODE" != "mission1" ]; then
         echo "Joint mode requires ONR_DEMO_MISSION1_INSTANCE with reports for the selected moving scenario." >&2; exit 1
     fi
     mission_args+=(--mission-mode "$MISSION_MODE" --mission2-scenario-dir "$MISSION2_SCENARIO")
+fi
+if [ "$MISSION_MODE" = "mission3" ]; then
+    if [ ! -r "$MISSION3_DESCRIPTION" ]; then
+        echo "Mission 3 description is missing." >&2; exit 1
+    fi
+    mission_args+=(--mission-mode mission3 --mission3-selection "$MISSION3_DESCRIPTION")
+    if [ -n "$MISSION3_FIXTURE" ]; then
+        if [ ! -r "$MISSION3_FIXTURE" ]; then
+            echo "Mission 3 fixture is missing." >&2; exit 1
+        fi
+        mission_args+=(--mission3-fixture "$MISSION3_FIXTURE")
+    fi
 fi
 
 if [ "$DRY_RUN" != "1" ]; then
@@ -168,7 +183,8 @@ echo "Created workspace '$WORKSPACE_LABEL' ($workspace_id) in herdr session '$se
 echo "Run data: $run_root"
 echo "Scenario: $SCENARIO_CONFIG"
 echo "Mission mode: $MISSION_MODE; Mission Input: $MISSION_FILE"
-if [ "$MISSION_MODE" != "mission2" ]; then echo "Mission 1 instance: $MISSION_INSTANCE"; fi
-if [ "$MISSION_MODE" != "mission1" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
+if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 1 instance: $MISSION_INSTANCE"; fi
+if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
+if [ "$MISSION_MODE" = "mission3" ]; then echo "Mission 3 description: $MISSION3_DESCRIPTION; fixture: ${MISSION3_FIXTURE:-live}"; fi
 echo "World-model frame stream: http://127.0.0.1:5066"
 echo "Attach with: herdr --session $sessname"

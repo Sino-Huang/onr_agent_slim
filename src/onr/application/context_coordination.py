@@ -14,6 +14,7 @@ from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
 from onr.application.maneuver_wakeups import ManeuverWakeups
 from onr.application.mission1_planning import Mission1ReplanGate
 from onr.application.mission2_planning import Mission2ReplanGate
+from onr.application.mission3_planning import Mission3ReplanGate
 from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import (
@@ -485,6 +486,7 @@ class ContextCoordination:
         last_gate_assessment_time = -math.inf
         last_gate_belief_revision: int | None = None
         mission2_gate = Mission2ReplanGate()
+        mission3_gate = Mission3ReplanGate()
         maneuver_wakeups = ManeuverWakeups()
 
         environment_started = False
@@ -600,6 +602,15 @@ class ContextCoordination:
                     collision_trigger = mission2_gate.assess(environment.planning_view().environment_event.payload)
                     if collision_trigger is not None:
                         gate_trigger = collision_trigger if gate_trigger is None else gate_trigger + ";" + collision_trigger
+                    inspection_trigger = mission3_gate.assess(
+                        environment.planning_view().environment_event.payload
+                    )
+                    if inspection_trigger is not None:
+                        gate_trigger = (
+                            inspection_trigger
+                            if gate_trigger is None
+                            else gate_trigger + ";" + inspection_trigger
+                        )
                     if periodic_hyper is not None or gate_trigger is not None or requested_hyper:
                         hyper_triggers = []
                         if periodic_hyper is not None:

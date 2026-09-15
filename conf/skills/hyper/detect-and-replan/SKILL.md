@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
-description: Apply when evidence affects plan feasibility, a Mission 1 utility gate identifies a better route, or Mission 2 collision risks and warnings change.
-version: '1.3.0'
+description: Apply when evidence affects plan feasibility, a Mission 1 utility gate identifies a better route, Mission 2 collision risks change, or Mission 3 inspection evidence/targets change.
+version: '1.4.0'
 ---
 
 # Detect And Replan
@@ -87,6 +87,18 @@ replacement actually retains its target and remaining window; choose
 - A replan request is advisory and is not a new plan or authority revision.
 - Never perform a hidden local rewrite of Mission Input, PlanningIntent, the plan, scene/belief, lifecycle, or FSM execution state.
 - Replanning does not automatically cancel physical execution; cancellation must occur through the established control and lifecycle path.
+
+## Mission 3 inspection replans
+
+Treat `mission3-gate:*` as a public advisory. Replan when a sufficient verdict
+removes a target, usable inconclusive/suspicious evidence adds investigation
+service, a public target estimate moves materially, or terminal maneuver evidence
+changes feasibility. A repeated snapshot produces no new action. Prefer the
+nearest feasible unresolved target, interleave investigation during the same
+visit, and bound revisits after failed or full-orbit-inconclusive attempts. Keep
+unresolved ships and their reasons in the final report at the recording/budget
+limit. Use the source-supplied sufficiency flag identically for live and simulated
+evidence; producer access and camera control stay outside Agent planning.
 
 ## Gotchas
 

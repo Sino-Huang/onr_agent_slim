@@ -254,10 +254,19 @@ def run_closed_loop_demo(
     mode = world_model_info.get("mission_mode", "mission1") if isinstance(world_model_info, Mapping) else "mission1"
     if mode != "mission2" and not isinstance(report_streams, Mapping):
         raise TypeError("environment planning view has no ship roster")
-    roster = (world_model_info["perception_predictions"]["trajectories"]
-              if mode in {"mission2", "joint"} else report_streams)
-    ship_ids = tuple(sorted(int(entity_id) for entity_id in roster))
-    if mode in {"mission2", "joint"}:
+    if mode == "mission3":
+        inspection = world_model_info.get("mission3")
+        if not isinstance(inspection, Mapping) or inspection.get("schema_version") != 1:
+            raise TypeError("environment planning view has no Mission 3 roster")
+        roster = inspection.get("selected_ship_ids")
+        if not isinstance(roster, (list, tuple)):
+            raise TypeError("environment planning view has invalid Mission 3 roster")
+        ship_ids = tuple(roster)
+    else:
+        roster = (world_model_info["perception_predictions"]["trajectories"]
+                  if mode in {"mission2", "joint"} else report_streams)
+        ship_ids = tuple(sorted(int(entity_id) for entity_id in roster))
+    if mode in {"mission2", "mission3", "joint"}:
         simulation_limit_seconds = min(simulation_limit_seconds, float(world_model_info["mission_end_time_s"]))
     planning_backend_root = Path(
         os.path.commonpath(
@@ -268,7 +277,7 @@ def run_closed_loop_demo(
             )
         )
     )
-    belief_service = None if mode == "mission2" else runtime.create_bayesian_belief_service(
+    belief_service = None if mode in {"mission2", "mission3"} else runtime.create_bayesian_belief_service(
         mission_id=mission_input.mission_id,
         keys=tuple(
             BeliefKey(entity_id, "reporting-corruption")
