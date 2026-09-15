@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal, NoReturn, TypeVar, cast
 
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware, wrap_model_call
 
 from onr.agents.role_context import MissionRoleContext, RoleEpisode
 from onr.agents.structured_output import (
@@ -95,6 +95,31 @@ HYPER_HEARTBEAT_SCHEMA: dict[str, Any] = {
 }
 
 
+def _request_tool_name(value: object) -> str | None:
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    if isinstance(value, Mapping):
+        function = value.get("function")
+        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+            return cast(str, function["name"])
+    return None
+
+
+@wrap_model_call
+def _gate_hyper_supervisor_scaffolding(
+    request: Any, handler: Callable[[Any], Any]
+) -> Any:
+    """Expose only the supervisor's structured decision to the model."""
+
+    tools = [
+        item
+        for item in request.tools
+        if _request_tool_name(item) == "HyperHeartbeatDecisionCandidate"
+    ]
+    return handler(request.override(tools=tools))
+
+
 def create_planning_intent_agent(
     *,
     model: Any,
@@ -145,6 +170,9 @@ def create_hyper_heartbeat_agent(
         skill_version=skill_version,
         backend_root=backend_root,
         backend_kind="filesystem",
+        middleware=[_gate_hyper_supervisor_scaffolding],
+        inline_skills=frozenset({"detect-and-replan"}),
+        skill_allowlist=frozenset({"detect-and-replan"}),
     )
 
 
@@ -165,6 +193,9 @@ def _create_deep_agent(
     writable_paths: list[str] | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: object | None = None,
+    inline_skills: frozenset[str] = frozenset(),
+    skill_allowlist: frozenset[str] | None = None,
+    filesystem_tools: list[str] | None = None,
 ) -> object:
     """Shared DeepAgents construction with role-context wiring."""
 
@@ -215,6 +246,8 @@ def _create_deep_agent(
         kwargs["memory"] = [memory_agent_path]
 
     selected_skills: list[str] = []
+    selected_skill_names: list[str] = []
+    supplied_guidance: list[str] = []
     selected_skill_profiles: list[dict[str, str]] = []
     skill_sources: list[str] = []
     if mission_id is not None and skill_catalog is not None:
@@ -228,6 +261,12 @@ def _create_deep_agent(
             if not callable(select):
                 raise TypeError("Role Skill catalog must expose select")
             selections = (select(role, skill_version),)
+        if skill_allowlist is not None:
+            selections = tuple(
+                selected
+                for selected in selections
+                if getattr(selected, "role", None) in skill_allowlist
+            )
         for selected in selections:
             selected_path = getattr(selected, "path", None)
             if not isinstance(selected_path, Path):
@@ -246,11 +285,33 @@ def _create_deep_agent(
                     "path": str(selected_path),
                 }
             )
+            selected_skill_names.append(selected_role)
+            if selected_role in inline_skills:
+                guidance_paths = [selected_path / "SKILL.md"]
+                guidance_paths.extend(
+                    sorted((selected_path / "references").glob("*.md"))
+                )
+                for guidance_path in guidance_paths:
+                    virtual_path = _skill_agent_path(guidance_path, backend_root)
+                    supplied_guidance.append(
+                        f'<guidance path="{virtual_path}">\n'
+                        + guidance_path.read_text(encoding="utf-8")
+                        + "\n</guidance>"
+                    )
             source_path = _skill_agent_path(selected_path.parent, backend_root)
             if source_path not in skill_sources:
                 skill_sources.append(source_path)
 
-    if selected_skills:
+    if supplied_guidance:
+        kwargs["system_prompt"] = (system_prompt or "") + (
+            "\n\nThe following selected guidance is supplied in full for this invocation. "
+            "Consult these contents directly; no read_file call is needed for these supplied files. "
+            "Apply every action-submission and evidence requirement. "
+            "Current invocation facts remain authoritative.\n"
+            + "\n".join(supplied_guidance)
+        )
+
+    if selected_skills and not set(selected_skill_names).issubset(inline_skills):
         kwargs["skills"] = skill_sources
 
     if context is not None or selected_skills or backend_kind == "local-shell":
@@ -289,7 +350,10 @@ def _create_deep_agent(
     # backend because execute is unrestricted. Hyper's LocalShellBackend is used
     # only by the trusted local workflow and therefore intentionally omits them.
     if backend_kind == "filesystem" and (context is not None or selected_skills):
-        from deepagents.middleware.filesystem import FilesystemPermission
+        from deepagents.middleware.filesystem import (
+            FilesystemMiddleware,
+            FilesystemPermission,
+        )
 
         # Rules are first-match.  The current role's Mission Memory is the
         # sole writable scope; Role Skills and every other path are denied.
@@ -315,6 +379,16 @@ def _create_deep_agent(
             )
         hard_permissions.append(FilesystemPermission(["write"], ["/**"], mode="deny"))
         kwargs["permissions"] = hard_permissions
+        if filesystem_tools is not None:
+            configured_middleware = list(middleware or [])
+            configured_middleware.append(
+                FilesystemMiddleware(
+                    backend=kwargs["backend"],
+                    tools=cast(Any, filesystem_tools),
+                    _permissions=hard_permissions,
+                )
+            )
+            kwargs["middleware"] = configured_middleware
 
     agent = create_deep_agent(**kwargs)
     recorder = getattr(model, "_agent_debug_recorder", None)

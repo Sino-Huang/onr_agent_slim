@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import SimpleNamespace
 
 import pytest
 
+import onr.agents.hyper_agent as hyper_agent
 from onr.adapters.inprocess_transport import InProcessTransport
 from onr.agents.hyper_agent import DeepAgentsHyperHeartbeatProvider
 from onr.application.hyper_supervisor import HyperSupervisor
@@ -57,6 +59,25 @@ def _request(identity: str, revision: int, reason: str) -> ReplanRequest:
         1,
         {"environment_data": revision},
     )
+
+
+def test_supervisor_model_request_exposes_only_structured_decision() -> None:
+    request = SimpleNamespace(
+        tools=[
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="task"),
+            SimpleNamespace(name="HyperHeartbeatDecisionCandidate"),
+        ]
+    )
+    request.override = dict
+
+    result = hyper_agent._gate_hyper_supervisor_scaffolding.wrap_model_call(
+        request, lambda selected: selected
+    )
+
+    assert [item.name for item in result["tools"]] == [
+        "HyperHeartbeatDecisionCandidate"
+    ]
 
 
 def test_requests_and_periodic_trigger_coalesce_into_one_durable_decision() -> None:

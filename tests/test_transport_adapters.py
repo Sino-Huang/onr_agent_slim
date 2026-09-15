@@ -102,3 +102,48 @@ def test_file_duplicate_command_repairs_missing_receipt(tmp_path: Path) -> None:
     assert transport.get_command_receipt(command.command_id) is None
     assert transport.send_command(command) == receipt
     assert transport.get_command_receipt(command.command_id) == receipt
+
+
+def test_file_poll_does_not_read_acknowledged_event_payloads(tmp_path, monkeypatch):
+    import onr.adapters.file_transport as module
+
+    subscription = Subscription("reader", "mission", "updates")
+    transport = FileTransport(tmp_path, (subscription,))
+    for sequence in range(12):
+        transport.publish_event("updates", TransportEvent(1, f"e-{sequence}", "mission", sequence, "update", {}))
+    consumer = transport.open_consumer(subscription)
+    for _ in range(12):
+        consumer.receive().ack()
+    reads = []
+    original = module._read_json
+
+    def record(path, default):
+        if "topics" in path.parts:
+            reads.append(path)
+        return original(path, default)
+
+    monkeypatch.setattr(module, "_read_json", record)
+    assert consumer.receive() is None
+    consumer.close()
+    assert reads == []
+
+
+def test_file_latest_reads_only_newest_matching_payload(tmp_path, monkeypatch):
+    import onr.adapters.file_transport as module
+
+    transport = FileTransport(tmp_path)
+    for sequence in range(12):
+        transport.publish_event("updates", TransportEvent(1, f"e-{sequence}", "mission", sequence, "odd" if sequence % 2 else "even", {}))
+    reads = []
+    original = module._read_json
+
+    def record(path, default):
+        reads.append(path)
+        return original(path, default)
+
+    monkeypatch.setattr(module, "_read_json", record)
+    assert transport.latest_event("updates", "mission").sequence == 11
+    assert len(reads) == 1
+    reads.clear()
+    assert transport.latest_event("updates", "mission", event_kind="even").sequence == 10
+    assert len(reads) == 2

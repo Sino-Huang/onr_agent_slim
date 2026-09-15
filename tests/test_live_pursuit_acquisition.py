@@ -31,6 +31,7 @@ ROOT = Path(__file__).parents[1]
     [
         ("unseen", "navigate"),
         ("arrived", "pursue"),
+        ("enroute-visible", "pursue"),
         ("tracking", None),
         ("new-gps", "navigate"),
         ("no-gps", None),
@@ -121,31 +122,47 @@ def test_live_pursuit_acquisition_and_recovery(
         if phase == "unseen"
         else 46
         if phase == "arrived"
+        else 44
+        if phase == "enroute-visible"
         else 61
         if phase == "new-gps"
         else 55
     )
-    position = {"x": 40 if phase == "unseen" else 180, "y": -20, "z": -25}
-    visible = phase == "tracking"
+    position = {
+        "x": (
+            40
+            if phase == "unseen"
+            else 100
+            if phase == "enroute-visible"
+            else 180
+        ),
+        "y": -20,
+        "z": -25,
+    }
+    visible = phase in {"tracking", "enroute-visible"}
     active = (
         None
         if phase == "unseen"
         else {
-            "action": "navigate" if phase == "arrived" else "pursue",
+            "action": (
+                "navigate" if phase in {"arrived", "enroute-visible"} else "pursue"
+            ),
             "maneuver_id": "acquire-report-first" if phase == "arrived" else "track-23",
             "lifecycle": "completed" if phase == "arrived" else "active",
             "phase": "navigate"
-            if phase == "arrived"
+            if phase in {"arrived", "enroute-visible"}
             else "pursuit"
             if visible
             else "search",
             "start_time": 40 if phase == "arrived" else 46,
             "plan_revision": 1,
             "parameters": {"x": 180, "y": -20, "z": -25, "deadline_time": 52}
-            if phase == "arrived"
+            if phase in {"arrived", "enroute-visible"}
             else {"entity_id": 23},
-            "progress": {"remaining_distance_m": 0}
-            if phase == "arrived"
+            "progress": {
+                "remaining_distance_m": 0 if phase == "arrived" else 80
+            }
+            if phase in {"arrived", "enroute-visible"}
             else {"entity_id": 23},
         }
     )

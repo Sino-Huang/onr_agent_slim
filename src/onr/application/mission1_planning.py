@@ -9,8 +9,10 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cache
-from itertools import pairwise
+from itertools import pairwise, repeat
 from typing import Any, cast
+
+import numpy as np
 
 from onr.contracts.fsm import FSMStatus, Statechart
 from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
@@ -748,10 +750,13 @@ def _candidate(
 
 
 def _candidate_arcs(
-    candidates: Sequence[SurveillanceCandidate], speed: float,
+    candidates: Sequence[SurveillanceCandidate],
+    speed: float,
     quarter_turn_seconds: float = 0.0,
     chronological_reports: bool = False,
-    *, information_aware: bool = False, report_history_aware: bool = False,
+    *,
+    information_aware: bool = False,
+    report_history_aware: bool = False,
 ) -> tuple[tuple[int, int], ...]:
     """Build the same reduced arcs without materializing the dense closure.
 
@@ -778,58 +783,113 @@ def _candidate_arcs(
     # unrestricted reachability could itself repeat a batch. Intersecting each
     # witness's expiry mask protects all inserted batches from the suffix.
     safe_successors = [0] + [
-        all_nodes & ~((1 << (bisect_right(starts,
-            c.last_report_time_s + max_delay + 1e-9) + 1)) - 1)
-        if c.report_ids else all_nodes
+        all_nodes
+        & ~(
+            (1 << (bisect_right(starts, c.last_report_time_s + max_delay + 1e-9) + 1))
+            - 1
+        )
+        if c.report_ids
+        else all_nodes
         for c in candidates
     ]
     reports = [frozenset(candidate.report_ids) for candidate in candidates]
-    positive = [False] + [
-        (_score_units(replace(_candidate_utility(candidate), estimation=0.0))
-         if information_aware else _score_units(_candidate_utility(candidate))) > 0
-        for candidate in candidates
-    ] + [False]
+    positive = (
+        [False]
+        + [
+            (
+                _score_units(replace(_candidate_utility(candidate), estimation=0.0))
+                if information_aware
+                else _score_units(_candidate_utility(candidate))
+            )
+            > 0
+            for candidate in candidates
+        ]
+        + [False]
+    )
+    xs = np.array([c.x for c in candidates], dtype=float)
+    ys = np.array([c.y for c in candidates], dtype=float)
+    start_times = np.array([c.start_s for c in candidates], dtype=float)
+    report_epochs = np.array([c.start_s - c.observation_delay_s for c in candidates])
+    arrival = np.array(
+        [4 if c.arrival_direction is None else c.arrival_direction for c in candidates],
+        dtype=int,
+    )
+    turns = np.array(
+        [
+            [
+                [
+                    [
+                        _navigation_turns(north, east, initial, final)
+                        for final in (0, 1, 2, 3, None)
+                    ]
+                    for initial in (0, 1, 2, 3, None)
+                ]
+                for east in (2, None, 0)
+            ]
+            for north in (1, None, 3)
+        ]
+    )
+    report_nodes: dict[str, int] = {}
+    for i, batch in enumerate(reports, 1):
+        for report in batch:
+            report_nodes[report] = report_nodes.get(report, 0) | (1 << i)
+    positive_bits = sum(1 << i for i, value in enumerate(positive) if value)
     arcs: list[tuple[int, int]] = []
     for source in range(sink - 1, 0, -1):
         left = candidates[source - 1]
         first = bisect_left(starts, left.end_s) + 1
-        pending = all_nodes & ~((1 << first) - 1)
-        successors = sink_bit
+        travel = (np.abs(xs - left.end_x) + np.abs(ys - left.end_y)) / (0.9 * speed)
+        if quarter_turn_seconds:
+            north = np.sign(xs - left.end_x).astype(int) + 1
+            east = np.sign(ys - left.end_y).astype(int) + 1
+            initial = 4 if left.arrival_direction is None else left.arrival_direction
+            travel += turns[north, east, initial, arrival] * quarter_turn_seconds
+        feasible = start_times + 1e-9 >= left.end_s + travel
+        if chronological_reports:
+            feasible &= report_epochs > left.last_report_time_s + 1e-9
+        pending = (
+            int.from_bytes(np.packbits(feasible, bitorder="little").tobytes(), "little")
+            << 1
+        ) | sink_bit
+        pending &= ~((1 << first) - 1)
+        overlap = 0
+        for report in reports[source - 1]:
+            overlap |= report_nodes[report]
+        pending &= ~overlap
+        # Only positive intermediates can remove a direct arc. Process those
+        # choices first, leaving zero-utility arcs intact for all tie objectives.
+        positive_pending = pending & positive_bits
         history_successors = sink_bit
-        while pending:
-            bit = pending & -pending
-            pending ^= bit
+        while positive_pending:
+            bit = positive_pending & -positive_pending
             target = bit.bit_length() - 1
-            if target == sink:
-                arcs.append((source, sink))
-                break
             right = candidates[target - 1]
-            if chronological_reports and (
-                right.start_s - right.observation_delay_s
-                <= left.last_report_time_s + 1e-9
-            ):
-                # Window alternatives can otherwise repeat an older report
-                # after an intervening visit. Ordered report epochs preclude
-                # both adjacent and nonadjacent reuse without relaxing flow
-                # integrality. One view per co-timed batch remains the scope.
-                continue
-            if not reports[source - 1].isdisjoint(reports[target - 1]):
-                continue
-            if right.start_s + 1e-9 < left.end_s + _navigation_time(
-                left.end_x, left.end_y, right.x, right.y, speed,
-                left.arrival_direction, right.arrival_direction, quarter_turn_seconds,
-            ):
-                continue
-            arcs.append((source, target))
-            successors |= bit | reachable[target]
-            history_successors |= bit
-            if positive[target] and not report_history_aware:
+            if not report_history_aware:
                 pending &= ~reachable[target]
-            elif positive[target] and (
-                not right.report_ids or right.start_s - right.observation_delay_s > left.end_s + 1e-9
+            elif (
+                not right.report_ids
+                or right.start_s - right.observation_delay_s > left.end_s + 1e-9
             ):
                 history_successors |= history_reachable[target]
                 pending &= ~history_reachable[target]
+            positive_pending &= pending & ~bit
+        targets = np.flatnonzero(
+            np.unpackbits(
+                np.frombuffer(
+                    pending.to_bytes((sink + 8) // 8, "little"), dtype=np.uint8
+                ),
+                bitorder="little",
+            )
+        ).tolist()
+        arcs.extend(zip(repeat(source), targets))
+        history_successors |= pending
+        successors = pending | sink_bit
+        closure_pending = pending & ~sink_bit
+        while closure_pending:
+            bit = closure_pending & -closure_pending
+            target = bit.bit_length() - 1
+            successors |= reachable[target]
+            closure_pending &= ~(bit | reachable[target])
         reachable[source] = successors
         history_reachable[source] = history_successors & safe_successors[source]
     # Every candidate has already passed initial-pose/time admission.
@@ -847,7 +907,8 @@ def _candidate_arcs(
     ordered_arcs = tuple(sorted(arcs))
     return (
         _prune_terminal_alternatives(candidates, ordered_arcs)
-        if chronological_reports and not information_aware else ordered_arcs
+        if chronological_reports and not information_aware
+        else ordered_arcs
     )
 
 
@@ -996,6 +1057,7 @@ def build_candidate_dag(
     environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
     *, information_horizon_seconds: float | None = None,
     route_horizon_seconds: float | None = None,
+    positive_only: bool = False,
 ) -> CandidateDAG:
     """Build sampled fixed views and pursuits, optionally with bounded route information.
 
@@ -1152,7 +1214,11 @@ def build_candidate_dag(
     ordered_candidates = tuple(
         sorted(
             (candidate for candidate in candidates.values()
-             if planning_horizon is None or candidate.end_s <= now + planning_horizon),
+             if (planning_horizon is None or candidate.end_s <= now + planning_horizon)
+             and (
+                 not positive_only
+                 or _score_units(_candidate_utility(candidate)) > 0
+             )),
             key=lambda item: (item.start_s, item.end_s, item.mode, item.candidate_id),
         )
     )
@@ -1222,58 +1288,95 @@ def _route_cost(
 
 
 def _best_route(
-    nodes: Sequence[_RouteNode], arcs: Sequence[tuple[int, int]],
+    nodes: Sequence[_RouteNode],
+    arcs: Sequence[tuple[int, int]],
 ) -> tuple[int, int, int, int, tuple[int, ...]]:
-    """Exact lexicographic path, with fixed-view holding charged on transitions."""
+    """Exact lexicographic path with vectorized predecessor cost comparisons."""
     sink = len(nodes) + 1
-    incoming: list[list[int]] = [[] for _ in range(sink + 1)]
+    incoming = [[] for _ in range(sink + 1)]
     for source, target in arcs:
         incoming[target].append(source)
-    best: list[tuple[int, int, int, int, tuple[int, ...]] | None] = [None] * (
-        sink + 1
+    scores = np.zeros(sink + 1, dtype=np.int64)
+    maneuvers = np.zeros(sink + 1, dtype=np.int64)
+    durations = np.zeros(sink + 1, dtype=np.int64)
+    orders = np.zeros(sink + 1, dtype=np.int64)
+    reached = np.zeros(sink + 1, dtype=bool)
+    reached[0] = True
+    node_x = np.array([0] + [n.x for n in nodes])
+    node_y = np.array([0] + [n.y for n in nodes])
+    arrival_directions = np.array(
+        [-1]
+        + [-1 if n.arrival_direction is None else n.arrival_direction for n in nodes]
     )
-    best[0] = (0, 0, 0, 0, ())
+    fixed_views = np.array([False] + [n.mode == "fixed_view" for n in nodes])
+    node_starts = np.array([0] + [n.start for n in nodes], dtype=np.int64)
+    node_durations = np.array([0] + [n.duration for n in nodes], dtype=np.int64)
+    paths: list[tuple[int, ...]] = [()] * (sink + 1)
+    reverse_paths: list[tuple[int, ...]] = [()] * (sink + 1)
     for node in range(1, sink + 1):
-        for previous in incoming[node]:
-            prior = best[previous]
-            if prior is None:
-                continue
-            if node == sink:
-                candidate = prior
-            else:
-                score, maneuvers, duration, order = _route_cost(nodes, previous, node)
-                candidate = (
-                    prior[0] + score,
-                    prior[1] + maneuvers,
-                    prior[2] + duration,
-                    prior[3] + order,
-                    prior[4] + (node - 1,),
-                )
-            current = best[node]
-            candidate_key = (
-                candidate[0],
-                -candidate[1],
-                -candidate[2],
-                -candidate[3],
-                tuple(-value for value in reversed(candidate[4])),
+        previous = np.array(incoming[node], dtype=np.intp)
+        previous = previous[reached[previous]]
+        if not len(previous):
+            continue
+        if node == sink:
+            candidate_scores = scores[previous]
+            candidate_maneuvers = maneuvers[previous]
+            candidate_durations = durations[previous]
+            candidate_orders = orders[previous]
+        else:
+            right = nodes[node - 1]
+            holding = (
+                fixed_views[previous]
+                & fixed_views[node]
+                & (node_x[previous] == node_x[node])
+                & (node_y[previous] == node_y[node])
+                & (arrival_directions[previous] == arrival_directions[node])
             )
-            current_key = (
-                None
-                if current is None
-                else (
-                    current[0],
-                    -current[1],
-                    -current[2],
-                    -current[3],
-                    tuple(-value for value in reversed(current[4])),
+            candidate_scores = scores[previous] + right.score
+            candidate_maneuvers = maneuvers[previous] + (~holding)
+            candidate_durations = (
+                durations[previous]
+                + right.duration
+                + np.where(
+                    holding,
+                    right.start - node_starts[previous] - node_durations[previous],
+                    0,
                 )
             )
-            if current_key is None or candidate_key > current_key:
-                best[node] = candidate
-    result = best[sink]
-    if result is None:
+            candidate_orders = orders[previous] + node
+        # Resolve each integer objective before comparing reversed paths.
+        # All alternatives here append the same node, so only the predecessor
+        # paths need comparison for the final deterministic tie break.
+        choices = np.flatnonzero(candidate_scores == candidate_scores.max())
+        choices = choices[
+            candidate_maneuvers[choices] == candidate_maneuvers[choices].min()
+        ]
+        choices = choices[
+            candidate_durations[choices] == candidate_durations[choices].min()
+        ]
+        choices = choices[candidate_orders[choices] == candidate_orders[choices].min()]
+        selected = min(choices, key=lambda i: reverse_paths[previous[i]])
+        parent = int(previous[selected])
+        scores[node] = candidate_scores[selected]
+        maneuvers[node] = candidate_maneuvers[selected]
+        durations[node] = candidate_durations[selected]
+        orders[node] = candidate_orders[selected]
+        reached[node] = True
+        paths[node] = paths[parent] if node == sink else paths[parent] + (node - 1,)
+        reverse_paths[node] = (
+            reverse_paths[parent]
+            if node == sink
+            else (node - 1,) + reverse_paths[parent]
+        )
+    if not reached[sink]:
         raise ValueError("Mission 1 candidate graph has no route")
-    return result
+    return (
+        int(scores[sink]),
+        int(maneuvers[sink]),
+        int(durations[sink]),
+        int(orders[sink]),
+        paths[sink],
+    )
 
 
 def _fixed_view_runs(
@@ -1521,8 +1624,16 @@ class Mission1ReplanGate:
         *,
         explicit_request: bool = False,
     ) -> tuple[ReplanGateDecision, AdvisoryRoute]:
-        graph = build_candidate_dag(environment, belief, information_horizon_seconds=self.information_horizon_seconds,
-                                    route_horizon_seconds=self.route_horizon_seconds)
+        graph = build_candidate_dag(
+            environment,
+            belief,
+            information_horizon_seconds=self.information_horizon_seconds,
+            route_horizon_seconds=self.route_horizon_seconds,
+            positive_only=(
+                self.information_horizon_seconds is None
+                and self.route_horizon_seconds is None
+            ),
+        )
         advisory = longest_path_oracle(graph)
         active_context = status.active_state_context
         active_target = active_context.get("target_entity_id")

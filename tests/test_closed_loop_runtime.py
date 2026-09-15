@@ -400,6 +400,48 @@ def test_fallback_waits_a_full_interval_after_feedback_assessment(
     assert times == [0, 0.5, 5.5]
 
 
+def test_superseded_command_cancellation_does_not_wake_maneuver(
+    tmp_path: Path,
+) -> None:
+    environment, coordinator, _, _, _, maneuver, _ = _runtime_parts(tmp_path, Mock())
+    times: list[float] = []
+
+    class Provider:
+        def heartbeat(self, invocation, context):  # type: ignore[no-untyped-def]
+            now = environment.current_time
+            times.append(now)
+            if now in {0, 5}:
+                context.command_dispatcher.dispatch_physical(
+                    invocation,
+                    ManeuverControlDecision(
+                        f"navigation-{now:g}",
+                        invocation.mission_id,
+                        invocation.plan_revision,
+                        maneuver_id=f"navigation-{now:g}",
+                        physical_intent=ManeuverIntent(
+                            "navigate",
+                            (
+                                ManeuverParameter("x", 1000 + now),
+                                ManeuverParameter("y", 0),
+                                ManeuverParameter("z", -250),
+                                ManeuverParameter("speed", 1),
+                            ),
+                        ),
+                    ),
+                    sequence=len(times),
+                )
+            return ManeuverHeartbeatCompletion(
+                invocation.mission_id, invocation.request_id, "Assessed"
+            )
+
+    maneuver.decision_provider = Provider()
+    result = coordinator(lambda *_: None, simulation_limit_seconds=7).run(_revision(1))
+
+    assert environment.last_override_feedback is not None
+    assert times == [0, 5]
+    assert result.environment_triggered_maneuver_heartbeat_count == 0
+
+
 def test_closed_loop_failure_is_logged_and_source_is_stopped(tmp_path: Path) -> None:
     _, coordinator, *_ = _runtime_parts(tmp_path, Mock())
     runtime = coordinator(lambda *_: None)

@@ -16,9 +16,10 @@ version: '3.5.0'
    `conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/prepare_statechart.py`
    and
    `conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/inspect_statechart.py`.
-   Run
+   Run both commands in one `execute` call joined by `&&`, so preparation is
+   followed immediately by compact validation. First run
    `python conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/prepare_statechart.py <planner-artifact> <shell-workspace>/generate_statechart.py <shell-workspace>/statechart.json`,
-   then
+   and then
    `python conf/skills/hyper/creating-statechart-files/examples/event-information-patrol/inspect_statechart.py <planner-artifact> <shell-workspace>/statechart.json`.
    Substitute the labeled paths returned by `planner_executor`; shell-quote paths
    containing whitespace. Do not copy or transcribe the helper, inspect the

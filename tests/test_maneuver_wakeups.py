@@ -160,8 +160,7 @@ def test_fixed_view_ignores_gps_and_visibility_updates():
     )
 
 
-@pytest.mark.parametrize("phase", ["pursuit", "search"])
-def test_active_pursuit_folds_visibility_but_keeps_gps_checks_and_deadlines(phase):
+def test_searching_pursuit_folds_visibility_but_keeps_gps_checks_and_deadlines():
     status, intent = context(pursuit=True)
     wakeups = ManeuverWakeups()
     world = {
@@ -176,7 +175,7 @@ def test_active_pursuit_folds_visibility_but_keeps_gps_checks_and_deadlines(phas
         "maneuver_lifecycle": {
             "action": "pursue",
             "lifecycle": "active",
-            "phase": phase,
+            "phase": "search",
             "parameters": {"entity_id": 23},
             "start_time": 0,
         },
@@ -201,6 +200,41 @@ def test_active_pursuit_folds_visibility_but_keeps_gps_checks_and_deadlines(phas
     assert wakeups.due(status, intent, environment, 12.5) == (
         "deadline:intent-not-before:12.5",
         "deadline:observation-end:12.5",
+    )
+
+
+@pytest.mark.parametrize("phase, visible", [("pursuit", []), ("search", [23])])
+def test_tracking_or_visible_pursuit_folds_redundant_gps_wakeups(phase, visible):
+    status, intent = context(pursuit=True, end=100)
+    wakeups = ManeuverWakeups()
+    world = {
+        "visible_ship_ids": visible,
+        "public_position_fixes": [],
+        "gps_interval_seconds": 5,
+        "next_gps_update_time_s": 5,
+        "event_report_checks": [],
+    }
+    environment = {
+        "world_model_info": world,
+        "maneuver_lifecycle": {
+            "action": "pursue",
+            "lifecycle": "active",
+            "phase": phase,
+            "parameters": {"entity_id": 23},
+            "start_time": 0,
+        },
+    }
+
+    assert wakeups.due(status, intent, environment, 0) == ()
+    assert wakeups.due(status, intent, environment, 5) == ()
+    world["next_gps_update_time_s"] = 10
+    world["public_position_fixes"] = [{"entity_id": 23, "sampled_at_s": 5}]
+    assert wakeups.due(status, intent, environment, 5.5) == ()
+
+    world["visible_ship_ids"] = []
+    environment["maneuver_lifecycle"]["phase"] = "search"
+    assert wakeups.due(status, intent, environment, 6) == (
+        "deadline:acquisition-gps:5",
     )
 
 
@@ -237,8 +271,15 @@ def test_search_bound_uses_configured_gps_phase_and_attempt_not_current_time(nex
     status, intent = context(pursuit=True, end=100)
     wakeups = ManeuverWakeups()
     environment = {
-        "maneuver_lifecycle": {"action": "pursue", "start_time": 8},
+        "maneuver_lifecycle": {
+            "action": "pursue",
+            "lifecycle": "active",
+            "phase": "search",
+            "parameters": {"entity_id": 23},
+            "start_time": 8,
+        },
         "world_model_info": {
+            "visible_ship_ids": [],
             "gps_interval_seconds": 7,
             "next_gps_update_time_s": next_gps,
         },

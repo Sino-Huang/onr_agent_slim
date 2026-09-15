@@ -13,6 +13,7 @@ from onr.adapters.mission_memory import FileMissionMemoryStore
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.agents.hyper_agent import (
     DeepAgentsPlanningIntentInterpreter,
+    create_hyper_heartbeat_agent,
     create_planning_intent_agent,
 )
 from onr.agents.hyper_workflow import create_hyper_workflow_agent
@@ -134,24 +135,85 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
         "/conf/skills/hyper/detect-and-replan",
         "/conf/skills/hyper/creating-statechart-files",
     ]
+    assert created[0]["skills"] == ["/conf/skills/hyper"]
+    supplied = created[1]["system_prompt"]
+    for relative in (
+        "decision-cycle/SKILL.md",
+        "physical-maneuver-selection/SKILL.md",
+        "physical-maneuver-selection/references/pursuit-acquisition.md",
+        "hyper-coordination/SKILL.md",
+    ):
+        source = _REPO_ROOT / "conf/skills/maneuver-control" / relative
+        assert source.read_text(encoding="utf-8") in supplied
+    assert "no read_file call is needed" in supplied
+    assert "supplied in full" not in created[0].get("system_prompt", "")
     maneuver_skills = [
         "/conf/skills/maneuver-control/decision-cycle",
         "/conf/skills/maneuver-control/physical-maneuver-selection",
         "/conf/skills/maneuver-control/hyper-coordination",
     ]
     assert created[0]["skills"] == ["/conf/skills/hyper"]
-    assert created[1]["skills"] == ["/conf/skills/maneuver-control"]
+    assert "skills" not in created[1]
     for kwargs, selected_skills in zip(created, (hyper_skills, maneuver_skills)):
-        skill_sources = kwargs["skills"]
         permissions = kwargs["permissions"]
-        assert isinstance(skill_sources, list) and isinstance(permissions, list)
-        assert [
-            permission.paths[0] for permission in permissions[:-1]
-        ] == selected_skills
+        assert isinstance(permissions, list)
+        assert [permission.paths[0] for permission in permissions[:-1]] == selected_skills
         assert all(permission.mode == "deny" for permission in permissions)
 
 
-def test_hyper_and_maneuver_agents_receive_todo_list_middleware(monkeypatch) -> None:
+def test_hyper_supervisor_receives_replan_guidance_inline(monkeypatch) -> None:
+    import onr.agents.hyper_agent as hyper_agent
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        hyper_agent,
+        "_create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    create_hyper_heartbeat_agent(
+        model=object(),
+        system_prompt="Supervisor prompt.",
+        mission_id="mission-1",
+    )
+
+    assert captured["inline_skills"] == frozenset({"detect-and-replan"})
+    assert captured["skill_allowlist"] == frozenset({"detect-and-replan"})
+    assert len(cast(list[object], captured["middleware"])) == 1
+
+
+def test_hyper_supervisor_exposes_only_replan_guidance(monkeypatch) -> None:
+    import deepagents
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        deepagents,
+        "create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or PublicFakeDeepAgent(),
+    )
+    catalog = FilesystemRoleSkillCatalog(_REPO_ROOT / "conf/skills")
+
+    create_hyper_heartbeat_agent(
+        model=object(),
+        system_prompt="Supervisor prompt.",
+        mission_id="mission-1",
+        skill_catalog=catalog,
+        backend_root=_REPO_ROOT,
+    )
+
+    prompt = cast(str, captured["system_prompt"])
+    assert "A missed pursuit-acquisition bound" in prompt
+    assert "no read_file call is needed" in prompt
+    assert "skills" not in captured
+    permissions = cast(list[object], captured["permissions"])
+    assert [cast(Any, item).paths[0] for item in permissions[:-1]] == [
+        "/conf/skills/hyper/detect-and-replan"
+    ]
+
+
+def test_only_hyper_agent_receives_todo_list_middleware(
+    monkeypatch, tmp_path: Path
+) -> None:
     import deepagents
     from langchain.agents.middleware import TodoListMiddleware
 
@@ -164,19 +226,28 @@ def test_hyper_and_maneuver_agents_receive_todo_list_middleware(monkeypatch) -> 
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
 
     create_planning_intent_agent(model=object())
-    create_maneuver_control_agent(model=object())
+    create_maneuver_control_agent(
+        model=object(),
+        mission_id="mission-1",
+        memory_store=FileMissionMemoryStore(tmp_path / "memory"),
+        backend_root=tmp_path,
+    )
 
     hyper_middleware = created[0].get("middleware")
     maneuver_middleware = created[1].get("middleware", [])
     assert isinstance(hyper_middleware, list)
     assert isinstance(maneuver_middleware, list)
     assert [type(middleware) for middleware in hyper_middleware] == [TodoListMiddleware]
-    assert [type(middleware) for middleware in maneuver_middleware] == [
-        TodoListMiddleware
+    assert all(not isinstance(middleware, TodoListMiddleware) for middleware in maneuver_middleware)
+    filesystem = [
+        middleware for middleware in maneuver_middleware
+        if type(middleware).__name__ == "FilesystemMiddleware"
     ]
+    assert len(filesystem) == 1
+    assert [tool.name for tool in filesystem[0].tools] == ["read_file"]
 
 
-def test_maneuver_debug_profile_contains_operational_and_todo_tools(
+def test_maneuver_debug_profile_contains_only_operational_tools(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     import deepagents
@@ -202,7 +273,7 @@ def test_maneuver_debug_profile_contains_operational_and_todo_tools(
         "set_transition_target",
         "transition_fsm",
     ]
-    assert "write_todos" in profiles[0][1]
+    assert "write_todos" not in profiles[0][1]
 
 
 def test_only_hyper_workflow_receives_minimal_local_shell_backend(
@@ -609,7 +680,6 @@ def test_planner_generation_skills_use_direct_external_tools_and_same_file_repai
         assert "submit_planner_attempt" in skill
         assert "planner_executor" in skill
         assert "same submitted files" in skill
-        assert "write_todos" in skill
         assert "edit_file" in skill
         assert "normalization template" not in skill
         assert "code-owned action checker" not in skill

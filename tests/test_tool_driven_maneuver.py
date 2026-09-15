@@ -20,6 +20,8 @@ from onr.adapters.operational_log import InProcessOperationalLog
 from onr.agents.maneuver_control import (
     DeepAgentsHeartbeatProvider,
     ManeuverHeartbeatOrderingError,
+    _derived_pursuit_facts,
+    _model_visible_invocation,
 )
 from onr.agents.maneuver_tools import (
     MANEUVER_OPERATIONAL_TOOLS,
@@ -473,7 +475,7 @@ def test_transition_tool_checks_exact_candidate_without_interpreting_context() -
         plan_revision=plan.plan_revision,
         statechart_reference="accepted-statechart.json",
         fsm_context=journal.focused_context(status, None),
-        environment_data={"mission_time_seconds": 9},
+        environment_data={"mission_time_seconds": 10},
     )
     context = ManeuverToolContext(
         invocation, runner, _Dispatcher(), transition_intents=journal
@@ -547,6 +549,58 @@ def test_transition_tool_checks_exact_candidate_without_interpreting_context() -
         "y": 8,
     }
     assert journal.latest(plan.mission_id).status == "consumed"  # type: ignore[union-attr]
+
+
+def test_transition_tool_rejects_future_exact_time_bound() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    intent = journal.select(
+        status,
+        "arbitrary destination",
+        "Select the exact live target.",
+        selected_at=0,
+    )
+    invocation = ManeuverInvocation(
+        request_id="future-bound-heartbeat",
+        correlation_id="future-bound-correlation",
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        statechart_reference="accepted-statechart.json",
+        fsm_context=journal.focused_context(status, intent),
+        environment_data={"mission_time_seconds": 9},
+    )
+    context = ManeuverToolContext(
+        invocation, runner, _Dispatcher(), transition_intents=journal
+    )
+
+    result = json.loads(
+        cast(Any, transition_fsm).func(
+            current_state=status.active_state,
+            next_state="arbitrary destination",
+            assessment="satisfied_with_uncertainty",
+            evidence="The time bound is still future.",
+            uncertainty="Mission time has not reached the bound.",
+            runtime=_runtime(context),
+        )
+    )
+
+    assert result == {
+        "status": "rejected",
+        "reason": "the selected Transition Intent time bound is still future",
+        "mission_time_seconds": 9.0,
+        "not_before_seconds": 10.0,
+        "current_state": status.active_state,
+        "candidates": [
+            {
+                "target_state": item.target,
+                "condition": item.to_dict()["transition_context"],
+            }
+            for item in status.transition_candidates
+        ],
+    }
 
 
 def test_assess_first_heartbeat_persists_new_state_intent_for_fresh_evidence(
@@ -2049,6 +2103,702 @@ def test_belief_tool_ingests_each_pending_event_once(
     assert current is not None and current.belief_revision == 2
 
 
+def test_model_visible_invocation_bounds_entities_and_retains_events() -> None:
+    plan = _plan()
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    old = EntityObservation("old", "ship-1", (0, 0, 0), 1, 0.1)
+    latest = EntityObservation("latest", "ship-1", (1, 2, 0), 2, 0.2)
+    other = EntityObservation("other", "ship-2", (3, 4, 0), 1.5, 0.3)
+    event = EventObservation(
+        observation_id="event-observed",
+        entity_id="ship-1",
+        position=(1, 2, 0),
+        observed_time=2,
+        uncertainty_score=0.1,
+        source_event_index=1,
+        event_type="report",
+        event_information={"decision": "left"},
+        event_time=2,
+    )
+    invocation = ManeuverInvocation(
+        "bounded-entity-heartbeat",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {"mission_time_seconds": 2},
+        pending_perceptions=(old, event, other, latest),
+    )
+
+    visible = _model_visible_invocation(invocation)
+
+    assert visible["pending_perceptions"] == [event.to_dict()]
+    assert visible["pending_entity_perceptions"] == {
+        "observation_count": 3,
+        "latest_by_entity": [latest.to_dict(), other.to_dict()],
+    }
+    assert invocation.pending_perceptions == (old, event, other, latest)
+
+
+def test_model_visible_invocation_projects_world_history_to_current_references() -> None:
+    plan = _plan()
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    event = EventObservation(
+        observation_id="event-observed",
+        entity_id="ship-1",
+        position=(1, 2, 0),
+        observed_time=2,
+        uncertainty_score=0.1,
+        source_event_index=1,
+        event_type="report",
+        event_information={"report_id": "report-current"},
+        event_time=2,
+    )
+    current_report = {"report_id": "report-current", "entity_id": "ship-1"}
+    other_report = {"report_id": "report-other", "entity_id": "ship-2"}
+    invocation = ManeuverInvocation(
+        "bounded-world-heartbeat",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {
+            "mission_time_seconds": 2,
+            "maneuver_lifecycle": {"parameters": {"entity_id": "ship-1"}},
+            "world_model_info": {
+                "visible_ship_ids": ["ship-1", "ship-2"],
+                "event_report_checks": [current_report, other_report],
+                "ship_event_reports": {
+                    "ship-1": [current_report],
+                    "ship-2": [other_report],
+                },
+                "public_position_fixes": [current_report, other_report],
+                "detected_issues": {
+                    "ship-1": [{"issue_id": "current"}],
+                    "ship-2": [{"issue_id": "other"}],
+                },
+            },
+        },
+        pending_perceptions=(event,),
+    )
+
+    visible = _model_visible_invocation(invocation)
+    info = cast(dict[str, object], visible["environment_data"])["world_model_info"]
+
+    assert isinstance(info, dict)
+    assert info["visible_ship_ids"] == ["ship-1", "ship-2"]
+    assert info["event_report_checks"] == [current_report]
+    assert info["ship_event_reports"] == {"ship-1": [current_report]}
+    assert info["public_position_fixes"] == [current_report]
+    assert info["detected_issues"] == {"ship-1": [{"issue_id": "current"}]}
+    assert visible["pending_event_perception_count"] == 1
+    assert info["history_projection"] == {
+        "scope": "current_fsm_and_pending_events",
+        "event_report_checks": {"available": 2, "shown": 1},
+        "ship_event_reports": {"available": 2, "shown": 1},
+        "public_position_fixes": {"available": 2, "shown": 1},
+        "detected_issue_entities": {"available": 2, "shown": 1},
+    }
+    original_info = invocation.to_dict()["environment_data"]["world_model_info"]
+    assert original_info["ship_event_reports"] == {
+        "ship-1": [current_report],
+        "ship-2": [other_report],
+    }
+
+
+def test_derived_pursuit_facts_expose_passed_bound_and_stale_fix() -> None:
+    plan = _plan()
+    chart = _chart(plan)
+    chart = replace(
+        chart,
+        state_context={
+            **chart.state_context,
+            chart.entry_state: {
+                "surveillance_mode": "pursue_ship",
+                "target_entity_id": 23,
+                "observation_window": {
+                    "start": {"seconds": 52},
+                    "duration": {"seconds": 30},
+                },
+            },
+        },
+    )
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(chart))
+    invocation = ManeuverInvocation(
+        "pursuit-facts-heartbeat",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {
+            "mission_time_seconds": 55,
+            "maneuver_lifecycle": {
+                "action": "pursue",
+                "lifecycle": "active",
+                "phase": "search",
+                "start_time": 46,
+                "parameters": {"entity_id": 23},
+            },
+            "world_model_info": {
+                "visible_ship_ids": [],
+                "gps_interval_seconds": 30,
+                "next_gps_update_time_s": 60,
+                "public_position_fixes": [
+                    {"entity_id": 23, "sampled_at_s": 30, "source": "gps"}
+                ],
+            },
+        },
+    )
+
+    assert _derived_pursuit_facts(invocation) == {
+        "target_entity_id": 23,
+        "matching_active_pursuit": True,
+        "active_acquisition_navigation": False,
+        "target_visible": False,
+        "pursuit_phase": "search",
+        "mission_time_seconds": 55.0,
+        "attempt_start_seconds": 46.0,
+        "first_required_observation_seconds": 52.0,
+        "first_gps_after_attempt_seconds": 60.0,
+        "acquisition_bound_seconds": 52.0,
+        "seconds_since_acquisition_bound": 3.0,
+        "newest_target_fix": {
+            "entity_id": 23,
+            "sampled_at_s": 30,
+            "source": "gps",
+        },
+        "newest_fix_after_attempt": False,
+    }
+
+
+def test_reporting_events_are_pre_ingested_once_before_model_assessment() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    journal = TransitionIntentJournal(transport)
+    intent = journal.select(
+        status, "arbitrary destination", "Retain pending intent.", selected_at=0
+    )
+    event = EventObservation(
+        observation_id="event-pre-ingested",
+        entity_id="ship-1",
+        position=(1, 2, 0),
+        observed_time=2,
+        uncertainty_score=0.1,
+        source_event_index=1,
+        event_type="report",
+        event_information={"decision": "left"},
+        event_time=2,
+    )
+    invocation = ManeuverInvocation(
+        "pre-ingestion-heartbeat",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {"mission_time_seconds": 2},
+        pending_perceptions=(event,),
+    )
+
+    class ReportingService:
+        belief_kind = "reporting_reliability"
+
+        def handle(self, _: object) -> None:
+            return None
+
+    class Agent:
+        def invoke(self, state: dict[str, Any], **_: object) -> dict[str, object]:
+            payload = json.loads(state["messages"][0].content)
+            assert payload["pending_perceptions"] == []
+            assert payload["pending_event_perception_count"] == 0
+            assert payload["pre_ingested_event_perceptions"]["status"] == (
+                "ignored_actual_event_observations"
+            )
+            assert payload["pre_ingested_event_perceptions"]["event_count"] == 1
+            return {"structured_response": {"summary": "Event batch recorded."}}
+
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        belief_service=ReportingService(),
+        transition_intents=journal,
+    )
+
+    DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert context.perception_batch_ingested is True
+    assert [item.name for item in context.execution_record.executions] == [
+        "ingest_perceptions"
+    ]
+    assert context.execution_record.executions[0].successful is True
+    assert invocation.pending_perceptions == (event,)
+
+
+@pytest.mark.parametrize(
+    ("phase", "visible", "mission_time", "remaining", "status_text"),
+    (
+        ("pursuit", False, 55, 27, "tracking phase"),
+        ("search", True, 55, 27, "currently visible"),
+        ("search", False, 50, 32, "within its acquisition search bound"),
+    ),
+)
+def test_future_visible_pursuit_fast_path_ingests_and_skips_model(
+    phase: str,
+    visible: bool,
+    mission_time: int,
+    remaining: int,
+    status_text: str,
+) -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    chart = Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile=plan.planner_choice.planning_profile,
+        entry_state="observing",
+        states=("observing", "done"),
+        terminal_states=("done",),
+        state_context={
+            "observing": {
+                "surveillance_mode": "pursue_ship",
+                "target_entity_id": 23,
+                "observation_window": {
+                    "start": {"seconds": 52},
+                    "duration": {"seconds": 30},
+                },
+            },
+            "done": {},
+        },
+        transitions=(
+            StatechartTransition(
+                "finish",
+                "observing",
+                "done",
+                {"readiness": {"not_before": {"seconds": 82}}},
+            ),
+        ),
+    )
+    status = asyncio.run(runner.activate(chart))
+    journal = TransitionIntentJournal(transport)
+    intent = journal.select(status, "done", "Wait for time gate.", selected_at=0)
+    event = EventObservation(
+        observation_id="event-fast-path",
+        entity_id=23,
+        position=(1, 2, 0),
+        observed_time=mission_time,
+        uncertainty_score=0.1,
+        source_event_index=1,
+        event_type="report",
+        event_information={"decision": "left"},
+        event_time=mission_time,
+    )
+    invocation = ManeuverInvocation(
+        "fast-path-heartbeat",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {
+            "mission_time_seconds": mission_time,
+            "maneuver_lifecycle": {
+                "action": "pursue",
+                "lifecycle": "active",
+                "phase": phase,
+                "start_time": 46,
+                "parameters": {"entity_id": 23},
+            },
+            "world_model_info": {"visible_ship_ids": [23] if visible else []},
+        },
+        pending_perceptions=(event,),
+    )
+
+    class ReportingService:
+        belief_kind = "reporting_reliability"
+
+        def handle(self, _: object) -> None:
+            return None
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> object:
+            raise AssertionError("routine future tracking must not invoke the model")
+
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        belief_service=ReportingService(),
+        transition_intents=journal,
+    )
+
+    result = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert f"{remaining} seconds" in result.summary
+    assert status_text in result.summary
+    assert "no physical command was submitted" in result.summary
+    assert context.perception_batch_ingested is True
+    assert [item.name for item in context.execution_record.executions] == [
+        "ingest_perceptions"
+    ]
+    assert asyncio.run(runner.status()).active_state == "observing"
+
+
+def _bounded_search_invocation(
+    *, mission_time: float, fixes: list[dict[str, object]]
+) -> tuple[
+    ManeuverInvocation,
+    FSMRunner,
+    TransitionIntentJournal,
+    InProcessTransport,
+]:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    chart = Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="observing",
+        states=("observing", "done"),
+        terminal_states=("done",),
+        state_context={
+            "observing": {
+                "surveillance_mode": "pursue_ship",
+                "target_entity_id": 23,
+                "observation_window": {
+                    "start": {"seconds": 52},
+                    "duration": {"seconds": 30},
+                },
+            },
+            "done": {},
+        },
+        transitions=(
+            StatechartTransition(
+                "finish",
+                "observing",
+                "done",
+                {"readiness": {"not_before": {"seconds": 82}}},
+            ),
+        ),
+    )
+    status = asyncio.run(runner.activate(chart))
+    journal = TransitionIntentJournal(transport)
+    intent = journal.select(status, "done", "Wait for time gate.", selected_at=0)
+    invocation = ManeuverInvocation(
+        f"bounded-search-{mission_time:g}",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {
+            "mission_time_seconds": mission_time,
+            "controlled_vehicle": {"position": {"x": 0, "y": 0, "z": -25}},
+            "maneuver_lifecycle": {
+                "action": "pursue",
+                "lifecycle": "active",
+                "phase": "search",
+                "start_time": 46,
+                "parameters": {"entity_id": 23},
+            },
+            "world_model_info": {
+                "visible_ship_ids": [],
+                "gps_interval_seconds": 30,
+                "next_gps_update_time_s": 90,
+                "public_position_fixes": fixes,
+            },
+        },
+        available_recipients=("hyper-agent",),
+    )
+    return invocation, runner, journal, transport
+
+
+def test_missed_acquisition_fast_path_notifies_once_without_model() -> None:
+    invocation, runner, journal, transport = _bounded_search_invocation(
+        mission_time=55,
+        fixes=[
+            {
+                "entity_id": 23,
+                "sampled_at_s": 30,
+                "source": "gps",
+                "position": {"x": 10, "y": 20},
+            }
+        ],
+    )
+    communication = TransportCommunicationPort(cast(Any, InProcessTransport()))
+    seen: list[AgentMessage] = []
+    communication.register(
+        "hyper-agent",
+        lambda message: seen.append(message) or {"disposition": "no_change"},
+    )
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> object:
+            raise AssertionError("exact missed acquisition must not invoke the model")
+
+    provider = DeepAgentsHeartbeatProvider(Agent())
+    for _ in range(2):
+        context = ManeuverToolContext(
+            invocation,
+            runner,
+            ManeuverControl(cast(Any, transport), object()),
+            communication_port=communication,
+            transition_intents=journal,
+        )
+        result = provider.heartbeat(invocation, context)
+        assert "missed acquisition" in result.summary
+
+    assert len(seen) == 1
+    assert seen[0].kind == "replan"
+
+
+def test_new_gps_recovery_fast_path_navigates_and_reports_without_model() -> None:
+    invocation, runner, journal, transport = _bounded_search_invocation(
+        mission_time=61,
+        fixes=[
+            {
+                "entity_id": 23,
+                "sampled_at_s": 60,
+                "source": "gps",
+                "position": {"x": 150, "y": 70},
+            }
+        ],
+    )
+    communication = TransportCommunicationPort(cast(Any, InProcessTransport()))
+    seen: list[AgentMessage] = []
+    communication.register(
+        "hyper-agent",
+        lambda message: seen.append(message) or {"disposition": "no_change"},
+    )
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> object:
+            raise AssertionError("exact GPS recovery must not invoke the model")
+
+    control = ManeuverControl(cast(Any, transport), object())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        control,
+        communication_port=communication,
+        transition_intents=journal,
+    )
+    result = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert "Submitted recovery navigation" in result.summary
+    assert [item.name for item in context.execution_record.executions] == [
+        "navigate",
+        "communicate",
+    ]
+    queued = transport.state.commands[("maneuver-adapter", invocation.mission_id)][0][1]
+    command = ManeuverCommand.from_command(queued, "maneuver")
+    assert command.action == "navigate"
+    assert command.intent.to_dict()["parameters"] == {"x": 150, "y": 70, "z": -25}
+    assert len(seen) == 1
+    assert seen[0].kind == "report"
+
+
+def test_completed_acquisition_navigation_resumes_pursuit_without_model() -> None:
+    base, runner, journal, transport = _bounded_search_invocation(
+        mission_time=61,
+        fixes=[],
+    )
+    environment = dict(base.environment_data)
+    environment["maneuver_lifecycle"] = {
+        "action": "navigate",
+        "lifecycle": "completed",
+        "parameters": {"x": 150, "y": 70, "z": -25},
+    }
+    invocation = replace(base, environment_data=environment)
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> object:
+            raise AssertionError("navigation arrival must not invoke the model")
+
+    control = ManeuverControl(cast(Any, transport), object())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        control,
+        transition_intents=journal,
+    )
+    result = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert "Submitted pursuit of target 23" in result.summary
+    assert [item.name for item in context.execution_record.executions] == ["pursue"]
+    queued = transport.state.commands[("maneuver-adapter", base.mission_id)][0][1]
+    command = ManeuverCommand.from_command(queued, "maneuver")
+    assert command.action == "pursue"
+    assert command.intent.to_dict()["parameters"] == {"entity_id": 23}
+
+
+def test_future_fixed_view_report_wake_skips_model() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    chart = Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="observing",
+        states=("observing", "done"),
+        terminal_states=("done",),
+        state_context={
+            "observing": {
+                "surveillance_mode": "fixed_view",
+                "desired_outcome": {"location": {"x": 100, "y": 20}},
+            },
+            "done": {},
+        },
+        transitions=(
+            StatechartTransition(
+                "finish",
+                "observing",
+                "done",
+                {"readiness": {"not_before": {"seconds": 82}}},
+            ),
+        ),
+    )
+    status = asyncio.run(runner.activate(chart))
+    journal = TransitionIntentJournal(transport)
+    intent = journal.select(status, "done", "Wait for time gate.", selected_at=0)
+    invocation = ManeuverInvocation(
+        "fixed-view-report-wake",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, intent),
+        {
+            "mission_time_seconds": 75,
+            "maneuver_lifecycle": {
+                "action": "navigate",
+                "lifecycle": "completed",
+                "parameters": {"x": 100, "y": 20, "z": -25},
+            },
+            "world_model_info": {"event_report_checks": []},
+        },
+    )
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> object:
+            raise AssertionError("future fixed-view gate must not invoke the model")
+
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        _Dispatcher(),
+        transition_intents=journal,
+    )
+    result = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    assert "7 seconds in the future" in result.summary
+    assert context.execution_record.executions == []
+
+
+def test_time_ready_mission1_entry_fast_path_transitions_and_dispatches() -> None:
+    plan = _plan()
+    transport = InProcessTransport()
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    chart = Statechart(
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        mission_snapshot_id=plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="waiting",
+        states=("waiting", "assignment", "done"),
+        terminal_states=("done",),
+        state_context={
+            "waiting": {"desired_outcome": "begin"},
+            "assignment": {
+                "candidate_id": "fixed-1",
+                "surveillance_mode": "fixed_view",
+                "desired_outcome": {
+                    "location": {"x": 100, "y": 20},
+                    "arrival_deadline": {"seconds": 8},
+                },
+                "planner_item": {"parameters": {"arrival_direction": 2}},
+            },
+            "done": {},
+        },
+        transitions=(
+            StatechartTransition(
+                "begin",
+                "waiting",
+                "assignment",
+                {"readiness": {"mission_time_at_or_after": {"seconds": 0}}},
+            ),
+            StatechartTransition(
+                "finish",
+                "assignment",
+                "done",
+                {"readiness": {"not_before": {"seconds": 10}}},
+            ),
+        ),
+    )
+    status = asyncio.run(runner.activate(chart))
+    journal = TransitionIntentJournal(transport)
+    invocation = ManeuverInvocation(
+        "ready-entry",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        journal.focused_context(status, None),
+        {
+            "mission_time_seconds": 0,
+            "controlled_vehicle": {"position": {"x": 0, "y": 0, "z": -25}},
+            "world_model_info": {"visible_ship_ids": []},
+        },
+    )
+
+    class Agent:
+        def invoke(self, *_: object, **__: object) -> object:
+            raise AssertionError("exact Mission 1 entry must not invoke the model")
+
+    control = ManeuverControl(cast(Any, transport), object())
+    context = ManeuverToolContext(
+        invocation,
+        runner,
+        control,
+        transition_intents=journal,
+    )
+    result = DeepAgentsHeartbeatProvider(Agent()).heartbeat(invocation, context)
+
+    live = asyncio.run(runner.status())
+    assert live.active_state == "assignment"
+    assert journal.current(live).target_state == "done"
+    assert "submitted fixed-view navigation" in result.summary
+    assert [item.name for item in context.execution_record.executions] == [
+        "set_transition_target",
+        "transition_fsm",
+        "set_transition_target",
+        "navigate",
+    ]
+    queued = transport.state.commands[("maneuver-adapter", plan.mission_id)][0][1]
+    command = ManeuverCommand.from_command(queued, "maneuver")
+    assert command.intent.to_dict()["parameters"] == {
+        "arrival_direction": 2,
+        "deadline_time": 8.0,
+        "x": 100,
+        "y": 20,
+        "z": -25,
+    }
+
+
 def test_failed_perception_ingestion_remains_available_for_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2255,12 +3005,13 @@ def test_heartbeat_adds_exact_read_only_transition_facts(
         },
     )
     original = invocation.to_dict()
+    model_visible = _model_visible_invocation(invocation)
 
     class Agent:
         def invoke(self, state: dict[str, Any], **_: object) -> dict[str, object]:
             messages = state["messages"]
             assert len(messages) == 2
-            assert json.loads(messages[0].content) == original
+            assert json.loads(messages[0].content) == model_visible
             facts = json.loads(messages[1].content)["derived_transition_facts"]
             assert facts["intent_id"] == intent.intent_id
             assert facts["source_state"] == chart.entry_state

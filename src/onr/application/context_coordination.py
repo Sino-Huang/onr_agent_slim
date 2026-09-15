@@ -26,6 +26,7 @@ from onr.contracts.context_coordination import (
 )
 from onr.contracts.environment import (
     Perception,
+    environment_maneuver_lifecycle,
     environment_mission_time,
     perception_from_dict,
 )
@@ -430,7 +431,19 @@ class ContextCoordination:
             )
             for event in update.feedback_events:
                 feedback = ManeuverFeedback.from_dict(event.payload)
-                if feedback.lifecycle != "active":
+                lifecycle = environment_maneuver_lifecycle(update.environment_data)
+                current_command_id = (
+                    lifecycle.get("command_id")
+                    if lifecycle is not None
+                    else None
+                )
+                feedback_command_id = feedback.payload.get("command_id")
+                superseded = (
+                    isinstance(current_command_id, str)
+                    and isinstance(feedback_command_id, str)
+                    and current_command_id != feedback_command_id
+                )
+                if feedback.lifecycle != "active" and not superseded:
                     self._queue_maneuver_trigger(f"environment:{event.event_id}")
         latest = self._drain_required(context_consumer, fallback=snapshot)
         return latest, len(updates)
@@ -469,6 +482,8 @@ class ContextCoordination:
             else None
         )
         last_gate_signature: tuple[object, ...] | None = None
+        last_gate_assessment_time = -math.inf
+        last_gate_belief_revision: int | None = None
         mission2_gate = Mission2ReplanGate()
         maneuver_wakeups = ManeuverWakeups()
 
@@ -538,28 +553,40 @@ class ContextCoordination:
                         reliability = self._resolve_belief(snapshot)
                         if not isinstance(reliability, ReportingReliabilitySnapshot):
                             raise TypeError("Mission 1 requires reporting reliability")
-                        gate_decision, advisory = mission1_gate.assess(
-                            planning_environment,
-                            reliability,
-                            active_revision.statechart,
-                            status,
-                            explicit_request=requested_hyper,
-                        )
-                        gate_signature = (
-                            active_revision.planner_plan.plan_revision,
-                            reliability.input_revision,
-                            status.active_state,
-                            tuple(item.candidate_id for item in advisory.candidates),
-                            gate_decision.reason,
-                        )
-                        if gate_decision.trigger and (
-                            requested_hyper or gate_signature != last_gate_signature
+                        if (
+                            requested_hyper
+                            or reliability.input_revision
+                            != last_gate_belief_revision
+                            or now - last_gate_assessment_time >= 5.0
                         ):
-                            gate_trigger = (
-                                f"mission1-gate:{gate_decision.reason}:"
-                                f"belief-{reliability.input_revision}"
+                            gate_decision, advisory = mission1_gate.assess(
+                                planning_environment,
+                                reliability,
+                                active_revision.statechart,
+                                status,
+                                explicit_request=requested_hyper,
                             )
-                            last_gate_signature = gate_signature
+                            last_gate_assessment_time = now
+                            last_gate_belief_revision = reliability.input_revision
+                            gate_signature = (
+                                active_revision.planner_plan.plan_revision,
+                                reliability.input_revision,
+                                status.active_state,
+                                tuple(
+                                    item.candidate_id
+                                    for item in advisory.candidates
+                                ),
+                                gate_decision.reason,
+                            )
+                            if gate_decision.trigger and (
+                                requested_hyper
+                                or gate_signature != last_gate_signature
+                            ):
+                                gate_trigger = (
+                                    f"mission1-gate:{gate_decision.reason}:"
+                                    f"belief-{reliability.input_revision}"
+                                )
+                                last_gate_signature = gate_signature
                     else:
                         periodic_hyper, last_hyper_periodic, coalesced = (
                             self._next_periodic(
@@ -654,6 +681,8 @@ class ContextCoordination:
                                 self._transition_intents.invalidate_latest(mission_id)
                                 active_revision = replacement
                                 last_gate_signature = None
+                                last_gate_assessment_time = -math.inf
+                                last_gate_belief_revision = None
                                 plan_revisions.append(next_revision)
                                 periodic, last_maneuver_periodic, coalesced = (
                                     self._next_periodic(

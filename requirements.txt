@@ -1,3 +1,6 @@
 -e .[dev]
 playwright==1.62.0
 # System executable used by Hyper workflow tests: jq=1.8.2 (conda-forge)
+
+# Read-only sampling profiler for runtime investigations
+py-spy==0.4.2

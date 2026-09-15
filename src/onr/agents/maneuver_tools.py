@@ -460,6 +460,32 @@ def _transition_fsm(
         }
         context.execution_record.append("transition_fsm", result, successful=False)
         return _canonical_json(result)
+    readiness = intent.condition.get("readiness")
+    readiness = readiness if isinstance(readiness, Mapping) else intent.condition
+    not_before = readiness.get("not_before")
+    if isinstance(not_before, Mapping):
+        not_before = not_before.get("seconds")
+    mission_clock = readiness.get("mission_clock")
+    if (
+        not_before is None
+        and isinstance(mission_clock, Mapping)
+        and mission_clock.get("unit") == "seconds"
+    ):
+        not_before = mission_clock.get("minimum")
+    now = environment_mission_time(context.invocation.environment_data)
+    if (
+        type(not_before) in (int, float)
+        and now + 1e-9 < float(cast(Any, not_before))
+    ):
+        result = {
+            "status": "rejected",
+            "reason": "the selected Transition Intent time bound is still future",
+            "mission_time_seconds": now,
+            "not_before_seconds": float(cast(Any, not_before)),
+            **_candidate_result(status),
+        }
+        context.execution_record.append("transition_fsm", result, successful=False)
+        return _canonical_json(result)
     sequence = len(context.execution_record.executions) + 1
     decision_id = f"maneuver-transition:{context.invocation.request_id}:{sequence}"
     authorization = ManeuverDecision(
@@ -878,29 +904,11 @@ def investigate(
     )
 
 
-@tool(parse_docstring=True)
-def ingest_perceptions(
-    reflection: str,
-    runtime: ToolRuntime[ManeuverToolContext],
+def _ingest_pending_perceptions(
+    context: ManeuverToolContext, reflection: str
 ) -> str:
-    """Ingest every pending event perception as an ordered Bayesian update.
-
-    Call only when pending_perceptions contains observation_kind="event".
-    Entity sightings (observation_kind="entity") are tracking evidence, not
-    event evidence. A mixed batch processes only its event observations.
-    With no event observations, the call is rejected without changing belief
-    or marking the batch ingested; continue the heartbeat without retrying it.
-
-    Args:
-        reflection: Concise public evidence summary for this perception batch.
-
-    Returns:
-        Completed batch status; new belief content enters later Hyper invocations.
-    """
-
     from onr.application.bayesian_belief import create_risk_observation_event
 
-    context = _context(runtime)
     if context.perception_batch_ingested:
         raise RuntimeError("perception batch tool is unavailable after success")
     if context.belief_service is None:
@@ -982,6 +990,29 @@ def ingest_perceptions(
     }
     context.execution_record.append("ingest_perceptions", result, successful=True)
     return _canonical_json(result)
+
+
+@tool(parse_docstring=True)
+def ingest_perceptions(
+    reflection: str,
+    runtime: ToolRuntime[ManeuverToolContext],
+) -> str:
+    """Ingest every pending event perception as an ordered Bayesian update.
+
+    Call only when pending_perceptions contains observation_kind="event".
+    Entity sightings (observation_kind="entity") are tracking evidence, not
+    event evidence. A mixed batch processes only its event observations.
+    With no event observations, the call is rejected without changing belief
+    or marking the batch ingested; continue the heartbeat without retrying it.
+
+    Args:
+        reflection: Concise public evidence summary for this perception batch.
+
+    Returns:
+        Completed batch status; new belief content enters later Hyper invocations.
+    """
+
+    return _ingest_pending_perceptions(_context(runtime), reflection)
 
 
 @tool(parse_docstring=True)

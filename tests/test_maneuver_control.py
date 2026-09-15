@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from langchain.agents.middleware import TodoListMiddleware
 
 import onr.agents.maneuver_control as maneuver_control_agent
 from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
@@ -421,7 +420,28 @@ def test_agent_factory_receives_private_summary_response_and_tools(
         "ingest_perceptions",
         "communicate",
     ]
-    assert [type(item) for item in captured["middleware"]] == [TodoListMiddleware]
+    assert len(captured["middleware"]) == 1
+    assert captured["inline_skills"] == frozenset(
+        {"decision-cycle", "physical-maneuver-selection", "hyper-coordination"}
+    )
+    assert captured["filesystem_tools"] == ["read_file"]
+
+
+def test_maneuver_model_request_hides_unused_scaffolding_tools() -> None:
+    request = SimpleNamespace(
+        tools=[
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="task"),
+            SimpleNamespace(name="navigate"),
+        ]
+    )
+    request.override = dict
+
+    result = cast(Any, maneuver_control_agent._gate_maneuver_scaffolding).wrap_model_call(
+        request, lambda value: value
+    )
+
+    assert [tool.name for tool in result["tools"]] == ["navigate"]
 
 
 def test_typed_decision_application_validation_failure_is_not_retried_or_effectful() -> (

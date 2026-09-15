@@ -14,16 +14,17 @@ Mission 2-only planning does not.
 
 ## Choose the generation route
 
-After `record_planning_intent`, inspect the returned environment file with
-`execute` and `jq 'keys' <file>`. Follow the discovered containers with further
-`jq` key and representative-record queries until the event collection, event
-identity/type/time/position, drone collection/identity/location/velocity/FoV,
-and their nesting are explicit. Inspect the event-type distribution and match
-each event entity to the supplied belief marginals. Preserve identifiers,
-order, units, and scales.
+After `record_planning_intent`, use the checked-in pipeline directly when the
+returned evidence includes the Mission 1 reliability snapshot and static report
+schedule. Its `inspect_inputs.py` performs the required schema inspection and
+belief matching. For other shapes, inspect the returned environment file with
+`execute` and `jq 'keys' <file>`. Follow discovered containers with key and
+representative-record queries until event and vehicle nesting are explicit.
+Preserve identifiers, order, units, and scales.
 
 Use one independent inspection per `execute` call so its exit status belongs
-to that query; connect genuinely dependent shell operations with `&&`. For the
+to that query, except for the explicitly combined checked-in Mission 1 pipeline
+below; connect genuinely dependent shell operations with `&&`. For the
 Mission 1 physical shape, sample report streams with
 `jq '.world_model_info.ship_event_reports | to_entries | .[0]' <environment-file>`
 and read spaced keys with
@@ -35,8 +36,13 @@ and read spaced keys with
 
 ## Mission 1 reliability candidate DAG
 
-Read [Mission 1 mixed-action reference](references/mission1-mixed-action.md)
+Apply the supplied [Mission 1 mixed-action reference](references/mission1-mixed-action.md)
 before generating or interpreting this planner shape. Then:
+
+When `build_mission1_revision` is available, call it immediately. It runs the
+checked-in generation, inspection, planner, and Statechart validation sequence
+described below and returns one verified receipt. Do not run its helper commands
+separately in that workflow.
 
 1. Use these checked-in, parameterized helpers at their stable
    repository-relative execute paths:
@@ -66,7 +72,9 @@ before generating or interpreting this planner shape. Then:
    `python conf/skills/hyper/creating-minizinc-problem-files/examples/event-information-patrol/inspect_problem.py <shell-workspace>/data.dzn`.
    Shell-quote paths containing whitespace. The execute backend starts at the
    repository root with the `onr` Python activated; the working directory remains the repository root.
-   Use one independent inspection per `execute` call. Do not author an ad-hoc inspection script. Do not read the generated
+   For this checked-in pipeline, run the input inspection, preparation, and DZN
+   inspection in one `execute` call joined by `&&`, in that order. Each program
+   emits a labeled JSON result and any failure stops the pipeline. Do not author an ad-hoc inspection script. Do not read the generated
    DZN into model context. The same commands apply to initial planning and
    every replacement revision.
 4. Require `valid: true` from `inspect_problem.py`. Inspect the preparation JSON manifest
@@ -110,8 +118,7 @@ This route bypasses `initialize_event_data_materialization` and
 ## Repair and evidence
 
 Completion requires successful MiniZinc instance checking and planner
-execution. On failure, call `write_todos` for the returned todo rollback, use
-`edit_file` on the same files,
+execution. On failure, use `edit_file` on the same files,
 and resubmit the same submitted files at the same paths. Treat verifier and executor diagnostics as the
 repair authority while preserving unaffected evidence. Use `restart: true`
 only to intentionally discard a generic materialization and its accepted rows.

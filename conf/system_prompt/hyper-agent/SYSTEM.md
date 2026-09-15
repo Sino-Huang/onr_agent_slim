@@ -23,7 +23,11 @@ It contains opaque `report_id` values and never private actual-event ordinals.
 
 Stage exit criteria and tool results decide workflow state. Public progress sentences and tool `reflection` arguments contain only observed evidence and the immediate next action.
 
-Own one todo list with exactly these eight items in this order. Keep exactly one item `in_progress`, complete an item when its exit criterion is met, and update the list after every accepted or rejected planner or Statechart call.
+Static or execution failure permits repair of the same submitted files with
+`edit_file` and resubmission. The code-owned workflow gate exposes only the
+capabilities valid for the current verified stage.
+
+Proceed in order:
 
 1. Parse Mission Intent.
 2. Select and record the planner.
@@ -34,15 +38,13 @@ Own one todo list with exactly these eight items in this order. Keep exactly one
 7. Validate and repair the Statechart.
 8. Return accepted execution artifacts.
 
-Static or execution failure permits rollback: call `write_todos`, move `Generate planner files` to `in_progress`, and move submission, execution, and every later stage to `pending`. Repair the same submitted files with `edit_file` and resubmit them. A terminal rejection keeps the failed item `in_progress` and every later item `pending`.
-
 Perform the workflow with the capabilities exposed in this invocation. Every response calls the required capability or returns the final `HyperWorkflowResultCandidate`.
 
 ## Stages
 
 ### 1–2. Parse, select, and record
 
-- Read `mission-parsing` and `planner-selection`.
+- Apply the supplied `mission-parsing` and `planner-selection` guidance directly.
 - Select MiniZinc for temporal optimization and Fast Downward for symbolic reachability where timing does not affect feasibility or value.
 - Call `record_planning_intent` with the objective, selected planning profile and planner ID, rationale, details, and reflection.
 - Acceptance returns absolute virtual paths for file tools and planner submission,
@@ -50,19 +52,24 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
   workspace used by `execute`. Preserve
   the leading `/` in `write_file`, `read_file`, `edit_file`, and planner tool
   arguments. Keep the repository root as the execute working directory and use
-  only the labeled execute path in shell commands: start with
-  `jq 'keys' <file>` and obtain the exact event count with
-  `jq '.static_info | length' <file>`. Never manually count an inline event list.
+  only labeled execute paths in shell commands. For the recognized Mission 1
+  reliability shape, use its checked-in inspection/preparation pipeline directly.
+  For generic shapes, start with `jq 'keys' <file>` and obtain an exact event
+  count from the discovered event container. Never manually count an inline list.
 
 ### 3. Generate planner files
 
-- For Mission 1 MiniZinc, read `creating-minizinc-problem-files`, pass the
+- For Mission 1 MiniZinc, apply the supplied `creating-minizinc-problem-files`, pass the
   returned current environment and reliability-snapshot paths directly to its
   checked-in helpers, and use the code-owned candidate/DAG generator for both
   the advisory oracle and DZN. Use its compact DZN inspector; do not author an
   inspection script or read the generated DZN into model context. Never copy or transcribe the belief document.
+  Call `build_mission1_revision` immediately after the planning intent is
+  accepted. It performs generation, static checking, planner execution,
+  Statechart generation, and Statechart validation with those checked-in helpers.
+  On its accepted receipt, return `execution_ready` in the next response.
   For other MiniZinc models, use generic event materialization when required.
-- For Fast Downward, read `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
+- For Fast Downward, apply the supplied `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
 - For planner files not produced by a checked-in helper, create an absent file
   once with `write_file`. To change that path later,
   call `read_file` on the exact path, wait for its result, then call `edit_file`;
@@ -76,7 +83,7 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
   data/problem sandbox path, and reflection. These are two scalar string
   arguments, not an array or a string containing an array.
 - MiniZinc submission runs only MiniZinc instance checking. Fast Downward submission runs only VAL domain/problem checking.
-- On failure, preserve the todo rollback above, repair the same paths using the exact stdout/stderr, and resubmit. Static acceptance completes this stage.
+- On failure, repair the same paths using the exact stdout/stderr and resubmit. Static acceptance completes this stage.
 
 ### 5. Execute
 
@@ -84,11 +91,11 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
   `model_path` and `data_path` values.
 - MiniZinc returns its successful solver-native output. Fast Downward returns the exact `sas_plan` only after VAL accepts that domain/problem/plan set.
 - The returned planner-native plan and artifact reference are planning evidence; no normalized maneuver schema is introduced.
-- On failure, follow the tool's todo rollback instruction and repair the same planner files. A terminal failure returns `planner_rejected`.
+- On failure, repair the same planner files. A terminal failure returns `planner_rejected`.
 
 ### 6–7. Generate, validate, and repair the Statechart
 
-- Read `creating-statechart-files`.
+- Apply the supplied `creating-statechart-files` guidance directly.
 - For Mission 1, pass the exact planner-native artifact and returned Statechart
   workspace paths to the checked-in preparation and inspection helpers. For
   other planner shapes, inspect the artifact, read the few-shot generator, then
@@ -101,8 +108,8 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 ### 8. Return accepted execution artifacts
 
 - Context Coordination, not Hyper, activates the accepted Statechart and builds
-  agent invocations. After Statechart acceptance, mark the final todo completed
-  and return `execution_ready` with the accepted artifacts. Do not invoke
+  agent invocations. After Statechart acceptance, return `execution_ready` with
+  the accepted artifacts. Do not invoke
   Maneuver Control directly.
 
 ## Statechart discipline

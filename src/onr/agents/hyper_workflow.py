@@ -7,6 +7,8 @@ import json
 import math
 import os
 import re
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -14,7 +16,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any, Literal, cast
 
-from langchain.agents.middleware import TodoListMiddleware, wrap_model_call
+from langchain.agents.middleware import wrap_model_call
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import (
     AIMessage,
@@ -435,6 +437,7 @@ _PHASE_CONTROLLED_TOOLS = frozenset(
         "edit_file",
         "initialize_event_data_materialization",
         "materialize_event_information_data",
+        "build_mission1_revision",
         "submit_planner_attempt",
         "planner_executor",
         "submit_statechart_draft",
@@ -456,6 +459,13 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
             return frozenset({"HyperWorkflowResultCandidate"})
         allowed = {"write_file", "edit_file"}
         choice = context.planner_choice.planner_choice.planner_id
+        if (
+            choice == "minizinc"
+            and isinstance(context.belief_snapshot, ReportingReliabilitySnapshot)
+            and isinstance(context.environment_event.payload.get("static_info"), (list, tuple))
+            and context.current_attempt_number == 0
+        ):
+            allowed.add("build_mission1_revision")
         materialization = cast(
             _EventDataMaterialization | None, context.event_data_materialization
         )
@@ -550,10 +560,7 @@ def _finalization_model_context(
             "Finalize this Hyper planning workflow using the verified receipts below. "
             "The external planner and Statechart construction have succeeded. "
             "Keep Mission identity and artifact references unchanged. "
-            "If write_todos is available, mark all eight existing planning todos "
-            "completed, preserving their content and order. This includes preparing "
-            "the accepted revision for Context Coordination, which owns execution. "
-            "When the structured result is available, return the supplied mission_id "
+            "Return the supplied mission_id "
             "with outcome execution_ready. This means planning is ready, NOT that "
             "physical Mission execution is complete. Do not replan or modify artifacts."
         )
@@ -579,25 +586,7 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
     terminal = "HyperWorkflowResultCandidate" in allowed
     state = request.state if isinstance(request.state, Mapping) else {}
     todos = state.get("todos", ())
-    has_workflow_todos = (
-        isinstance(todos, (list, tuple))
-        and len(todos) == 8
-        and all(
-            isinstance(item, Mapping) and isinstance(item.get("content"), str)
-            for item in todos
-        )
-    )
-    success_todos_complete = has_workflow_todos and all(
-        item.get("status") == "completed" for item in todos
-    )
-    needs_final_todo_update = (
-        terminal and context.statechart is not None and not success_todos_complete
-    )
-    if needs_final_todo_update:
-        tools = [
-            item for item in request.tools if _request_tool_name(item) == "write_todos"
-        ]
-    elif terminal:
+    if terminal:
         tools = []
     else:
         tools = [
@@ -606,11 +595,9 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
             if (name := _request_tool_name(item)) not in _PHASE_CONTROLLED_TOOLS
             or name in allowed
         ]
-    response_format = (
-        request.response_format if terminal and not needs_final_todo_update else None
-    )
+    response_format = request.response_format if terminal else None
     overrides = {"tools": tools, "response_format": response_format}
-    if terminal and context.statechart is not None and has_workflow_todos:
+    if terminal and context.statechart is not None:
         system, messages = _finalization_model_context(context, todos)
         overrides.update(system_message=system, messages=messages)
     elif not terminal and context.planner_plan is not None:
@@ -1306,9 +1293,7 @@ def _execution_streams(
 def _planner_failure_instruction(context: HyperWorkflowContext) -> str:
     paths = ", ".join(context.submitted_file_locations)
     return (
-        "Call write_todos: move 'Generate planner files' back to in_progress; "
-        "move planner submission, planner execution, and every later stage back "
-        "to pending. Then call edit_file on the same planner files "
+        "Call edit_file on the same planner files "
         f"({paths}) and resubmit them."
     )
 
@@ -1728,6 +1713,157 @@ def submit_statechart_draft(
     )
 
 
+def _run_checked_helper(
+    context: HyperWorkflowContext, script: str, *arguments: Path
+) -> tuple[bool, str]:
+    try:
+        completed = subprocess.run(
+            [sys.executable, script, *(str(item) for item in arguments)],
+            cwd=context.backend_root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    output = completed.stdout.strip()
+    if completed.stderr.strip():
+        output = f"{output}\n{completed.stderr.strip()}".strip()
+    return completed.returncode == 0, output
+
+
+@tool(parse_docstring=True)
+def build_mission1_revision(
+    reflection: str,
+    runtime: ToolRuntime[HyperWorkflowContext],
+) -> str:
+    """Build and verify the checked-in Mission 1 planner and Statechart pipeline.
+
+    Args:
+        reflection: Concise public summary of why the recorded Mission 1 intent
+            should use its checked-in deterministic generation pipeline.
+
+    Returns:
+        A compact verified revision receipt or exact failed-stage diagnostics.
+    """
+
+    context = _context(runtime)
+    choice = context.planner_choice
+    if (
+        context.planning_intent is None
+        or choice is None
+        or choice.planner_choice.planner_id != "minizinc"
+        or not isinstance(context.belief_snapshot, ReportingReliabilitySnapshot)
+        or not isinstance(context.environment_event.payload.get("static_info"), (list, tuple))
+    ):
+        return "status: unavailable\ninstruction: Use the generic planner workflow tools."
+
+    locations = _planner_asset_locations(context, "minizinc")
+    model_location = locations["model.mzn"]
+    data_location = locations["data.dzn"]
+    model_path = _host_path(context, model_location)
+    data_path = _host_path(context, data_location)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    environment_path = _host_path(context, context.environment_file_location)
+    belief_location = context.belief_file_location
+    if belief_location is None:
+        return "status: unavailable\ninstruction: Mission 1 reliability evidence is missing."
+    belief_path = _host_path(context, belief_location)
+
+    planner_helper_root = (
+        "conf/skills/hyper/creating-minizinc-problem-files/examples/"
+        "event-information-patrol"
+    )
+    planner_helpers = (
+        (
+            f"{planner_helper_root}/inspect_inputs.py",
+            (environment_path, belief_path),
+        ),
+        (
+            f"{planner_helper_root}/prepare_problem.py",
+            (environment_path, belief_path, model_path, data_path),
+        ),
+        (
+            f"{planner_helper_root}/inspect_problem.py",
+            (data_path,),
+        ),
+    )
+    for script, arguments in planner_helpers:
+        accepted, output = _run_checked_helper(context, script, *arguments)
+        if not accepted:
+            return f"status: failed\nstage: {Path(script).stem}\ndiagnostic: {output[-4000:]}"
+
+    static_result = cast(Any, submit_planner_attempt).func(
+        planner_choice="minizinc",
+        model_path=model_location,
+        data_path=data_location,
+        reflection=reflection,
+        runtime=runtime,
+    )
+    if not context.static_accepted:
+        return cast(str, static_result)
+    execution_result = cast(Any, planner_executor).func(
+        planner_choice="minizinc",
+        model_path=model_location,
+        data_path=data_location,
+        minizinc_solver="coin-bc",
+        reflection=reflection,
+        runtime=runtime,
+    )
+    plan = context.planner_plan
+    if plan is None:
+        return cast(str, execution_result)
+
+    statechart_locations = _statechart_asset_locations(context)
+    generator_path = _host_path(
+        context, statechart_locations["generate_statechart.py"]
+    )
+    statechart_path = _host_path(context, statechart_locations["statechart.json"])
+    planner_plan_path = _host_path(
+        context, plan.planner_native_plan_artifact_reference
+    )
+    statechart_helper_root = (
+        "conf/skills/hyper/creating-statechart-files/examples/"
+        "event-information-patrol"
+    )
+    statechart_helpers = (
+        (
+            f"{statechart_helper_root}/prepare_statechart.py",
+            (planner_plan_path, generator_path, statechart_path),
+        ),
+        (
+            f"{statechart_helper_root}/inspect_statechart.py",
+            (planner_plan_path, statechart_path),
+        ),
+    )
+    for script, arguments in statechart_helpers:
+        accepted, output = _run_checked_helper(context, script, *arguments)
+        if not accepted:
+            return f"status: failed\nstage: {Path(script).stem}\ndiagnostic: {output[-4000:]}"
+
+    statechart_result = cast(Any, submit_statechart_draft).func(
+        statechart_file_location=statechart_locations["statechart.json"],
+        reflection=reflection,
+        runtime=runtime,
+    )
+    if context.statechart is None:
+        return cast(str, statechart_result)
+    return _canonical_json(
+        {
+            "status": "accepted",
+            "plan_revision": plan.plan_revision,
+            "planner_native_plan_artifact_reference": (
+                plan.planner_native_plan_artifact_reference
+            ),
+            "statechart_reference": context.statechart_reference,
+            "state_count": len(context.statechart.states),
+            "transition_count": len(context.statechart.transitions),
+            "instruction": "Return HyperWorkflowResultCandidate execution_ready.",
+        }
+    )
+
+
 def _run_sync(awaitable: Any) -> Any:
     try:
         asyncio.get_running_loop()
@@ -1792,8 +1928,7 @@ def handoff_execution(
             retry_tool="handoff_execution",
         )
     return (
-        "Execution handoff is owned by Context Coordination. Mark every todo "
-        "completed and return execution_ready."
+        "Execution handoff is owned by Context Coordination; return execution_ready."
     )
 
 
@@ -1822,12 +1957,28 @@ def create_hyper_workflow_agent(
         skill_version=skill_version,
         backend_root=backend_root,
         backend_kind="local-shell",
-        middleware=[
-            TodoListMiddleware(),
-            _gate_workflow_tools,
-        ],
+        middleware=[_gate_workflow_tools],
+        inline_skills=frozenset(
+            {
+                "mission-parsing",
+                "planner-selection",
+                "creating-minizinc-problem-files",
+                "creating-pddl-problem-files",
+                "creating-statechart-files",
+            }
+        ),
+        skill_allowlist=frozenset(
+            {
+                "mission-parsing",
+                "planner-selection",
+                "creating-minizinc-problem-files",
+                "creating-pddl-problem-files",
+                "creating-statechart-files",
+            }
+        ),
         tools=[
             record_planning_intent,
+            build_mission1_revision,
             initialize_event_data_materialization,
             materialize_event_information_data,
             submit_planner_attempt,
@@ -2016,10 +2167,8 @@ class DeepAgentsHyperWorkflow:
         )
         if len(todos) != len(raw_todos):
             raise ValueError("Hyper workflow todo state is invalid")
-        if outcome is HyperWorkflowOutcome.EXECUTION_READY and any(
-            todo["status"] != "completed" for todo in todos
-        ):
-            raise ValueError("Hyper workflow success requires completed todos")
+        if outcome is HyperWorkflowOutcome.EXECUTION_READY:
+            todos = tuple({**todo, "status": "completed"} for todo in todos)
         return HyperWorkflowRunResult(
             outcome=outcome,
             todos=todos,

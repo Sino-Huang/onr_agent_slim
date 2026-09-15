@@ -123,7 +123,7 @@ class FileTransport:
             return wire
         stream = self.root / "topics" / _part(topic) / "missions" / _part(wire.mission_id)
         stream.mkdir(parents=True, exist_ok=True)
-        for path in stream.glob("*.json"):
+        for path in stream.glob(f"{wire.sequence:020d}-*.json"):
             raw = _read_json(path, {})
             if isinstance(raw, dict) and raw.get("sequence") == wire.sequence:
                 if raw != wire.to_dict():
@@ -287,8 +287,8 @@ class FileTransport:
         self, topic: str, mission_id: str, *, event_kind: str | None = None
     ) -> TransportEvent | None:
         stream = self.root / "topics" / _part(topic) / "missions" / _part(mission_id)
-        candidates: list[TransportEvent] = []
-        for path in stream.glob("*.json"):
+        # Stream filenames carry the immutable sequence assigned at publication.
+        for path in sorted(stream.glob("*.json"), reverse=True):
             value = _read_json(path, None)
             if not isinstance(value, dict):
                 continue
@@ -297,8 +297,8 @@ class FileTransport:
             except ValueError:
                 continue
             if event_kind is None or event.event_kind == event_kind:
-                candidates.append(event)
-        return max(candidates, key=lambda event: (event.sequence, event.event_id), default=None)
+                return event
+        return None
 
     def get_dead_letters(self, subscription: Subscription) -> tuple[dict[str, object], ...]:
         state = self.root / "subscriptions" / _part(subscription.service_id) / _part(subscription.mission_id) / _part(subscription.topic) / "dead-letter"
@@ -412,7 +412,10 @@ class FileConsumer:
     def _next_candidate(self, cursor: dict[str, int], processed: set[str]) -> tuple[object, str, int, str] | None:
         candidates: list[tuple[int, str, object, str]] = []
         event_dir = self._transport.root / "topics" / _part(self.subscription.topic) / "missions" / _part(self.subscription.mission_id)
+        event_limit = cursor.get("event", cursor.get("sequence", -1))
         for path in event_dir.glob("*.json"):
+            if int(path.name.split("-", 1)[0]) <= event_limit:
+                continue
             value = _read_json(path, None)
             if isinstance(value, dict):
                 try:
@@ -422,6 +425,8 @@ class FileConsumer:
                 candidates.append((event.sequence, event.event_id, event, "event"))
         command_dir = self._find_command_dir()
         for path in command_dir.glob("*.json") if command_dir.exists() else ():
+            if int(path.name.split("-", 1)[0]) <= cursor.get("command", -1):
+                continue
             value = _read_json(path, None)
             if not isinstance(value, dict) or value.get("kind") not in {"command", "outcome"}:
                 continue

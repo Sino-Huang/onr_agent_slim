@@ -12,6 +12,7 @@ dependencies = [
     "fastapi",
     "langchain",
     "langchain-openai",
+    "numpy>=1.26",
     "python-statemachine",
     "python-socketio>=5.12,<6",
     "PyYAML>=6.0.2",

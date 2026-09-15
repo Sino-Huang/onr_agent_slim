@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, cast
 
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import wrap_model_call
+from langchain.tools import ToolRuntime
 from langchain_core.messages import HumanMessage
 
 from onr.agents.hyper_agent import _create_deep_agent
 from onr.agents.maneuver_tools import (
     MANEUVER_OPERATIONAL_TOOLS,
     ManeuverToolContext,
+    _ingest_pending_perceptions,
     _run,
+    communicate,
+    navigate,
+    pursue,
+    set_transition_target,
+    transition_fsm,
 )
 from onr.agents.structured_output import (
     StructuralIssue,
@@ -60,6 +67,10 @@ _NON_PHYSICAL_CHOICES_EXPECTED: Final = (
     "one of "
     + ", ".join(f'"{value}"' for value in _NON_PHYSICAL_CHOICES)
     + ", or null"
+)
+_MANEUVER_MODEL_TOOL_NAMES: Final = frozenset(
+    {tool.name for tool in MANEUVER_OPERATIONAL_TOOLS}
+    | {"ManeuverHeartbeatResponse"}
 )
 
 
@@ -134,19 +145,50 @@ MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
 _MANEUVER_HEARTBEAT_RESPONSE_SCHEMA: dict[str, Any] = {
     "title": "ManeuverHeartbeatResponse",
     "description": (
-        "Complete this heartbeat with its concise public summary after assessing "
-        "the evidence and finishing any chosen todos. Short no-effect heartbeats "
-        "can call this directly without creating todos. Call this instead of "
-        "returning prose. This completion "
-        "records no physical, FSM, belief, or communication effect."
+        "Complete this heartbeat only after receiving results for every chosen "
+        "operational effect. First call the required physical, FSM, ingestion, or "
+        "communication tool and inspect its result; then call this completion "
+        "tool. A no-effect heartbeat may complete directly after assessment. "
+        "This completion records only a summary and cannot submit an action."
     ),
     "type": "object",
     "properties": {
-        "summary": {"type": "string", "minLength": 1},
+        "summary": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "Concise public summary grounded in actual tool results. Describe "
+                "a submitted action only when its operational tool returned a "
+                "submission result in this heartbeat."
+            ),
+        },
     },
     "required": ["summary"],
     "additionalProperties": False,
 }
+
+
+def _request_tool_name(value: object) -> str | None:
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    if isinstance(value, Mapping):
+        function = value.get("function")
+        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+            return cast(str, function["name"])
+    return None
+
+
+@wrap_model_call
+def _gate_maneuver_scaffolding(request: Any, handler: Callable[[Any], Any]) -> Any:
+    """Keep DeepAgents memory internals while hiding unused workflow tools."""
+
+    tools = [
+        item
+        for item in request.tools
+        if _request_tool_name(item) in _MANEUVER_MODEL_TOOL_NAMES
+    ]
+    return handler(request.override(tools=tools))
 
 
 def create_maneuver_control_agent(
@@ -173,7 +215,15 @@ def create_maneuver_control_agent(
         backend_root=backend_root,
         backend_kind="filesystem",
         tools=list(MANEUVER_OPERATIONAL_TOOLS),
-        middleware=[TodoListMiddleware()],
+        middleware=[_gate_maneuver_scaffolding],
+        inline_skills=frozenset(
+            {
+                "decision-cycle",
+                "physical-maneuver-selection",
+                "hyper-coordination",
+            }
+        ),
+        filesystem_tools=["read_file"],
         context_schema=ManeuverToolContext,
     )
 
@@ -251,6 +301,349 @@ def _derived_transition_facts(
     }
 
 
+def _derived_pursuit_facts(
+    invocation: ManeuverInvocation,
+) -> dict[str, object] | None:
+    current = invocation.fsm_context.current_state_context
+    target = current.get("target_entity_id")
+    if current.get("surveillance_mode") != "pursue_ship" or target is None:
+        return None
+
+    def seconds(value: object) -> float | None:
+        if isinstance(value, Mapping):
+            value = value.get("seconds")
+        return float(value) if type(value) in (int, float) else None
+
+    def plain(value: object) -> object:
+        if isinstance(value, Mapping):
+            return {str(key): plain(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [plain(item) for item in value]
+        return value
+
+    environment = invocation.environment_data
+    lifecycle = environment.get("maneuver_lifecycle")
+    world = environment.get("world_model_info")
+    lifecycle = lifecycle if isinstance(lifecycle, Mapping) else {}
+    world = world if isinstance(world, Mapping) else {}
+    parameters = lifecycle.get("parameters")
+    parameters = parameters if isinstance(parameters, Mapping) else {}
+    matching_pursuit = (
+        lifecycle.get("action") == "pursue"
+        and lifecycle.get("lifecycle") == "active"
+        and str(parameters.get("entity_id")) == str(target)
+    )
+    visible_ids = world.get("visible_ship_ids")
+    visible_ids = visible_ids if isinstance(visible_ids, (list, tuple)) else ()
+    facts: dict[str, object] = {
+        "target_entity_id": target,
+        "matching_active_pursuit": matching_pursuit,
+        "active_acquisition_navigation": (
+            lifecycle.get("action") == "navigate"
+            and lifecycle.get("lifecycle") == "active"
+        ),
+        "target_visible": any(str(item) == str(target) for item in visible_ids),
+        "pursuit_phase": lifecycle.get("phase"),
+    }
+    now = seconds(environment.get("mission_time_seconds"))
+    attempt = seconds(lifecycle.get("start_time")) if matching_pursuit else None
+    if now is not None:
+        facts["mission_time_seconds"] = now
+    if attempt is not None:
+        facts["attempt_start_seconds"] = attempt
+        bounds: list[float] = []
+        window = current.get("observation_window")
+        window = window if isinstance(window, Mapping) else {}
+        observation_start = seconds(window.get("start"))
+        if observation_start is not None and observation_start > attempt:
+            facts["first_required_observation_seconds"] = observation_start
+            bounds.append(observation_start)
+        interval = seconds(world.get("gps_interval_seconds"))
+        next_gps = seconds(world.get("next_gps_update_time_s"))
+        if interval and next_gps is not None:
+            cycles = max(0, math.ceil((next_gps - attempt) / interval) - 1)
+            first_gps = next_gps - cycles * interval
+            if first_gps > attempt:
+                facts["first_gps_after_attempt_seconds"] = first_gps
+                bounds.append(first_gps)
+        if not bounds:
+            duration = seconds(window.get("duration"))
+            if observation_start is not None and duration is not None:
+                bounds.append(observation_start + duration)
+        if bounds:
+            bound = min(bounds)
+            facts["acquisition_bound_seconds"] = bound
+            if now is not None:
+                facts["seconds_since_acquisition_bound"] = now - bound
+
+    fixes = world.get("public_position_fixes")
+    fixes = fixes if isinstance(fixes, (list, tuple)) else ()
+    target_fixes = [
+        fix
+        for fix in fixes
+        if isinstance(fix, Mapping)
+        and str(fix.get("entity_id")) == str(target)
+        and seconds(fix.get("sampled_at_s")) is not None
+    ]
+    if target_fixes:
+        newest = max(target_fixes, key=lambda fix: seconds(fix["sampled_at_s"]))
+        sampled_at = seconds(newest["sampled_at_s"])
+        facts["newest_target_fix"] = plain(newest)
+        facts["newest_fix_after_attempt"] = (
+            sampled_at > attempt
+            if sampled_at is not None and attempt is not None
+            else None
+        )
+    return facts
+
+
+def _routine_future_tracking_summary(
+    invocation: ManeuverInvocation,
+    *,
+    event_batch_resolved: bool,
+) -> str | None:
+    if invocation.fsm_context.transition_intent is None or invocation.hyper_outcomes:
+        return None
+    if (
+        any(
+            item.observation_kind == "event"
+            for item in invocation.pending_perceptions
+        )
+        and not event_batch_resolved
+    ):
+        return None
+    transition = _derived_transition_facts(invocation)
+    pursuit = _derived_pursuit_facts(invocation)
+    if transition is None or pursuit is None:
+        return None
+    future = [
+        float(transition[key])
+        for key in ("seconds_until_not_before", "seconds_until_window_end")
+        if type(transition.get(key)) in (int, float) and transition[key] > 1e-9
+    ]
+    if not future:
+        return None
+    if not (
+        pursuit.get("matching_active_pursuit") is True
+        and (
+            pursuit.get("pursuit_phase") == "pursuit"
+            or pursuit.get("target_visible") is True
+            or (
+                pursuit.get("pursuit_phase") == "search"
+                and type(pursuit.get("seconds_since_acquisition_bound"))
+                in (int, float)
+                and pursuit["seconds_since_acquisition_bound"] < 0
+            )
+        )
+    ):
+        return None
+    target = pursuit["target_entity_id"]
+    remaining = max(future)
+    ingestion = (
+        " The pending Event batch was recorded before assessment."
+        if event_batch_resolved
+        and any(
+            item.observation_kind == "event"
+            for item in invocation.pending_perceptions
+        )
+        else ""
+    )
+    if pursuit.get("pursuit_phase") == "pursuit":
+        pursuit_status = "remains active in tracking phase"
+    elif pursuit.get("target_visible") is True:
+        pursuit_status = "remains active with the target currently visible"
+    else:
+        pursuit_status = "remains active within its acquisition search bound"
+    return (
+        f"Retained the current Transition Intent with {remaining:g} seconds of "
+        f"exact time readiness remaining. Target {target}'s matching pursuit "
+        f"{pursuit_status}; no physical command was submitted."
+        f"{ingestion}"
+    )
+
+
+def _direct_tool_runtime(
+    context: ManeuverToolContext, tool_call_id: str
+) -> ToolRuntime[ManeuverToolContext]:
+    return ToolRuntime(
+        state={"messages": []},
+        context=context,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id=tool_call_id,
+        store=None,
+    )
+
+
+def _future_transition_gate(invocation: ManeuverInvocation) -> bool:
+    facts = _derived_transition_facts(invocation)
+    if facts is None:
+        return False
+    return any(
+        type(facts.get(key)) in (int, float) and facts[key] > 1e-9
+        for key in ("seconds_until_not_before", "seconds_until_window_end")
+    )
+
+
+def _model_visible_invocation(invocation: ManeuverInvocation) -> dict[str, object]:
+    """Bound historical context while retaining current and actionable evidence."""
+
+    payload = invocation.to_dict()
+    perceptions = cast(list[dict[str, object]], payload["pending_perceptions"])
+    entity_rows = [
+        (index, item)
+        for index, item in enumerate(perceptions)
+        if item.get("observation_kind") == "entity"
+    ]
+    if entity_rows:
+        latest: dict[object, tuple[int, dict[str, object]]] = {}
+        for index, item in entity_rows:
+            entity_id = item["entity_id"]
+            previous = latest.get(entity_id)
+            if previous is None or (
+                float(cast(Any, item["observed_time"])), index
+            ) > (
+                float(cast(Any, previous[1]["observed_time"])),
+                previous[0],
+            ):
+                latest[entity_id] = (index, item)
+        payload["pending_perceptions"] = [
+            item
+            for item in perceptions
+            if item.get("observation_kind") != "entity"
+        ]
+        payload["pending_entity_perceptions"] = {
+            "observation_count": len(entity_rows),
+            "latest_by_entity": [
+                item
+                for _, item in sorted(
+                    latest.values(),
+                    key=lambda pair: json.dumps(
+                        pair[1]["entity_id"], sort_keys=True
+                    ),
+                )
+            ],
+        }
+    _project_model_world_history(payload)
+    return payload
+
+
+def _project_model_world_history(payload: dict[str, object]) -> None:
+    pending = payload.get("pending_perceptions")
+    if isinstance(pending, list):
+        payload["pending_event_perception_count"] = sum(
+            isinstance(item, Mapping) and item.get("observation_kind") == "event"
+            for item in pending
+        )
+    environment = payload.get("environment_data")
+    fsm_context = payload.get("fsm_context")
+    if not isinstance(environment, dict) or not isinstance(fsm_context, Mapping):
+        return
+    info = environment.get("world_model_info")
+    if not isinstance(info, dict):
+        return
+
+    report_ids: set[str] = set()
+    entity_ids: set[str] = set()
+
+    def collect(value: object, *, include_entities: bool = True) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key in {"report_id", "related_report_id"} and isinstance(
+                    item, str
+                ):
+                    report_ids.add(item)
+                elif key == "report_ids" and isinstance(item, (list, tuple)):
+                    report_ids.update(
+                        candidate for candidate in item if isinstance(candidate, str)
+                    )
+                elif (
+                    include_entities
+                    and key in {"entity_id", "target_entity_id"}
+                    and isinstance(item, (str, int))
+                    and not isinstance(item, bool)
+                ):
+                    entity_ids.add(str(item))
+                collect(item, include_entities=include_entities)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item, include_entities=include_entities)
+
+    collect(fsm_context)
+    collect(environment.get("maneuver_lifecycle"))
+    collect(payload.get("pending_perceptions"), include_entities=False)
+    if not report_ids and not entity_ids:
+        return
+
+    counts: dict[str, dict[str, int]] = {}
+
+    def record(name: str, before: int, after: int) -> None:
+        counts[name] = {"available": before, "shown": after}
+
+    checks = info.get("event_report_checks")
+    if isinstance(checks, list):
+        selected = [
+            row
+            for row in checks
+            if isinstance(row, Mapping)
+            and (
+                row.get("report_id") in report_ids
+                or str(row.get("entity_id")) in entity_ids
+            )
+        ]
+        info["event_report_checks"] = selected
+        record("event_report_checks", len(checks), len(selected))
+
+    reports = info.get("ship_event_reports")
+    if isinstance(reports, dict):
+        selected_reports: dict[str, object] = {}
+        available = 0
+        shown = 0
+        for entity_id, rows in reports.items():
+            if not isinstance(rows, list):
+                continue
+            available += len(rows)
+            selected_rows = [
+                row
+                for row in rows
+                if isinstance(row, Mapping) and row.get("report_id") in report_ids
+            ]
+            if not report_ids and str(entity_id) in entity_ids:
+                selected_rows = rows
+            if selected_rows:
+                selected_reports[str(entity_id)] = selected_rows
+                shown += len(selected_rows)
+        info["ship_event_reports"] = selected_reports
+        record("ship_event_reports", available, shown)
+
+    fixes = info.get("public_position_fixes")
+    if isinstance(fixes, list):
+        selected_fixes = [
+            row
+            for row in fixes
+            if isinstance(row, Mapping)
+            and str(row.get("entity_id")) in entity_ids
+        ]
+        info["public_position_fixes"] = selected_fixes
+        record("public_position_fixes", len(fixes), len(selected_fixes))
+
+    issues = info.get("detected_issues")
+    if isinstance(issues, dict):
+        selected_issues = {
+            str(entity_id): rows
+            for entity_id, rows in issues.items()
+            if str(entity_id) in entity_ids
+        }
+        info["detected_issues"] = selected_issues
+        record("detected_issue_entities", len(issues), len(selected_issues))
+
+    if counts:
+        info["history_projection"] = {
+            "scope": "current_fsm_and_pending_events",
+            **counts,
+        }
+
+
 class DeepAgentsHeartbeatProvider:
     """Invoke a Maneuver Deep Agent and identify its heartbeat completion."""
 
@@ -263,6 +656,8 @@ class DeepAgentsHeartbeatProvider:
             raise ValueError("Maneuver completion retry budget must be non-negative")
         self.agent = agent
         self.max_retries = max_retries
+        self._notified_missed_acquisitions: set[tuple[object, ...]] = set()
+        self._submitted_recovery_fixes: set[tuple[object, ...]] = set()
 
     def heartbeat(
         self,
@@ -278,11 +673,97 @@ class DeepAgentsHeartbeatProvider:
         invoke = cast(Any, self.agent).invoke
         callback = getattr(self.agent, "_onr_debug_callback", None)
         config = {"callbacks": [callback]} if callback is not None else None
+        pre_ingestion: dict[str, object] | None = None
+        if (
+            any(
+                item.observation_kind == "event"
+                for item in invocation.pending_perceptions
+            )
+            and getattr(tool_context.belief_service, "belief_kind", None)
+            == "reporting_reliability"
+        ):
+            pre_ingestion = cast(
+                dict[str, object],
+                json.loads(
+                    _ingest_pending_perceptions(
+                        tool_context,
+                        "Runtime ingested the complete pending Event batch before "
+                        "Maneuver assessment.",
+                    )
+                ),
+            )
+        entry_summary = self._routine_ready_entry(invocation, tool_context)
+        if entry_summary is not None:
+            return ManeuverHeartbeatCompletion(
+                mission_id=invocation.mission_id,
+                request_id=invocation.request_id,
+                summary=entry_summary,
+            )
+        handoff_summary = self._routine_pursuit_handoff(invocation, tool_context)
+        if handoff_summary is not None:
+            return ManeuverHeartbeatCompletion(
+                mission_id=invocation.mission_id,
+                request_id=invocation.request_id,
+                summary=handoff_summary,
+            )
+        fixed_view_summary = self._routine_future_fixed_view(
+            invocation,
+            event_batch_resolved=pre_ingestion is not None,
+        )
+        if fixed_view_summary is not None:
+            return ManeuverHeartbeatCompletion(
+                mission_id=invocation.mission_id,
+                request_id=invocation.request_id,
+                summary=fixed_view_summary,
+            )
+        routine_summary = _routine_future_tracking_summary(
+            invocation,
+            event_batch_resolved=pre_ingestion is not None,
+        )
+        if routine_summary is not None:
+            return ManeuverHeartbeatCompletion(
+                mission_id=invocation.mission_id,
+                request_id=invocation.request_id,
+                summary=routine_summary,
+            )
+        recovery_summary = self._routine_pursuit_recovery(
+            invocation,
+            tool_context,
+            event_batch_resolved=pre_ingestion is not None,
+        )
+        if recovery_summary is not None:
+            return ManeuverHeartbeatCompletion(
+                mission_id=invocation.mission_id,
+                request_id=invocation.request_id,
+                summary=recovery_summary,
+            )
+        payload = _model_visible_invocation(invocation)
+        if pre_ingestion is not None:
+            payload["pending_perceptions"] = [
+                item
+                for item in cast(list[dict[str, object]], payload["pending_perceptions"])
+                if item.get("observation_kind") != "event"
+            ]
+            payload["pending_event_perception_count"] = 0
+            payload["pre_ingested_event_perceptions"] = pre_ingestion
+        stable_prefix = (
+            "schema_version",
+            "mission_id",
+            "plan_revision",
+            "statechart_reference",
+            "available_recipients",
+            "planning_snapshot",
+            "fsm_context",
+            "environment_data",
+        )
+        ordered_payload = {
+            **{key: payload[key] for key in stable_prefix if key in payload},
+            **payload,
+        }
         messages = [
             HumanMessage(
                 content=json.dumps(
-                    invocation.to_dict(),
-                    sort_keys=True,
+                    ordered_payload,
                     separators=(",", ":"),
                     ensure_ascii=False,
                     allow_nan=False,
@@ -295,6 +776,19 @@ class DeepAgentsHeartbeatProvider:
                 HumanMessage(
                     content=json.dumps(
                         {"derived_transition_facts": facts},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    )
+                )
+            )
+        pursuit_facts = _derived_pursuit_facts(invocation)
+        if pursuit_facts is not None:
+            messages.append(
+                HumanMessage(
+                    content=json.dumps(
+                        {"derived_pursuit_facts": pursuit_facts},
                         sort_keys=True,
                         separators=(",", ":"),
                         ensure_ascii=False,
@@ -346,6 +840,389 @@ class DeepAgentsHeartbeatProvider:
             mission_id=invocation.mission_id,
             request_id=invocation.request_id,
             summary=summary,
+        )
+
+    def _routine_ready_entry(
+        self,
+        invocation: ManeuverInvocation,
+        tool_context: ManeuverToolContext,
+    ) -> str | None:
+        focused = invocation.fsm_context
+        if focused.transition_intent is not None or len(focused.transition_candidates) != 1:
+            return None
+        candidate = focused.transition_candidates[0]
+        readiness = candidate.condition.get("readiness")
+        readiness = readiness if isinstance(readiness, Mapping) else {}
+        threshold = readiness.get("mission_time_at_or_after")
+        if isinstance(threshold, Mapping):
+            threshold = threshold.get("seconds")
+        now = invocation.environment_data.get("mission_time_seconds")
+        if (
+            type(threshold) not in (int, float)
+            or type(now) not in (int, float)
+            or now + 1e-9 < threshold
+        ):
+            return None
+        runtime = _direct_tool_runtime(tool_context, "routine-ready-entry")
+        selection = json.loads(
+            cast(Any, set_transition_target).func(
+                target_state=candidate.target_state,
+                rationale="The sole exact entry transition is time-ready.",
+                runtime=runtime,
+            )
+        )
+        if selection.get("status") not in {"selected", "retained"}:
+            return None
+        transition = json.loads(
+            cast(Any, transition_fsm).func(
+                current_state=focused.current_state,
+                next_state=candidate.target_state,
+                assessment="satisfied",
+                evidence=(
+                    f"Mission time {float(now):g} meets the exact entry threshold "
+                    f"{float(threshold):g}."
+                ),
+                uncertainty="None; this entry condition is an exact Mission-time gate.",
+                runtime=runtime,
+            )
+        )
+        if transition.get("status") != "transitioned":
+            return None
+
+        live = _current_focused_fsm_context(tool_context)
+        if live.transition_candidates:
+            if len(live.transition_candidates) != 1:
+                raise RuntimeError("Mission 1 generated state has ambiguous next targets")
+            next_target = live.transition_candidates[0].target_state
+            next_selection = json.loads(
+                cast(Any, set_transition_target).func(
+                    target_state=next_target,
+                    rationale="Retain the sole planner-ordered next assignment.",
+                    runtime=runtime,
+                )
+            )
+            if next_selection.get("status") not in {"selected", "retained"}:
+                raise RuntimeError("Mission 1 next Transition Intent was rejected")
+
+        state = live.current_state_context
+        mode = state.get("surveillance_mode")
+        outcome = state.get("desired_outcome")
+        outcome = outcome if isinstance(outcome, Mapping) else {}
+        vehicle = invocation.environment_data.get("controlled_vehicle")
+        vehicle = vehicle if isinstance(vehicle, Mapping) else {}
+        vehicle_position = vehicle.get("position")
+        vehicle_position = (
+            vehicle_position if isinstance(vehicle_position, Mapping) else {}
+        )
+        altitude = vehicle_position.get("z")
+        candidate_id = state.get("candidate_id", candidate.target_state)
+        action_id = f"assignment-entry:{candidate_id}"
+        action: str | None = None
+        if mode == "fixed_view":
+            location = outcome.get("location")
+            deadline = outcome.get("arrival_deadline")
+            deadline = deadline.get("seconds") if isinstance(deadline, Mapping) else None
+            planner_item = state.get("planner_item")
+            parameters = (
+                planner_item.get("parameters")
+                if isinstance(planner_item, Mapping)
+                else {}
+            )
+            direction = (
+                parameters.get("arrival_direction")
+                if isinstance(parameters, Mapping)
+                else None
+            )
+            if not isinstance(location, Mapping):
+                raise RuntimeError("Mission 1 fixed-view entry has no location")
+            cast(Any, navigate).func(
+                maneuver_id=action_id,
+                x=location["x"],
+                y=location["y"],
+                z=altitude,
+                deadline_time=deadline,
+                arrival_direction=direction,
+                reflection="Entered the planner-selected fixed-view assignment.",
+                runtime=runtime,
+            )
+            action = "fixed-view navigation"
+        elif mode == "pursue_ship":
+            target = state.get("target_entity_id")
+            world = invocation.environment_data.get("world_model_info")
+            world = world if isinstance(world, Mapping) else {}
+            visible_ids = world.get("visible_ship_ids")
+            visible_ids = visible_ids if isinstance(visible_ids, (list, tuple)) else ()
+            visible = any(str(item) == str(target) for item in visible_ids)
+            rendezvous = outcome.get("acquisition_rendezvous")
+            rendezvous = rendezvous if isinstance(rendezvous, Mapping) else {}
+            location = rendezvous.get("location")
+            deadline = rendezvous.get("arrival_deadline")
+            deadline = deadline.get("seconds") if isinstance(deadline, Mapping) else None
+            arrived = False
+            if isinstance(location, Mapping):
+                coordinates = (
+                    vehicle_position.get("x"),
+                    vehicle_position.get("y"),
+                    location.get("x"),
+                    location.get("y"),
+                )
+                if all(type(item) in (int, float) for item in coordinates):
+                    arrived = math.dist(coordinates[:2], coordinates[2:]) <= 1e-6
+            if visible or arrived:
+                cast(Any, pursue).func(
+                    maneuver_id=action_id,
+                    entity_id=target,
+                    reflection="Entered the planner-selected pursuit assignment.",
+                    runtime=runtime,
+                )
+                action = "pursuit"
+            else:
+                if not isinstance(location, Mapping):
+                    raise RuntimeError("Mission 1 pursuit entry has no rendezvous")
+                cast(Any, navigate).func(
+                    maneuver_id=action_id,
+                    x=location["x"],
+                    y=location["y"],
+                    z=altitude,
+                    deadline_time=deadline,
+                    reflection="Entered pursuit acquisition via its rendezvous.",
+                    runtime=runtime,
+                )
+                action = "pursuit-acquisition navigation"
+        elif live.transition_candidates:
+            raise RuntimeError("Mission 1 assignment has no supported surveillance mode")
+
+        return (
+            f"Applied the sole time-ready entry transition to {candidate.target_state}"
+            + (f" and submitted {action}." if action is not None else ".")
+        )
+
+    def _routine_pursuit_handoff(
+        self,
+        invocation: ManeuverInvocation,
+        tool_context: ManeuverToolContext,
+    ) -> str | None:
+        if not _future_transition_gate(invocation):
+            return None
+        state = invocation.fsm_context.current_state_context
+        target = state.get("target_entity_id")
+        if state.get("surveillance_mode") != "pursue_ship" or target is None:
+            return None
+        lifecycle = invocation.environment_data.get("maneuver_lifecycle")
+        lifecycle = lifecycle if isinstance(lifecycle, Mapping) else {}
+        if lifecycle.get("action") != "navigate":
+            return None
+        world = invocation.environment_data.get("world_model_info")
+        world = world if isinstance(world, Mapping) else {}
+        visible_ids = world.get("visible_ship_ids")
+        visible_ids = visible_ids if isinstance(visible_ids, (list, tuple)) else ()
+        visible = any(str(item) == str(target) for item in visible_ids)
+        arrived = lifecycle.get("lifecycle") == "completed"
+        if not visible and not arrived:
+            return None
+        candidate_id = state.get("candidate_id", invocation.fsm_context.current_state)
+        result = json.loads(
+            cast(Any, pursue).func(
+                maneuver_id=f"assignment-pursuit:{candidate_id}",
+                entity_id=target,
+                reflection=(
+                    f"Target {target} is currently visible."
+                    if visible
+                    else f"Acquisition navigation for target {target} completed."
+                ),
+                runtime=_direct_tool_runtime(tool_context, "routine-pursuit-handoff"),
+            )
+        )
+        if result.get("status") not in {"queued", "already_queued"}:
+            return None
+        basis = "current sighting" if visible else "navigation arrival"
+        return f"Submitted pursuit of target {target} after {basis}."
+
+    @staticmethod
+    def _routine_future_fixed_view(
+        invocation: ManeuverInvocation,
+        *,
+        event_batch_resolved: bool,
+    ) -> str | None:
+        if invocation.hyper_outcomes or not _future_transition_gate(invocation):
+            return None
+        if (
+            any(
+                item.observation_kind == "event"
+                for item in invocation.pending_perceptions
+            )
+            and not event_batch_resolved
+        ):
+            return None
+        state = invocation.fsm_context.current_state_context
+        if state.get("surveillance_mode") != "fixed_view":
+            return None
+        outcome = state.get("desired_outcome")
+        outcome = outcome if isinstance(outcome, Mapping) else {}
+        location = outcome.get("location")
+        lifecycle = invocation.environment_data.get("maneuver_lifecycle")
+        lifecycle = lifecycle if isinstance(lifecycle, Mapping) else {}
+        parameters = lifecycle.get("parameters")
+        parameters = parameters if isinstance(parameters, Mapping) else {}
+        if (
+            not isinstance(location, Mapping)
+            or lifecycle.get("action") != "navigate"
+            or lifecycle.get("lifecycle") not in {"active", "completed"}
+            or parameters.get("x") != location.get("x")
+            or parameters.get("y") != location.get("y")
+        ):
+            return None
+        transition = _derived_transition_facts(invocation)
+        assert transition is not None
+        remaining = max(
+            float(transition[key])
+            for key in ("seconds_until_not_before", "seconds_until_window_end")
+            if type(transition.get(key)) in (int, float) and transition[key] > 1e-9
+        )
+        status = lifecycle["lifecycle"]
+        return (
+            f"Retained the planner-selected fixed viewpoint with navigation {status}; "
+            f"the exact transition gate remains {remaining:g} seconds in the future."
+        )
+
+    def _routine_pursuit_recovery(
+        self,
+        invocation: ManeuverInvocation,
+        tool_context: ManeuverToolContext,
+        *,
+        event_batch_resolved: bool,
+    ) -> str | None:
+        if not _future_transition_gate(invocation):
+            return None
+        if (
+            any(
+                item.observation_kind == "event"
+                for item in invocation.pending_perceptions
+            )
+            and not event_batch_resolved
+        ):
+            return None
+        facts = _derived_pursuit_facts(invocation)
+        if (
+            facts is None
+            or facts.get("matching_active_pursuit") is not True
+            or facts.get("pursuit_phase") != "search"
+            or facts.get("target_visible") is not False
+            or type(facts.get("seconds_since_acquisition_bound"))
+            not in (int, float)
+            or facts["seconds_since_acquisition_bound"] < 0
+        ):
+            return None
+        target = facts["target_entity_id"]
+        attempt = facts.get("attempt_start_seconds")
+        key = (
+            invocation.mission_id,
+            invocation.plan_revision,
+            invocation.fsm_context.state_entry_revision,
+            target,
+            attempt,
+        )
+        newest_fix = facts.get("newest_target_fix")
+        sampled_at = (
+            newest_fix.get("sampled_at_s")
+            if isinstance(newest_fix, Mapping)
+            else None
+        )
+        if facts.get("newest_fix_after_attempt") is True:
+            position = newest_fix.get("position") if isinstance(newest_fix, Mapping) else None
+            vehicle = invocation.environment_data.get("controlled_vehicle")
+            vehicle_position = (
+                vehicle.get("position") if isinstance(vehicle, Mapping) else None
+            )
+            if (
+                not isinstance(position, Mapping)
+                or type(position.get("x")) not in (int, float)
+                or type(position.get("y")) not in (int, float)
+                or not isinstance(vehicle_position, Mapping)
+                or type(vehicle_position.get("z")) not in (int, float)
+            ):
+                return None
+            recovery_key = (*key, sampled_at)
+            if recovery_key in self._submitted_recovery_fixes:
+                return (
+                    f"Retained recovery for target {target} using the already "
+                    f"submitted GPS fix sampled at {sampled_at}."
+                )
+            reflection = (
+                f"Target {target} remained unseen after its acquisition bound; "
+                f"recovering to the newer GPS fix sampled at {sampled_at}."
+            )
+            runtime = _direct_tool_runtime(tool_context, "routine-pursuit-recovery")
+            navigate_result = json.loads(
+                cast(Any, navigate).func(
+                    maneuver_id=f"pursuit-recovery:{target}:gps-{sampled_at}",
+                    x=position["x"],
+                    y=position["y"],
+                    z=vehicle_position["z"],
+                    reflection=reflection,
+                    runtime=runtime,
+                )
+            )
+            if navigate_result.get("status") not in {"queued", "already_queued"}:
+                return None
+            cast(Any, communicate).func(
+                recipient="hyper-agent",
+                kind="report",
+                message=(
+                    f"Target {target} remained unseen after the acquisition bound. "
+                    f"Submitted recovery navigation to the public GPS fix sampled "
+                    f"at {sampled_at}; the active assignment and target are unchanged."
+                ),
+                reflection=reflection,
+                runtime=_direct_tool_runtime(
+                    tool_context, "routine-pursuit-recovery-report"
+                ),
+            )
+            self._submitted_recovery_fixes.add(recovery_key)
+            return (
+                f"Submitted recovery navigation for target {target} to the GPS "
+                f"fix sampled at {sampled_at} and reported it to Hyper."
+            )
+
+        if facts.get("newest_fix_after_attempt") is not False:
+            return None
+        if (
+            facts.get("first_gps_after_attempt_seconds")
+            == facts.get("acquisition_bound_seconds")
+            and abs(float(facts["seconds_since_acquisition_bound"])) <= 1e-9
+        ):
+            return (
+                f"Retained target {target}'s active local search while the GPS fix "
+                "due at this exact acquisition boundary is published."
+            )
+        if invocation.hyper_outcomes:
+            self._notified_missed_acquisitions.add(key)
+        if key in self._notified_missed_acquisitions:
+            return (
+                f"Retained target {target}'s active local search after its missed "
+                "acquisition was already evaluated by Hyper; no newer GPS fix exists."
+            )
+        bound = facts.get("acquisition_bound_seconds")
+        reflection = (
+            f"Target {target} remained unseen when its acquisition bound {bound} "
+            "passed, with no newer GPS fix available."
+        )
+        cast(Any, communicate).func(
+            recipient="hyper-agent",
+            kind="replan",
+            message=(
+                f"Missed acquisition for target {target}: the active pursuit remained "
+                f"in search after bound {bound}, and no public GPS fix sampled after "
+                f"attempt start {attempt} exists. No replacement physical command "
+                "was issued; requesting Hyper evaluation."
+            ),
+            reflection=reflection,
+            runtime=_direct_tool_runtime(tool_context, "routine-missed-acquisition"),
+        )
+        self._notified_missed_acquisitions.add(key)
+        return (
+            f"Reported target {target}'s missed acquisition to Hyper and retained "
+            "the active local search because no newer GPS fix exists."
         )
 
 

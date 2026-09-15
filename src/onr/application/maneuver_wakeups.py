@@ -103,6 +103,11 @@ class ManeuverWakeups:
                 and lifecycle.get("lifecycle") == "active"
                 and _object(lifecycle.get("parameters")).get("entity_id") == target
             )
+            needs_recovery = (
+                active_target_pursuit
+                and lifecycle.get("phase") == "search"
+                and not visible
+            )
             if active_target_pursuit:
                 # Tracking/search already belongs to the running controller.
                 # Keep fresh visibility, but do not deliberate on every blink.
@@ -110,14 +115,15 @@ class ManeuverWakeups:
             else:
                 changed("target-visibility", visible)
             fixes = world.get("public_position_fixes", ())
-            changed(
-                "target-gps",
-                tuple(
-                    fix.get("sampled_at_s")
-                    for fix in fixes
-                    if isinstance(fix, Mapping) and fix.get("entity_id") == target
-                ),
+            target_gps = tuple(
+                fix.get("sampled_at_s")
+                for fix in fixes
+                if isinstance(fix, Mapping) and fix.get("entity_id") == target
             )
+            if active_target_pursuit and not needs_recovery:
+                self._signals["target-gps"] = target_gps
+            else:
+                changed("target-gps", target_gps)
             outcome = _object(current.get("desired_outcome"))
             rendezvous = _object(outcome.get("acquisition_rendezvous"))
             boundary("acquisition-arrival", rendezvous.get("arrival_deadline"))
@@ -127,7 +133,7 @@ class ManeuverWakeups:
             interval = _seconds(world.get("gps_interval_seconds"))
             next_gps = _seconds(world.get("next_gps_update_time_s"))
             if (
-                lifecycle.get("action") == "pursue"
+                needs_recovery
                 and attempt is not None
                 and interval
                 and next_gps is not None

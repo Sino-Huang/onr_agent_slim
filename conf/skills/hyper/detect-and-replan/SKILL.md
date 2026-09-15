@@ -61,6 +61,21 @@ the gate's score comparison before choosing a replacement. A periodic GPS fix
 describes the ship at its sample time; compare it with the public schedule at
 that time, not with a later rendezvous coordinate as though the ship were static.
 
+A missed pursuit-acquisition bound is a valid escalation, but it is not by
+itself evidence that replanning can improve the route. When the same target is
+already under active pursuit/local search and no newer usable target position
+or other route-changing evidence exists, choose `no_change` and preserve the
+search. A new solve would reuse the same stale rendezvous while consuming the
+remaining observation window. Choose `replan` only when fresh evidence can
+change the target, route, mode, or feasibility. Record either disposition as the
+correlated evaluation of the Maneuver request.
+
+A newer target fix may support Maneuver's bounded recovery navigation without a
+replacement plan. When that recovery is already active or submitted for the
+same target and the current assignment, mode, and remaining window stay
+feasible, choose `no_change`. Replan only when the new evidence requires
+planning authority to alter the assignment or its feasibility.
+
 An accepted replacement starts its new Statechart and may preempt the current
 assignment through Maneuver Control. Describe that tradeoff explicitly when
 requesting a replan. Claim that a pursuit is preserved only if the accepted

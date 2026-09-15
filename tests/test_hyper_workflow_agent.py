@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -486,7 +485,18 @@ def test_tool_interfaces_are_identical_and_planner_neutral(monkeypatch: Any) -> 
         module, "_create_deep_agent", lambda **kw: captured.update(kw) or object()
     )
     create_hyper_workflow_agent(model=object(), system_prompt="test", mission_id="m")
-    assert type(cast(list[Any], captured["middleware"])[0]) is TodoListMiddleware
+    assert captured["middleware"] == [_gate_workflow_tools]
+    expected_skills = frozenset(
+        {
+            "mission-parsing",
+            "planner-selection",
+            "creating-minizinc-problem-files",
+            "creating-pddl-problem-files",
+            "creating-statechart-files",
+        }
+    )
+    assert captured["inline_skills"] == expected_skills
+    assert captured["skill_allowlist"] == expected_skills
     expected = {"planner_choice", "model_path", "data_path", "reflection"}
     assert set(cast(Any, submit_planner_attempt).args) == expected
     assert set(cast(Any, planner_executor).args) == expected | {"minizinc_solver"}
@@ -533,7 +543,7 @@ def test_terminal_workflow_gate_exposes_only_structured_response(
     assert overridden["response_format"] is response_format
 
 
-def test_success_gate_requires_final_todo_update_before_structured_response(
+def test_success_gate_exposes_structured_response_without_todo_round_trip(
     tmp_path: Path,
 ) -> None:
     context = _accepted_context(tmp_path)
@@ -550,9 +560,9 @@ def test_success_gate_requires_final_todo_update_before_structured_response(
     update = cast(Any, _gate_workflow_tools).wrap_model_call(
         request, lambda value: value
     )
-    assert update["tools"] == [write_todos]
-    assert update["response_format"] is None
-    assert "messages" not in update  # keep full instructions to repair missing todos
+    assert update["tools"] == []
+    assert update["response_format"] is response_format
+    assert len(update["messages"]) == 1
 
     request.state = {
         "todos": [
@@ -616,8 +626,8 @@ def test_success_gate_compacts_only_model_view_and_preserves_verified_receipts(
     assert receipt["statechart_revision"] == context.statechart.statechart_revision
     assert receipt["todos"] == todos
     assert "old-inspection-output" not in result.messages[0].content
-    assert result.response_format == (response_format if completed else None)
-    assert result.tools == ([] if completed else request.tools)
+    assert result.response_format == response_format
+    assert result.tools == []
     assert request.messages is history and request.state is state
     assert state["messages"] is history and state["todos"] is todos
     assert Path(context.statechart_reference).is_file()
@@ -1349,7 +1359,7 @@ def test_fast_downward_success_requires_val_and_returns_exact_sas_plan(
     "outcome",
     [PlanningOutcome.ERROR, PlanningOutcome.TIMEOUT, PlanningOutcome.UNSOLVABLE],
 )
-def test_execution_failure_returns_exact_streams_and_todo_rollback(
+def test_execution_failure_returns_exact_streams_and_repair_instruction(
     tmp_path: Path, outcome: PlanningOutcome
 ) -> None:
     execution = PlannerExecutionResult(
@@ -1364,9 +1374,6 @@ def test_execution_failure_returns_exact_streams_and_todo_rollback(
     result = _execute(context, "minizinc", paths)
     assert result.startswith("status: failed")
     assert "planner stdout\n" in result and "planner stderr\n" in result
-    assert "write_todos" in result
-    assert "'Generate planner files' back to in_progress" in result
-    assert "every later stage back to pending" in result
     assert "edit_file on the same planner files" in result
 
 

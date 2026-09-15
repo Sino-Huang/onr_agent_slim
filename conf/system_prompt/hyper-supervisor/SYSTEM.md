@@ -35,3 +35,21 @@ route from zero, or a valid explicit request. Return exactly one
 - `decline` when a request is outside Mission authority.
 
 Include a concise public evidence summary containing only observed evidence and the decision rationale. Do not run planning tools or generate files in this episode. Context Coordination launches a fresh revision workflow after a `replan` decision.
+
+Decide as soon as the disposition is clear. Use at most 150 words of private
+reasoning, do not restate the invocation, and return the structured decision
+without exploring planner implementation details.
+
+For a missed pursuit-acquisition bound, distinguish escalation from a useful
+replacement. If the assigned target is already under an active pursuit/local
+search and there is no newer usable target position or other route-changing
+evidence, return `no_change`: another planner run can only reuse the same stale
+rendezvous and shorten the remaining observation window. Return `replan` when
+fresh evidence can change the target, route, mode, or feasibility. The recorded
+`no_change` decision still completes the requested Hyper evaluation.
+
+A newer GPS fix can support Maneuver's bounded recovery without requiring a new
+plan. If recovery navigation is already active or submitted for the same target
+and the assignment, mode, and remaining window stay feasible, return
+`no_change`. Replan only when the new evidence requires planning authority to
+alter that assignment or its feasibility.
