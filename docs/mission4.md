@@ -62,3 +62,57 @@ The tests cover useful additional views, strict threshold boundaries, nonmatches
 unknown uncertainty, unsupported/out-of-area locations, contradiction, request
 changes, old-evidence reuse and checkpoint replay. Worker interaction/planning is
 #32; actual runtime/Agent acceptance is #33; native perception acceptance is #35.
+
+## Worker requests and adaptive planning (#32)
+
+`Mission4WorkerSession` durably queues worker text and submits one revision at a
+time using the runtime's documented `search_requests/` boundary. Runtime receipts
+acknowledge acceptance; queued text is retained across restart while a request is
+pending. Text parsing does not reset or directly mutate runtime mission state.
+
+Supported examples:
+
+- `Please find a red container in dock` — adds a target.
+- `also find a blue truck` — adds another target across configured areas.
+- `change worker:1 to blue container in dock` — explicit description/area amendment.
+- `extend deadline to 400 seconds` — absolute mission-time deadline change.
+- `remove worker:2`, `cancel search`, `show progress`, `show evidence`.
+
+Each target accepts one value per named attribute from the configured vocabulary.
+Unknown words, negation, competing values and unknown areas require clarification.
+This is a deterministic constrained-language intake, not a full-LLM language quality
+claim. Clarification leaves accepted work intact. Requests after termination require
+a new Mission Run. Progress/evidence queries produce no objective revision; the
+caller renders current per-target belief/report state.
+
+`Mission4AdaptivePlanner.decide(environment)` consumes actual public environment
+snapshots, updates Agent-owned beliefs and returns typed decisions. It selects areas
+jointly for unresolved objectives using priors, travel and observed coverage; observed
+candidates can prompt additional cardinal views. It preserves still-useful active
+legs and handles completed/failed feedback, changed objectives and final outcomes.
+It reuses existing `navigate`/`search_area` command parameters, including arrival
+direction for a useful camera-facing view. A finite set of additional viewpoints
+bounds repeated investigation; unresolved targets remain explicit when search is
+exhausted. Public geometry and runtime execution enforce restrictions. Private
+target coordinates/labels never enter the planner.
+
+`Mission4ReplanGate` is wired into Context Coordination alongside existing mission
+gates. It wakes planning on a new search decision and stays inactive for other
+mission modes. Physical command completion still comes from environment feedback.
+The standalone acceptance runner in #33 drives the same policy over actual Agent
+transport, with deterministic planning labelled explicitly.
+
+Bounded, nonmutating checks on a captured public environment JSON:
+
+```bash
+python -u -m onr.application.mission4_planning environment.json --dry-run
+python -u -m onr.adapters.mission4_worker --mission-id mission4 \
+  --session var/mission4-worker.json --request-directory var/runtime/search_requests \
+  --environment environment.json --text 'find red container in dock' --dry-run
+```
+
+Remove `--dry-run` from the worker command to queue/publish its request. The session
+owner calls `advance` on subsequent public snapshots to consume acknowledgements
+and publish queued requests. `examples/mission4_requests.json` supplies a two-request
+script for the later integration runner. Full loop commands and evidence belong to
+#33; these checks do not claim that flight or integration has run.
