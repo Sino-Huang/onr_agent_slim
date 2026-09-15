@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 from onr.adapters.file_transport import FileTransport
@@ -52,13 +53,10 @@ def main() -> None:
     )
     if not entity_ids:
         parser.error("public report schedule has no numeric ship IDs")
-    created_at = environment.get("mission_epoch")
-    if not isinstance(created_at, str):
-        parser.error("initial environment has no Mission epoch")
     belief = ReportingReliabilityManager(args.mission_id, entity_ids).snapshot(
         input_event_id=event.event_id,
         input_revision=0,
-        created_at=created_at,
+        created_at=datetime.now(UTC).isoformat(),
     )
 
     args.output.mkdir(parents=True, exist_ok=False)
