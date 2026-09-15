@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
 description: Use when selecting or preserving a physical maneuver, including pursuit acquisition and recovery.
-version: '1.4.0'
+version: '1.5.0'
 ---
 
 # Physical maneuver selection
@@ -22,7 +22,10 @@ cancelled lifecycle.
   unknown lifecycle, not failure. Keep stable action identity for retries.
 - In Mission 2, retain the authorized pair/target/source/run/forecast/window. A
   risk pair alone proves neither visibility nor collision. Ask Hyper to reconsider
-  expired or unreachable assignments.
+  expired or unreachable assignments. An empty-candidate monitoring state holds
+  without submitting a physical command. A completed fixed viewpoint remains
+  suitable until prediction evidence changes; preserve it instead of issuing
+  another zero-distance navigation.
 
 For `fixed_view`, navigate to the selected location. For `pursue_ship`, apply
 the acquisition reference below while retaining the same FSM assignment and
@@ -44,3 +47,9 @@ replacement, which cancels an active orbit through the normal lifecycle. Orbit
 completion, no detection, unavailable perception and absent confidence leave the
 ship unresolved. After a failed or inconclusive attempt, screen other feasible
 ships before a bounded revisit; report the reason when no recovery evidence arrives.
+
+For Mission 4, use `navigate` for a selected useful viewpoint and `search_area`
+for an authorized polygon from the active objective. Retain objective, area and
+view identities in the action context. A completed movement or covered area is
+physical progress only; preserve the action until lifecycle/evidence changes and
+let accumulated object-search belief establish a found result.

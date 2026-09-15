@@ -2,8 +2,10 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
+from onr.adapters.file_transport import FileTransport
 from onr.application.mission4_planning import interpret_worker_text
 from onr.application.object_search_belief import plain
 
@@ -78,16 +80,125 @@ class Mission4WorkerSession:
             atomic_json(path,envelope)
 
 
+def _request_script(path):
+    script=json.loads(Path(path).read_text())
+    if not isinstance(script,list) or not script:
+        raise ValueError("worker request script must be a non-empty array")
+    normalized=[]
+    for item in script:
+        if not isinstance(item,dict) or set(item)!={"at_s","text"}:
+            raise ValueError("worker request entries require at_s and text")
+        at_s=item["at_s"]
+        text=item["text"]
+        if isinstance(at_s,bool) or not isinstance(at_s,(int,float)) or at_s<0:
+            raise ValueError("worker request time must be non-negative")
+        if not isinstance(text,str) or not text.strip():
+            raise ValueError("worker request text is required")
+        normalized.append({"at_s":float(at_s),"text":text})
+    if [item["at_s"] for item in normalized] != sorted(item["at_s"] for item in normalized):
+        raise ValueError("worker request script must be ordered by mission time")
+    return normalized
+
+
+def play_request_script(*,mission_id,session_path,request_directory,transport_root,
+                        script_path,ready_path=None,poll_seconds=.1,timeout_seconds=600,
+                        transport=None):
+    """Replay worker requests against public Mission 4 transport evidence."""
+    script=_request_script(script_path)
+    session=Mission4WorkerSession(mission_id,session_path,request_directory)
+    saved_script=session.data.get("script")
+    if saved_script is not None and saved_script!=script:
+        raise ValueError("worker request script changed across resume")
+    session.data.setdefault("script",script)
+    session.data.setdefault("next_script_request",0)
+    session.data.setdefault("agent_report_event_id",None)
+    atomic_json(session.state_path,session.data)
+    transport=transport or FileTransport(transport_root)
+    deadline=time.monotonic()+float(timeout_seconds)
+    accepted_before=sum(item.get("kind")=="accepted" for item in session.data["history"])
+    while time.monotonic()<deadline:
+        event=transport.latest_event("environment-data",mission_id,event_kind="environment_data")
+        if event is None:
+            time.sleep(poll_seconds)
+            continue
+        environment=plain(event.payload)
+        section=environment.get("world_model_info",{}).get("mission4")
+        if not isinstance(section,dict):
+            raise TypeError("public environment has no Mission 4 state")
+        now=float(environment["mission_time_seconds"])
+        next_request=int(session.data["next_script_request"])
+        while next_request<len(script) and script[next_request]["at_s"]<=now:
+            session.enqueue(script[next_request]["text"])
+            next_request+=1
+            session.data["next_script_request"]=next_request
+            atomic_json(session.state_path,session.data)
+        result=session.advance(section,now)
+        accepted=sum(item.get("kind")=="accepted" for item in session.data["history"])
+        if ready_path is not None and accepted>0 and not Path(ready_path).exists():
+            atomic_json(Path(ready_path),{"mission_id":mission_id,"accepted_requests":accepted})
+        if result is not None or accepted>accepted_before:
+            print(json.dumps({"mission_time_s":now,"next_request":next_request,
+                              "accepted_requests":accepted,"result":result}),flush=True)
+            accepted_before=accepted
+        report_event=transport.latest_event("mission4-agent-reports",mission_id,
+                                            event_kind="mission4-agent-report")
+        if (report_event is not None and section["status"]=="active"
+                and report_event.event_id!=session.data["agent_report_event_id"]):
+            reason=report_event.payload["reason"]
+            report=plain(report_event.payload["report"])
+            if reason=="all_found" and (not report.get("targets") or
+                    any(item.get("status")!="found" for item in report["targets"])):
+                raise ValueError("all_found Agent report has unresolved targets")
+            if reason in {"all_found","search_exhausted","execution_failed"}:
+                request={"request_id":report_event.event_id,"base_revision":section["revision"],
+                         "operation":"finish","reason":reason}
+                envelope={"mission_id":mission_id,"request":request}
+                path=Path(request_directory) / f"{section['revision']+1:08d}.json"
+                if path.exists() and json.loads(path.read_text())!=envelope:
+                    raise ValueError("Agent finish request filename conflict")
+                if not path.exists():atomic_json(path,envelope)
+                session.data["agent_report_event_id"]=report_event.event_id
+                session.data["agent_report"]=report
+                atomic_json(session.state_path,session.data)
+                print(json.dumps({"mission_time_s":now,"agent_finish":reason,
+                                  "report_event_id":report_event.event_id}),flush=True)
+        if (next_request==len(script) and not session.data["queue"]
+                and session.data["pending"] is None and section["status"]!="active"):
+            return session.data
+        time.sleep(poll_seconds)
+    raise TimeoutError("worker request playback timed out")
+
+
 def main(argv=None):
     import argparse
     parser=argparse.ArgumentParser(description="Queue one worker Mission 4 request without resetting an active search")
     parser.add_argument("--mission-id",required=True)
     parser.add_argument("--session",required=True)
     parser.add_argument("--request-directory",required=True)
-    parser.add_argument("--environment",required=True,help="Current public environment JSON")
-    parser.add_argument("--text",required=True)
+    parser.add_argument("--environment",help="Current public environment JSON")
+    parser.add_argument("--text")
+    parser.add_argument("--transport-root")
+    parser.add_argument("--script")
+    parser.add_argument("--ready-file")
+    parser.add_argument("--poll-seconds",type=float,default=.1)
+    parser.add_argument("--timeout-seconds",type=float,default=600)
     parser.add_argument("--dry-run",action="store_true")
     args=parser.parse_args(argv)
+    scripted=args.script is not None or args.transport_root is not None
+    if scripted:
+        if args.script is None or args.transport_root is None or args.environment is not None or args.text is not None:
+            parser.error("script playback requires --script and --transport-root only")
+        if args.dry_run:
+            result={"kind":"script","requests":len(_request_script(args.script))}
+        else:
+            result=play_request_script(mission_id=args.mission_id,session_path=args.session,
+                request_directory=args.request_directory,transport_root=args.transport_root,
+                script_path=args.script,ready_path=args.ready_file,poll_seconds=args.poll_seconds,
+                timeout_seconds=args.timeout_seconds)
+        print(json.dumps(result),flush=True)
+        return 0
+    if args.environment is None or args.text is None:
+        parser.error("one-shot requests require --environment and --text")
     env=json.loads(Path(args.environment).read_text())
     section=env["world_model_info"]["mission4"]
     if args.dry_run:

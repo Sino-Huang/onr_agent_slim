@@ -1,5 +1,8 @@
 # Mission 4: worker-requested object search
 
+For the terminal-audited vLLM/runtime launcher and durable worker request pane,
+see [Model-backed live demos for Missions 2–4](live-demo-missions-2-4.md).
+
 Parent specification: [runtime #27](https://github.com/Sino-Huang/onr_physical_runtime/issues/27).
 Runtime contracts/examples live in the sibling `onr_physical_runtime` checkout's
 `docs/mission_desc/mission4_contract.md`. Agent modules do not import runtime,

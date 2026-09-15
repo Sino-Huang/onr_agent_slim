@@ -9,6 +9,12 @@ from collections.abc import Mapping
 from onr.application.bayesian_belief import BayesianBeliefManager
 from onr.application.object_search_belief import plain, location_supported
 
+_SELECTION_MODEL = """int: selected_index;
+constraint selected_index >= 0 /\\ selected_index <= 1;
+solve maximize selected_index;
+output ["{\\\"selected_index\\\":", show(selected_index), "}"];
+"""
+
 
 @dataclass(frozen=True)
 class Mission4Decision:
@@ -131,24 +137,27 @@ class Mission4AdaptivePlanner:
         position=environment["controlled_vehicle"]["position"]
         current=[float(position[k]) for k in ("x","y","z")]
         options=[]
-        for match in snapshot.matches:
-            if match.target_id not in unresolved or match.probability is None:
-                continue
-            obj=section["objectives"][match.target_id]
-            polygons=[section["package"]["areas"][a]["polygon"] for a in obj["area_ids"]]
-            if not location_supported(match.position,0,polygons):
-                continue
-            for index,(dn,de) in enumerate([(10,0),(0,10),(-10,0),(0,-10)]):
-                key=[match.track_id,index]
-                if key in self.data["visited_views"]:
+        if len(unresolved) == 1 or active:
+            for match in snapshot.matches:
+                if match.target_id not in unresolved or match.probability is None:
                     continue
-                target=[match.position[0]+dn,match.position[1]+de,current[2]]
-                if any(location_supported(target,0,[p]) for p in section["package"]["obstacles"]+section["package"]["keep_out_zones"]):
+                obj=section["objectives"][match.target_id]
+                polygons=[section["package"]["areas"][a]["polygon"] for a in obj["area_ids"]]
+                if not location_supported(match.position,0,polygons):
                     continue
-                distance=math.dist(current,target)
-                if distance/2.5>=section["deadline_s"]-now:
-                    continue
-                options.append((match.probability/(1+distance),key,target,match))
+                for index,(dn,de) in enumerate([(10,0),(0,10),(-10,0),(0,-10)]):
+                    key=[match.track_id,index]
+                    if key in self.data["visited_views"]:
+                        continue
+                    target=[match.position[0]+dn,match.position[1]+de,current[2]]
+                    if any(location_supported(target,0,[p]) for p in section["package"]["obstacles"]+section["package"]["keep_out_zones"]):
+                        continue
+                    distance=math.dist(current,target)
+                    if distance < 1.0:
+                        continue
+                    if distance/2.5>=section["deadline_s"]-now:
+                        continue
+                    options.append((match.probability/(1+distance),key,target,match))
         if options:
             _,key,target,match=max(options,key=lambda item:item[0])
             self.data["visited_views"].append(key)
@@ -195,13 +204,28 @@ class Mission4ReplanGate:
     def __init__(self):
         self.planner=Mission4AdaptivePlanner()
         self.last_decision=None
+        self._last_trigger=None
 
     def assess(self,environment):
         decision=self.planner.decide(environment)
         if decision is None:
             return None
         self.last_decision=decision
-        return f"mission4-gate:{decision.reason}:{decision.action}"
+        trigger=f"mission4-gate:{decision.reason}:{decision.action}"
+        if trigger==self._last_trigger:
+            return None
+        self._last_trigger=trigger
+        return trigger
+
+
+def write_minizinc_problem(decision, model_path, data_path):
+    """Write the code-owned MiniZinc receipt for one adaptive decision."""
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_text(_SELECTION_MODEL, encoding="utf-8")
+    data_path.write_text(
+        f"selected_index = {0 if decision is None else 1};\n", encoding="utf-8"
+    )
 
 
 def main(argv=None):
@@ -212,9 +236,21 @@ def main(argv=None):
     parser.add_argument("environment",type=Path)
     parser.add_argument("--mission-id",default="mission4")
     parser.add_argument("--dry-run",action="store_true",help="Validate and print a decision without sending it")
+    parser.add_argument("--output",type=Path)
+    parser.add_argument("--model",type=Path)
+    parser.add_argument("--data",type=Path)
     args=parser.parse_args(argv)
     decision=Mission4AdaptivePlanner(args.mission_id).decide(json.loads(args.environment.read_text()))
-    print(json.dumps({"status":"PASS","decision":None if decision is None else decision.to_dict()}),flush=True)
+    result={"status":"PASS","mission_time_seconds":json.loads(args.environment.read_text()).get("mission_time_seconds"),
+            "decision":None if decision is None else decision.to_dict()}
+    if bool(args.model) != bool(args.data):
+        parser.error("--model and --data must be supplied together")
+    if args.output is not None and not args.dry_run:
+        args.output.parent.mkdir(parents=True,exist_ok=True)
+        args.output.write_text(json.dumps(result,indent=2)+"\n",encoding="utf-8")
+    if args.model is not None and not args.dry_run:
+        write_minizinc_problem(decision,args.model,args.data)
+    print(json.dumps(result),flush=True)
     return 0
 
 

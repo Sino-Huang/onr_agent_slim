@@ -144,7 +144,61 @@ def _parser() -> argparse.ArgumentParser:
             "artifact paths"
         ),
     )
+    parser.add_argument(
+        "--result-path",
+        type=Path,
+        help="write the terminal closed-loop result as JSON",
+    )
     return parser
+
+
+def _mission_mode_context(
+    world_model_info: Mapping[str, object],
+) -> tuple[str, tuple[int | str, ...]]:
+    mode = world_model_info.get("mission_mode", "mission1")
+    if mode not in {"mission1", "mission2", "mission3", "mission4", "joint"}:
+        raise ValueError("environment planning view has an unsupported mission mode")
+    if mode in {"mission1", "joint"}:
+        reports = world_model_info.get("ship_event_reports")
+        if not isinstance(reports, Mapping):
+            raise TypeError("environment planning view has no ship report roster")
+        return str(mode), tuple(sorted(int(entity_id) for entity_id in reports))
+    if mode == "mission2":
+        predictions = world_model_info.get("perception_predictions")
+        trajectories = (
+            predictions.get("trajectories")
+            if isinstance(predictions, Mapping)
+            else None
+        )
+        if not isinstance(trajectories, Mapping):
+            raise TypeError("environment planning view has no Mission 2 trajectories")
+        return str(mode), tuple(sorted(int(entity_id) for entity_id in trajectories))
+    if mode == "mission3":
+        inspection = world_model_info.get("mission3")
+        if not isinstance(inspection, Mapping) or inspection.get("schema_version") != 1:
+            raise TypeError("environment planning view has no Mission 3 roster")
+        roster = inspection.get("selected_ship_ids")
+        if not isinstance(roster, (list, tuple)):
+            raise TypeError("environment planning view has invalid Mission 3 roster")
+        return str(mode), tuple(roster)
+    search = world_model_info.get("mission4")
+    if not isinstance(search, Mapping) or search.get("schema_version") != 1:
+        raise TypeError("environment planning view has no Mission 4 search state")
+    objectives = search.get("objectives")
+    if not isinstance(objectives, Mapping) or not objectives:
+        raise RuntimeError("Mission 4 requires an accepted worker objective before planning")
+    return str(mode), ()
+
+
+def _mission_end_time(
+    world_model_info: Mapping[str, object], mission_mode: str
+) -> float:
+    if mission_mode == "mission4":
+        search = world_model_info["mission4"]
+        if not isinstance(search, Mapping):
+            raise TypeError("environment planning view has no Mission 4 search state")
+        return float(search["deadline_s"])
+    return float(world_model_info["mission_end_time_s"])
 
 
 def _run_hyper_revision(
@@ -246,28 +300,13 @@ def run_closed_loop_demo(
     ):
         raise TypeError("environment planning view has no static_info evidence")
     world_model_info = planning_view.environment_event.payload.get("world_model_info")
-    report_streams = (
-        world_model_info.get("ship_event_reports")
-        if isinstance(world_model_info, Mapping)
-        else None
-    )
-    mode = world_model_info.get("mission_mode", "mission1") if isinstance(world_model_info, Mapping) else "mission1"
-    if mode != "mission2" and not isinstance(report_streams, Mapping):
-        raise TypeError("environment planning view has no ship roster")
-    if mode == "mission3":
-        inspection = world_model_info.get("mission3")
-        if not isinstance(inspection, Mapping) or inspection.get("schema_version") != 1:
-            raise TypeError("environment planning view has no Mission 3 roster")
-        roster = inspection.get("selected_ship_ids")
-        if not isinstance(roster, (list, tuple)):
-            raise TypeError("environment planning view has invalid Mission 3 roster")
-        ship_ids = tuple(roster)
-    else:
-        roster = (world_model_info["perception_predictions"]["trajectories"]
-                  if mode in {"mission2", "joint"} else report_streams)
-        ship_ids = tuple(sorted(int(entity_id) for entity_id in roster))
-    if mode in {"mission2", "mission3", "joint"}:
-        simulation_limit_seconds = min(simulation_limit_seconds, float(world_model_info["mission_end_time_s"]))
+    if not isinstance(world_model_info, Mapping):
+        raise TypeError("environment planning view has no world-model evidence")
+    mode, ship_ids = _mission_mode_context(world_model_info)
+    if mode in {"mission2", "mission3", "mission4", "joint"}:
+        simulation_limit_seconds = min(
+            simulation_limit_seconds, _mission_end_time(world_model_info, mode)
+        )
     planning_backend_root = Path(
         os.path.commonpath(
             (
@@ -277,15 +316,18 @@ def run_closed_loop_demo(
             )
         )
     )
-    belief_service = None if mode in {"mission2", "mission3"} else runtime.create_bayesian_belief_service(
-        mission_id=mission_input.mission_id,
-        keys=tuple(
-            BeliefKey(entity_id, "reporting-corruption")
-            for entity_id in ship_ids
-        ),
-        belief_kind="reporting_reliability",
-        context_topic="planning-evidence",
-        clock=lambda: "2026-08-23T00:00:00+10:00",
+    belief_service = (
+        None
+        if mode not in {"mission1", "joint"}
+        else runtime.create_bayesian_belief_service(
+            mission_id=mission_input.mission_id,
+            keys=tuple(
+                BeliefKey(entity_id, "reporting-corruption") for entity_id in ship_ids
+            ),
+            belief_kind="reporting_reliability",
+            context_topic="planning-evidence",
+            clock=lambda: "2026-08-23T00:00:00+10:00",
+        )
     )
     belief = None if belief_service is None else belief_service.load_current_snapshot()
     with runtime.transport.open_consumer(
@@ -452,7 +494,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 recursion_limit=args.recursion_limit,
                 simulation_limit_seconds=args.simulation_limit_seconds,
             )
-        print(json.dumps(result.to_dict(), sort_keys=True))
+        result_payload = result.to_dict()
+        if args.result_path is not None:
+            args.result_path.parent.mkdir(parents=True, exist_ok=True)
+            args.result_path.write_text(
+                json.dumps(result_payload, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        print(json.dumps(result_payload, sort_keys=True))
         return 0
     except Exception as exc:
         print(

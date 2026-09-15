@@ -12,6 +12,16 @@ Use its source-independent candidate procedure and the generic submission route
 below. The Mission 1-only procedure requires a reporting-reliability belief;
 Mission 2-only planning does not.
 
+For Mission 3, run `python -m onr.application.mission3_planning
+<environment-file> --output <shell-workspace>/mission3-decision.json --model
+<shell-workspace>/model.mzn --data <shell-workspace>/data.dzn`. For Mission 4,
+use the identical arguments with `onr.application.mission4_planning` and
+`mission4-decision.json`. Use the exact returned execute paths. These
+code-owned adaptive policies consume current public evidence and write a
+MiniZinc selection receipt; keep the generated model and data unchanged, then
+submit and execute them through the normal external MiniZinc tools. Do not
+hand-author a replacement model for either mission.
+
 ## Choose the generation route
 
 After `record_planning_intent`, use the checked-in pipeline directly when the

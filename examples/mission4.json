@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Find every active worker-requested object within its allowed search area. Preserve accepted requests and evidence, seek additional useful views when uncertainty remains, and report each target found or explicitly unresolved before the mission deadline.",
+  "source_authority": "demo-operator"
+}

@@ -8,7 +8,8 @@ retains producer beliefs and calibration status. Both drive the same observation
 planning procedure. Warning predictions are distinct from confirmed events.
 
 1. Run `python -m onr.application.mission2_planning <environment-file>
-   --output <shell-workspace>/mission2-candidates.json` using authorized execute
+   --output <shell-workspace>/mission2-candidates.json --model
+   <shell-workspace>/model.mzn --data <shell-workspace>/data.dzn` using authorized execute
    paths. In joint mode choose `--joint-priority balanced|mission1|mission2`
    from Mission Intent; balanced is the default when no preference is specified.
    Inspect its compact manifest and candidate file. The candidate builder uses
@@ -20,12 +21,15 @@ planning procedure. Warning predictions are distinct from confirmed events.
    and travel duration. Probability `null` means unavailable, not zero risk or
    certainty. Keep source/run/sequence and pair/target identities in planner
    output. Keep desired observation windows separate from travel.
-3. Write the model and data in the returned workspace; use the generic MiniZinc
-   submission and external verification route. Mission 2-only planning needs no
+3. Submit the code-owned model and data from step 1 through the generic MiniZinc
+   submission and external verification route; keep their returned paths and
+   contents unchanged. Mission 2-only planning needs no
    reporting-reliability belief file or Mission 1 event materialization. When
    forecasts are unready/stale or no feasible risk assignment exists, plan
    continued monitoring until the next GPS/forecast update rather than claiming
-   that the mission has finished or teleporting to an unreachable pair.
+   that the mission has finished or teleporting to an unreachable pair. Use
+   The code-owned model supports an empty candidate array and emits a monitoring
+   result through the next evidence time.
 4. In joint mode, retain Mission 1 report candidates and Mission 2 risk
    candidates with separate utilities and scores. Honor the configured priority.
    Balanced scheduling alternates feasible mission opportunities instead of
@@ -36,7 +40,9 @@ planning procedure. Warning predictions are distinct from confirmed events.
    solver-native artifact for Statechart authoring. The accepted Statechart
    keeps monitoring/replanning alive until Mission Intent's completion condition
    or `mission_end_time_s`; completing one short observation is not completion
-   of a whole collision-monitoring mission.
+   of a whole collision-monitoring mission. `monitor_until_s` is the next
+   evidence/replan cue. The monitoring state's terminal transition remains
+   gated by `mission_end_time_s`, never by `monitor_until_s`.
 
 The candidate helper produces planning inputs only. Hyper owns planner choice
 and plan revisions; Maneuver Control owns physical action selection. Replanning

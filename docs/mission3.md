@@ -1,5 +1,8 @@
 # Mission 3 selected-fleet inspection
 
+For the terminal-audited vLLM/runtime launcher, see
+[Model-backed live demos for Missions 2–4](live-demo-missions-2-4.md).
+
 Mission 3 consumes the physical runtime's versioned `world_model_info.mission3`
 section. The normalized `selected_ship_ids` roster is authoritative for the round;
 incidental visible ships never expand it. `target_observations` contains only public

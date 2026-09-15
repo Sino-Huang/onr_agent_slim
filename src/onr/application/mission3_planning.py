@@ -11,6 +11,12 @@ from typing import Literal, cast
 
 EntityId = int | str
 
+_SELECTION_MODEL = """int: selected_index;
+constraint selected_index >= 0 /\\ selected_index <= 1;
+solve maximize selected_index;
+output ["{\\\"selected_index\\\":", show(selected_index), "}"];
+"""
+
 
 def _plain(value: object) -> object:
     if isinstance(value, Mapping):
@@ -588,6 +594,7 @@ class Mission3ReplanGate:
     def __init__(self) -> None:
         self.planner = Mission3AdaptivePlanner()
         self.last_decision: Mission3Decision | None = None
+        self._last_trigger: str | None = None
 
     def assess(self, environment: Mapping[str, object]) -> str | None:
         decision = self.planner.decide(environment)
@@ -595,7 +602,23 @@ class Mission3ReplanGate:
             return None
         self.last_decision = decision
         target = "none" if decision.entity_id is None else str(decision.entity_id)
-        return f"mission3-gate:{decision.reason}:{decision.action}:{target}"
+        trigger = f"mission3-gate:{decision.reason}:{decision.action}:{target}"
+        if trigger == self._last_trigger:
+            return None
+        self._last_trigger = trigger
+        return trigger
+
+
+def write_minizinc_problem(
+    decision: Mission3Decision | None, model_path: Path, data_path: Path
+) -> None:
+    """Write the code-owned MiniZinc receipt for one adaptive decision."""
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_text(_SELECTION_MODEL, encoding="utf-8")
+    data_path.write_text(
+        f"selected_index = {0 if decision is None else 1};\n", encoding="utf-8"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -606,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--mission-time-budget-s", type=float)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--model", type=Path)
+    parser.add_argument("--data", type=Path)
     args = parser.parse_args(argv)
     environment = json.loads(args.environment.read_text(encoding="utf-8"))
     planner = Mission3AdaptivePlanner(mission_time_budget_s=args.mission_time_budget_s)
@@ -614,11 +639,18 @@ def main(argv: list[str] | None = None) -> int:
         "source": "public_world_model",
         "dry_run": args.dry_run,
         "mission_time_seconds": environment.get("mission_time_seconds"),
+        "mission_end_time_s": environment.get("world_model_info", {}).get(
+            "mission_end_time_s"
+        ),
         "decision": None if decision is None else decision.to_dict(),
     }
     if args.output is not None and not args.dry_run:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    if bool(args.model) != bool(args.data):
+        parser.error("--model and --data must be supplied together")
+    if args.model is not None and not args.dry_run:
+        write_minizinc_problem(decision, args.model, args.data)
     print(json.dumps(result, sort_keys=True))
     return 0
 
@@ -632,4 +664,5 @@ __all__ = [
     "Mission3Decision",
     "Mission3Description",
     "Mission3ReplanGate",
+    "write_minizinc_problem",
 ]

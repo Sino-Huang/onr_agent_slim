@@ -27,6 +27,12 @@ Static or execution failure permits repair of the same submitted files with
 `edit_file` and resubmission. The code-owned workflow gate exposes only the
 capabilities valid for the current verified stage.
 
+Every required file and workspace location is supplied by the workflow or the
+inline skill guidance. Do not perform filesystem discovery and never search
+`/`, `/data`, or the repository tree. Use the exact supplied paths with
+`execute`, `read_file`, `write_file`, or `edit_file`; broad discovery output can
+exhaust the live model context without adding authoritative evidence.
+
 Proceed in order:
 
 1. Parse Mission Intent.
@@ -68,7 +74,9 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
   accepted. It performs generation, static checking, planner execution,
   Statechart generation, and Statechart validation with those checked-in helpers.
   On its accepted receipt, return `execution_ready` in the next response.
-  For other MiniZinc models, use generic event materialization when required.
+  For Missions 2, 3, and 4, use the checked-in code-owned planner command in
+  the supplied MiniZinc guidance and keep its model/data unchanged. For other
+  MiniZinc models, use generic event materialization when required.
 - For Fast Downward, apply the supplied `creating-pddl-problem-files` and write `domain.pddl` plus `problem.pddl` at the exact returned paths.
 - For planner files not produced by a checked-in helper, create an absent file
   once with `write_file`. To change that path later,

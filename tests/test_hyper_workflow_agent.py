@@ -543,6 +543,33 @@ def test_terminal_workflow_gate_exposes_only_structured_response(
     assert overridden["response_format"] is response_format
 
 
+def test_nonterminal_workflow_gate_removes_filesystem_discovery_tools(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=context),
+        tools=[
+            SimpleNamespace(name="ls"),
+            SimpleNamespace(name="glob"),
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="record_planning_intent"),
+        ],
+        response_format=object(),
+        state={"todos": []},
+    )
+    request.override = lambda **changes: changes
+
+    update = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+
+    assert [tool.name for tool in update["tools"]] == [
+        "read_file",
+        "record_planning_intent",
+    ]
+
+
 def test_success_gate_exposes_structured_response_without_todo_round_trip(
     tmp_path: Path,
 ) -> None:

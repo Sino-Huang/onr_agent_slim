@@ -7,7 +7,10 @@ import pytest
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.inprocess_transport import InProcessTransport, InProcessTransportState
-from onr.application.context_coordination import ContextCoordination
+from onr.application.context_coordination import (
+    ContextCoordination,
+    _environment_for_maneuver,
+)
 from onr.contracts.context_coordination import (
     MISSION_SNAPSHOT_SOURCES,
     MissionSnapshot,
@@ -36,6 +39,16 @@ def _plan(revision: int = 1) -> NormalizedPlan:
         planner_choice=PlannerChoice(PlanningProfile.TEMPORAL, "minizinc"),
         outcome=PlanningOutcome.UNSOLVABLE,
     )
+
+
+def test_maneuver_context_drops_only_terminal_lifecycle_from_old_plan() -> None:
+    environment = {
+        "maneuver_lifecycle": {"lifecycle": "completed", "plan_revision": 1}
+    }
+    assert _environment_for_maneuver(environment, 2)["maneuver_lifecycle"] is None
+    assert _environment_for_maneuver(environment, 1) is environment
+    active = {"maneuver_lifecycle": {"lifecycle": "active", "plan_revision": 1}}
+    assert _environment_for_maneuver(active, 2) is active
 
 
 def _deliver(service: ContextCoordination, consumer: Any) -> MissionSnapshot | None:

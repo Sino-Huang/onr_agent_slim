@@ -469,6 +469,8 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         "runtime.yaml",
         "--simulation-limit-seconds",
         "30",
+        "--result-path",
+        str(tmp_path / "terminal-result.json"),
     ]
     if planner_override is not None:
         arguments.extend(("--planner-artifacts", planner_override))
@@ -486,6 +488,7 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
     assert runtime.transport.root.is_dir()
     assert not any(runtime.transport.root.iterdir())
     assert json.loads(captured.out) == expected.to_dict()
+    assert json.loads((tmp_path / "terminal-result.json").read_text()) == expected.to_dict()
     assert calls[0] == (
         "runtime",
         {"repo_root": tmp_path, "config_path": Path("runtime.yaml")},
@@ -507,6 +510,41 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
     assert closed_loop[3]["planner_artifacts"] == expected_artifacts.resolve()
     assert closed_loop[3]["recursion_limit"] == 240
     assert closed_loop[3]["simulation_limit_seconds"] == 30.0
+
+
+def test_mission_mode_context_keeps_mode_specific_evidence_separate() -> None:
+    assert runtime_cli._mission_mode_context(
+        {"mission_mode": "mission1", "ship_event_reports": {"2": []}}
+    ) == ("mission1", (2,))
+    assert runtime_cli._mission_mode_context(
+        {
+            "mission_mode": "mission2",
+            "perception_predictions": {"trajectories": {"3": {}}},
+        }
+    ) == ("mission2", (3,))
+    assert runtime_cli._mission_mode_context(
+        {
+            "mission_mode": "mission3",
+            "mission3": {"schema_version": 1, "selected_ship_ids": ["ship-a"]},
+        }
+    ) == ("mission3", ("ship-a",))
+    assert runtime_cli._mission_mode_context(
+        {
+            "mission_mode": "mission4",
+            "mission4": {"schema_version": 1, "objectives": {"worker:1": {}}},
+        }
+    ) == ("mission4", ())
+    with pytest.raises(RuntimeError, match="accepted worker objective"):
+        runtime_cli._mission_mode_context(
+            {"mission_mode": "mission4", "mission4": {"schema_version": 1, "objectives": {}}}
+        )
+
+    assert runtime_cli._mission_end_time(
+        {"mission_end_time_s": 20.0}, "mission3"
+    ) == 20.0
+    assert runtime_cli._mission_end_time(
+        {"mission4": {"deadline_s": 45.0}}, "mission4"
+    ) == 45.0
 
 
 def test_cli_failure_is_nonzero_actionable_and_safe(

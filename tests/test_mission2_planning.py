@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
 from onr.application.mission2_planning import (
-    Mission2ReplanGate, collision_observation_candidates, joint_observation_priority, main,
+    Mission2ReplanGate,
+    collision_observation_candidates,
+    joint_observation_priority,
+    main,
 )
 
 
@@ -84,6 +89,14 @@ def test_gate_coalesces_duplicates_and_detects_changed_cleared_and_stale_risks()
     prediction = env["world_model_info"]["perception_predictions"]
     prediction["sequence"] += 1
     assert gate.assess(env) is None
+    first_candidate = collision_observation_candidates(env)[0].candidate_id
+    env["controlled_vehicle"]["position"]["x"] = 200
+    assert collision_observation_candidates(env)[0].candidate_id != first_candidate
+    assert gate.assess(env) is None
+    env["controlled_vehicle"]["position"]["x"] = 0
+    env["mission_time_seconds"] = 10
+    assert gate.assess(env) is None
+    env["mission_time_seconds"] = 5
     prediction["alerts"] = [{"event_id": "warning-1"}]
     assert "new_warning" in gate.assess(env)
     assert gate.assess(env) is None
@@ -118,3 +131,40 @@ def test_candidate_cli_needs_no_reports_or_bayesian_state(tmp_path, capsys):
     assert report["candidate_count"] == 2
     assert report["candidates"][0]["probability"] is None
     assert json.loads(capsys.readouterr().out)["prediction_source"] == "simulated"
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_candidate_cli_writes_verified_minizinc_problem(tmp_path,ready,capsys):
+    env=environment()
+    if not ready:
+        env["world_model_info"]["perception_predictions"]["status"]="not_ready"
+    source=tmp_path / "environment.json";source.write_text(json.dumps(env))
+    output=tmp_path / "candidates.json";model=tmp_path / "model.mzn";data=tmp_path / "data.dzn"
+    assert main([str(source),"--output",str(output),"--model",str(model),"--data",str(data)])==0
+    capsys.readouterr()
+    executable=Path(__file__).parents[1] / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc"
+    result=subprocess.run([str(executable),"--solver","coin-bc",str(model),str(data)],
+        text=True,capture_output=True,timeout=30,check=False)
+    assert result.returncode==0,result.stderr
+    solved=json.loads(result.stdout.splitlines()[0])
+    assert bool(solved["selected_indices"]) is ready
+
+
+def test_code_owned_statechart_keeps_monitoring_until_recording_end(tmp_path,capsys):
+    source=tmp_path / "environment.json";source.write_text(json.dumps(environment()))
+    candidates=tmp_path / "mission2-candidates.json"
+    assert main([str(source),"--output",str(candidates)])==0
+    capsys.readouterr()
+    plan=tmp_path / "minizinc.plan"
+    plan.write_text(json.dumps({"type":"solution","output":{
+        "default":json.dumps({"selected_indices":[1],"monitor_until_s":10})}})+"\n")
+    chart=tmp_path / "statechart.json"
+    helper=Path(__file__).parents[1] / "conf/skills/hyper/creating-statechart-files/examples/mission2-collision/prepare_statechart.py"
+    result=subprocess.run([str(helper),str(plan),str(candidates),str(chart)],
+        text=True,capture_output=True,timeout=10,check=False)
+    assert result.returncode==0,result.stderr
+    value=json.loads(chart.read_text())
+    assert value["entry_state"]=="risk-observation-1"
+    assert "scenario-recording-end" in value["states"]
+    terminal=value["transitions"][-1]
+    assert terminal["context"]["readiness"]["mission_time_at_or_after"]["seconds"]==100

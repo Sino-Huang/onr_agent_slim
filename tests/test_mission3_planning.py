@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -407,6 +409,10 @@ def test_replan_gate_coalesces_snapshots_and_cli_dry_run_writes_nothing(
     first = gate.assess(frozen_environment)
     assert first is not None and first.startswith("mission3-gate:")
     assert gate.assess(frozen_environment) is None
+    later = copy.deepcopy(environment)
+    later["mission_time_seconds"] = 0.5
+    later["state_version"] = 1
+    assert gate.assess(later) is None
     assert Mission3ReplanGate().assess({"world_model_info": {}}) is None
 
     source = tmp_path / "environment.json"
@@ -417,3 +423,40 @@ def test_replan_gate_coalesces_snapshots_and_cli_dry_run_writes_nothing(
     assert result["source"] == "public_world_model"
     assert result["decision"]["entity_id"] == 1
     assert not output.exists()
+
+
+def test_cli_and_helper_write_verified_adaptive_plan(tmp_path, capsys) -> None:
+    source = tmp_path / "environment.json"
+    source.write_text(json.dumps(_environment([_ship(1)])), encoding="utf-8")
+    manifest = tmp_path / "mission3-decision.json"
+    model, data = tmp_path / "model.mzn", tmp_path / "data.dzn"
+    assert main([
+        str(source), "--output", str(manifest),
+        "--model", str(model), "--data", str(data),
+    ]) == 0
+    capsys.readouterr()
+    repository = Path(__file__).parents[1]
+    executable = repository / "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc"
+    solved = tmp_path / "plan.jsonl"
+    result = subprocess.run(
+        [str(executable), "--json-stream", "--solver", "coin-bc", str(model), str(data)],
+        text=True, capture_output=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert any(
+        json.loads(line).get("status") == "OPTIMAL_SOLUTION"
+        for line in result.stdout.splitlines()
+    )
+    solved.write_text(result.stdout, encoding="utf-8")
+    chart = tmp_path / "statechart.json"
+    helper = repository / "conf/skills/hyper/creating-statechart-files/examples/adaptive-mission/prepare_statechart.py"
+    generated = subprocess.run(
+        [str(helper), "mission3", str(solved), str(manifest), str(chart)],
+        text=True, capture_output=True, timeout=10, check=False,
+    )
+    assert generated.returncode == 0, generated.stderr
+    statechart = json.loads(chart.read_text())
+    assert statechart["entry_state"] == "inspection-action"
+    assert statechart["transitions"][-1]["context"]["readiness"] == {
+        "mission_time_at_or_after": {"seconds": 100.0}
+    }

@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
-description: Apply when evidence affects plan feasibility, a Mission 1 utility gate identifies a better route, Mission 2 collision risks change, or Mission 3 inspection evidence/targets change.
-version: '1.4.0'
+description: Apply when evidence affects plan feasibility, a Mission 1 utility gate identifies a better route, Mission 2 collision risks change, Mission 3 inspection evidence changes, or Mission 4 search objectives/evidence change.
+version: '1.5.0'
 ---
 
 # Detect And Replan
@@ -99,6 +99,25 @@ visit, and bound revisits after failed or full-orbit-inconclusive attempts. Keep
 unresolved ships and their reasons in the final report at the recording/budget
 limit. Use the source-supplied sufficiency flag identically for live and simulated
 evidence; producer access and camera control stay outside Agent planning.
+When `all_resolved` arrives before the recording boundary and the active
+Statechart is nonterminal, choose `replan`: the replacement code-owned policy
+emits the evidence-backed terminal report chart. Do not choose `no_change`
+merely because the superseded chart could wait until the recording deadline.
+
+## Mission 4 search replans
+
+Treat `mission4-gate:*` as public advisory evidence. Replan when an accepted
+worker revision changes the active objectives, a maneuver completes or fails,
+coverage changes, or new observations change accumulated match uncertainty.
+Preserve unaffected objectives, evidence identities, elapsed Mission time and
+feasible plan segments. Seek another useful view while a required attribute or
+location remains unresolved. An `all_found` report requires supported locations
+inside the requested areas and the configured strict belief threshold; runtime
+receipts remain the authority for request and physical lifecycle changes.
+When an accepted request revision adds or changes an objective and the current
+Statechart is monitoring with no still-useful active physical leg, choose
+`replan` so the replacement chart schedules the code-owned adaptive decision.
+Do not choose `no_change` merely because both objectives share an area.
 
 ## Gotchas
 

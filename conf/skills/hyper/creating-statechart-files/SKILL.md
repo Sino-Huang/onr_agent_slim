@@ -1,7 +1,7 @@
 ---
 name: creating-statechart-files
 description: Apply after planner execution returns an accepted planner-native artifact and exact Statechart workspace paths to author, inspect, submit, and repair schema-flexible execution semantics.
-version: '3.5.0'
+version: '3.7.0'
 ---
 
 # Creating Statechart Files
@@ -25,14 +25,26 @@ version: '3.5.0'
    containing whitespace. Do not copy or transcribe the helper, inspect the
    MiniZinc JSONL with an ad-hoc query, or author an inspection script. The same
    commands apply to initial planning and replacement revisions.
-3. For any other planner shape, inspect and decode the artifact with `jq` or
+3. For Mission 2 collision monitoring, run
+   `python conf/skills/hyper/creating-statechart-files/examples/mission2-collision/prepare_statechart.py <planner-artifact> <shell-workspace>/mission2-candidates.json <shell-workspace>/statechart.json`
+   with the returned execute paths. This keeps an empty-candidate monitoring
+   plan active until `mission_end_time_s`; `monitor_until_s` remains a replan cue.
+   Inspect the printed counts, then submit the generated Statechart unchanged.
+4. For a Mission 3 adaptive plan, run exactly
+   `python conf/skills/hyper/creating-statechart-files/examples/adaptive-mission/prepare_statechart.py mission3 <planner-artifact> <shell-workspace>/mission3-decision.json <shell-workspace>/statechart.json`.
+   For Mission 4, run exactly the same command with `mission4` as the first
+   argument and `mission4-decision.json` as the manifest. Substitute the exact
+   returned planner-artifact and shell-workspace paths. Never mix the Mission 3
+   mode with the Mission 4 manifest or vice versa. Inspect the compact manifest,
+   then submit the generated Statechart unchanged.
+5. For any other planner shape, inspect and decode the artifact with `jq` or
    standard-library Python. Read
    `examples/event-information-patrol/generate_statechart.py` as a few-shot,
    author a mission-specific generator at the exact returned virtual location,
    and keep planner-output extraction separate from semantic-topology
    construction. Adapt extraction to the observed schema; do not introduce a
    production-owned planner schema.
-4. Preserve every planner-selected item’s order, dependencies, parameters, timing, units, and identifiers in self-explanatory state or transition contexts. Describe desired operational outcomes and evidence; Maneuver Control chooses physical tools.
+6. Preserve every planner-selected item’s order, dependencies, parameters, timing, units, and identifiers in self-explanatory state or transition contexts. Describe desired operational outcomes and evidence; Maneuver Control chooses physical tools.
    Initial travel may be authorized at Mission time zero. Later travel becomes
    eligible when the prior planner evidence interval ends; authoritative maneuver
    lifecycle feedback triggers Maneuver Control immediately, without rounding
@@ -42,6 +54,10 @@ version: '3.5.0'
    entity where applicable, opaque report identities, observation window, and
    the recall/estimation/omission utility breakdown. Maneuver Control chooses
    `navigate` or `pursue` and its adapter parameters at runtime.
+   For Mission 4, preserve the active objective revision, target/area identity,
+   useful viewpoint or search polygon, deadline and evidence condition. Enter a
+   terminal state only for an evidence-backed `all_found` result or an explicit
+   runtime deadline/failure outcome; area coverage alone remains nonterminal.
    An omission-search fixed view can have empty report IDs and nonzero omission
    utility. Preserve its `scored_observation_windows` in `planner_item` and the
    existing outgoing `readiness.not_before` at the outer window end. Empty or
@@ -58,14 +74,14 @@ version: '3.5.0'
    outcome-only state adds a wait until a later heartbeat even when the next
    assignment is already eligible. Preserve the evidence/time conditions on
    the direct transition; reasoning wall time requires no schedule allowance.
-5. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
-6. For Mission 1, require both helper manifests to agree and the inspector to
+7. Assert that every extracted planner item is represented exactly once. Generate `statechart.json` at the exact returned location and print a compact manifest containing planner-item coverage, order, state/edge counts, and terminal completion.
+8. For Mission 1, require both helper manifests to agree and the inspector to
    report `valid: true`. For other planner shapes, run the authored generator and
    inspect both authored files and its manifest. Do not read a large generated
    Statechart into model context. Repair the same files until their contents and
    manifest agree with the planner artifact.
-7. Call `submit_statechart_draft` with the exact returned `statechart_file_location`. On rejection, use the structured diagnostic to edit, rerun, inspect, and resubmit those same files.
-8. Completion requires verifier acceptance and successful `python-statemachine` construction.
+9. Call `submit_statechart_draft` with the exact returned `statechart_file_location`. On rejection, use the structured diagnostic to edit, rerun, inspect, and resubmit those same files.
+10. Completion requires verifier acceptance and successful `python-statemachine` construction.
 
 ## Draft contract
 

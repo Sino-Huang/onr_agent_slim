@@ -6,6 +6,7 @@ external Planner Plan and an accepted Statechart; Maneuver Control selects actio
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -115,6 +116,54 @@ def joint_observation_priority(*, configured_priority: str, last_served: str | N
     return "mission1" if last_served == "mission2" else "mission2"
 
 
+_MISSION2_MODEL = """int: n;
+int: monitor_until_s;
+array[1..n] of int: candidate_weight;
+array[1..n] of int: travel_millis;
+array[1..n] of var bool: selected;
+constraint sum(i in 1..n)(bool2int(selected[i])) <= 1;
+solve maximize sum(i in 1..n)(bool2int(selected[i]) *
+    (candidate_weight[i] * 100000 - travel_millis[i]));
+output ["{\\\"selected_indices\\\":[",
+    join(",", [show(i) | i in 1..n where fix(selected[i])]),
+    "],\\\"monitor_until_s\\\":", show(monitor_until_s), "}"];
+"""
+
+
+def write_minizinc_problem(report: Mapping, model_path, data_path) -> None:
+    """Write the verified Mission 2 selection model and current public data."""
+    from pathlib import Path
+
+    candidates = report["candidates"]
+    now = float(report["mission_time_seconds"])
+    monitor_until = min(float(report["valid_until_s"]), float(report["mission_end_time_s"]))
+    weights = []
+    travel = []
+    for candidate in candidates:
+        contact = float(candidate["predicted_contact_at_s"])
+        urgency = max(0.0, 30.0 - max(0.0, contact - now)) / 30.0
+        probability = candidate["probability"]
+        weights.append(round(1000 * (urgency + (0.5 if probability is None else float(probability)))))
+        travel.append(round(1000 * float(candidate["travel_seconds"])))
+    model = Path(model_path)
+    data = Path(data_path)
+    model.parent.mkdir(parents=True, exist_ok=True)
+    data.parent.mkdir(parents=True, exist_ok=True)
+    model.write_text(_MISSION2_MODEL, encoding="utf-8")
+    data.write_text(
+        "\n".join(
+            (
+                f"n = {len(candidates)};",
+                f"monitor_until_s = {math.ceil(monitor_until)};",
+                f"candidate_weight = {json.dumps(weights)};",
+                f"travel_millis = {json.dumps(travel)};",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
 class Mission2ReplanGate:
     """Coalesce duplicate snapshots and trigger on meaningful risk changes."""
 
@@ -139,10 +188,11 @@ class Mission2ReplanGate:
             self._alert_ids = set()
         state = "stale" if now > prediction["valid_until_s"] else prediction["status"]
         candidates = collision_observation_candidates(environment)
-        risks = tuple(sorted((tuple(row["ship_ids"]),
-            sum(float(row["predicted_contact_at_s"]) - now > limit for limit in (0, 5, 10, 20)))
-            for row in prediction["active_pairs"])) if state in {"ready", "partial"} else ()
-        signature = (state, risks, candidates[0].candidate_id if candidates else None,
+        risks = tuple(sorted(
+            ((tuple(row["ship_ids"]), float(row["predicted_contact_at_s"]),
+              row["probability"]) for row in prediction["active_pairs"]),
+            key=lambda item: item[0])) if state in {"ready", "partial"} else ()
+        signature = (state, risks, bool(candidates),
                      now >= float(world["mission_end_time_s"]))
         fresh_alerts = {row["event_id"] for row in prediction["alerts"]} - self._alert_ids
         self._alert_ids.update(fresh_alerts)
@@ -163,6 +213,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("environment", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--model", type=Path)
+    parser.add_argument("--data", type=Path)
     parser.add_argument("--joint-priority", choices=("balanced", "mission1", "mission2"), default="balanced")
     args = parser.parse_args(argv)
     environment = json.loads(args.environment.read_text())
@@ -177,12 +229,16 @@ def main(argv=None) -> int:
         "prediction_source": prediction["source"], "prediction_status": prediction["status"],
         "valid_until_s": prediction["valid_until_s"], "joint_priority": args.joint_priority,
         "candidate_count": len(candidates), "candidates": [c.to_dict() for c in candidates]}
+    if bool(args.model) != bool(args.data):
+        parser.error("--model and --data must be supplied together")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({k: v for k, v in report.items() if k != "candidates"}))
     else:
         print(json.dumps(report, indent=2))
+    if args.model is not None:
+        write_minizinc_problem(report, args.model, args.data)
     return 0
 
 

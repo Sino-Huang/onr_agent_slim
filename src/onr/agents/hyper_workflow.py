@@ -445,6 +445,7 @@ _PHASE_CONTROLLED_TOOLS = frozenset(
         "HyperWorkflowResultCandidate",
     }
 )
+_DISCOVERY_TOOLS = frozenset({"glob", "ls"})
 
 
 def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
@@ -592,8 +593,8 @@ def _gate_workflow_tools(request: Any, handler: Callable[[Any], Any]) -> Any:
         tools = [
             item
             for item in request.tools
-            if (name := _request_tool_name(item)) not in _PHASE_CONTROLLED_TOOLS
-            or name in allowed
+            if (name := _request_tool_name(item)) not in _DISCOVERY_TOOLS
+            and (name not in _PHASE_CONTROLLED_TOOLS or name in allowed)
         ]
     response_format = request.response_format if terminal else None
     overrides = {"tools": tools, "response_format": response_format}

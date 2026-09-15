@@ -1,7 +1,7 @@
 ---
 name: mission-parsing
 description: Apply when deriving PlanningIntent from MissionInput while preserving source authority.
-version: '1.8.0'
+version: '1.9.0'
 ---
 
 # Mission Parsing
@@ -61,6 +61,17 @@ incidental ships never expand it. Use public target estimates for travel and
 only a producer's explicit sufficient normal/abnormal verdict resolves a ship,
 and a value rule that prioritizes resolving the remaining roster within the
 recording/budget limit. Mission 3 has no reporting-reliability belief input.
+
+### Worker-requested object search
+
+A Mission 4 search is a temporal adaptive-search problem. Select MiniZinc and
+use only the accepted objectives, allowed areas, coverage, observations and
+accumulated match evidence in `world_model_info.mission4`. Preserve unresolved
+objectives when a new request revision arrives. Plan additional useful views
+while match or location uncertainty remains, and end only when the public
+evidence supports `all_found` or an explicit deadline/failure outcome. Mission 4
+has no reporting-reliability belief input; the object-search belief represented
+in its public planning evidence owns found decisions.
 
 ## Gotchas
 

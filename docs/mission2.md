@@ -1,5 +1,8 @@
 # Mission 2 observation planning
 
+For the terminal-audited vLLM/runtime launcher, see
+[Model-backed live demos for Missions 2–4](live-demo-missions-2-4.md).
+
 Tracking: [runtime #17](https://github.com/Sino-Huang/onr_physical_runtime/issues/17),
 under parent [#15](https://github.com/Sino-Huang/onr_physical_runtime/issues/15).
 

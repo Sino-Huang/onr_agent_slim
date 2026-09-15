@@ -25,13 +25,25 @@ readonly DIAGNOSTIC_PRIOR="${ONR_DEMO_DIAGNOSTIC_PRIOR:-}"
 readonly MISSION1_PLANNING_INPUT="${ONR_DEMO_MISSION1_PLANNING_INPUT:-}"
 readonly MISSION3_DESCRIPTION="${ONR_DEMO_MISSION3_DESCRIPTION:-$AGENT_ROOT/examples/mission3_description.json}"
 readonly MISSION3_FIXTURE="${ONR_DEMO_MISSION3_FIXTURE:-}"
+readonly MISSION4_PACKAGE="${ONR_DEMO_MISSION4_PACKAGE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_package.json}"
+readonly MISSION4_FIXTURE="${ONR_DEMO_MISSION4_FIXTURE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_fixture.json}"
+readonly MISSION4_REQUESTS="${ONR_DEMO_MISSION4_REQUESTS:-$AGENT_ROOT/examples/mission4_requests.json}"
+readonly MISSION4_WORKER_TIMEOUT_SECONDS="${ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS:-3600}"
+readonly VIEWER_PORT="${ONR_DEMO_VIEWER_PORT:-5066}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
+if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then
+    default_maneuver_seconds=30
+else
+    default_maneuver_seconds=300
+fi
+readonly MANEUVER_SECONDS="${ONR_DEMO_MANEUVER_SECONDS:-$default_maneuver_seconds}"
 case "$MISSION_MODE" in
     mission1) default_mission_file="$AGENT_ROOT/examples/mission.json" ;;
     mission2) default_mission_file="$AGENT_ROOT/examples/mission2.json" ;;
     mission3) default_mission_file="$AGENT_ROOT/examples/mission3.json" ;;
+    mission4) default_mission_file="$AGENT_ROOT/examples/mission4.json" ;;
     joint) default_mission_file="$AGENT_ROOT/examples/mission1-and-2.json" ;;
-    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2, mission3 or joint." >&2; exit 2 ;;
+    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2, mission3, mission4 or joint." >&2; exit 2 ;;
 esac
 readonly MISSION_FILE="${ONR_DEMO_MISSION_FILE:-$default_mission_file}"
 
@@ -82,6 +94,12 @@ if [ "$MISSION_MODE" = "mission3" ]; then
         mission_args+=(--mission3-fixture "$MISSION3_FIXTURE")
     fi
 fi
+if [ "$MISSION_MODE" = "mission4" ]; then
+    if [ ! -r "$MISSION4_PACKAGE" ] || [ ! -r "$MISSION4_FIXTURE" ] || [ ! -r "$MISSION4_REQUESTS" ]; then
+        echo "Mission 4 package, fixture or request script is missing." >&2; exit 1
+    fi
+    mission_args+=(--mission-mode mission4 --mission4-package "$MISSION4_PACKAGE" --mission4-fixture "$MISSION4_FIXTURE")
+fi
 
 if [ "$DRY_RUN" != "1" ]; then
 session_list="$(herdr session list)"
@@ -107,6 +125,9 @@ physical_state_root="$run_root/physical-state"
 agent_storage_root="$run_root/agent-storage"
 planner_artifacts_root="$run_root/planner-artifacts"
 environment_artifacts_root="$run_root/environment-artifacts"
+closed_loop_result="$run_root/closed-loop-result.json"
+mission4_worker_state="$run_root/mission4-worker-session.json"
+mission4_worker_ready="$run_root/mission4-worker-ready.json"
 agent_config="$run_root/onr_agent_params.yaml"
 environment_config="$run_root/environment_physical.yaml"
 resolved_mission1_planning_input="$MISSION1_PLANNING_INPUT"
@@ -125,6 +146,7 @@ mkdir -p \
 
 sed \
     -e "s|^environment_profile: .*|environment_profile: $environment_config|" \
+    -e "s|^  maneuver_seconds: .*|  maneuver_seconds: $MANEUVER_SECONDS|" \
     -e "s|^  root: var/transport$|  root: $transport_root|" \
     -e "s|^  root: var/storage$|  root: $agent_storage_root|" \
     -e "s|^  planner_artifacts: var/planner-artifacts$|  planner_artifacts: $planner_artifacts_root|" \
@@ -148,13 +170,13 @@ fi
 
 physical_args=(python -u -m onr_physical_runtime.agent.service --scenario-config "$SCENARIO_CONFIG"
     --transport-root "$transport_root" --state-root "$physical_state_root" --mission-id "$MISSION_ID"
-    --vehicle-id "$VEHICLE_ID" "${mission_args[@]}" --viewer-host 127.0.0.1 --viewer-port 5066)
+    --vehicle-id "$VEHICLE_ID" "${mission_args[@]}" --viewer-host 127.0.0.1 --viewer-port "$VIEWER_PORT")
 printf -v physical_python '%q ' "${physical_args[@]}"
 physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec $physical_python"
 printf -v physical_command 'bash -lc %q' "$physical_inner"
 
 agent_args=(python -u -m onr.runtime.cli --mission-file "$MISSION_FILE" --repo-root "$AGENT_ROOT"
-    --config-path "$agent_config" --skip-runtime-artifact-rollover)
+    --config-path "$agent_config" --skip-runtime-artifact-rollover --result-path "$closed_loop_result")
 printf -v agent_python '%q ' "${agent_args[@]}"
 planning_preparation=""
 if [ "$prepare_mission1_planning_input" = "1" ]; then
@@ -170,12 +192,30 @@ if [ "$prepare_mission1_planning_input" = "1" ]; then
     printf -v view_input_python '%q ' "${view_input_args[@]}"
     planning_preparation="$public_input_python&& $view_input_python&& "
 fi
-agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; ${planning_preparation}exec $agent_python"
+agent_ready_file="$initial_event"
+agent_ready_description="physical runtime initial update"
+if [ "$MISSION_MODE" = "mission4" ]; then
+    agent_ready_file="$mission4_worker_ready"
+    agent_ready_description="initial Mission 4 worker request receipt"
+fi
+agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the $agent_ready_description...'; for attempt in {1..120}; do [ -f '$agent_ready_file' ] && break; sleep 1; done; if [ ! -f '$agent_ready_file' ]; then echo '$agent_ready_description was not available within 120 seconds.' >&2; exit 1; fi; echo 'Waiting for the configured vLLM endpoint...'; for attempt in {1..120}; do curl -fsS --max-time 2 http://127.0.0.1:11411/v1/models >/dev/null 2>&1 && break; sleep 1; done; if ! curl -fsS --max-time 2 http://127.0.0.1:11411/v1/models >/dev/null 2>&1; then echo 'configured vLLM endpoint was not available within 120 seconds.' >&2; exit 1; fi; ${planning_preparation}exec $agent_python"
 printf -v agent_command 'bash -lc %q' "$agent_inner"
+
+worker_command=""
+if [ "$MISSION_MODE" = "mission4" ]; then
+    worker_args=(python -u -m onr.adapters.mission4_worker --mission-id "$MISSION_ID"
+        --session "$mission4_worker_state" --request-directory "$physical_state_root/search_requests"
+        --transport-root "$transport_root" --script "$MISSION4_REQUESTS" --ready-file "$mission4_worker_ready"
+        --timeout-seconds "$MISSION4_WORKER_TIMEOUT_SECONDS")
+    printf -v worker_python '%q ' "${worker_args[@]}"
+    worker_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; exec $worker_python"
+    printf -v worker_command 'bash -lc %q' "$worker_inner"
+fi
 
 if [ "$DRY_RUN" = "1" ]; then
     printf 'DRY RUN: mode=%s; no services started\nRun configuration: %s\nPhysical command: %s\nAgent command: %s\n' \
         "$MISSION_MODE" "$run_root" "$physical_command" "$agent_command"
+    if [ -n "$worker_command" ]; then printf 'Worker command: %s\n' "$worker_command"; fi
     exit 0
 fi
 
@@ -201,6 +241,12 @@ agent_pane="$(HERDR_SESSION="$sessname" herdr pane split "$physical_pane" --dire
 HERDR_SESSION="$sessname" herdr pane rename "$agent_pane" "agent-slim"
 HERDR_SESSION="$sessname" herdr pane run "$agent_pane" "$agent_command"
 
+if [ -n "$worker_command" ]; then
+    worker_pane="$(HERDR_SESSION="$sessname" herdr pane split "$physical_pane" --direction down --no-focus | jq -r '.result.pane.pane_id')"
+    HERDR_SESSION="$sessname" herdr pane rename "$worker_pane" "mission4-worker"
+    HERDR_SESSION="$sessname" herdr pane run "$worker_pane" "$worker_command"
+fi
+
 echo "Created workspace '$WORKSPACE_LABEL' ($workspace_id) in herdr session '$sessname'."
 echo "Run data: $run_root"
 echo "Scenario: $SCENARIO_CONFIG"
@@ -208,5 +254,7 @@ echo "Mission mode: $MISSION_MODE; Mission Input: $MISSION_FILE"
 if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 1 instance: $MISSION_INSTANCE"; fi
 if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
 if [ "$MISSION_MODE" = "mission3" ]; then echo "Mission 3 description: $MISSION3_DESCRIPTION; fixture: ${MISSION3_FIXTURE:-live}"; fi
-echo "World-model frame stream: http://127.0.0.1:5066"
+if [ "$MISSION_MODE" = "mission4" ]; then echo "Mission 4 package: $MISSION4_PACKAGE; fixture: $MISSION4_FIXTURE; requests: $MISSION4_REQUESTS"; fi
+echo "Terminal audit: python scripts/audit_live_demo.py --run-root '$run_root' --mission-mode '$MISSION_MODE'"
+echo "World-model frame stream: http://127.0.0.1:$VIEWER_PORT"
 echo "Attach with: herdr --session $sessname"

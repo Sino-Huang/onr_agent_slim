@@ -111,6 +111,21 @@ class InferenceWindow:
         }
 
 
+def _environment_for_maneuver(
+    environment: Mapping[str, object], plan_revision: int
+) -> Mapping[str, object]:
+    lifecycle = environment_maneuver_lifecycle(environment)
+    if (
+        lifecycle is not None
+        and lifecycle.get("lifecycle") not in {"accepted", "active"}
+        and lifecycle.get("plan_revision") != plan_revision
+    ):
+        current = dict(environment)
+        current["maneuver_lifecycle"] = None
+        return current
+    return environment
+
+
 @dataclass(frozen=True, slots=True)
 class ClosedLoopRunResult:
     """Safe final audit summary for one deterministic Mission simulation."""
@@ -474,6 +489,7 @@ class ContextCoordination:
         tick_count = 0
         maximum_update_batch = 0
         coalesced_update_count = 0
+        simulation_limit_assessed = False
         inference_windows: list[InferenceWindow] = []
         last_maneuver_periodic = -self._maneuver_seconds
         last_hyper_periodic = 0.0
@@ -498,6 +514,18 @@ class ContextCoordination:
                 self._publish_runtime_source_facts(status)
                 snapshot = self._drain_required(context_consumer)
                 self._append_belief_revisions(belief_revisions)
+                initial_environment = self._resolve_environment(snapshot)
+                initial_world = initial_environment.get("world_model_info", {})
+                mission_mode = (
+                    initial_world.get("mission_mode", "mission1")
+                    if isinstance(initial_world, Mapping)
+                    else "mission1"
+                )
+                specialized_replan_mode = mission_mode in {
+                    "mission2",
+                    "mission3",
+                    "mission4",
+                }
 
                 while True:
                     environment.raise_if_failed()
@@ -591,7 +619,7 @@ class ContextCoordination:
                                     f"belief-{reliability.input_revision}"
                                 )
                                 last_gate_signature = gate_signature
-                    else:
+                    elif not specialized_replan_mode:
                         periodic_hyper, last_hyper_periodic, coalesced = (
                             self._next_periodic(
                                 now,
@@ -618,6 +646,11 @@ class ContextCoordination:
                     )
                     if search_trigger is not None:
                         gate_trigger = search_trigger if gate_trigger is None else gate_trigger + ";" + search_trigger
+                        search_decision = mission4_gate.last_decision
+                        if search_decision is not None and search_decision.action == "report":
+                            self._publish_mission4_report(
+                                mission_id, search_decision.reason, search_decision.report
+                            )
                     if periodic_hyper is not None or gate_trigger is not None or requested_hyper:
                         hyper_triggers = []
                         if periodic_hyper is not None:
@@ -745,6 +778,12 @@ class ContextCoordination:
                     ):
                         break
                     if environment.current_time >= self._simulation_limit_seconds:
+                        if specialized_replan_mode and not simulation_limit_assessed:
+                            self._queue_maneuver_trigger(
+                                f"simulation-limit:{environment.current_time:g}"
+                            )
+                            simulation_limit_assessed = True
+                            continue
                         periodic, last_maneuver_periodic, coalesced = (
                             self._next_periodic(
                                 environment.current_time,
@@ -1017,7 +1056,10 @@ class ContextCoordination:
             plan_revision=revision.planner_plan.plan_revision,
             statechart_reference=revision.statechart_reference,
             fsm_context=self._transition_intents.focused_context(status, intent),
-            environment_data=self._resolve_environment(snapshot),
+            environment_data=_environment_for_maneuver(
+                self._resolve_environment(snapshot),
+                revision.planner_plan.plan_revision,
+            ),
             trigger_identities=triggers,
             pending_perceptions=tuple(self._pending_perceptions),
             available_recipients=("hyper-agent",),
@@ -1105,6 +1147,27 @@ class ContextCoordination:
                 sequence=sequence,
             ),
         )
+
+    def _publish_mission4_report(
+        self, mission_id: str, reason: str, report: Mapping[str, object] | None
+    ) -> TransportEvent:
+        topic = "mission4-agent-reports"
+        revision = 0 if report is None else int(report.get("request_revision", 0))
+        event_id = f"mission4-agent-report:{mission_id}:{revision}:{reason}"
+        existing = self._transport.latest_event(
+            topic, mission_id, event_kind="mission4-agent-report"
+        )
+        if existing is not None and existing.event_id == event_id:
+            return existing
+        event = TransportEvent(
+            schema_version=1,
+            event_id=event_id,
+            mission_id=mission_id,
+            sequence=self._transport.next_event_sequence(topic, mission_id),
+            event_kind="mission4-agent-report",
+            payload={"reason": reason, "report": {} if report is None else dict(report)},
+        )
+        return self._transport.publish_event(topic, event)
 
     def publish_source_fact(
         self,
