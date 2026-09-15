@@ -104,3 +104,46 @@ Final verification:
   finds the previously introduced core `from onr.` import. Running without the
   marker expression additionally fails the unavailable opt-in AirSim gates, so
   no AirSim result is claimed here.
+
+## Default `demo-001` live reproduction
+
+On 2026-09-15, the unmodified default launcher command
+`bash scripts/live_demo_with_wm/herdr_start_live_demo.sh onr` completed the
+`demo-001` fixture in `run.VW40wd`. It checked 13 of 234 public reports and
+recalled **1/39 corrupt outcomes (2.56%)**. The generated Environment Profile
+had no Mission 1 planning input, so its radius-only candidates did not preserve
+the native camera direction. A minimized replay confirmed that two
+solver-credited reports at `(1046, -116)` were outside the commanded view.
+
+After making the launcher's public-view preparation the Mission 1 default,
+`run.e1byuO` completed the same 299.5 s/600-tick task with 46 unique checks:
+44 clean, one omitted, and one altered. Both reports from the minimized failure
+were checked. Offline evaluator scoring gave **2/39 recall (5.13%)** and reduced
+balanced MSE from `0.140416` to `0.113971` (**18.83%**). The result exactly
+matched the separate native-camera replay's check/outcome totals. The terminal
+transition matched all 19 report IDs required by its final statechart and used
+`assessment=satisfied`; belief revision 29 matched the check ledger.
+
+The corrected run took 3,859.89 s wall time (64.33 minutes): 1,932.73 s in 97
+recorded LLM calls, 123.01 s in non-overlapping tool calls, and 1,804.15 s in
+view preparation, simulation, coordination, transport, and other uninstrumented
+work. Relative to the radius-only baseline, wall time increased by 286.10 s and
+recorded LLM time by 896.71 s because the wider coverage produced more maneuver
+decisions and six rather than four planner revisions.
+
+This recall is not sufficient for a 50% target. An evaluator-only clairvoyant
+MILP over all 616 public native-camera views certified an optimistic upper bound
+of **16/39 (41.0%)**. Even an omnidirectional execution over the current
+candidate set therefore cannot reach 50%; improving the target requires broader
+candidate coverage or a changed sensing/task envelope, not prompt tuning.
+
+The strict completed-run audit found one additional route-model defect:
+navigation after a pursuit completed at 98.5 s against a 98.0 s deadline. The
+graph had assumed that the UAV ended pursuit at the ship's final reported
+position, although surveillance can validly hold nearer the pursuit start.
+Outgoing pursuit arcs now require the successor to be reachable from both
+public endpoint bounds. The regression and the full non-live suite pass
+(945 passed, 22 deselected). The completed-run bundle is
+`var/mission1-default-live-run-e1byuO-final/`; its diagnostic audit confirms all
+other assertions, while the strict audit intentionally retains the observed
+late-navigation failure from the pre-fix run.

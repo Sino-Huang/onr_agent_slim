@@ -844,6 +844,19 @@ def _candidate_arcs(
             east = np.sign(ys - left.end_y).astype(int) + 1
             initial = 4 if left.arrival_direction is None else left.arrival_direction
             travel += turns[north, east, initial, arrival] * quarter_turn_seconds
+        if left.mode == "pursue_ship":
+            # Surveillance may hold after acquisition instead of ending at the
+            # ship's final report position, so neither endpoint may be assumed.
+            from_start = (
+                np.abs(xs - left.x) + np.abs(ys - left.y)
+            ) / (0.9 * speed)
+            if quarter_turn_seconds:
+                north = np.sign(xs - left.x).astype(int) + 1
+                east = np.sign(ys - left.y).astype(int) + 1
+                from_start += (
+                    turns[north, east, 4, arrival] * quarter_turn_seconds
+                )
+            travel = np.maximum(travel, from_start)
         feasible = start_times + 1e-9 >= left.end_s + travel
         if chronological_reports:
             feasible &= report_epochs > left.last_report_time_s + 1e-9

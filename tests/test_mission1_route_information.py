@@ -205,6 +205,43 @@ def test_history_safe_pruning_uses_valid_chains_not_only_direct_neighbors():
     assert arcs == tuple((i, i + 1) for i in range(7))
 
 
+def test_pursuit_successor_is_reachable_from_either_endpoint() -> None:
+    from onr.application.mission1_planning import _candidate_arcs
+
+    graph, _ = history_graph()
+    template = graph.candidates[0]
+    pursuit = replace(
+        template,
+        candidate_id="pursuit",
+        mode="pursue_ship",
+        entity_id=1,
+        report_ids=("pursuit-report",),
+        start_s=0,
+        end_s=3,
+        x=0,
+        y=0,
+        end_x=100,
+        end_y=0,
+        arrival_direction=None,
+    )
+    fixed = replace(
+        template,
+        candidate_id="fixed",
+        report_ids=("fixed-report",),
+        start_s=4.5,
+        end_s=5,
+        x=100,
+        y=0,
+        end_x=100,
+        end_y=0,
+        arrival_direction=0,
+    )
+
+    arcs = _candidate_arcs((pursuit, fixed), 30, 0.5)
+
+    assert (1, 2) not in arcs
+
+
 def test_separate_route_horizon_retains_late_recall_without_late_information():
     environment = _environment([_report("early", 1, 10, 0, 0), _report("late", 1, 30, 0, 0)], fov=1)
     belief = _belief((1,))
