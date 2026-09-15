@@ -603,6 +603,72 @@ def test_transition_tool_rejects_future_exact_time_bound() -> None:
     }
 
 
+def test_transition_tool_requires_exact_unconfirmed_report_ids() -> None:
+    plan = _plan()
+    chart = _chart(plan)
+    chart = replace(
+        chart,
+        transitions=(
+            replace(
+                chart.transitions[0],
+                context={
+                    "readiness": {
+                        "not_before": {"seconds": 10},
+                        "sensed_evidence": {
+                            "report_check_ledger": "world_model_info.event_report_checks",
+                            "report_ids": ["confirmed-report", "missing-report"],
+                        },
+                    }
+                },
+            ),
+        ),
+    )
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(chart))
+    intent = journal.select(
+        status, "arbitrary destination", "Assess exact evidence.", selected_at=0
+    )
+    invocation = ManeuverInvocation(
+        request_id="missing-evidence-heartbeat",
+        correlation_id="missing-evidence-correlation",
+        mission_id=plan.mission_id,
+        plan_revision=plan.plan_revision,
+        statechart_reference="accepted-statechart.json",
+        fsm_context=journal.focused_context(status, intent),
+        environment_data={
+            "mission_time_seconds": 10,
+            "world_model_info": {
+                "event_report_checks": [
+                    {"report_id": "confirmed-report", "outcome": "clean"}
+                ]
+            },
+        },
+    )
+    context = ManeuverToolContext(
+        invocation, runner, _Dispatcher(), transition_intents=journal
+    )
+
+    result = json.loads(
+        cast(Any, transition_fsm).func(
+            current_state="arbitrary origin",
+            next_state="arbitrary destination",
+            assessment="satisfied_with_uncertainty",
+            evidence="One required report is confirmed.",
+            uncertainty="One required report remains unconfirmed.",
+            runtime=_runtime(context),
+        )
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == (
+        "uncertainty must name every unconfirmed required report ID"
+    )
+    assert result["omitted_report_ids"] == ["missing-report"]
+    assert asyncio.run(runner.status()).active_state == "arbitrary origin"
+
+
 def test_assess_first_heartbeat_persists_new_state_intent_for_fresh_evidence(
     tmp_path: Path,
 ) -> None:

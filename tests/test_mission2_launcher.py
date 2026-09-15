@@ -73,3 +73,55 @@ def test_launcher_dry_run_preserves_default_and_selects_mission2(tmp_path, mode)
     expected_planning_input = str(planning_input) if mode != "mission2" else None
     assert generated_profile["external"]["mission1_planning_input_path"] == expected_planning_input
     assert "no services started" in result.stdout
+
+
+def test_mission1_launcher_prepares_public_sensor_input_by_default(tmp_path):
+    repo = Path(__file__).parents[1]
+    agent, physical = tmp_path / "agent", tmp_path / "physical"
+    (agent / "conf").mkdir(parents=True)
+    (agent / "examples").mkdir()
+    for name in ("onr_agent_params.yaml", "environment_physical.yaml"):
+        shutil.copyfile(repo / "conf" / name, agent / "conf" / name)
+    shutil.copyfile(repo / "examples/mission.json", agent / "examples/mission.json")
+    instance = physical / "data/harbor_world/mission1_instances/demo-001"
+    instance.mkdir(parents=True)
+    (instance / "events_report.json").write_text("[]")
+    config = tmp_path / "scenario.yaml"
+    config.write_text("{}")
+    script = tmp_path / "launcher.sh"
+    script.write_text(
+        (repo / "scripts/live_demo_with_wm/herdr_start_live_demo.sh")
+        .read_text()
+        .replace("/data/ccu/sukaih/ONR/onr_agent_slim", str(agent))
+        .replace("/data/ccu/sukaih/ONR/onr_physical_runtime", str(physical))
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ONR_DEMO_")}
+    env.update(ONR_DEMO_DRY_RUN="1", ONR_DEMO_SCENARIO_CONFIG=str(config))
+
+    result = subprocess.run(
+        ["bash", str(script), "not-a-real-herdr-session"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    run_root = Path(next(
+        line.removeprefix("Run configuration: ")
+        for line in result.stdout.splitlines()
+        if line.startswith("Run configuration: ")
+    ))
+    generated_profile = yaml.safe_load(
+        (run_root / "environment_physical.yaml").read_text()
+    )
+    assert generated_profile["external"]["mission1_planning_input_path"] == str(
+        run_root / "mission1-planning-input/environment.json"
+    )
+    agent_command = next(
+        line.removeprefix("Agent command: ")
+        for line in result.stdout.splitlines()
+        if line.startswith("Agent command: ")
+    )
+    assert "prepare_live_mission1_public_inputs.py" in agent_command
+    assert "prepare_surveillance_views.py" in agent_command

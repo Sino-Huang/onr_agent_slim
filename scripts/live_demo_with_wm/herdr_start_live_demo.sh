@@ -4,6 +4,8 @@
 # workspace inside an existing herdr session.
 # Optional ONR_DEMO_SCENARIO_CONFIG and ONR_DEMO_MISSION1_INSTANCE select a
 # caller-supplied task without changing the default harbor demo or CLI arguments.
+# Mission 1 prepares public native-camera views unless the caller supplies an
+# explicit ONR_DEMO_MISSION1_PLANNING_INPUT.
 # ONR_DEMO_DIAGNOSTIC_PRIOR optionally installs an explicit oracle/flattening
 # control bundle through the existing initial-belief store and outbox.
 
@@ -107,6 +109,12 @@ planner_artifacts_root="$run_root/planner-artifacts"
 environment_artifacts_root="$run_root/environment-artifacts"
 agent_config="$run_root/onr_agent_params.yaml"
 environment_config="$run_root/environment_physical.yaml"
+resolved_mission1_planning_input="$MISSION1_PLANNING_INPUT"
+prepare_mission1_planning_input=0
+if [ "$MISSION_MODE" = "mission1" ] && [ -z "$resolved_mission1_planning_input" ]; then
+    resolved_mission1_planning_input="$run_root/mission1-planning-input/environment.json"
+    prepare_mission1_planning_input=1
+fi
 
 mkdir -p \
     "$transport_root" \
@@ -124,7 +132,7 @@ sed \
 
 sed \
     -e "s|^  planning_artifact_root: var/environment$|  planning_artifact_root: $environment_artifacts_root|" \
-    -e "s|^  mission1_planning_input_path: null$|  mission1_planning_input_path: ${MISSION1_PLANNING_INPUT:-null}|" \
+    -e "s|^  mission1_planning_input_path: null$|  mission1_planning_input_path: ${resolved_mission1_planning_input:-null}|" \
     "$AGENT_ROOT/conf/environment_physical.yaml" > "$environment_config"
 
 initial_event="$transport_root/identity/event-environment-update%3Amission%3Ademo%3Ainitial.json"
@@ -148,7 +156,21 @@ printf -v physical_command 'bash -lc %q' "$physical_inner"
 agent_args=(python -u -m onr.runtime.cli --mission-file "$MISSION_FILE" --repo-root "$AGENT_ROOT"
     --config-path "$agent_config" --skip-runtime-artifact-rollover)
 printf -v agent_python '%q ' "${agent_args[@]}"
-agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; exec $agent_python"
+planning_preparation=""
+if [ "$prepare_mission1_planning_input" = "1" ]; then
+    public_input_root="$run_root/mission1-public-input"
+    planning_input_root="$run_root/mission1-planning-input"
+    public_input_args=(python "$AGENT_ROOT/scripts/prepare_live_mission1_public_inputs.py"
+        --transport-root "$transport_root" --mission-id "$MISSION_ID" --output "$public_input_root")
+    view_input_args=(env "PYTHONPATH=$PHYSICAL_ROOT/src:$AGENT_ROOT/src" python
+        "$PHYSICAL_ROOT/scripts/prepare_surveillance_views.py" --scenario "$SCENARIO_CONFIG"
+        --environment "$public_input_root/environment.json" --belief "$public_input_root/belief.json"
+        --agent-var "$AGENT_ROOT/var" --output "$planning_input_root")
+    printf -v public_input_python '%q ' "${public_input_args[@]}"
+    printf -v view_input_python '%q ' "${view_input_args[@]}"
+    planning_preparation="$public_input_python&& $view_input_python&& "
+fi
+agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the physical runtime initial update...'; for attempt in {1..120}; do [ -f '$initial_event' ] && break; sleep 1; done; if [ ! -f '$initial_event' ]; then echo 'Physical runtime did not publish its initial update within 120 seconds.' >&2; exit 1; fi; ${planning_preparation}exec $agent_python"
 printf -v agent_command 'bash -lc %q' "$agent_inner"
 
 if [ "$DRY_RUN" = "1" ]; then

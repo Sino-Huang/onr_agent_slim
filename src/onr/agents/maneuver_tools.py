@@ -353,6 +353,8 @@ def transition_fsm(
         assessment: Maneuver's semantic assessment of the selected condition.
         evidence: Concise public evidence supporting the assessment.
         uncertainty: Concise public uncertainty or accepted missingness summary.
+            When required report checks remain unconfirmed, name every exact
+            report ID supplied by the derived transition facts.
 
     Returns:
         Canonical JSON containing rejection evidence or the updated focused FSM context.
@@ -486,6 +488,53 @@ def _transition_fsm(
         }
         context.execution_record.append("transition_fsm", result, successful=False)
         return _canonical_json(result)
+    sensed = readiness.get("sensed_evidence")
+    world = context.invocation.environment_data.get("world_model_info")
+    unconfirmed: list[str] = []
+    if (
+        isinstance(sensed, Mapping)
+        and sensed.get("report_check_ledger")
+        == "world_model_info.event_report_checks"
+        and isinstance(world, Mapping)
+    ):
+        required = sensed.get("report_ids")
+        ledger = world.get("event_report_checks")
+        if isinstance(required, (list, tuple)) and isinstance(ledger, (list, tuple)):
+            required_ids = list(
+                dict.fromkeys(item for item in required if isinstance(item, str))
+            )
+            observed = {
+                row.get("report_id") for row in ledger if isinstance(row, Mapping)
+            }
+            unconfirmed = [item for item in required_ids if item not in observed]
+    if unconfirmed:
+        if parsed_assessment is not TransitionAssessment.SATISFIED_WITH_UNCERTAINTY:
+            result = {
+                "status": "rejected",
+                "reason": (
+                    "unconfirmed required reports need satisfied_with_uncertainty"
+                ),
+                "unconfirmed_report_ids": unconfirmed,
+                **_candidate_result(status),
+            }
+            context.execution_record.append(
+                "transition_fsm", result, successful=False
+            )
+            return _canonical_json(result)
+        omitted = [report_id for report_id in unconfirmed if report_id not in uncertainty]
+        if omitted:
+            result = {
+                "status": "rejected",
+                "reason": (
+                    "uncertainty must name every unconfirmed required report ID"
+                ),
+                "omitted_report_ids": omitted,
+                **_candidate_result(status),
+            }
+            context.execution_record.append(
+                "transition_fsm", result, successful=False
+            )
+            return _canonical_json(result)
     sequence = len(context.execution_record.executions) + 1
     decision_id = f"maneuver-transition:{context.invocation.request_id}:{sequence}"
     authorization = ManeuverDecision(

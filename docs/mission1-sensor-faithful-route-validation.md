@@ -22,8 +22,12 @@ checks the Mission ID, exact public report-ID set, and advertised FoV radius,
 then adds only the prepared surveillance and observation fields to
 `planning_view()`. The live environment projection remains unmodified and does
 not contain `surveillance_views`. The launcher exposes the seam as
-`ONR_DEMO_MISSION1_PLANNING_INPUT` for Mission 1 and joint runs. The default is
-`null`, preserving the radius-only behavior.
+`ONR_DEMO_MISSION1_PLANNING_INPUT` for Mission 1 and joint runs. The generic
+Environment Profile default remains `null`. For a Mission 1 live-demo launch,
+omitting the override now prepares public native-camera views from the selected
+time-zero report stream and ordinary prior before Agent starts; an explicit
+override still selects the caller's prepared input. Joint mode continues to
+require an explicit input when sensor-aware Mission 1 planning is wanted.
 
 This interface was added in Agent commit `db4008d` and Physical Runtime commit
 `01600ad`. It does not change the single Mission 1 `model.mzn`, the 10% replan
