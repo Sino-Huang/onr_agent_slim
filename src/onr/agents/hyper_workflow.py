@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Thread
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from langchain.agents.middleware import wrap_model_call
 from langchain.tools import ToolRuntime, tool
@@ -25,6 +25,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from pydantic import BeforeValidator
 
 from onr.agents.hyper_agent import (
     _create_deep_agent,
@@ -66,6 +67,20 @@ HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
     "required": ["mission_id", "outcome"],
     "additionalProperties": False,
 }
+
+
+def _decode_json_object(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+PlanningIntentDetails = Annotated[
+    dict[str, Any], BeforeValidator(_decode_json_object)
+]
 
 
 def _canonical_json(value: object) -> str:
@@ -660,7 +675,7 @@ def record_planning_intent(
     planning_profile: Literal["temporal", "symbolic"],
     planner_id: Literal["minizinc", "fast-downward"],
     rationale: str,
-    details: dict[str, Any],
+    details: PlanningIntentDetails,
     prior_knowledge: dict[str, Any] | None,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
