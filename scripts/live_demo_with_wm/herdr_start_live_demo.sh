@@ -114,6 +114,33 @@ if [ "$status" != "running" ]; then
     echo "Start it first with: herdr --session $sessname" >&2
     exit 1
 fi
+
+# A live demo owns one workspace label. Closing any prior matching workspace
+# also terminates its pane processes while preserving its run data under var.
+existing_workspace_ids="$(
+    HERDR_SESSION="$sessname" herdr workspace list |
+        jq -r --arg label "$WORKSPACE_LABEL" \
+            '.result.workspaces[] | select(.label == $label) | .workspace_id'
+)"
+for existing_workspace_id in $existing_workspace_ids; do
+    HERDR_SESSION="$sessname" herdr workspace close "$existing_workspace_id"
+done
+
+if ! python - "$VIEWER_PORT" <<'PY'
+import socket
+import sys
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    try:
+        probe.bind(("127.0.0.1", int(sys.argv[1])))
+    except OSError:
+        raise SystemExit(1) from None
+PY
+then
+    echo "Viewer address 127.0.0.1:$VIEWER_PORT is already in use." >&2
+    echo "Close the owning workspace or process, or set ONR_DEMO_VIEWER_PORT to a free port." >&2
+    exit 1
+fi
 fi
 
 # Keep each live demo isolated while retaining all generated state under the
@@ -229,17 +256,6 @@ if [ "$DRY_RUN" = "1" ]; then
     if [ -n "$worker_command" ]; then printf 'Worker command: %s\n' "$worker_command"; fi
     exit 0
 fi
-
-# A live demo owns one workspace label. Closing any prior matching workspace
-# also terminates its pane processes while preserving its run data under var.
-existing_workspace_ids="$(
-    HERDR_SESSION="$sessname" herdr workspace list |
-        jq -r --arg label "$WORKSPACE_LABEL" \
-            '.result.workspaces[] | select(.label == $label) | .workspace_id'
-)"
-for existing_workspace_id in $existing_workspace_ids; do
-    HERDR_SESSION="$sessname" herdr workspace close "$existing_workspace_id"
-done
 
 create_out="$(HERDR_SESSION="$sessname" herdr workspace create --cwd "$AGENT_ROOT" --label "$WORKSPACE_LABEL" --no-focus)"
 physical_pane="$(printf '%s' "$create_out" | jq -r '.result.root_pane.pane_id')"

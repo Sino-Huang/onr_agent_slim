@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -120,3 +122,106 @@ def test_mission1_live_demo_keeps_legacy_run_directory() -> None:
         )
     )
     assert run_root.parent == repository / "var/live_demo_with_wm"
+
+
+def test_launcher_rejects_occupied_viewer_port_before_creating_run_or_workspace(
+    tmp_path: Path,
+) -> None:
+    repository = Path(__file__).parents[1]
+    agent_root = tmp_path / "agent"
+    physical_root = tmp_path / "physical"
+    (agent_root / "conf").mkdir(parents=True)
+    (agent_root / "examples").mkdir()
+    for name in ("onr_agent_params.yaml", "environment_physical.yaml"):
+        shutil.copyfile(repository / "conf" / name, agent_root / "conf" / name)
+    for name in ("mission3.json", "mission3_description.json"):
+        shutil.copyfile(repository / "examples" / name, agent_root / "examples" / name)
+
+    scenario = tmp_path / "mission3-scenario.yaml"
+    scenario.write_text("{}\n", encoding="utf-8")
+    launcher = tmp_path / "launcher.sh"
+    launcher.write_text(
+        (repository / "scripts/live_demo_with_wm/herdr_start_live_demo.sh")
+        .read_text(encoding="utf-8")
+        .replace("/data/ccu/sukaih/ONR/onr_agent_slim", str(agent_root))
+        .replace("/data/ccu/sukaih/ONR/onr_physical_runtime", str(physical_root)),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    call_log = tmp_path / "herdr-calls.log"
+    fake_herdr = fake_bin / "herdr"
+    fake_herdr.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['HERDR_CALL_LOG'], 'a', encoding='utf-8') as log:\n"
+        "    log.write(' '.join(args) + '\\n')\n"
+        "if args == ['session', 'list']:\n"
+        "    print('demo running')\n"
+        "elif args == ['workspace', 'list']:\n"
+        "    print(json.dumps({'result': {'workspaces': ["
+        "{'label': 'mission3-live-demo', 'workspace_id': 'owned-workspace'}, "
+        "{'label': 'mission2-live-demo', 'workspace_id': 'foreign-workspace'}]}}))\n"
+        "elif args[:2] == ['workspace', 'create']:\n"
+        "    print(json.dumps({'result': {'root_pane': {'pane_id': 'physical-pane'}, "
+        "'workspace': {'workspace_id': 'new-workspace'}}}))\n"
+        "elif args[:2] == ['pane', 'split']:\n"
+        "    print(json.dumps({'result': {'pane': {'pane_id': 'agent-pane'}}}))\n"
+        "else:\n"
+        "    print('{}')\n",
+        encoding="utf-8",
+    )
+    fake_herdr.chmod(0o755)
+
+    run_parent = agent_root / "var/live_demo_with_wm/mission3"
+    run_parent.mkdir(parents=True)
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("ONR_DEMO_")
+    }
+    environment.update(
+        HERDR_CALL_LOG=str(call_log),
+        ONR_DEMO_MISSION_MODE="mission3",
+        ONR_DEMO_SCENARIO_CONFIG=str(scenario),
+        PATH=f"{fake_bin}{os.pathsep}{environment['PATH']}",
+    )
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        viewer_port = listener.getsockname()[1]
+        environment["ONR_DEMO_VIEWER_PORT"] = str(viewer_port)
+
+        result = subprocess.run(
+            ["bash", str(launcher), "demo"],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+
+        with socket.create_connection(("127.0.0.1", viewer_port), timeout=1):
+            listener.settimeout(1)
+            connection, _ = listener.accept()
+            connection.close()
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert f"127.0.0.1:{viewer_port}" in output
+    assert "ONR_DEMO_VIEWER_PORT" in output
+    assert any(phrase in output.lower() for phrase in ("in use", "occupied"))
+    assert list(run_parent.iterdir()) == []
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        "session list",
+        "workspace list",
+        "workspace close owned-workspace",
+    ]
+    assert "workspace close foreign-workspace" not in calls
+    assert not any(call.startswith(("workspace create", "pane ")) for call in calls)
