@@ -217,9 +217,15 @@ if [ "$MISSION_MODE" = "mission4" ]; then
     printf -v worker_command 'bash -lc %q' "$worker_inner"
 fi
 
+audit_args=(python scripts/audit_live_demo.py --run-root "$run_root" --mission-mode "$MISSION_MODE")
+if [ "$MISSION_MODE" = "mission2" ]; then
+    audit_args+=(--mission2-scenario-dir "$MISSION2_SCENARIO")
+fi
+printf -v audit_command '%q ' "${audit_args[@]}"
+
 if [ "$DRY_RUN" = "1" ]; then
-    printf 'DRY RUN: mode=%s; no services started\nRun configuration: %s\nPhysical command: %s\nAgent command: %s\n' \
-        "$MISSION_MODE" "$run_root" "$physical_command" "$agent_command"
+    printf 'DRY RUN: mode=%s; no services started\nRun configuration: %s\nPhysical command: %s\nAgent command: %s\nTerminal audit: %s\n' \
+        "$MISSION_MODE" "$run_root" "$physical_command" "$agent_command" "$audit_command"
     if [ -n "$worker_command" ]; then printf 'Worker command: %s\n' "$worker_command"; fi
     exit 0
 fi
@@ -260,6 +266,6 @@ if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then echo 
 if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
 if [ "$MISSION_MODE" = "mission3" ]; then echo "Mission 3 description: $MISSION3_DESCRIPTION; fixture: ${MISSION3_FIXTURE:-live}"; fi
 if [ "$MISSION_MODE" = "mission4" ]; then echo "Mission 4 package: $MISSION4_PACKAGE; fixture: $MISSION4_FIXTURE; requests: $MISSION4_REQUESTS"; fi
-echo "Terminal audit: python scripts/audit_live_demo.py --run-root '$run_root' --mission-mode '$MISSION_MODE'"
+echo "Terminal audit: $audit_command"
 echo "World-model frame stream: http://127.0.0.1:$VIEWER_PORT"
 echo "Attach with: herdr --session $sessname"

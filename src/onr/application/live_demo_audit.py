@@ -56,7 +56,12 @@ def _contains_private_fixture_key(value: object) -> bool:
     return False
 
 
-def audit_live_demo(run_root: Path, mission_mode: str) -> dict[str, object]:
+def audit_live_demo(
+    run_root: Path,
+    mission_mode: str,
+    *,
+    mission_metrics: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
     if mission_mode not in {"mission2", "mission3", "mission4"}:
@@ -163,6 +168,8 @@ def audit_live_demo(run_root: Path, mission_mode: str) -> dict[str, object]:
         "operational_record_count": len(records),
         "agent_debug_record_count": len(debug_records),
     }
+    if mission_metrics is not None:
+        audit["mission_metrics"] = dict(mission_metrics)
     (root / "live-acceptance.json").write_text(
         json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

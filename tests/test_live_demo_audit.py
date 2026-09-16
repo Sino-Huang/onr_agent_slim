@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -105,6 +107,74 @@ def test_live_demo_audit_records_failures(tmp_path: Path) -> None:
     audit = audit_live_demo(tmp_path, "mission2")
     assert audit["status"] == "FAIL"
     assert set(audit["failures"]) >= {"fsm_not_terminal", "transport_dead_letter_recorded"}
+
+
+def test_mission2_live_demo_audit_persists_collision_metrics(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission2")
+    scenario = tmp_path / "collision" / "0"
+    ships = scenario / "ships"
+    ships.mkdir(parents=True)
+    for ship_id, start, end, heading in ((1, 0, 20, 0), (2, 30, 10, 180)):
+        write(ships / f"{ship_id}.json", {
+            "id": ship_id,
+            "objectId": ship_id,
+            "mesh": {
+                "MinBounds": {"X": -100, "Y": -100},
+                "MaxBounds": {"X": 100, "Y": 100},
+            },
+            "pose": [
+                [start * 100, 0, 0, heading, 0],
+                [end * 100, 0, 0, heading, 10],
+            ],
+        })
+    write(tmp_path / "physical-state/observations/00000001-observation.json", {
+        "observation_time_s": 5.0,
+        "world_model_info": {
+            "mission_mode": "mission2",
+            "perception_predictions": {
+                "run_id": "video-demo",
+                "alerts": [
+                    {
+                        "ship_ids": [1, 2],
+                        "event_type": "near_collision",
+                        "published_at_s": 4.0,
+                        "predicted_contact_at_s": 7.0,
+                    },
+                    {
+                        "ship_ids": [1, 2],
+                        "event_type": "collision",
+                        "published_at_s": 5.0,
+                        "predicted_contact_at_s": 7.0,
+                    },
+                ],
+            },
+        },
+    })
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "scripts/audit_live_demo.py"),
+            "--run-root",
+            str(tmp_path),
+            "--mission-mode",
+            "mission2",
+            "--mission2-scenario-dir",
+            str(scenario),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    metrics = json.loads((tmp_path / "mission2-metrics.json").read_text())
+    assert metrics["prediction_run_id"] == "video-demo"
+    assert metrics["metrics"]["actual_contact"]["pair_recall"] == 1.0
+    assert metrics["metrics"]["actual_contact"]["precision"] == 1.0
+    acceptance = json.loads((tmp_path / "live-acceptance.json").read_text())
+    assert acceptance["mission_metrics"] == metrics
 
 
 def test_live_demo_audit_orders_content_addressed_events_by_mission_time(

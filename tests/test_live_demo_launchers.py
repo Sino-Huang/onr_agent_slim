@@ -53,10 +53,23 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
     agent = commands["Agent command"]
     assert agent[agent.index("--mission-file") + 1].endswith(f"{mode}.json")
     assert "--result-path" in agent
+    audit_line = next(
+        line.removeprefix("Terminal audit: ")
+        for line in result.stdout.splitlines()
+        if line.startswith("Terminal audit: ")
+    )
+    audit = shlex.split(audit_line)
+    assert audit[audit.index("--run-root") + 1] == str(run_root)
+    assert audit[audit.index("--mission-mode") + 1] == mode
     if mode == "mission2":
         assert physical[physical.index("--scenario-config") + 1].endswith(
             "config/mission2_live_demo.yaml"
         )
+        assert audit[audit.index("--mission2-scenario-dir") + 1].endswith(
+            "onr_scenario/offshore_dock_1/collision/0"
+        )
+    else:
+        assert "--mission2-scenario-dir" not in audit
     if mode == "mission3":
         assert physical[physical.index("--mission3-fixture") + 1].endswith(
             "config/mission3_smoke/private_fixture.json"

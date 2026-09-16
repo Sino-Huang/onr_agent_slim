@@ -55,6 +55,14 @@ fails on a nonterminal FSM, missing model/planner/maneuver evidence, Mission-tim
 movement during inference, dead letters, operational errors, or an incomplete
 mission-specific result.
 
+For Mission 2, that same terminal command opens the selected scenario truth
+only after execution and writes `mission2-metrics.json`. It reports pair recall,
+precision, false positives and false negatives, timely-warning coverage, and
+per-pair lead time at the strict sub-1 m contact, sub-5 m collision-warning, and
+sub-10 m near-collision boundaries. The metrics are also embedded in
+`live-acceptance.json` for one-file presentation and remain measurements rather
+than an invented pass threshold.
+
 Each run retains generated configuration, physical state, Agent storage,
 planner revisions, immutable environment artifacts, transport records,
 `closed-loop-result.json`, and the final audit. Close its Herdr workspace to stop

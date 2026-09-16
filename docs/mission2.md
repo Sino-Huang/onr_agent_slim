@@ -68,6 +68,14 @@ configured model service available. Both panes use unbuffered Python and display
 progress; all state stays under the printed run directory. This route uses
 standalone world-model predictions and needs no AirSim or solution checkout.
 
+After the terminal result, run the launcher's printed audit command. It binds
+the exact selected scenario to the recorded public prediction snapshots and
+writes `mission2-metrics.json` beside `live-acceptance.json`. The former contains
+the sub-1 m, sub-5 m, and sub-10 m pair metrics specified by Physical Runtime;
+the latter embeds the same data with the integration acceptance evidence.
+Private trajectories are opened by this terminal evaluator, never supplied to
+the live Agent or predictor.
+
 Set `ONR_DEMO_MISSION2_SCENARIO` to another original scenario directory. For joint
 mode set `ONR_DEMO_MISSION_MODE=joint` and explicitly supply
 `ONR_DEMO_MISSION1_INSTANCE` for that moving scenario. `ONR_DEMO_MISSION_FILE`
