@@ -64,6 +64,13 @@ PLANNING_INTENT_SCHEMA: dict[str, Any] = {
                 "pre-planner specification envelopes."
             ),
         },
+        "prior_knowledge": {
+            "anyOf": [{"type": "object"}, {"type": "null"}],
+            "description": (
+                "Optional versioned mission-derived prior claims. Numeric belief "
+                "parameters remain code-owned."
+            ),
+        },
     },
     "required": [
         "mission_id",
@@ -324,9 +331,7 @@ def _create_deep_agent(
                 else Path.cwd().resolve()
             )
             python_directory = Path(sys.executable).resolve().parent
-            shell_path = (
-                f"{shell_root / 'modules/jq'}:{python_directory}:/usr/bin:/bin"
-            )
+            shell_path = f"{shell_root / 'modules/jq'}:{python_directory}:/usr/bin:/bin"
             if shutil.which("jq", path=shell_path) is None:
                 raise RuntimeError(
                     f"Hyper workflow requires jq on its configured PATH ({shell_path})"
@@ -576,18 +581,18 @@ def _parse_planning_intent_response(
     response: object, mission_input: MissionInput
 ) -> PlanningIntent:
     path = "$.structured_response"
-    candidate = _fields(
-        _structured_response(response),
-        {
-            "mission_id",
-            "source_authority",
-            "objective",
-            "planner_choice",
-            "rationale",
-            "details",
-        },
-        path,
-    )
+    structured = _structured_response(response)
+    expected = {
+        "mission_id",
+        "source_authority",
+        "objective",
+        "planner_choice",
+        "rationale",
+        "details",
+    }
+    if "prior_knowledge" in structured:
+        expected.add("prior_knowledge")
+    candidate = _fields(structured, expected, path)
     for name in ("mission_id", "source_authority", "objective", "rationale"):
         _text(candidate[name], f"{path}.{name}")
     _validate_planning_intent_choice(
@@ -617,10 +622,12 @@ def _parse_planning_intent_response(
             "planning intent source authority does not match mission input"
         )
 
+    prior = candidate.get("prior_knowledge")
     return PlanningIntent.from_dict(
         {
             **candidate,
-            "schema_version": 1,
+            "schema_version": 1 if prior is None else 2,
+            **({} if prior is None else {"prior_knowledge": prior}),
         }
     )
 

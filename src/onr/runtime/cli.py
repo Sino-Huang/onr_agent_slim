@@ -6,9 +6,10 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
@@ -18,11 +19,11 @@ from onr.application.context_coordination import (
     ClosedLoopRunResult,
 )
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot, BeliefKey
-from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import HyperHeartbeatInvocation, MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
 from onr.contracts.planning import PlannerPlan
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.transport import TransportEvent
 from onr.ports.environment import EnvironmentPlanningView
 from onr.runtime.composition import RuntimeComposition
@@ -217,6 +218,8 @@ def _run_hyper_revision(
     belief_file: Path | None,
     revision: int,
     recursion_limit: int,
+    belief_service: Any | None = None,
+    refresh_planning_context: Callable[[], MissionSnapshot] | None = None,
 ) -> ActivePlanRevision | None:
     revision_root = artifact_root / f"revision-{revision:03d}"
     workflow = runtime.create_hyper_workflow(
@@ -236,6 +239,8 @@ def _run_hyper_revision(
         belief_snapshot=belief_snapshot,
         belief_file=belief_file,
         backend_root=backend_root,
+        belief_service=belief_service,
+        refresh_planning_context=refresh_planning_context,
     )
     result = workflow.run(
         context,
@@ -337,6 +342,17 @@ def run_closed_loop_demo(
     if not isinstance(planning_snapshot, MissionSnapshot):
         raise RuntimeError("Context Coordination did not publish initial evidence")
 
+    def refresh_planning_context() -> MissionSnapshot:
+        with runtime.transport.open_consumer(
+            context_coordination.subscription
+        ) as refresh_consumer:
+            refreshed = context_coordination.drain_to_latest(refresh_consumer)
+        if not isinstance(refreshed, MissionSnapshot):
+            raise RuntimeError(
+                "prior initialization did not publish a Mission Snapshot"
+            )
+        return refreshed
+
     hyper_model = runtime.create_chat_model(
         mission_id=mission_input.mission_id,
         debug_scope="hyper-agent",
@@ -353,9 +369,13 @@ def run_closed_loop_demo(
         environment_event=planning_view.environment_event,
         environment_file=planning_view.environment_file,
         belief_snapshot=belief,
-        belief_file=None if belief_service is None else belief_service.current_snapshot_path(),
+        belief_file=None
+        if belief_service is None
+        else belief_service.current_snapshot_path(),
         revision=1,
         recursion_limit=recursion_limit,
+        belief_service=belief_service,
+        refresh_planning_context=refresh_planning_context,
     )
     if active is None:
         raise RuntimeError(
@@ -410,10 +430,16 @@ def run_closed_loop_demo(
             planning_snapshot=snapshot,
             environment_event=latest_planning_view.environment_event,
             environment_file=latest_planning_view.environment_file,
-            belief_snapshot=None if belief_service is None else belief_service.load_current_snapshot(),
-            belief_file=None if belief_service is None else belief_service.current_snapshot_path(),
+            belief_snapshot=None
+            if belief_service is None
+            else belief_service.load_current_snapshot(),
+            belief_file=None
+            if belief_service is None
+            else belief_service.current_snapshot_path(),
             revision=revision,
             recursion_limit=recursion_limit,
+            belief_service=belief_service,
+            refresh_planning_context=refresh_planning_context,
         )
 
     context_coordination = runtime.create_context_coordination(

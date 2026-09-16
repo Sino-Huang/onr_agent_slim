@@ -917,6 +917,7 @@ class RuntimeComposition:
         environment_authority: object | None = None,
         belief_service: BayesianBeliefService | ReportingReliabilityService | None = None,
         communication_port: object | None = None,
+        refresh_planning_context: Callable[[], MissionSnapshot] | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""
 
@@ -973,6 +974,7 @@ class RuntimeComposition:
             environment_authority=environment_authority,
             belief_service=belief_service,
             communication_port=communication_port,
+            refresh_planning_context=refresh_planning_context,
         )
 
     def run_planning_mission(

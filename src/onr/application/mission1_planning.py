@@ -975,6 +975,35 @@ def sample_fixed_viewpoints(
     return tuple(sorted(viewpoints))
 
 
+def _public_rendezvous(
+    x: float,
+    y: float,
+    radius: float,
+    surveillance_views: Sequence[Mapping[str, Any]] | None,
+) -> tuple[int, int] | None:
+    point = round(x), round(y)
+    if surveillance_views is None:
+        return point
+    view_points = tuple(
+        sorted({(round(float(view["x"])), round(float(view["y"]))) for view in surveillance_views})
+    )
+    if not view_points:
+        return None
+    min_x = min(item[0] for item in view_points)
+    max_x = max(item[0] for item in view_points)
+    min_y = min(item[1] for item in view_points)
+    max_y = max(item[1] for item in view_points)
+    if min_x <= point[0] <= max_x and min_y <= point[1] <= max_y:
+        return point
+    nearest = min(
+        view_points,
+        key=lambda item: (math.hypot(item[0] - x, item[1] - y), item),
+    )
+    if math.hypot(nearest[0] - x, nearest[1] - y) > radius:
+        return None
+    return nearest
+
+
 def _fixed_view_candidates(
     opportunities: Sequence[ObservationOpportunity],
     radius: float,
@@ -1198,8 +1227,16 @@ def build_candidate_dag(
     # Actual acquisition and recovery remain Maneuver Control's responsibility.
     latest_fixes = {}
     for entity, sampled, x, y in public_position_fix_anchors(environment, belief):
+        rendezvous = _public_rendezvous(
+            x,
+            y,
+            fov,
+            cast(Sequence[Mapping[str, Any]] | None, views),
+        )
+        if rendezvous is None:
+            continue
         if entity not in latest_fixes or sampled > latest_fixes[entity][0]:
-            latest_fixes[entity] = sampled, round(x), round(y)
+            latest_fixes[entity] = sampled, *rendezvous
     opportunities_by_id = {item.report_id: item for item in opportunities}
     for item in tuple(candidates.values()):
         if item.mode != "pursue_ship" or item.entity_id not in latest_fixes:

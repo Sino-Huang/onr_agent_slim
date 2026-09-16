@@ -43,6 +43,7 @@ from onr.contracts.planning_evidence import (
     TranslationAttemptOutcome,
 )
 from onr.contracts.planning_intent import PlanningIntent
+from onr.contracts.prior_knowledge import PriorKnowledge, PriorKnowledgeClaim
 from onr.contracts.role_context import (
     HYPER_AGENT_ROLE,
     MANEUVER_CONTROL_ROLE,
@@ -95,6 +96,8 @@ __all__ = [
     "PlannerPlan",
     "PlannerRevisionEvidence",
     "PlanningIntent",
+    "PriorKnowledge",
+    "PriorKnowledgeClaim",
     "ReplanRequest",
     "ReportingReliabilitySnapshot",
     "RoleSkill",

@@ -30,6 +30,7 @@ from onr.agents.hyper_agent import (
     _create_deep_agent,
     _parse_planning_intent_response,
 )
+from onr.application.hyper_agent import HyperAgent
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
@@ -299,6 +300,7 @@ class HyperWorkflowContext:
     environment_authority: Any = None
     belief_service: Any = None
     communication_port: Any = None
+    refresh_planning_context: Callable[[], MissionSnapshot] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_input, MissionInput):
@@ -363,6 +365,10 @@ class HyperWorkflowContext:
             getattr(self.communication_port, "request", None)
         ):
             raise TypeError("Hyper workflow communication port must expose request")
+        if self.refresh_planning_context is not None and not callable(
+            self.refresh_planning_context
+        ):
+            raise TypeError("Hyper workflow planning-context refresh must be callable")
         self.artifact_root = Path(self.artifact_root).resolve()
         if self.backend_root is None:
             raise ValueError("Hyper workflow environment file requires a backend root")
@@ -463,7 +469,9 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
         if (
             choice == "minizinc"
             and isinstance(context.belief_snapshot, ReportingReliabilitySnapshot)
-            and isinstance(context.environment_event.payload.get("static_info"), (list, tuple))
+            and isinstance(
+                context.environment_event.payload.get("static_info"), (list, tuple)
+            )
             and context.current_attempt_number == 0
         ):
             allowed.add("build_mission1_revision")
@@ -653,6 +661,7 @@ def record_planning_intent(
     planner_id: Literal["minizinc", "fast-downward"],
     rationale: str,
     details: dict[str, Any],
+    prior_knowledge: dict[str, Any] | None,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
@@ -669,6 +678,8 @@ def record_planning_intent(
         details: JSON-safe planner-selection facts derived from Mission Intent.
         reflection: Concise public summary of observed evidence and the immediate
             next action. Do not include private reasoning.
+        prior_knowledge: Optional versioned mission-derived belief claims. Do not
+            invent entity identities or numeric Bayesian parameters.
 
     Returns:
         Acceptance with planner-native paths and exact file-generation evidence.
@@ -685,6 +696,7 @@ def record_planning_intent(
         },
         "rationale": rationale,
         "details": details,
+        **({} if prior_knowledge is None else {"prior_knowledge": prior_knowledge}),
     }
     try:
         intent = _parse_planning_intent_response(
@@ -701,6 +713,57 @@ def record_planning_intent(
         )
     except ValueError as exc:
         return f"Planning intent rejected: {exc}"
+    prior_status = ""
+    if intent.prior_knowledge is not None:
+        initialize = getattr(context.belief_service, "initialize_from_prior", None)
+        if not callable(initialize):
+            status = "not_applied"
+            reason = "active belief service does not support initialization"
+            prior_status = f" Prior knowledge not applied: {reason}."
+        else:
+            application = initialize(
+                intent.prior_knowledge, context.environment_event.payload
+            )
+            status = getattr(application, "status", "not_applied")
+            reason = getattr(application, "reason", "belief service returned no reason")
+            if status == "applied":
+                if context.refresh_planning_context is None:
+                    raise RuntimeError(
+                        "prior initialization requires an authoritative planning-context refresh"
+                    )
+                refreshed = context.refresh_planning_context()
+                belief = context.belief_service.load_current_snapshot()
+                belief_file = Path(
+                    context.belief_service.current_snapshot_path()
+                ).resolve()
+                validated = HyperAgent.validate_belief_provenance(refreshed, belief)
+                if context.backend_root is None:
+                    raise RuntimeError("prior initialization requires a backend root")
+                try:
+                    relative_belief = belief_file.relative_to(context.backend_root)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "refreshed belief file is outside the backend root"
+                    ) from exc
+                context.mission_snapshot = refreshed
+                context.belief_snapshot = validated
+                context.belief_file = belief_file
+                context.belief_shell_location = relative_belief.as_posix()
+                context.belief_file_location = f"/{context.belief_shell_location}"
+                prior_status = " Prior knowledge applied."
+            elif status == "already_applied":
+                prior_status = " Prior knowledge was already applied."
+            else:
+                prior_status = f" Prior knowledge not applied: {reason}."
+        _emit(
+            context,
+            "prior-knowledge",
+            status,
+            details={
+                "belief_kind": intent.prior_knowledge.belief_kind,
+                "reason": reason,
+            },
+        )
     if context.planning_intent is not None or context.planner_choice is not None:
         if context.planning_intent != intent or context.planner_choice != choice:
             raise ValueError("recorded PlanningIntent conflicts with this workflow")
@@ -745,7 +808,7 @@ def record_planning_intent(
             f"{context.belief_shell_location}"
         )
     return (
-        f"{accepted} Generate {planner_label} files at these absolute virtual "
+        f"{accepted}{prior_status} Generate {planner_label} files at these absolute virtual "
         "file-tool paths:\n"
         f"{file_lines}\n"
         f"Shell workspace: {shell_workspace}\n"
@@ -1293,10 +1356,7 @@ def _execution_streams(
 
 def _planner_failure_instruction(context: HyperWorkflowContext) -> str:
     paths = ", ".join(context.submitted_file_locations)
-    return (
-        "Call edit_file on the same planner files "
-        f"({paths}) and resubmit them."
-    )
+    return f"Call edit_file on the same planner files ({paths}) and resubmit them."
 
 
 def _persist_minizinc_plan(context: HyperWorkflowContext, plan_text: str) -> Path:
@@ -1756,9 +1816,13 @@ def build_mission1_revision(
         or choice is None
         or choice.planner_choice.planner_id != "minizinc"
         or not isinstance(context.belief_snapshot, ReportingReliabilitySnapshot)
-        or not isinstance(context.environment_event.payload.get("static_info"), (list, tuple))
+        or not isinstance(
+            context.environment_event.payload.get("static_info"), (list, tuple)
+        )
     ):
-        return "status: unavailable\ninstruction: Use the generic planner workflow tools."
+        return (
+            "status: unavailable\ninstruction: Use the generic planner workflow tools."
+        )
 
     locations = _planner_asset_locations(context, "minizinc")
     model_location = locations["model.mzn"]
@@ -1817,16 +1881,11 @@ def build_mission1_revision(
         return cast(str, execution_result)
 
     statechart_locations = _statechart_asset_locations(context)
-    generator_path = _host_path(
-        context, statechart_locations["generate_statechart.py"]
-    )
+    generator_path = _host_path(context, statechart_locations["generate_statechart.py"])
     statechart_path = _host_path(context, statechart_locations["statechart.json"])
-    planner_plan_path = _host_path(
-        context, plan.planner_native_plan_artifact_reference
-    )
+    planner_plan_path = _host_path(context, plan.planner_native_plan_artifact_reference)
     statechart_helper_root = (
-        "conf/skills/hyper/creating-statechart-files/examples/"
-        "event-information-patrol"
+        "conf/skills/hyper/creating-statechart-files/examples/event-information-patrol"
     )
     statechart_helpers = (
         (
@@ -1928,9 +1987,7 @@ def handoff_execution(
             required_tool="submit_statechart_draft",
             retry_tool="handoff_execution",
         )
-    return (
-        "Execution handoff is owned by Context Coordination; return execution_ready."
-    )
+    return "Execution handoff is owned by Context Coordination; return execution_ready."
 
 
 def create_hyper_workflow_agent(

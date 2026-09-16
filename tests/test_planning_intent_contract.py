@@ -4,7 +4,7 @@ from typing import TypedDict, cast
 
 import pytest
 
-from onr.contracts import PlanningIntent
+from onr.contracts import PlanningIntent, PriorKnowledge, PriorKnowledgeClaim
 from onr.contracts.planning import PlannerChoice
 
 
@@ -26,9 +26,7 @@ class _PlanningIntentOverrides(TypedDict, total=False):
     details: Mapping[str, object]
 
 
-def _intent(
-    *, details: object | None = None, **overrides: object
-) -> PlanningIntent:
+def _intent(*, details: object | None = None, **overrides: object) -> PlanningIntent:
     default_details: Mapping[str, object] = {
         "constraints": {
             "regions": ["alpha", {"priority": 1}],
@@ -69,7 +67,9 @@ def test_planning_intent_is_a_canonical_immutable_public_contract() -> None:
 
     source_priority["priority"] = 2
     serialized_details = cast(Mapping[str, object], intent.to_dict()["details"])
-    serialized_constraints = cast(Mapping[str, object], serialized_details["constraints"])
+    serialized_constraints = cast(
+        Mapping[str, object], serialized_details["constraints"]
+    )
     serialized_regions = cast(list[object], serialized_constraints["regions"])
     serialized_priority = cast(Mapping[str, object], serialized_regions[1])
     assert serialized_priority["priority"] == 1
@@ -96,6 +96,43 @@ def test_planning_intent_is_a_canonical_immutable_public_contract() -> None:
     assert PlanningIntent.from_json(canonical_json) == intent
 
 
+def test_planning_intent_records_versioned_general_prior_knowledge() -> None:
+    prior = PriorKnowledge(
+        belief_kind="reporting_reliability",
+        claims=(
+            PriorKnowledgeClaim(
+                "hypothesis_cardinality",
+                {"hypothesis": "anomalous_entity", "count": 1},
+            ),
+            PriorKnowledgeClaim(
+                "spatiotemporal_priority",
+                {
+                    "start_time_s": 160.0,
+                    "end_time_s": 300.0,
+                    "north_min_m": 800.0,
+                    "north_max_m": 1450.0,
+                    "east_min_m": -700.0,
+                    "east_max_m": -300.0,
+                },
+            ),
+        ),
+    )
+
+    intent = PlanningIntent(
+        mission_id="mission-1",
+        source_authority="mission-control",
+        objective="Monitor reporting reliability",
+        rationale="Timing and sensing geometry determine coverage.",
+        planner_choice=PlannerChoice("temporal", "minizinc"),
+        details={"mission_pattern": "report-event-accounting-patrol"},
+        prior_knowledge=prior,
+    )
+
+    assert intent.schema_version == 2
+    assert intent.prior_knowledge == prior
+    assert PlanningIntent.from_json(intent.to_canonical_json()) == intent
+
+
 @pytest.mark.parametrize(
     "field",
     ("mission_id", "source_authority", "objective", "rationale"),
@@ -117,6 +154,7 @@ def test_planning_intent_requires_nonblank_identity_and_explanation_fields(
         "rationale",
         "planner_choice",
         "details",
+        "prior_knowledge",
     ),
 )
 def test_planning_intent_rejects_reserved_detail_keys(reserved_key: str) -> None:

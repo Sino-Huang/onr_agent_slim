@@ -13,8 +13,12 @@ The raw operator-authored natural-language input supplied in a Mission Activatio
 _Avoid_: Public trace record, derived plan
 
 **Planning Intent**:
-A structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It retains Mission and source authority identity and may hold flexible planner-selection facts in `details`, but never planner files or verification evidence; it does not amend the Mission Intent or MissionInput.
+A structured, non-authoritative interpretation derived from the raw MissionInput and operator Mission Intent to support planner selection. It retains Mission and source authority identity, may hold flexible planner-selection facts in `details`, and may carry versioned Prior Knowledge for one-time belief initialization, but never planner files or verification evidence; it does not amend the Mission Intent or MissionInput.
 _Avoid_: Source authority, planner-native asset, verification record
+
+**Prior Knowledge**:
+Versioned qualitative claims derived from Mission Intent and interpreted by the active belief service before initial planning. It is recorded with Planning Intent, while numeric Bayesian parameters remain code-owned and observed evidence owns later posterior updates.
+_Avoid_: Ground truth, repeated posterior override, planner utility bonus
 
 **Mission Run**:
 One concrete execution attempt for a Mission. A Mission can have more than one Mission Run.

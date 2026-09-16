@@ -264,10 +264,12 @@ def test_load_mission_file_is_exact_and_strict(tmp_path: Path) -> None:
 def test_example_mission_requests_event_accounting_patrol() -> None:
     mission = runtime_cli.load_mission_file(Path("examples/mission.json"))
 
-    assert mission.mission_text == (
+    assert mission.mission_text.startswith(
         "Please patrol the environment and confirm that all the events mentioned "
         "in the event report are accounted for."
     )
+    assert "exactly one vessel is unreliable" in mission.mission_text
+    assert "planning-view NED region" in mission.mission_text
 
 
 def test_demo_environment_flag_is_required_only_for_fake_profile(

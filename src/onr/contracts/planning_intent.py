@@ -10,9 +10,9 @@ from types import MappingProxyType
 from typing import Any
 
 from onr.contracts.planning import PlannerChoice, PlanningProfile
+from onr.contracts.prior_knowledge import PriorKnowledge
 
-
-_TOP_LEVEL_FIELDS = frozenset(
+_TOP_LEVEL_FIELDS_V1 = frozenset(
     {
         "schema_version",
         "mission_id",
@@ -23,6 +23,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "details",
     }
 )
+_TOP_LEVEL_FIELDS_V2 = _TOP_LEVEL_FIELDS_V1 | {"prior_knowledge"}
 _PROHIBITED_DETAIL_KEYS = frozenset(
     {
         "planner_assets",
@@ -95,6 +96,7 @@ class PlanningIntent:
     rationale: str
     planner_choice: PlannerChoice
     details: Mapping[str, object]
+    prior_knowledge: PriorKnowledge | None = None
     schema_version: int = field(default=1, init=False)
 
     def __post_init__(self) -> None:
@@ -104,19 +106,33 @@ class PlanningIntent:
         _require_text(self.rationale, "planning rationale")
         if not isinstance(self.planner_choice, PlannerChoice):
             raise ValueError("planner choice must be a PlannerChoice")
-        if (self.planner_choice.planning_profile, self.planner_choice.planner_id) not in (
+        if (
+            self.planner_choice.planning_profile,
+            self.planner_choice.planner_id,
+        ) not in (
             (PlanningProfile.TEMPORAL, "minizinc"),
             (PlanningProfile.SYMBOLIC, "fast-downward"),
         ):
             raise ValueError("planning intent requires a configured planner")
         if not isinstance(self.details, Mapping):
             raise ValueError("planning intent details must be a JSON object")
-        if any(key in _TOP_LEVEL_FIELDS for key in self.details):
-            raise ValueError("planning intent details cannot contain reserved top-level keys")
-        object.__setattr__(self, "details", _freeze_details(self.details, "planning intent details"))
+        if any(key in _TOP_LEVEL_FIELDS_V2 for key in self.details):
+            raise ValueError(
+                "planning intent details cannot contain reserved top-level keys"
+            )
+        object.__setattr__(
+            self, "details", _freeze_details(self.details, "planning intent details")
+        )
+        if self.prior_knowledge is not None and not isinstance(
+            self.prior_knowledge, PriorKnowledge
+        ):
+            raise ValueError("planning intent prior knowledge must be typed")
+        object.__setattr__(
+            self, "schema_version", 2 if self.prior_knowledge is not None else 1
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value: dict[str, Any] = {
             "schema_version": self.schema_version,
             "mission_id": self.mission_id,
             "source_authority": self.source_authority,
@@ -125,17 +141,25 @@ class PlanningIntent:
             "planner_choice": self.planner_choice.to_dict(),
             "details": _json_value(self.details),
         }
+        if self.prior_knowledge is not None:
+            value["prior_knowledge"] = self.prior_knowledge.to_dict()
+        return value
 
     def to_canonical_json(self) -> str:
         return _canonical_json(self.to_dict())
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PlanningIntent:
-        if not isinstance(value, Mapping) or set(value) != _TOP_LEVEL_FIELDS:
+        if not isinstance(value, Mapping):
             raise ValueError("planning intent contains unknown or missing fields")
-        schema_version = value["schema_version"]
-        if isinstance(schema_version, bool) or schema_version != 1:
-            raise ValueError("planning intent schema version must be exactly 1")
+        schema_version = value.get("schema_version")
+        expected = _TOP_LEVEL_FIELDS_V1 if schema_version == 1 else _TOP_LEVEL_FIELDS_V2
+        if (
+            isinstance(schema_version, bool)
+            or schema_version not in {1, 2}
+            or set(value) != expected
+        ):
+            raise ValueError("planning intent contains unknown or missing fields")
         return cls(
             mission_id=value["mission_id"],
             source_authority=value["source_authority"],
@@ -143,6 +167,11 @@ class PlanningIntent:
             rationale=value["rationale"],
             planner_choice=PlannerChoice.from_dict(value["planner_choice"]),
             details=value["details"],
+            prior_knowledge=(
+                None
+                if schema_version == 1
+                else PriorKnowledge.from_dict(value["prior_knowledge"])
+            ),
         )
 
     @classmethod

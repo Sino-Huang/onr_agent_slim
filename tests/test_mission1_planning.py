@@ -107,6 +107,34 @@ def test_future_or_unreachable_gps_does_not_add_early_pursuit(fix_time, x):
                    for c in build_candidate_dag(environment, _belief((1,))).candidates)
 
 
+def test_sensor_aware_pursuit_projects_gps_outside_public_view_envelope() -> None:
+    environment = _environment(
+        [_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)],
+        fov=50.0,
+    )
+    environment["controlled_vehicle"]["quarter_turn_seconds"] = 0.5
+    environment["surveillance_views"] = [
+        {"x": 80, "y": 0, "arrival_direction": 0, "report_ids": ["a", "b"]}
+    ]
+    environment["world_model_info"]["public_position_fixes"] = [
+        {
+            "entity_id": 1,
+            "sampled_at_s": 0,
+            "source": "gps",
+            "position": {"x": 120, "y": 0, "z": 0},
+        }
+    ]
+
+    early = [
+        candidate
+        for candidate in build_candidate_dag(environment, _belief((1,))).candidates
+        if candidate.mode == "pursue_ship" and candidate.start_s < 20
+    ]
+
+    assert len(early) == 1
+    assert (early[0].x, early[0].y) == (80, 0)
+
+
 def test_early_gps_pursuit_cannot_recredit_reports_across_delayed_views():
     environment = _environment([_report("a", 1, 20, 0, 0), _report("b", 1, 30, 0, 0),
                                 _report("bridge", 2, 15, 0, 0)])

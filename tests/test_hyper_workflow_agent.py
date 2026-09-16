@@ -14,6 +14,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.operational_log import InProcessOperationalLog
 from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.agents.hyper_workflow import (
@@ -29,7 +30,12 @@ from onr.agents.hyper_workflow import (
     submit_planner_attempt,
     submit_statechart_draft,
 )
-from onr.application.reporting_reliability import ReportingReliabilityManager
+from onr.application.reporting_reliability import (
+    FileReportingReliabilityStore,
+    ReportingReliabilityManager,
+    ReportingReliabilityService,
+    reporting_reliability_reference,
+)
 from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
@@ -42,6 +48,7 @@ from onr.contracts.planning import (
     SymbolicPlannerExecutionResult,
 )
 from onr.contracts.transport import CommandOutcome, TransportEvent
+from onr.ports.transport import Subscription
 
 
 class _MiniZinc:
@@ -211,6 +218,8 @@ def _context(
     handoff: bool = False,
     belief_snapshot: object | None = None,
     belief_file: Path | None = None,
+    belief_service: object | None = None,
+    refresh_planning_context: object | None = None,
 ) -> HyperWorkflowContext:
     mission = MissionInput("mission-1", "Survey and return", "mission-control")
     event = TransportEvent(
@@ -253,6 +262,8 @@ def _context(
         val_validator=val or _VAL(),
         belief_snapshot=belief_snapshot,
         belief_file=belief_file,
+        belief_service=belief_service,
+        refresh_planning_context=refresh_planning_context,
         max_planner_attempts=2,
         max_statechart_attempts=2,
         state_machine_factory=PythonStateMachineFactory(),
@@ -269,6 +280,7 @@ def _record(context: HyperWorkflowContext, planner: str) -> str:
         planner_id=planner,
         rationale="Reachability only" if symbolic else "Timing affects feasibility",
         details={"mission_pattern": "survey-return"},
+        prior_knowledge=None,
         reflection="Recording planner choice.",
         runtime=_runtime(context),
     )
@@ -320,6 +332,14 @@ def test_recorded_choice_distinguishes_virtual_file_paths_from_shell_paths(
     ).is_file()
 
 
+def test_record_planning_intent_exposes_prior_but_not_injected_runtime() -> None:
+    schema = cast(Any, record_planning_intent).tool_call_schema.model_json_schema()
+
+    assert "prior_knowledge" in schema["properties"]
+    assert "prior_knowledge" in schema["required"]
+    assert "runtime" not in schema["properties"]
+
+
 def test_recorded_choice_accepts_planning_projection_of_snapshot_live_event(
     tmp_path: Path,
 ) -> None:
@@ -340,6 +360,126 @@ def test_recorded_choice_accepts_planning_projection_of_snapshot_live_event(
     result = _record(context, "minizinc")
 
     assert result.startswith("Planning intent accepted.")
+
+
+def test_recorded_prior_refreshes_authorized_belief_before_planning(
+    tmp_path: Path,
+) -> None:
+    backend = tmp_path / "backend"
+    subscription = Subscription(
+        "context-coordination", "mission-1", "planning-evidence"
+    )
+    service = ReportingReliabilityService.create(
+        "mission-1",
+        (1, 2, 3),
+        FileReportingReliabilityStore(backend / "var/storage"),
+        InProcessTransport((subscription,)),
+        context_topic="planning-evidence",
+        clock=lambda: "2026-09-04T00:00:00+10:00",
+    )
+    refreshed: list[object] = []
+
+    def refresh() -> MissionSnapshot:
+        belief = service.load_current_snapshot()
+        refreshed.append(belief)
+        return MissionSnapshot(
+            mission_id="mission-1",
+            version=2,
+            created_at="2026-09-04T00:00:00+10:00",
+            environment_data="environment:1",
+            bayesian_belief_snapshot=reporting_reliability_reference(belief),
+            source_revisions={"environment_data": 1, "bayesian_belief_snapshot": 2},
+            source_references={
+                "environment_data": "environment:1",
+                "bayesian_belief_snapshot": reporting_reliability_reference(belief),
+            },
+            source_health={
+                "environment_data": "healthy",
+                "bayesian_belief_snapshot": "healthy",
+            },
+            source_freshness={
+                "environment_data": True,
+                "bayesian_belief_snapshot": True,
+            },
+        )
+
+    context = _context(
+        tmp_path,
+        belief_snapshot=service.load_current_snapshot(),
+        belief_file=service.current_snapshot_path(),
+        belief_service=service,
+        refresh_planning_context=refresh,
+    )
+    context.environment_event = TransportEvent(
+        1,
+        "environment:1",
+        "mission-1",
+        0,
+        "environment_data",
+        {
+            "static_info": [
+                {"entity_id": 1, "time": 12.0, "position": [10.0, 10.0, -25.0]},
+                {"entity_id": 1, "time": 14.0, "position": [20.0, 20.0, -25.0]},
+                {"entity_id": 2, "time": 16.0, "position": [30.0, 30.0, -25.0]},
+            ]
+        },
+    )
+    context.environment_file.write_text(
+        json.dumps(context.environment_event.to_dict()["payload"]), encoding="utf-8"
+    )
+
+    result = cast(Any, record_planning_intent).func(
+        objective="Monitor reporting reliability",
+        planning_profile="temporal",
+        planner_id="minizinc",
+        rationale="Timing affects surveillance feasibility",
+        details={"mission_pattern": "report-event-accounting-patrol"},
+        prior_knowledge={
+            "schema_version": 1,
+            "belief_kind": "reporting_reliability",
+            "claims": [
+                {
+                    "claim_kind": "hypothesis_cardinality",
+                    "parameters": {"hypothesis": "anomalous_entity", "count": 1},
+                },
+                {
+                    "claim_kind": "spatiotemporal_priority",
+                    "parameters": {
+                        "start_time_s": 10.0,
+                        "end_time_s": 20.0,
+                        "north_min_m": 0.0,
+                        "north_max_m": 100.0,
+                        "east_min_m": 0.0,
+                        "east_max_m": 100.0,
+                    },
+                },
+            ],
+        },
+        reflection="Recording mission-derived prior knowledge.",
+        runtime=_runtime(context),
+    )
+
+    assert result.startswith("Planning intent accepted. Prior knowledge applied.")
+    assert refreshed
+    assert context.belief_snapshot.belief_revision == 2
+    assert context.mission_snapshot.version == 2
+    assert context.belief_file == service.current_snapshot_path()
+    assert context.planning_intent.prior_knowledge is not None
+
+    repeated = cast(Any, record_planning_intent).func(
+        objective="Monitor reporting reliability",
+        planning_profile="temporal",
+        planner_id="minizinc",
+        rationale="Timing affects surveillance feasibility",
+        details={"mission_pattern": "report-event-accounting-patrol"},
+        prior_knowledge=context.planning_intent.prior_knowledge.to_dict(),
+        reflection="Recording mission-derived prior knowledge.",
+        runtime=_runtime(context),
+    )
+    assert repeated.startswith(
+        "Planning intent was already accepted. Prior knowledge was already applied."
+    )
+    assert len(refreshed) == 1
 
 
 def test_recorded_choice_rejects_planning_projection_of_unrelated_event(
