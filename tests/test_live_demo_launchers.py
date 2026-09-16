@@ -22,7 +22,7 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
     environment["ONR_DEMO_DRY_RUN"] = "1"
     environment["ONR_DEMO_VIEWER_PORT"] = "5099"
     result = subprocess.run(
-        ["bash", str(script), "unused-session"],
+        ["bash", str(script), "05_onr"],
         env=environment,
         text=True,
         capture_output=True,
@@ -38,6 +38,7 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
             if line.startswith("Run configuration: ")
         )
     )
+    assert run_root.parent == repository / "var/live_demo_with_wm" / mode
     assert "  maneuver_seconds: 300\n" in (
         run_root / "onr_agent_params.yaml"
     ).read_text(encoding="utf-8")
@@ -78,3 +79,31 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
         assert worker[worker.index("--timeout-seconds") + 1] == "3600"
     else:
         assert "Worker command:" not in result.stdout
+
+
+def test_mission1_live_demo_keeps_legacy_run_directory() -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_live_demo.sh"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("ONR_DEMO_")
+    }
+    environment["ONR_DEMO_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(script), "05_onr"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    run_root = Path(
+        next(
+            line.removeprefix("Run configuration: ")
+            for line in result.stdout.splitlines()
+            if line.startswith("Run configuration: ")
+        )
+    )
+    assert run_root.parent == repository / "var/live_demo_with_wm"

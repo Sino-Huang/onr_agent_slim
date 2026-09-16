@@ -20,8 +20,11 @@ Mission 3 defaults to the three-ship standalone inspection fixture. Mission 4
 defaults to the standalone search package/fixture and replays the two timed
 requests in `examples/mission4_requests.json`; its third pane records durable
 worker receipts. Its demo profile uses a 15 m sensor radius so dock coverage
-requires physical traversal and distinct fixture views. The shared launcher prints every resolved input and the
-isolated `var/live_demo_with_wm/run.*` directory.
+requires physical traversal and distinct fixture views. The shared launcher
+prints every resolved input and the isolated run directory. Mission 1 retains
+`var/live_demo_with_wm/run.*`; Missions 2–4 write to
+`var/live_demo_with_wm/mission2/run.*`, `mission3/run.*`, and `mission4/run.*`,
+respectively.
 The scripted worker allows one hour of wall time by default for queued shared
 vLLM deployments; override it with `ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS`.
 

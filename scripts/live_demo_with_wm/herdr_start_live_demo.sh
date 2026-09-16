@@ -117,9 +117,14 @@ fi
 fi
 
 # Keep each live demo isolated while retaining all generated state under the
-# repository's conventional var directory.
-mkdir -p "$AGENT_ROOT/var/live_demo_with_wm"
-run_root="$(mktemp -d "$AGENT_ROOT/var/live_demo_with_wm/run.XXXXXX")"
+# repository's conventional var directory. Missions 2-4 use mission-specific
+# parents so their output cannot be mistaken for the original Mission 1 runs.
+run_parent="$AGENT_ROOT/var/live_demo_with_wm"
+case "$MISSION_MODE" in
+    mission2|mission3|mission4) run_parent="$run_parent/$MISSION_MODE" ;;
+esac
+mkdir -p "$run_parent"
+run_root="$(mktemp -d "$run_parent/run.XXXXXX")"
 transport_root="$run_root/transport"
 physical_state_root="$run_root/physical-state"
 agent_storage_root="$run_root/agent-storage"
