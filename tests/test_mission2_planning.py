@@ -108,6 +108,23 @@ def test_gate_coalesces_duplicates_and_detects_changed_cleared_and_stale_risks()
     assert gate.assess(env) is None
 
 
+def test_gate_coalesces_contact_time_floating_point_jitter() -> None:
+    gate = Mission2ReplanGate()
+    env = environment()
+    assert "risk_changed" in gate.assess(env)
+
+    refreshed = copy.deepcopy(env)
+    refreshed["mission_time_seconds"] = 5.5
+    prediction = refreshed["world_model_info"]["perception_predictions"]
+    prediction["sequence"] = 2
+    prediction["valid_until_s"] = 10.5
+    prediction["active_pairs"][0]["predicted_contact_at_s"] = 20.000000000001
+
+    assert gate.assess(refreshed) is None
+    prediction["active_pairs"][0]["predicted_contact_at_s"] = 20.5
+    assert "risk_changed" in gate.assess(refreshed)
+
+
 def test_mission1_only_does_not_enable_collision_gate():
     assert Mission2ReplanGate().assess({"world_model_info": {}}) is None
     assert collision_observation_candidates({"world_model_info": {}}) == ()

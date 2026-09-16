@@ -189,7 +189,7 @@ class Mission2ReplanGate:
         state = "stale" if now > prediction["valid_until_s"] else prediction["status"]
         candidates = collision_observation_candidates(environment)
         risks = tuple(sorted(
-            ((tuple(row["ship_ids"]), float(row["predicted_contact_at_s"]),
+            ((tuple(row["ship_ids"]), round(float(row["predicted_contact_at_s"]), 6),
               row["probability"]) for row in prediction["active_pairs"]),
             key=lambda item: item[0])) if state in {"ready", "partial"} else ()
         signature = (state, risks, bool(candidates),
