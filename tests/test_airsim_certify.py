@@ -34,6 +34,7 @@ from onr.demo.airsim_reconstruction.certify import (
     skew_within_tolerance,
     trajectory_timestamp_index,
     wait_for_ship_spawns,
+    warm_up_stepped_playback,
 )
 from onr.demo.airsim_reconstruction.engine import (
     EngineConfigSwap,
@@ -342,6 +343,29 @@ def test_pause_patiently_raises_after_three_failures() -> None:
 
     assert failure.value.attempts == 3
     assert freeze.attempts == 3
+
+
+class _StepWarmupStub:
+    def __init__(self, now: list[float], wall_durations: list[float]) -> None:
+        self.now = now
+        self.wall_durations = iter(wall_durations)
+        self.steps: list[float] = []
+
+    def step(self, seconds: float) -> None:
+        self.steps.append(seconds)
+        self.now[0] += next(self.wall_durations)
+
+
+def test_warm_up_stepped_playback_runs_three_measured_steps() -> None:
+    now = [10.0]
+    freeze = _StepWarmupStub(now, [1.8, 1.3, 1.05])
+
+    durations = warm_up_stepped_playback(
+        freeze, monotonic=lambda: now[0]
+    )
+
+    assert freeze.steps == [1.0, 1.0, 1.0]
+    assert durations == pytest.approx([1.8, 1.3, 1.05])
 
 
 class _SceneObjectsStub:

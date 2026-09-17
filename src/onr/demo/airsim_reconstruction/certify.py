@@ -586,6 +586,24 @@ def pause_patiently(
     raise PatientPauseError(max_attempts, last_error) from last_error
 
 
+def warm_up_stepped_playback(
+    freeze: Any,
+    *,
+    step_count: int = 3,
+    step_s: float = 1.0,
+    monotonic: Any = time.monotonic,
+) -> list[float]:
+    """Exercise stepped playback and return each step's wall duration."""
+    if step_count <= 0:
+        raise ValueError("step_count must be positive")
+    durations: list[float] = []
+    for _ in range(step_count):
+        started = monotonic()
+        freeze.step(step_s)
+        durations.append(float(monotonic() - started))
+    return durations
+
+
 def wait_for_pause_window(
     clock: Any,
     scenario_start_time_s: float,
@@ -983,6 +1001,11 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 phase_at_pause_s = float("nan")
                 alignment_error_s = float("inf")
                 placement_error_s = float("inf")
+                warmup_step_wall_s: list[float] = []
+                report["measurements"]["warmup_step_wall_s"] = (
+                    warmup_step_wall_s
+                )
+                warmup_completed = False
                 for alignment_attempt in range(
                     1, PAUSE_ALIGNMENT_MAX_ATTEMPTS + 1
                 ):
@@ -1049,7 +1072,66 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                         placement_aligned = pause_placement_acceptable(
                             phase_at_pause_s, ship_phase_samples
                         )
-                    aligned = clock_aligned and placement_aligned
+                    pre_warmup: dict[str, Any] | None = None
+                    warmup_performed = False
+                    if clock_aligned and placement_aligned and not warmup_completed:
+                        pre_warmup = {
+                            "frozen_phase_s": phase_at_pause_s,
+                            "alignment_error_s": alignment_error_s,
+                            "pause_placement_error_s": attempt_placement_error_s,
+                            "ships": [dict(sample) for sample in ship_phase_samples],
+                        }
+                        _progress(
+                            report,
+                            "warmup",
+                            "exercising three one-second stepped-playback calls",
+                        )
+                        warmup_step_wall_s.extend(
+                            warm_up_stepped_playback(initial_freeze)
+                        )
+                        warmup_completed = True
+                        warmup_performed = True
+                        current_clock_status = launch_clock.status()
+                        paused_clock_status = current_clock_status
+                        phase_at_pause_s = (
+                            float(current_clock_status["frozen_ns"]) / 1e9
+                            - scenario_start_time_s
+                        )
+                        alignment_error_s = pause_alignment_error_s(
+                            phase_at_pause_s
+                        )
+                        clock_aligned = pause_alignment_acceptable(
+                            phase_at_pause_s
+                        )
+                        has_headroom = epoch_headroom_available(
+                            phase_at_pause_s,
+                            lead_in_s,
+                            margin_s=PAUSE_HEADROOM_MARGIN_S,
+                        )
+                        ship_phase_samples = []
+                        placement_aligned = False
+                        attempt_placement_error_s = None
+                        if has_headroom:
+                            ship_phase_samples = sample_ship_trajectory_phases(
+                                patient_client,
+                                verification_ships,
+                                trajectory_phase,
+                            )
+                            for sample in ship_phase_samples:
+                                sample["phase_error_s"] = abs(
+                                    sample["trajectory_phase_s"]
+                                    - phase_at_pause_s
+                                )
+                            attempt_placement_error_s = pause_placement_error_s(
+                                phase_at_pause_s, ship_phase_samples
+                            )
+                            placement_error_s = attempt_placement_error_s
+                            placement_aligned = pause_placement_acceptable(
+                                phase_at_pause_s, ship_phase_samples
+                            )
+                        aligned = placement_aligned
+                    else:
+                        aligned = clock_aligned and placement_aligned
                     pause_alignment_attempts.append(
                         {
                             "attempt": alignment_attempt,
@@ -1061,6 +1143,8 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                             "clock_aligned": clock_aligned,
                             "placement_aligned": placement_aligned,
                             "ships": ship_phase_samples,
+                            "warmup_performed": warmup_performed,
+                            "pre_warmup": pre_warmup,
                             "aligned": aligned,
                             "epoch_headroom": has_headroom,
                         }
