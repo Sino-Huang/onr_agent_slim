@@ -22,10 +22,13 @@ from onr.demo.airsim_reconstruction.certify import (
     pause_alignment_acceptable,
     pause_alignment_error_s,
     pause_patiently,
+    pause_placement_acceptable,
+    pause_placement_error_s,
     pause_window_delay_s,
     pose_within_tolerance,
     reconcile_cleanup_failure,
     resolve_lead_in_s,
+    sample_ship_trajectory_phases,
     scenario_phase_if_fresh,
     segmentation_ids_valid,
     skew_within_tolerance,
@@ -240,6 +243,51 @@ def test_pause_boundary_window_and_alignment_decisions() -> None:
     assert pause_alignment_error_s(2.49) == pytest.approx(0.01)
     assert pause_alignment_acceptable(2.20)
     assert not pause_alignment_acceptable(2.201)
+
+
+class _TrajectoryPosition:
+    def __init__(self, phase_s: float) -> None:
+        self.x_val = phase_s
+        self.y_val = 0.0
+        self.z_val = 0.0
+
+
+class _TrajectoryPose:
+    def __init__(self, phase_s: float) -> None:
+        self.position = _TrajectoryPosition(phase_s)
+
+
+class _TrajectoryPoseClient:
+    def __init__(self, phases: dict[str, float]) -> None:
+        self.phases = phases
+
+    def simGetObjectPose(self, name: str) -> _TrajectoryPose:
+        return _TrajectoryPose(self.phases[name])
+
+
+def test_pause_placement_verdict_uses_sampled_trajectory_phases() -> None:
+    ships = [
+        {"id": 1, "name": "ship-1"},
+        {"id": 10, "name": "ship-10"},
+        {"id": 11, "name": "ship-11"},
+    ]
+    client = _TrajectoryPoseClient(
+        {"ship-1": 1.0, "ship-10": 1.1, "ship-11": 0.9}
+    )
+
+    samples = sample_ship_trajectory_phases(
+        client,
+        ships,
+        lambda _ship, measured_ned: measured_ned[0],
+    )
+
+    assert [sample["id"] for sample in samples] == [1, 10, 11]
+    assert pause_placement_error_s(1.03, samples) == pytest.approx(0.13)
+    assert pause_placement_acceptable(1.03, samples)
+
+    samples[-1]["trajectory_phase_s"] = 0.8
+    assert pause_placement_error_s(1.03, samples) == pytest.approx(0.23)
+    assert not pause_placement_acceptable(1.03, samples)
 
 
 def test_segmentation_accepts_ship_passenger_and_static_ids() -> None:

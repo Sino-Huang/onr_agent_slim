@@ -45,7 +45,9 @@ PAUSE_WINDOW_START_S = 0.03
 PAUSE_WINDOW_END_S = 0.08
 PAUSE_WINDOW_POLL_S = 0.005
 PAUSE_ALIGNMENT_TOLERANCE_S = 0.20
-PAUSE_ALIGNMENT_MAX_ATTEMPTS = 6
+PAUSE_PLACEMENT_TOLERANCE_S = 0.20
+PAUSE_HEADROOM_MARGIN_S = 5.0
+PAUSE_ALIGNMENT_MAX_ATTEMPTS = 20
 PHASE_COMPARISON_EPSILON_S = 1e-9
 
 
@@ -168,6 +170,54 @@ def pause_alignment_acceptable(
     """Return whether a frozen phase is close enough to a trajectory row."""
     return (
         pause_alignment_error_s(scene_phase_s, tick_s=tick_s)
+        <= tolerance_s + PHASE_COMPARISON_EPSILON_S
+    )
+
+
+def sample_ship_trajectory_phases(
+    client: Any,
+    ships: Sequence[Mapping[str, Any]],
+    trajectory_phase_fn: Any,
+) -> list[dict[str, Any]]:
+    """Measure the trajectory phase of SceneClock's verification ships."""
+    samples: list[dict[str, Any]] = []
+    for ship in ships:
+        position = client.simGetObjectPose(ship["name"]).position
+        measured_ned = [position.x_val, position.y_val, position.z_val]
+        samples.append(
+            {
+                "id": int(ship["id"]),
+                "name": str(ship["name"]),
+                "trajectory_phase_s": float(
+                    trajectory_phase_fn(ship, measured_ned)
+                ),
+            }
+        )
+    return samples
+
+
+def pause_placement_error_s(
+    frozen_scene_phase_s: float,
+    ship_phase_samples: Sequence[Mapping[str, Any]],
+) -> float:
+    """Return the largest ship-phase mismatch at a frozen boundary."""
+    if not ship_phase_samples:
+        raise ValueError("at least one ship phase sample is required")
+    return max(
+        abs(float(sample["trajectory_phase_s"]) - float(frozen_scene_phase_s))
+        for sample in ship_phase_samples
+    )
+
+
+def pause_placement_acceptable(
+    frozen_scene_phase_s: float,
+    ship_phase_samples: Sequence[Mapping[str, Any]],
+    *,
+    tolerance_s: float = PAUSE_PLACEMENT_TOLERANCE_S,
+) -> bool:
+    """Return whether every sampled ship agrees with the frozen scene phase."""
+    return (
+        pause_placement_error_s(frozen_scene_phase_s, ship_phase_samples)
         <= tolerance_s + PHASE_COMPARISON_EPSILON_S
     )
 
@@ -541,16 +591,20 @@ def wait_for_pause_window(
     scenario_start_time_s: float,
     lead_in_s: float,
     *,
+    headroom_margin_s: float = PAUSE_HEADROOM_MARGIN_S,
     poll_interval_s: float = PAUSE_WINDOW_POLL_S,
     sleep: Any = time.sleep,
 ) -> float:
     """Wait unfrozen for a post-row-boundary pause window with headroom."""
     while True:
         phase_s = clock.time() - float(scenario_start_time_s)
-        if not epoch_headroom_available(phase_s, lead_in_s):
+        if not epoch_headroom_available(
+            phase_s, lead_in_s, margin_s=headroom_margin_s
+        ):
             raise RuntimeError(
                 "insufficient lead-in headroom while waiting for pause alignment: "
-                f"phase_s={phase_s:.6f}, required<={lead_in_s - 2.0:.6f}"
+                f"phase_s={phase_s:.6f}, "
+                f"required<={lead_in_s - headroom_margin_s:.6f}"
             )
         delay_s = pause_window_delay_s(phase_s)
         if delay_s == 0.0:
@@ -820,6 +874,13 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
         mapping = json.loads(paths["mapping"].read_text())
         mapped_ids = mapped_dynamic_object_ids(mapping)
         ships = _load_ships(paths["ships"])
+        verification_ships = [
+            json.loads(path.read_text())
+            for path in sorted(paths["ships"].glob("*.json"))
+            if path.stem.isdigit()
+        ][:3]
+        if [int(ship["id"]) for ship in verification_ships] != [1, 10, 11]:
+            raise ValueError("scene-clock verification ships must be 1, 10, and 11")
         timestamp_indexes = {
             int(ship["id"]): trajectory_timestamp_index(ship) for ship in ships
         }
@@ -843,6 +904,10 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     EngineClock,
                     FullFreeze,
                     build_shim,
+                )
+                from onr_physical_runtime.sim.experimental_freeze.scene_clock import (
+                    SceneClock,
+                    trajectory_phase,
                 )
 
                 shim_directory = output / "shim"
@@ -917,6 +982,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 paused_clock_status: Mapping[str, Any] | None = None
                 phase_at_pause_s = float("nan")
                 alignment_error_s = float("inf")
+                placement_error_s = float("inf")
                 for alignment_attempt in range(
                     1, PAUSE_ALIGNMENT_MAX_ATTEMPTS + 1
                 ):
@@ -956,17 +1022,45 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     alignment_error_s = pause_alignment_error_s(
                         phase_at_pause_s
                     )
-                    aligned = pause_alignment_acceptable(phase_at_pause_s)
+                    clock_aligned = pause_alignment_acceptable(phase_at_pause_s)
                     has_headroom = epoch_headroom_available(
-                        phase_at_pause_s, lead_in_s
+                        phase_at_pause_s,
+                        lead_in_s,
+                        margin_s=PAUSE_HEADROOM_MARGIN_S,
                     )
+                    ship_phase_samples: list[dict[str, Any]] = []
+                    placement_aligned = False
+                    attempt_placement_error_s: float | None = None
+                    if clock_aligned and has_headroom:
+                        ship_phase_samples = sample_ship_trajectory_phases(
+                            patient_client,
+                            verification_ships,
+                            trajectory_phase,
+                        )
+                        for sample in ship_phase_samples:
+                            sample["phase_error_s"] = abs(
+                                sample["trajectory_phase_s"]
+                                - phase_at_pause_s
+                            )
+                        attempt_placement_error_s = pause_placement_error_s(
+                            phase_at_pause_s, ship_phase_samples
+                        )
+                        placement_error_s = attempt_placement_error_s
+                        placement_aligned = pause_placement_acceptable(
+                            phase_at_pause_s, ship_phase_samples
+                        )
+                    aligned = clock_aligned and placement_aligned
                     pause_alignment_attempts.append(
                         {
                             "attempt": alignment_attempt,
                             "phase_at_window_s": phase_at_window_s,
                             "frozen_phase_s": phase_at_pause_s,
                             "alignment_error_s": alignment_error_s,
+                            "pause_placement_error_s": attempt_placement_error_s,
                             "pause_rpc_attempts": rpc_attempts,
+                            "clock_aligned": clock_aligned,
+                            "placement_aligned": placement_aligned,
+                            "ships": ship_phase_samples,
                             "aligned": aligned,
                             "epoch_headroom": has_headroom,
                         }
@@ -975,16 +1069,22 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                         raise RuntimeError(
                             "insufficient lead-in headroom at initial pause: "
                             f"phase_at_pause_s={phase_at_pause_s:.6f}, "
-                            f"required<={lead_in_s - 2.0:.6f}"
+                            "required<="
+                            f"{lead_in_s - PAUSE_HEADROOM_MARGIN_S:.6f}"
                         )
                     if aligned:
                         break
                     if alignment_attempt == PAUSE_ALIGNMENT_MAX_ATTEMPTS:
+                        ship_details = ", ".join(
+                            f"ship {sample['id']}: "
+                            f"trajectory_phase_s={sample['trajectory_phase_s']:.6f}"
+                            for sample in ship_phase_samples
+                        )
                         raise RuntimeError(
-                            "tick-aligned initial pause failed after "
+                            "placement-aligned initial pause failed after "
                             f"{PAUSE_ALIGNMENT_MAX_ATTEMPTS} attempts; "
-                            f"final_phase_s={phase_at_pause_s:.6f}, "
-                            f"alignment_error_s={alignment_error_s:.6f}"
+                            f"frozen_phase_s={phase_at_pause_s:.6f}; "
+                            f"{ship_details or 'no ship phases sampled'}"
                         )
                     initial_freeze.resume()
                 assert paused_clock_status is not None
@@ -1000,8 +1100,13 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 report["measurements"]["pause_alignment_error_s"] = (
                     alignment_error_s
                 )
+                report["measurements"]["pause_placement_error_s"] = (
+                    placement_error_s
+                )
                 report["checks"]["epoch_headroom"] = epoch_headroom_available(
-                    phase_at_pause_s, lead_in_s
+                    phase_at_pause_s,
+                    lead_in_s,
+                    margin_s=PAUSE_HEADROOM_MARGIN_S,
                 )
                 _progress(
                     report,
@@ -1012,7 +1117,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     raise RuntimeError(
                         "insufficient lead-in headroom at initial pause: "
                         f"phase_at_pause_s={phase_at_pause_s:.6f}, "
-                        f"required<={lead_in_s - 2.0:.6f}"
+                        f"required<={lead_in_s - PAUSE_HEADROOM_MARGIN_S:.6f}"
                     )
                 (output / "scenario_times.engine.json").write_bytes(
                     scenario_times_bytes
@@ -1028,9 +1133,6 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 )
 
                 _progress(report, "scene-clock", "connecting asynchronous follower")
-                from onr_physical_runtime.sim.experimental_freeze.scene_clock import (
-                    SceneClock,
-                )
                 from onr_physical_runtime.synchronization import NedPose
 
                 initial_pose = NedPose(
