@@ -192,6 +192,20 @@ def resolve_lead_in_s(
     return lead_in_s
 
 
+def scenario_phase_if_fresh(
+    scenario_times: Mapping[str, Any],
+    *,
+    launch_wall_s: float,
+    clock_wall_s: float,
+    stale_tolerance_s: float = 1.0,
+) -> float | None:
+    """Return scene phase only for metadata initialized by the current launch."""
+    initialization_s = float(scenario_times["scenario_initialization_time"])
+    if initialization_s < float(launch_wall_s) - float(stale_tolerance_s):
+        return None
+    return float(clock_wall_s) - float(scenario_times["scenario_start_time"])
+
+
 def trajectory_timestamp_index(
     ship: Mapping[str, Any], *, tick_s: float = TICK_S
 ) -> dict[float, int]:
@@ -407,18 +421,36 @@ def _wait_for_rpc(process: Any, port: int, timeout_s: float = 120.0) -> Any:
 
 
 def _wait_for_active_scenario(
-    path: Path, process: Any, clock: Any, timeout_s: float = 120.0
+    path: Path,
+    process: Any,
+    clock: Any,
+    launch_wall_s: float,
+    timeout_s: float = 120.0,
 ) -> tuple[dict[str, Any], bytes]:
     """Wait for scenario metadata and for the unfrozen clock to reach its start."""
     deadline = time.monotonic() + timeout_s
     last_error: BaseException | None = None
+    stale_reported = False
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("engine exited before scenario_times.json was available")
         try:
             content = path.read_bytes()
             scenario_times = json.loads(content)
-            phase_s = clock.time() - float(scenario_times["scenario_start_time"])
+            phase_s = scenario_phase_if_fresh(
+                scenario_times,
+                launch_wall_s=launch_wall_s,
+                clock_wall_s=clock.time(),
+            )
+            if phase_s is None:
+                if not stale_reported:
+                    print(
+                        "Ignoring stale scenario_times.json from a previous launch",
+                        flush=True,
+                    )
+                    stale_reported = True
+                time.sleep(0.2)
+                continue
             if phase_s >= 0.0:
                 return scenario_times, content
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -824,6 +856,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 }
                 launch_started = time.monotonic()
                 with _temporary_environment(overrides):
+                    launch_wall_s = time.time()
                     process = launch_engine(
                         ENGINE_EXECUTABLE,
                         paths["settings"],
@@ -849,7 +882,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     "waiting unfrozen for scenario start before pausing",
                 )
                 scenario_times, scenario_times_bytes = _wait_for_active_scenario(
-                    scenario_times_path, process, launch_clock
+                    scenario_times_path, process, launch_clock, launch_wall_s
                 )
                 import airsim
 

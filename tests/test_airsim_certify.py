@@ -26,6 +26,7 @@ from onr.demo.airsim_reconstruction.certify import (
     pose_within_tolerance,
     reconcile_cleanup_failure,
     resolve_lead_in_s,
+    scenario_phase_if_fresh,
     segmentation_ids_valid,
     skew_within_tolerance,
     trajectory_timestamp_index,
@@ -366,6 +367,30 @@ def test_manifest_derived_lead_in_and_explicit_override(tmp_path: Path) -> None:
     manifest.write_text(json.dumps({"other": True}))
     with pytest.raises(ValueError, match="missing lead_in_seconds"):
         resolve_lead_in_s(None, manifest)
+
+
+def test_scenario_phase_rejects_stale_metadata_and_accepts_current_launch() -> None:
+    stale = {
+        "scenario_initialization_time": 900.0,
+        "scenario_start_time": 930.0,
+    }
+    fresh = {
+        "scenario_initialization_time": 1000.0,
+        "scenario_start_time": 1030.0,
+    }
+
+    assert (
+        scenario_phase_if_fresh(
+            stale, launch_wall_s=1000.0, clock_wall_s=1040.0
+        )
+        is None
+    )
+    assert scenario_phase_if_fresh(
+        fresh, launch_wall_s=1000.0, clock_wall_s=1029.5
+    ) == pytest.approx(-0.5)
+    assert scenario_phase_if_fresh(
+        fresh, launch_wall_s=1000.0, clock_wall_s=1030.25
+    ) == pytest.approx(0.25)
 
 
 def test_cleanup_error_does_not_mask_primary_failure() -> None:
