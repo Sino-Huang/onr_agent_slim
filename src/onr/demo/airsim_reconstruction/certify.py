@@ -630,6 +630,194 @@ def wait_for_pause_window(
         sleep(min(float(poll_interval_s), delay_s))
 
 
+def prepare_verified_initial_pause(
+    freeze: Any,
+    clock: Any,
+    client: Any,
+    verification_ships: Sequence[Mapping[str, Any]],
+    trajectory_phase_fn: Any,
+    scenario_start_time_s: float,
+    lead_in_s: float,
+    measurements: dict[str, Any],
+    *,
+    progress: Any = None,
+) -> dict[str, Any]:
+    """Align, placement-check, and warm up the initial frozen scene."""
+    attempts: list[dict[str, Any]] = []
+    measurements["pause_alignment_attempts"] = attempts
+    warmup_step_wall_s: list[float] = []
+    measurements["warmup_step_wall_s"] = warmup_step_wall_s
+    pause_rpc_attempts = 0
+    warmup_completed = False
+    paused_clock_status: Mapping[str, Any] | None = None
+    phase_at_pause_s = float("nan")
+    alignment_error_s = float("inf")
+    placement_error_s = float("inf")
+
+    for alignment_attempt in range(1, PAUSE_ALIGNMENT_MAX_ATTEMPTS + 1):
+        phase_at_window_s = wait_for_pause_window(
+            clock, scenario_start_time_s, lead_in_s
+        )
+        try:
+            rpc_attempts = pause_patiently(
+                freeze,
+                max_attempts=3,
+                retry_delay_s=5.0,
+            )
+        except PatientPauseError as exc:
+            pause_rpc_attempts += exc.attempts
+            measurements["pause_attempts"] = pause_rpc_attempts
+            attempts.append(
+                {
+                    "attempt": alignment_attempt,
+                    "phase_at_window_s": phase_at_window_s,
+                    "pause_rpc_attempts": exc.attempts,
+                    "error": str(exc),
+                }
+            )
+            raise
+        pause_rpc_attempts += rpc_attempts
+        measurements["pause_attempts"] = pause_rpc_attempts
+        current_clock_status = clock.status()
+        paused_clock_status = current_clock_status
+        phase_at_pause_s = (
+            float(current_clock_status["frozen_ns"]) / 1e9
+            - scenario_start_time_s
+        )
+        alignment_error_s = pause_alignment_error_s(phase_at_pause_s)
+        clock_aligned = pause_alignment_acceptable(phase_at_pause_s)
+        has_headroom = epoch_headroom_available(
+            phase_at_pause_s,
+            lead_in_s,
+            margin_s=PAUSE_HEADROOM_MARGIN_S,
+        )
+        ship_phase_samples: list[dict[str, Any]] = []
+        placement_aligned = False
+        attempt_placement_error_s: float | None = None
+        if clock_aligned and has_headroom:
+            ship_phase_samples = sample_ship_trajectory_phases(
+                client,
+                verification_ships,
+                trajectory_phase_fn,
+            )
+            for sample in ship_phase_samples:
+                sample["phase_error_s"] = abs(
+                    sample["trajectory_phase_s"] - phase_at_pause_s
+                )
+            attempt_placement_error_s = pause_placement_error_s(
+                phase_at_pause_s, ship_phase_samples
+            )
+            placement_error_s = attempt_placement_error_s
+            placement_aligned = pause_placement_acceptable(
+                phase_at_pause_s, ship_phase_samples
+            )
+
+        pre_warmup: dict[str, Any] | None = None
+        warmup_performed = False
+        if clock_aligned and placement_aligned and not warmup_completed:
+            pre_warmup = {
+                "frozen_phase_s": phase_at_pause_s,
+                "alignment_error_s": alignment_error_s,
+                "pause_placement_error_s": attempt_placement_error_s,
+                "ships": [dict(sample) for sample in ship_phase_samples],
+            }
+            if progress is not None:
+                progress(
+                    "warmup",
+                    "exercising three one-second stepped-playback calls",
+                )
+            warmup_step_wall_s.extend(warm_up_stepped_playback(freeze))
+            warmup_completed = True
+            warmup_performed = True
+            current_clock_status = clock.status()
+            paused_clock_status = current_clock_status
+            phase_at_pause_s = (
+                float(current_clock_status["frozen_ns"]) / 1e9
+                - scenario_start_time_s
+            )
+            alignment_error_s = pause_alignment_error_s(phase_at_pause_s)
+            clock_aligned = pause_alignment_acceptable(phase_at_pause_s)
+            has_headroom = epoch_headroom_available(
+                phase_at_pause_s,
+                lead_in_s,
+                margin_s=PAUSE_HEADROOM_MARGIN_S,
+            )
+            ship_phase_samples = []
+            placement_aligned = False
+            attempt_placement_error_s = None
+            if has_headroom:
+                ship_phase_samples = sample_ship_trajectory_phases(
+                    client,
+                    verification_ships,
+                    trajectory_phase_fn,
+                )
+                for sample in ship_phase_samples:
+                    sample["phase_error_s"] = abs(
+                        sample["trajectory_phase_s"] - phase_at_pause_s
+                    )
+                attempt_placement_error_s = pause_placement_error_s(
+                    phase_at_pause_s, ship_phase_samples
+                )
+                placement_error_s = attempt_placement_error_s
+                placement_aligned = pause_placement_acceptable(
+                    phase_at_pause_s, ship_phase_samples
+                )
+            aligned = placement_aligned
+        else:
+            aligned = clock_aligned and placement_aligned
+
+        attempts.append(
+            {
+                "attempt": alignment_attempt,
+                "phase_at_window_s": phase_at_window_s,
+                "frozen_phase_s": phase_at_pause_s,
+                "alignment_error_s": alignment_error_s,
+                "pause_placement_error_s": attempt_placement_error_s,
+                "pause_rpc_attempts": rpc_attempts,
+                "clock_aligned": clock_aligned,
+                "placement_aligned": placement_aligned,
+                "ships": ship_phase_samples,
+                "warmup_performed": warmup_performed,
+                "pre_warmup": pre_warmup,
+                "aligned": aligned,
+                "epoch_headroom": has_headroom,
+            }
+        )
+        if not has_headroom:
+            raise RuntimeError(
+                "insufficient lead-in headroom at initial pause: "
+                f"phase_at_pause_s={phase_at_pause_s:.6f}, "
+                f"required<={lead_in_s - PAUSE_HEADROOM_MARGIN_S:.6f}"
+            )
+        if aligned:
+            break
+        if alignment_attempt == PAUSE_ALIGNMENT_MAX_ATTEMPTS:
+            ship_details = ", ".join(
+                f"ship {sample['id']}: "
+                f"trajectory_phase_s={sample['trajectory_phase_s']:.6f}"
+                for sample in ship_phase_samples
+            )
+            raise RuntimeError(
+                "placement-aligned initial pause failed after "
+                f"{PAUSE_ALIGNMENT_MAX_ATTEMPTS} attempts; "
+                f"frozen_phase_s={phase_at_pause_s:.6f}; "
+                f"{ship_details or 'no ship phases sampled'}"
+            )
+        freeze.resume()
+
+    assert paused_clock_status is not None
+    measurements["clock_at_initial_pause"] = paused_clock_status
+    measurements["phase_at_pause_s"] = phase_at_pause_s
+    measurements["pause_alignment_error_s"] = alignment_error_s
+    measurements["pause_placement_error_s"] = placement_error_s
+    return {
+        "clock_status": paused_clock_status,
+        "phase_at_pause_s": phase_at_pause_s,
+        "alignment_error_s": alignment_error_s,
+        "placement_error_s": placement_error_s,
+    }
+
+
 def reconcile_cleanup_failure(
     report: dict[str, Any],
     primary_error: BaseException | None,
@@ -661,6 +849,20 @@ def _load_ships(ships_directory: Path) -> list[dict[str, Any]]:
     ]
     if {int(ship["id"]) for ship in ships} != set(range(1, 21)):
         raise ValueError("fixture must contain ship IDs 1 through 20 exactly once")
+    return ships
+
+
+def _load_scene_clock_verification_ships(
+    ships_directory: Path,
+) -> list[dict[str, Any]]:
+    """Load the same lexicographic first-three ships used by SceneClock."""
+    ships = [
+        json.loads(path.read_text())
+        for path in sorted(ships_directory.glob("*.json"))
+        if path.stem.isdigit()
+    ][:3]
+    if [int(ship["id"]) for ship in ships] != [1, 10, 11]:
+        raise ValueError("scene-clock verification ships must be 1, 10, and 11")
     return ships
 
 
@@ -892,13 +1094,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
         mapping = json.loads(paths["mapping"].read_text())
         mapped_ids = mapped_dynamic_object_ids(mapping)
         ships = _load_ships(paths["ships"])
-        verification_ships = [
-            json.loads(path.read_text())
-            for path in sorted(paths["ships"].glob("*.json"))
-            if path.stem.isdigit()
-        ][:3]
-        if [int(ship["id"]) for ship in verification_ships] != [1, 10, 11]:
-            raise ValueError("scene-clock verification ships must be 1, 10, and 11")
+        verification_ships = _load_scene_clock_verification_ships(paths["ships"])
         timestamp_indexes = {
             int(ship["id"]): trajectory_timestamp_index(ship) for ship in ships
         }
@@ -989,203 +1185,27 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 report["checks"]["ships_spawned"] = True
                 initial_freeze = FullFreeze(launch_clock, patient_client)
-                pause_alignment_attempts: list[dict[str, Any]] = []
-                report["measurements"]["pause_alignment_attempts"] = (
-                    pause_alignment_attempts
-                )
-                pause_rpc_attempts = 0
                 scenario_start_time_s = float(
                     scenario_times["scenario_start_time"]
                 )
-                paused_clock_status: Mapping[str, Any] | None = None
-                phase_at_pause_s = float("nan")
-                alignment_error_s = float("inf")
-                placement_error_s = float("inf")
-                warmup_step_wall_s: list[float] = []
-                report["measurements"]["warmup_step_wall_s"] = (
-                    warmup_step_wall_s
+                pause_result = prepare_verified_initial_pause(
+                    initial_freeze,
+                    launch_clock,
+                    patient_client,
+                    verification_ships,
+                    trajectory_phase,
+                    scenario_start_time_s,
+                    lead_in_s,
+                    report["measurements"],
+                    progress=lambda stage, detail: _progress(
+                        report, stage, detail
+                    ),
                 )
-                warmup_completed = False
-                for alignment_attempt in range(
-                    1, PAUSE_ALIGNMENT_MAX_ATTEMPTS + 1
-                ):
-                    phase_at_window_s = wait_for_pause_window(
-                        launch_clock, scenario_start_time_s, lead_in_s
-                    )
-                    try:
-                        rpc_attempts = pause_patiently(
-                            initial_freeze,
-                            max_attempts=3,
-                            retry_delay_s=5.0,
-                        )
-                    except PatientPauseError as exc:
-                        pause_rpc_attempts += exc.attempts
-                        report["measurements"]["pause_attempts"] = (
-                            pause_rpc_attempts
-                        )
-                        pause_alignment_attempts.append(
-                            {
-                                "attempt": alignment_attempt,
-                                "phase_at_window_s": phase_at_window_s,
-                                "pause_rpc_attempts": exc.attempts,
-                                "error": str(exc),
-                            }
-                        )
-                        raise
-                    pause_rpc_attempts += rpc_attempts
-                    report["measurements"]["pause_attempts"] = (
-                        pause_rpc_attempts
-                    )
-                    current_clock_status = launch_clock.status()
-                    paused_clock_status = current_clock_status
-                    phase_at_pause_s = (
-                        float(current_clock_status["frozen_ns"]) / 1e9
-                        - scenario_start_time_s
-                    )
-                    alignment_error_s = pause_alignment_error_s(
-                        phase_at_pause_s
-                    )
-                    clock_aligned = pause_alignment_acceptable(phase_at_pause_s)
-                    has_headroom = epoch_headroom_available(
-                        phase_at_pause_s,
-                        lead_in_s,
-                        margin_s=PAUSE_HEADROOM_MARGIN_S,
-                    )
-                    ship_phase_samples: list[dict[str, Any]] = []
-                    placement_aligned = False
-                    attempt_placement_error_s: float | None = None
-                    if clock_aligned and has_headroom:
-                        ship_phase_samples = sample_ship_trajectory_phases(
-                            patient_client,
-                            verification_ships,
-                            trajectory_phase,
-                        )
-                        for sample in ship_phase_samples:
-                            sample["phase_error_s"] = abs(
-                                sample["trajectory_phase_s"]
-                                - phase_at_pause_s
-                            )
-                        attempt_placement_error_s = pause_placement_error_s(
-                            phase_at_pause_s, ship_phase_samples
-                        )
-                        placement_error_s = attempt_placement_error_s
-                        placement_aligned = pause_placement_acceptable(
-                            phase_at_pause_s, ship_phase_samples
-                        )
-                    pre_warmup: dict[str, Any] | None = None
-                    warmup_performed = False
-                    if clock_aligned and placement_aligned and not warmup_completed:
-                        pre_warmup = {
-                            "frozen_phase_s": phase_at_pause_s,
-                            "alignment_error_s": alignment_error_s,
-                            "pause_placement_error_s": attempt_placement_error_s,
-                            "ships": [dict(sample) for sample in ship_phase_samples],
-                        }
-                        _progress(
-                            report,
-                            "warmup",
-                            "exercising three one-second stepped-playback calls",
-                        )
-                        warmup_step_wall_s.extend(
-                            warm_up_stepped_playback(initial_freeze)
-                        )
-                        warmup_completed = True
-                        warmup_performed = True
-                        current_clock_status = launch_clock.status()
-                        paused_clock_status = current_clock_status
-                        phase_at_pause_s = (
-                            float(current_clock_status["frozen_ns"]) / 1e9
-                            - scenario_start_time_s
-                        )
-                        alignment_error_s = pause_alignment_error_s(
-                            phase_at_pause_s
-                        )
-                        clock_aligned = pause_alignment_acceptable(
-                            phase_at_pause_s
-                        )
-                        has_headroom = epoch_headroom_available(
-                            phase_at_pause_s,
-                            lead_in_s,
-                            margin_s=PAUSE_HEADROOM_MARGIN_S,
-                        )
-                        ship_phase_samples = []
-                        placement_aligned = False
-                        attempt_placement_error_s = None
-                        if has_headroom:
-                            ship_phase_samples = sample_ship_trajectory_phases(
-                                patient_client,
-                                verification_ships,
-                                trajectory_phase,
-                            )
-                            for sample in ship_phase_samples:
-                                sample["phase_error_s"] = abs(
-                                    sample["trajectory_phase_s"]
-                                    - phase_at_pause_s
-                                )
-                            attempt_placement_error_s = pause_placement_error_s(
-                                phase_at_pause_s, ship_phase_samples
-                            )
-                            placement_error_s = attempt_placement_error_s
-                            placement_aligned = pause_placement_acceptable(
-                                phase_at_pause_s, ship_phase_samples
-                            )
-                        aligned = placement_aligned
-                    else:
-                        aligned = clock_aligned and placement_aligned
-                    pause_alignment_attempts.append(
-                        {
-                            "attempt": alignment_attempt,
-                            "phase_at_window_s": phase_at_window_s,
-                            "frozen_phase_s": phase_at_pause_s,
-                            "alignment_error_s": alignment_error_s,
-                            "pause_placement_error_s": attempt_placement_error_s,
-                            "pause_rpc_attempts": rpc_attempts,
-                            "clock_aligned": clock_aligned,
-                            "placement_aligned": placement_aligned,
-                            "ships": ship_phase_samples,
-                            "warmup_performed": warmup_performed,
-                            "pre_warmup": pre_warmup,
-                            "aligned": aligned,
-                            "epoch_headroom": has_headroom,
-                        }
-                    )
-                    if not has_headroom:
-                        raise RuntimeError(
-                            "insufficient lead-in headroom at initial pause: "
-                            f"phase_at_pause_s={phase_at_pause_s:.6f}, "
-                            "required<="
-                            f"{lead_in_s - PAUSE_HEADROOM_MARGIN_S:.6f}"
-                        )
-                    if aligned:
-                        break
-                    if alignment_attempt == PAUSE_ALIGNMENT_MAX_ATTEMPTS:
-                        ship_details = ", ".join(
-                            f"ship {sample['id']}: "
-                            f"trajectory_phase_s={sample['trajectory_phase_s']:.6f}"
-                            for sample in ship_phase_samples
-                        )
-                        raise RuntimeError(
-                            "placement-aligned initial pause failed after "
-                            f"{PAUSE_ALIGNMENT_MAX_ATTEMPTS} attempts; "
-                            f"frozen_phase_s={phase_at_pause_s:.6f}; "
-                            f"{ship_details or 'no ship phases sampled'}"
-                        )
-                    initial_freeze.resume()
-                assert paused_clock_status is not None
+                phase_at_pause_s = float(pause_result["phase_at_pause_s"])
                 pause_ack = time.monotonic()
                 report["checks"]["initial_pause_acknowledged"] = True
                 report["measurements"]["launch_to_pause_ack_s"] = (
                     pause_ack - launch_started
-                )
-                report["measurements"]["clock_at_initial_pause"] = (
-                    paused_clock_status
-                )
-                report["measurements"]["phase_at_pause_s"] = phase_at_pause_s
-                report["measurements"]["pause_alignment_error_s"] = (
-                    alignment_error_s
-                )
-                report["measurements"]["pause_placement_error_s"] = (
-                    placement_error_s
                 )
                 report["checks"]["epoch_headroom"] = epoch_headroom_available(
                     phase_at_pause_s,
