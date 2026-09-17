@@ -78,8 +78,18 @@ def _decode_json_object(value: object) -> object:
         return value
 
 
+def _decode_optional_json_object(value: object) -> object:
+    if isinstance(value, str) and value.strip() == "None":
+        return None
+    return _decode_json_object(value)
+
+
 PlanningIntentDetails = Annotated[
     dict[str, Any], BeforeValidator(_decode_json_object)
+]
+
+PlanningIntentPriorKnowledge = Annotated[
+    dict[str, Any] | None, BeforeValidator(_decode_optional_json_object)
 ]
 
 
@@ -676,7 +686,7 @@ def record_planning_intent(
     planner_id: Literal["minizinc", "fast-downward"],
     rationale: str,
     details: PlanningIntentDetails,
-    prior_knowledge: dict[str, Any] | None,
+    prior_knowledge: PlanningIntentPriorKnowledge,
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:

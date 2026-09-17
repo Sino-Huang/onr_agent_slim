@@ -361,6 +361,25 @@ def test_record_planning_intent_accepts_json_encoded_details_from_model(
     assert "Planning intent accepted" in result
 
 
+def test_record_planning_intent_accepts_none_string_for_prior_knowledge(
+    tmp_path: Path,
+) -> None:
+    tool = cast(Any, record_planning_intent)
+    arguments = tool.tool_call_schema.model_validate({
+        "objective": "Monitor collision risk",
+        "planning_profile": "temporal",
+        "planner_id": "minizinc",
+        "rationale": "Timing affects feasibility",
+        "details": '{"mission_pattern":"mission2_collision_monitoring"}',
+        "prior_knowledge": "None",
+        "reflection": "Recording planner choice.",
+    })
+
+    assert arguments.prior_knowledge is None
+    result = tool.func(**arguments.model_dump(), runtime=_runtime(_context(tmp_path)))
+    assert "Planning intent accepted" in result
+
+
 def test_recorded_choice_accepts_planning_projection_of_snapshot_live_event(
     tmp_path: Path,
 ) -> None:
