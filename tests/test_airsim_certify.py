@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from onr.demo.airsim_reconstruction.certify import (
+    PatientPauseError,
     angular_error_degrees,
     certification_times,
     decode_segmentation_ids,
@@ -17,9 +18,11 @@ from onr.demo.airsim_reconstruction.certify import (
     expected_ship_pose,
     image_pose_skew_s,
     mapped_dynamic_object_ids,
-    PatientPauseError,
-    pause_patiently,
     parity_errors,
+    pause_alignment_acceptable,
+    pause_alignment_error_s,
+    pause_patiently,
+    pause_window_delay_s,
     pose_within_tolerance,
     reconcile_cleanup_failure,
     resolve_lead_in_s,
@@ -224,6 +227,18 @@ def test_lead_in_epoch_shift_headroom_and_timestamp_lookup() -> None:
     bad_spacing = {"pose": [ship["pose"][0], [100.0, 200.0, -300.0, 180.0, 10.1]]}
     with pytest.raises(ValueError, match="spaced by 0.5"):
         trajectory_timestamp_index(bad_spacing)
+
+
+def test_pause_boundary_window_and_alignment_decisions() -> None:
+    assert pause_window_delay_s(1.01) == pytest.approx(0.02)
+    assert pause_window_delay_s(1.03) == pytest.approx(0.0)
+    assert pause_window_delay_s(1.08) == pytest.approx(0.0)
+    assert pause_window_delay_s(1.09) == pytest.approx(0.44)
+
+    assert pause_alignment_error_s(2.19) == pytest.approx(0.19)
+    assert pause_alignment_error_s(2.49) == pytest.approx(0.01)
+    assert pause_alignment_acceptable(2.20)
+    assert not pause_alignment_acceptable(2.201)
 
 
 def test_segmentation_accepts_ship_passenger_and_static_ids() -> None:

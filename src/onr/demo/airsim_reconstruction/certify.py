@@ -39,6 +39,14 @@ TICK_S = 0.5
 POSITION_TOLERANCE_M = 0.5
 HEADING_TOLERANCE_DEG = 5.0
 SKEW_TOLERANCE_S = 0.25
+# Pause shortly after a discrete 0.5 s trajectory-row transition. The 0.08 s
+# window ceiling leaves 0.12 s for pause RPC latency before the 0.20 s gate.
+PAUSE_WINDOW_START_S = 0.03
+PAUSE_WINDOW_END_S = 0.08
+PAUSE_WINDOW_POLL_S = 0.005
+PAUSE_ALIGNMENT_TOLERANCE_S = 0.20
+PAUSE_ALIGNMENT_MAX_ATTEMPTS = 6
+PHASE_COMPARISON_EPSILON_S = 1e-9
 
 
 def utc_now() -> str:
@@ -117,6 +125,51 @@ def epoch_headroom_available(
 ) -> bool:
     """Return whether establish has enough lead-in remaining to certify its step."""
     return float(phase_at_pause_s) <= float(lead_in_s) - float(margin_s)
+
+
+def pause_window_delay_s(
+    scene_phase_s: float,
+    *,
+    tick_s: float = TICK_S,
+    window_start_s: float = PAUSE_WINDOW_START_S,
+    window_end_s: float = PAUSE_WINDOW_END_S,
+) -> float:
+    """Return seconds until the current or next post-tick pause window."""
+    phase = float(scene_phase_s)
+    if not math.isfinite(phase) or phase < 0.0:
+        raise ValueError("scene phase must be finite and non-negative")
+    if not 0.0 <= window_start_s <= window_end_s < tick_s:
+        raise ValueError("pause window must lie within one positive tick")
+    offset = phase % tick_s
+    if offset < window_start_s - PHASE_COMPARISON_EPSILON_S:
+        return window_start_s - offset
+    if offset <= window_end_s + PHASE_COMPARISON_EPSILON_S:
+        return 0.0
+    return tick_s - offset + window_start_s
+
+
+def pause_alignment_error_s(
+    scene_phase_s: float, *, tick_s: float = TICK_S
+) -> float:
+    """Return distance from scene phase to the nearest trajectory-row boundary."""
+    phase = float(scene_phase_s)
+    if not math.isfinite(phase) or phase < 0.0:
+        raise ValueError("scene phase must be finite and non-negative")
+    offset = phase % tick_s
+    return min(offset, tick_s - offset)
+
+
+def pause_alignment_acceptable(
+    scene_phase_s: float,
+    *,
+    tolerance_s: float = PAUSE_ALIGNMENT_TOLERANCE_S,
+    tick_s: float = TICK_S,
+) -> bool:
+    """Return whether a frozen phase is close enough to a trajectory row."""
+    return (
+        pause_alignment_error_s(scene_phase_s, tick_s=tick_s)
+        <= tolerance_s + PHASE_COMPARISON_EPSILON_S
+    )
 
 
 def resolve_lead_in_s(
@@ -433,6 +486,28 @@ def pause_patiently(
             return attempt
     assert last_error is not None
     raise PatientPauseError(max_attempts, last_error) from last_error
+
+
+def wait_for_pause_window(
+    clock: Any,
+    scenario_start_time_s: float,
+    lead_in_s: float,
+    *,
+    poll_interval_s: float = PAUSE_WINDOW_POLL_S,
+    sleep: Any = time.sleep,
+) -> float:
+    """Wait unfrozen for a post-row-boundary pause window with headroom."""
+    while True:
+        phase_s = clock.time() - float(scenario_start_time_s)
+        if not epoch_headroom_available(phase_s, lead_in_s):
+            raise RuntimeError(
+                "insufficient lead-in headroom while waiting for pause alignment: "
+                f"phase_s={phase_s:.6f}, required<={lead_in_s - 2.0:.6f}"
+            )
+        delay_s = pause_window_delay_s(phase_s)
+        if delay_s == 0.0:
+            return phase_s
+        sleep(min(float(poll_interval_s), delay_s))
 
 
 def reconcile_cleanup_failure(
@@ -779,16 +854,89 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 report["measurements"]["spawn_wait_s"] = spawn_wait_s
                 report["checks"]["ships_spawned"] = True
                 initial_freeze = FullFreeze(launch_clock, patient_client)
-                pause_attempts = pause_patiently(
-                    initial_freeze, max_attempts=3, retry_delay_s=5.0
+                pause_alignment_attempts: list[dict[str, Any]] = []
+                report["measurements"]["pause_alignment_attempts"] = (
+                    pause_alignment_attempts
                 )
-                report["measurements"]["pause_attempts"] = pause_attempts
+                pause_rpc_attempts = 0
+                scenario_start_time_s = float(
+                    scenario_times["scenario_start_time"]
+                )
+                paused_clock_status: Mapping[str, Any] | None = None
+                phase_at_pause_s = float("nan")
+                alignment_error_s = float("inf")
+                for alignment_attempt in range(
+                    1, PAUSE_ALIGNMENT_MAX_ATTEMPTS + 1
+                ):
+                    phase_at_window_s = wait_for_pause_window(
+                        launch_clock, scenario_start_time_s, lead_in_s
+                    )
+                    try:
+                        rpc_attempts = pause_patiently(
+                            initial_freeze,
+                            max_attempts=3,
+                            retry_delay_s=5.0,
+                        )
+                    except PatientPauseError as exc:
+                        pause_rpc_attempts += exc.attempts
+                        report["measurements"]["pause_attempts"] = (
+                            pause_rpc_attempts
+                        )
+                        pause_alignment_attempts.append(
+                            {
+                                "attempt": alignment_attempt,
+                                "phase_at_window_s": phase_at_window_s,
+                                "pause_rpc_attempts": exc.attempts,
+                                "error": str(exc),
+                            }
+                        )
+                        raise
+                    pause_rpc_attempts += rpc_attempts
+                    report["measurements"]["pause_attempts"] = (
+                        pause_rpc_attempts
+                    )
+                    current_clock_status = launch_clock.status()
+                    paused_clock_status = current_clock_status
+                    phase_at_pause_s = (
+                        float(current_clock_status["frozen_ns"]) / 1e9
+                        - scenario_start_time_s
+                    )
+                    alignment_error_s = pause_alignment_error_s(
+                        phase_at_pause_s
+                    )
+                    aligned = pause_alignment_acceptable(phase_at_pause_s)
+                    has_headroom = epoch_headroom_available(
+                        phase_at_pause_s, lead_in_s
+                    )
+                    pause_alignment_attempts.append(
+                        {
+                            "attempt": alignment_attempt,
+                            "phase_at_window_s": phase_at_window_s,
+                            "frozen_phase_s": phase_at_pause_s,
+                            "alignment_error_s": alignment_error_s,
+                            "pause_rpc_attempts": rpc_attempts,
+                            "aligned": aligned,
+                            "epoch_headroom": has_headroom,
+                        }
+                    )
+                    if not has_headroom:
+                        raise RuntimeError(
+                            "insufficient lead-in headroom at initial pause: "
+                            f"phase_at_pause_s={phase_at_pause_s:.6f}, "
+                            f"required<={lead_in_s - 2.0:.6f}"
+                        )
+                    if aligned:
+                        break
+                    if alignment_attempt == PAUSE_ALIGNMENT_MAX_ATTEMPTS:
+                        raise RuntimeError(
+                            "tick-aligned initial pause failed after "
+                            f"{PAUSE_ALIGNMENT_MAX_ATTEMPTS} attempts; "
+                            f"final_phase_s={phase_at_pause_s:.6f}, "
+                            f"alignment_error_s={alignment_error_s:.6f}"
+                        )
+                    initial_freeze.resume()
+                assert paused_clock_status is not None
                 pause_ack = time.monotonic()
-                paused_clock_status = launch_clock.status()
-                phase_at_pause_s = (
-                    float(paused_clock_status["frozen_ns"]) / 1e9
-                    - float(scenario_times["scenario_start_time"])
-                )
                 report["checks"]["initial_pause_acknowledged"] = True
                 report["measurements"]["launch_to_pause_ack_s"] = (
                     pause_ack - launch_started
@@ -797,6 +945,9 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     paused_clock_status
                 )
                 report["measurements"]["phase_at_pause_s"] = phase_at_pause_s
+                report["measurements"]["pause_alignment_error_s"] = (
+                    alignment_error_s
+                )
                 report["checks"]["epoch_headroom"] = epoch_headroom_available(
                     phase_at_pause_s, lead_in_s
                 )
