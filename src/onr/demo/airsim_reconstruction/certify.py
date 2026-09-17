@@ -435,17 +435,33 @@ def wait_for_ship_spawns(
     poll_interval_s: float = 1.0,
     monotonic: Any = time.monotonic,
     sleep: Any = time.sleep,
-) -> float:
-    """Wait until every expected fixture ship is present in the AirSim scene."""
+) -> tuple[float, int]:
+    """Wait for all ships, tolerating RPC blockage within the overall deadline."""
     expected = {str(name) for name in expected_names}
     started = monotonic()
     deadline = started + float(timeout_s)
     missing = set(expected)
+    rpc_timeouts = 0
     while True:
-        present = set(client.simListSceneObjects())
+        if monotonic() >= deadline:
+            missing_names = ", ".join(sorted(missing))
+            raise TimeoutError(f"ships did not spawn; missing: {missing_names}")
+        try:
+            present = set(client.simListSceneObjects())
+        except Exception as exc:
+            rpc_timeouts += 1
+            now = monotonic()
+            if now >= deadline:
+                missing_names = ", ".join(sorted(missing))
+                raise TimeoutError(
+                    "ships did not spawn before the deadline; "
+                    f"missing: {missing_names}; RPC timeouts: {rpc_timeouts}"
+                ) from exc
+            sleep(min(float(poll_interval_s), max(0.0, deadline - now)))
+            continue
         missing = expected - present
         if not missing:
-            return float(monotonic() - started)
+            return float(monotonic() - started), rpc_timeouts
         now = monotonic()
         if now >= deadline:
             missing_names = ", ".join(sorted(missing))
@@ -845,13 +861,16 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     "ships",
                     "waiting for all fixture ships to spawn before pausing",
                 )
-                spawn_wait_s = wait_for_ship_spawns(
+                spawn_wait_s, spawn_wait_rpc_timeouts = wait_for_ship_spawns(
                     patient_client,
                     (ship["name"] for ship in ships),
                     timeout_s=180.0,
                     poll_interval_s=1.0,
                 )
                 report["measurements"]["spawn_wait_s"] = spawn_wait_s
+                report["measurements"]["spawn_wait_rpc_timeouts"] = (
+                    spawn_wait_rpc_timeouts
+                )
                 report["checks"]["ships_spawned"] = True
                 initial_freeze = FullFreeze(launch_clock, patient_client)
                 pause_alignment_attempts: list[dict[str, Any]] = []

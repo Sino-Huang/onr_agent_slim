@@ -296,13 +296,15 @@ def test_pause_patiently_raises_after_three_failures() -> None:
 
 
 class _SceneObjectsStub:
-    def __init__(self, responses: list[set[str]]) -> None:
+    def __init__(self, responses: list[set[str] | BaseException]) -> None:
         self.responses = responses
         self.calls = 0
 
     def simListSceneObjects(self) -> set[str]:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
         self.calls += 1
+        if isinstance(response, BaseException):
+            raise response
         return response
 
 
@@ -310,7 +312,7 @@ def test_wait_for_ship_spawns_partial_then_full() -> None:
     client = _SceneObjectsStub([{"ship-a"}, {"ship-a", "ship-b"}])
     now = [0.0]
 
-    elapsed = wait_for_ship_spawns(
+    elapsed, rpc_timeouts = wait_for_ship_spawns(
         client,
         ["ship-a", "ship-b"],
         monotonic=lambda: now[0],
@@ -318,6 +320,25 @@ def test_wait_for_ship_spawns_partial_then_full() -> None:
     )
 
     assert elapsed == pytest.approx(1.0)
+    assert rpc_timeouts == 0
+    assert client.calls == 2
+
+
+def test_wait_for_ship_spawns_tolerates_rpc_timeout_then_succeeds() -> None:
+    client = _SceneObjectsStub(
+        [TimeoutError("Request timed out"), {"ship-a", "ship-b"}]
+    )
+    now = [0.0]
+
+    elapsed, rpc_timeouts = wait_for_ship_spawns(
+        client,
+        ["ship-a", "ship-b"],
+        monotonic=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    assert elapsed == pytest.approx(1.0)
+    assert rpc_timeouts == 1
     assert client.calls == 2
 
 
