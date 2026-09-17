@@ -13,7 +13,10 @@ from typing import Any, cast
 from onr.agents.maneuver_tools import ManeuverHeartbeatExecutionRecord
 from onr.application.maneuver_wakeups import ManeuverWakeups
 from onr.application.mission1_planning import Mission1ReplanGate
-from onr.application.mission2_planning import Mission2ReplanGate
+from onr.application.mission2_planning import (
+    Mission2ReplanGate,
+    mission2_trigger_identity,
+)
 from onr.application.mission3_planning import Mission3ReplanGate
 from onr.application.mission4_planning import Mission4ReplanGate
 from onr.application.transition_intents import TransitionIntentJournal
@@ -502,6 +505,7 @@ class ContextCoordination:
         last_gate_signature: tuple[object, ...] | None = None
         last_gate_assessment_time = -math.inf
         last_gate_belief_revision: int | None = None
+        last_mission2_gate_signature: tuple[object, ...] | None = None
         mission2_gate = Mission2ReplanGate()
         mission3_gate = Mission3ReplanGate()
         mission4_gate = Mission4ReplanGate()
@@ -580,8 +584,10 @@ class ContextCoordination:
                     requested_hyper = bool(hyper.has_pending(mission_id))
                     gate_trigger: str | None = None
                     periodic_hyper: str | None = None
+                    planning_environment = (
+                        environment.planning_view().environment_event.payload
+                    )
                     if mission1_gate is not None:
-                        planning_environment = environment.planning_view().environment_event.payload
                         reliability = self._resolve_belief(snapshot)
                         if not isinstance(reliability, ReportingReliabilitySnapshot):
                             raise TypeError("Mission 1 requires reporting reliability")
@@ -629,11 +635,34 @@ class ContextCoordination:
                             )
                         )
                         coalesced_update_count += coalesced
-                    collision_trigger = mission2_gate.assess(environment.planning_view().environment_event.payload)
-                    if collision_trigger is not None:
-                        gate_trigger = collision_trigger if gate_trigger is None else gate_trigger + ";" + collision_trigger
+                    mission2_decision = mission2_gate.assess(
+                        planning_environment, status
+                    )
+                    mission2_gate_signature = (
+                        active_revision.planner_plan.plan_revision,
+                        mission2_decision.risk_revision.run_id,
+                        mission2_decision.risk_revision.revision,
+                        status.active_state,
+                        mission2_decision.current_candidate_id,
+                        mission2_decision.advisory_candidate_ids,
+                        mission2_decision.reason,
+                    )
+                    if mission2_decision.trigger and (
+                        requested_hyper
+                        or mission2_gate_signature
+                        != last_mission2_gate_signature
+                    ):
+                        collision_trigger = mission2_trigger_identity(
+                            mission2_decision
+                        )
+                        last_mission2_gate_signature = mission2_gate_signature
+                        gate_trigger = (
+                            collision_trigger
+                            if gate_trigger is None
+                            else gate_trigger + ";" + collision_trigger
+                        )
                     inspection_trigger = mission3_gate.assess(
-                        environment.planning_view().environment_event.payload
+                        planning_environment
                     )
                     if inspection_trigger is not None:
                         gate_trigger = (
@@ -642,7 +671,7 @@ class ContextCoordination:
                             else gate_trigger + ";" + inspection_trigger
                         )
                     search_trigger = mission4_gate.assess(
-                        environment.planning_view().environment_event.payload
+                        planning_environment
                     )
                     if search_trigger is not None:
                         gate_trigger = search_trigger if gate_trigger is None else gate_trigger + ";" + search_trigger
@@ -732,6 +761,7 @@ class ContextCoordination:
                                 self._transition_intents.invalidate_latest(mission_id)
                                 active_revision = replacement
                                 last_gate_signature = None
+                                last_mission2_gate_signature = None
                                 last_gate_assessment_time = -math.inf
                                 last_gate_belief_revision = None
                                 plan_revisions.append(next_revision)
