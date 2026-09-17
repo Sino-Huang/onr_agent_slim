@@ -71,10 +71,14 @@ class ManeuverWakeups:
             boundary("intent-not-before", readiness.get("not_before"))
         window = _object(current.get("observation_window"))
         start = _seconds(window.get("start"))
+        if start is None:
+            start = _seconds(window.get("start_s"))
+        end = _seconds(window.get("end_s"))
         duration = _seconds(window.get("duration"))
         boundary("observation-start", start)
-        if start is not None and duration is not None:
-            boundary("observation-end", start + duration)
+        if end is None and start is not None and duration is not None:
+            end = start + duration
+        boundary("observation-end", end)
 
         lifecycle = _object(environment.get("maneuver_lifecycle"))
         if lifecycle.get("lifecycle") == "active":

@@ -12,7 +12,7 @@ from onr.application.transition_intents import TransitionIntentJournal
 from onr.contracts.fsm import Statechart, StatechartTransition
 
 
-def context(*, pursuit=False, end=12.5):
+def context(*, pursuit=False, end=12.5, window=None):
     transport = InProcessTransport()
     runner = FSMRunner(transport, store=InMemoryFSMStateStore())
     status = asyncio.run(
@@ -30,10 +30,14 @@ def context(*, pursuit=False, end=12.5):
                         "surveillance_mode": "pursue_ship" if pursuit else "fixed_view",
                         "target_entity_id": 23 if pursuit else None,
                         "target_report_ids": ["r1"],
-                        "observation_window": {
-                            "start": {"seconds": end - 0.5},
-                            "duration": {"seconds": 0.5},
-                        },
+                        "observation_window": (
+                            window
+                            if window is not None
+                            else {
+                                "start": {"seconds": end - 0.5},
+                                "duration": {"seconds": 0.5},
+                            }
+                        ),
                     },
                     "done": {},
                 },
@@ -67,6 +71,18 @@ def test_deadlines_are_coalesced_once_without_authorizing_transition():
     )
     assert wakeups.due(status, intent, {}, 13) == ()
     assert status.active_state == "observing"  # Scheduling is not condition assessment.
+
+
+def test_mission2_style_start_s_end_s_window_registers_boundaries():
+    status, intent = context(window={"start_s": 54.0, "end_s": 55.0})
+    wakeups = ManeuverWakeups()
+    assert wakeups.due(status, intent, {}, 0) == ()
+    assert wakeups.due(status, intent, {}, 54) == (
+        "deadline:intent-not-before:12.5",
+        "deadline:observation-start:54",
+    )
+    assert wakeups.due(status, intent, {}, 55) == ("deadline:observation-end:55",)
+    assert wakeups.due(status, intent, {}, 56) == ()
 
 
 def test_skipped_ticks_still_deliver_due_boundaries_once():
