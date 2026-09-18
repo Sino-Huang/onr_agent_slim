@@ -47,6 +47,11 @@ case "$MISSION_MODE" in
 esac
 readonly MISSION_FILE="${ONR_DEMO_MISSION_FILE:-$default_mission_file}"
 
+# The launcher's own shell parses herdr JSON with jq. Use the repository's
+# vendored jq (the same copy the hyper agent backend puts on PATH) so jq is
+# guaranteed regardless of the caller's environment.
+export PATH="$AGENT_ROOT/modules/jq:$PATH"
+
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
     echo "Usage: $0 <herdr-session-name>" >&2
     exit 2
@@ -102,6 +107,16 @@ if [ "$MISSION_MODE" = "mission4" ]; then
 fi
 
 if [ "$DRY_RUN" != "1" ]; then
+# Fail fast with actionable guidance before any side effect when the caller's
+# environment is incomplete. jq comes from modules/jq above; python and herdr
+# must come from the caller, e.g. the activated onr conda environment.
+for required_tool in herdr jq python; do
+    if ! command -v "$required_tool" >/dev/null 2>&1; then
+        echo "The live-demo launcher requires '$required_tool' on PATH." >&2
+        echo "Activate the onr conda environment first (it provides python; jq is also vendored under modules/jq)." >&2
+        exit 1
+    fi
+done
 session_list="$(herdr session list)"
 status="$(printf '%s\n' "$session_list" | awk -v session="$sessname" '$1 == session {print $2}')"
 if [ -z "$status" ]; then
