@@ -29,6 +29,7 @@ from onr.agents.structured_output import (
     StructuredOutputFailure,
     StructuredOutputRetriesExhausted,
     invoke_with_structured_output_recovery,
+    summarize_mission4_coverage,
 )
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
@@ -543,15 +544,15 @@ def _project_model_world_history(payload: dict[str, object]) -> None:
     if not isinstance(info, dict):
         return
 
+    summarize_mission4_coverage(payload)
+
     report_ids: set[str] = set()
     entity_ids: set[str] = set()
 
     def collect(value: object, *, include_entities: bool = True) -> None:
         if isinstance(value, Mapping):
             for key, item in value.items():
-                if key in {"report_id", "related_report_id"} and isinstance(
-                    item, str
-                ):
+                if key in {"report_id", "related_report_id"} and isinstance(item, str):
                     report_ids.add(item)
                 elif key == "report_ids" and isinstance(item, (list, tuple)):
                     report_ids.update(

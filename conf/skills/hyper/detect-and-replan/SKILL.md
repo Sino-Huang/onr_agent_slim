@@ -1,7 +1,7 @@
 ---
 name: detect-and-replan
 description: Apply when evidence affects plan feasibility, a Mission 1 utility gate identifies a better route, Mission 2 collision risks change, Mission 3 inspection evidence changes, or Mission 4 search objectives/evidence change.
-version: '1.5.0'
+version: '1.6.0'
 ---
 
 # Detect And Replan
@@ -111,9 +111,12 @@ worker revision changes the active objectives, a maneuver completes or fails,
 coverage changes, or new observations change accumulated match uncertainty.
 Preserve unaffected objectives, evidence identities, elapsed Mission time and
 feasible plan segments. Seek another useful view while a required attribute or
-location remains unresolved. An `all_found` report requires supported locations
-inside the requested areas and the configured strict belief threshold; runtime
-receipts remain the authority for request and physical lifecycle changes.
+location remains unresolved, and use `investigate` as the close-up
+identification action when a track's position is precise but its attributes
+remain unresolved. An `all_found` report requires supported locations inside
+the requested areas and the configured strict belief threshold; for animal-type
+questions the species posterior must also be resolved. Runtime receipts remain
+the authority for request and physical lifecycle changes.
 When an accepted request revision adds or changes an objective and the current
 Statechart is monitoring with no still-useful active physical leg, choose
 `replan` so the replacement chart schedules the code-owned adaptive decision.

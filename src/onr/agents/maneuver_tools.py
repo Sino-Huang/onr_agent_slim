@@ -19,6 +19,7 @@ from onr.contracts.communication import AgentMessage, AgentMessageKind
 from onr.contracts.environment import (
     EntityId,
     EventObservation,
+    environment_maneuver_lifecycle,
     environment_mission_time,
 )
 from onr.contracts.fsm import FSMStatus, ManeuverDecision
@@ -531,9 +532,25 @@ def _transition_fsm(
                 "omitted_report_ids": omitted,
                 **_candidate_result(status),
             }
-            context.execution_record.append(
-                "transition_fsm", result, successful=False
-            )
+            context.execution_record.append("transition_fsm", result, successful=False)
+            return _canonical_json(result)
+    if readiness.get("matching_maneuver_lifecycle_terminal"):
+        lifecycle = environment_maneuver_lifecycle(context.invocation.environment_data)
+        terminal = lifecycle is not None and lifecycle.get("lifecycle") in {
+            "completed",
+            "failed",
+            "cancelled",
+        }
+        if not terminal:
+            result = {
+                "status": "rejected",
+                "reason": (
+                    "the selected physical action has no terminal maneuver "
+                    "feedback under the current plan revision"
+                ),
+                **_candidate_result(status),
+            }
+            context.execution_record.append("transition_fsm", result, successful=False)
             return _canonical_json(result)
     sequence = len(context.execution_record.executions) + 1
     decision_id = f"maneuver-transition:{context.invocation.request_id}:{sequence}"
@@ -624,6 +641,26 @@ def _polygon(value: object) -> list[dict[str, float]]:
             coordinates[name] = float(coordinate)
         result.append(coordinates)
     return result
+
+
+def _position(value: object) -> dict[str, float]:
+    if not isinstance(value, Mapping) or not {"x", "y"}.issubset(value):
+        raise ValueError("target position must contain at least x and y")
+    if set(value) - {"x", "y", "z"}:
+        raise ValueError("target position keys must be exactly x, y and optional z")
+    coordinates: dict[str, float] = {}
+    for name in ("x", "y", "z"):
+        if name not in value:
+            continue
+        coordinate = value[name]
+        if (
+            isinstance(coordinate, bool)
+            or not isinstance(coordinate, (int, float))
+            or not math.isfinite(float(coordinate))
+        ):
+            raise ValueError("target position coordinates must be finite numbers")
+        coordinates[name] = float(coordinate)
+    return coordinates
 
 
 def _physical(
@@ -919,43 +956,60 @@ def pursue(
 @tool(parse_docstring=True)
 def investigate(
     maneuver_id: str,
-    entity_id: EntityId,
     reflection: str,
     runtime: ToolRuntime[ManeuverToolContext],
+    entity_id: EntityId | None = None,
+    target: dict[str, float] | None = None,
     standoff_distance: float | None = None,
+    speed: float | None = None,
     deadline_time: float | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
-    """Submit an entity-investigation action.
+    """Submit an investigation action orbiting one subject at a standoff.
+
+    Exactly one of entity_id or target is required. Mission 1/2/3 ship
+    investigations use entity_id; Mission 4 uses target to orbit a located
+    search track at a standoff for close-up identification, copying the
+    target position from the planner's track estimate.
 
     Args:
         maneuver_id: Action identity selected for investigation.
-        entity_id: Environment entity identifier to investigate.
         reflection: Concise public evidence summary for this action.
+        entity_id: Environment entity identifier to investigate (missions 1/2/3).
+        target: Optional {x, y, z} track position for close-up identification (mission 4).
         standoff_distance: Optional desired separation distance.
+        speed: Optional requested speed. Mission 4 orbits should set the
+            planner's speed; omitting it lets the deadline pace the orbit.
         deadline_time: Absolute non-negative Mission time by which to reach standoff.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
-    required: dict[str, JsonScalar] = {"entity_id": entity_id}
+    if (entity_id is None) == (target is None):
+        raise ValueError("exactly one of entity_id or target is required")
+    required: dict[str, JsonScalar] = {}
+    if entity_id is not None:
+        required["entity_id"] = entity_id
     if standoff_distance is not None:
         required["standoff_distance"] = standoff_distance
+    if speed is not None:
+        required["speed"] = speed
     if deadline_time is not None:
         required["deadline_time"] = _deadline(deadline_time)
+    parameters = _parameters(required, extra_parameters)
+    if target is not None:
+        parameters = (*parameters, ManeuverParameter("target", _position(target)))
     context = _context(runtime)
     return _physical(
         context,
         tool_name="investigate",
         maneuver_id=maneuver_id,
         action="investigate",
-        parameters=_parameters(required, extra_parameters),
+        parameters=parameters,
         reflection=reflection,
     )
 
 
-def _ingest_pending_perceptions(
-    context: ManeuverToolContext, reflection: str
-) -> str:
+def _ingest_pending_perceptions(context: ManeuverToolContext, reflection: str) -> str:
     from onr.application.bayesian_belief import create_risk_observation_event
 
     if context.perception_batch_ingested:

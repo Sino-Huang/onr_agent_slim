@@ -669,6 +669,88 @@ def test_transition_tool_requires_exact_unconfirmed_report_ids() -> None:
     assert asyncio.run(runner.status()).active_state == "arbitrary origin"
 
 
+def test_transition_tool_requires_current_revision_terminal_maneuver_feedback() -> (
+    None
+):
+    plan = _plan()
+    chart = _chart(plan)
+    chart = replace(
+        chart,
+        transitions=(
+            replace(
+                chart.transitions[0],
+                context={"readiness": {"matching_maneuver_lifecycle_terminal": True}},
+            ),
+        ),
+    )
+    transport = InProcessTransport()
+    journal = TransitionIntentJournal(transport)
+    runner = FSMRunner(cast(Any, transport), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(chart))
+    intent = journal.select(
+        status, "arbitrary destination", "Assess exact evidence.", selected_at=0
+    )
+
+    def context_for(lifecycle: object, request_id: str) -> ManeuverToolContext:
+        invocation = ManeuverInvocation(
+            request_id=request_id,
+            correlation_id="lifecycle-correlation",
+            mission_id=plan.mission_id,
+            plan_revision=plan.plan_revision,
+            statechart_reference="accepted-statechart.json",
+            fsm_context=journal.focused_context(status, intent),
+            environment_data={
+                "mission_time_seconds": 10,
+                "maneuver_lifecycle": lifecycle,
+            },
+        )
+        return ManeuverToolContext(
+            invocation, runner, _Dispatcher(), transition_intents=journal
+        )
+
+    def attempt(context: ManeuverToolContext) -> dict[str, object]:
+        return json.loads(
+            cast(Any, transition_fsm).func(
+                current_state="arbitrary origin",
+                next_state="arbitrary destination",
+                assessment="satisfied",
+                evidence="The selected physical action has terminal feedback.",
+                uncertainty="None.",
+                runtime=_runtime(context),
+            )
+        )
+
+    # A replacement revision whose planner item has not been dispatched yet has
+    # no visible terminal feedback: the superseded revision's terminal
+    # lifecycle is scoped away before the heartbeat runs.
+    missing = attempt(context_for(None, "lifecycle-heartbeat-absent"))
+    assert missing["status"] == "rejected"
+    assert missing["reason"] == (
+        "the selected physical action has no terminal maneuver "
+        "feedback under the current plan revision"
+    )
+    assert asyncio.run(runner.status()).active_state == "arbitrary origin"
+
+    active = attempt(
+        context_for(
+            {"lifecycle": "active", "plan_revision": plan.plan_revision},
+            "lifecycle-heartbeat-active",
+        )
+    )
+    assert active["status"] == "rejected"
+    assert missing["reason"] == active["reason"]
+    assert asyncio.run(runner.status()).active_state == "arbitrary origin"
+
+    completed = attempt(
+        context_for(
+            {"lifecycle": "completed", "plan_revision": plan.plan_revision},
+            "lifecycle-heartbeat-completed",
+        )
+    )
+    assert completed["status"] == "transitioned"
+    assert asyncio.run(runner.status()).active_state == "arbitrary destination"
+
+
 def test_assess_first_heartbeat_persists_new_state_intent_for_fresh_evidence(
     tmp_path: Path,
 ) -> None:
@@ -2274,6 +2356,44 @@ def test_model_visible_invocation_projects_world_history_to_current_references()
         "ship-1": [current_report],
         "ship-2": [other_report],
     }
+
+
+def test_model_visible_invocation_summarizes_mission4_coverage_cells() -> None:
+    plan = _plan()
+    runner = FSMRunner(cast(Any, InProcessTransport()), store=InMemoryFSMStateStore())
+    status = asyncio.run(runner.activate(_chart(plan)))
+    cells = [[-577.1, -112.9], [-575.1, -122.9]]
+    invocation = ManeuverInvocation(
+        "mission4-coverage-heartbeat",
+        "correlation",
+        plan.mission_id,
+        plan.plan_revision,
+        "statechart.json",
+        _focused(status),
+        {
+            "mission_time_seconds": 2,
+            "world_model_info": {
+                "mission_mode": "mission4",
+                "mission4": {
+                    "objectives": {},
+                    "coverage": {
+                        "task:1": {"grid_resolution_m": 2.0, "observed_cells": cells},
+                        "task:2": {"grid_resolution_m": 2.0, "observed_cells": []},
+                    },
+                },
+            },
+        },
+    )
+
+    visible = _model_visible_invocation(invocation)
+    info = cast(dict[str, object], visible["environment_data"])["world_model_info"]
+
+    assert info["mission4"]["coverage"] == {
+        "task:1": {"grid_resolution_m": 2.0, "observed_cell_count": 2},
+        "task:2": {"grid_resolution_m": 2.0, "observed_cell_count": 0},
+    }
+    original = invocation.to_dict()["environment_data"]["world_model_info"]["mission4"]
+    assert original["coverage"]["task:1"]["observed_cells"] == cells
 
 
 def test_derived_pursuit_facts_expose_passed_bound_and_stale_fix() -> None:

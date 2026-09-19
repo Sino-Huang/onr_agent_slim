@@ -72,12 +72,12 @@ def test_shipped_catalog_selects_all_role_skills_in_operational_order() -> None:
     assert [skill.version for skill in (*hyper, *maneuver)] == [
         "1.11.0",
         "1.5.0",
-        "2.23.0",
+        "2.24.0",
         "2.0.0",
-        "1.5.0",
+        "1.6.0",
         "3.7.0",
         "2.2.2",
-        "1.5.0",
+        "1.7.0",
         "1.1.1",
     ]
     assert [skill.path.relative_to(catalog.root).as_posix() for skill in hyper] == [
@@ -627,7 +627,7 @@ def test_event_accounting_patrol_routes_to_reliability_candidate_example() -> No
     assert "substituting the two labeled execute paths verbatim" in minizinc_skill
     assert "Do not author an ad-hoc inspection script" in minizinc_skill
     assert "DZN into model context" in minizinc_skill
-    assert "version: '2.23.0'" in minizinc_skill
+    assert "version: '2.24.0'" in minizinc_skill
     assert "references/mission1-mixed-action.md" in minizinc_skill
     assert "example values are teaching values only" in mission1_guidance
     assert "replan-environment.json" in mission1_reference

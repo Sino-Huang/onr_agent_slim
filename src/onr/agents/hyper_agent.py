@@ -16,6 +16,7 @@ from onr.agents.structured_output import (
     StructuralIssue,
     StructuredOutputFailure,
     invoke_with_structured_output_recovery,
+    summarize_mission4_coverage,
 )
 from onr.contracts.hyper_agent import (
     HyperHeartbeatDecision,
@@ -500,9 +501,11 @@ class DeepAgentsHyperHeartbeatProvider:
                 else method(state, config={"callbacks": [callback]})
             )
 
+        payload = invocation.to_dict()
+        summarize_mission4_coverage(payload)
         return invoke_with_structured_output_recovery(
             invoke,
-            invocation.to_dict(),
+            payload,
             self.max_retries,
             lambda response: _parse_hyper_heartbeat_response(response, invocation),
         )
