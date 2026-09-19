@@ -1,7 +1,7 @@
 ---
 name: physical-maneuver-selection
 description: Use when selecting or preserving a physical maneuver, including pursuit acquisition and recovery.
-version: '1.5.0'
+version: '1.7.0'
 ---
 
 # Physical maneuver selection
@@ -48,8 +48,17 @@ completion, no detection, unavailable perception and absent confidence leave the
 ship unresolved. After a failed or inconclusive attempt, screen other feasible
 ships before a bounded revisit; report the reason when no recovery evidence arrives.
 
-For Mission 4, use `navigate` for a selected useful viewpoint and `search_area`
-for an authorized polygon from the active objective. Retain objective, area and
-view identities in the action context. A completed movement or covered area is
-physical progress only; preserve the action until lifecycle/evidence changes and
-let accumulated object-search belief establish a found result.
+For Mission 4, use `navigate` for a selected useful viewpoint, `search_area`
+for an authorized polygon from the active objective, and `investigate` with an
+explicit target position for close-up identification of a located track. Retain
+objective, area and view identities in the action context. A completed movement
+or covered area is physical progress only; preserve the action until
+lifecycle/evidence changes and let accumulated object-search belief establish a
+found result. Under a replacement plan revision, submit the current action
+state's planner item even when an identical action completed under the
+superseded revision: the terminal-feedback readiness for leaving that state
+refers to the command submitted for the current revision's planner item, not
+to any earlier command. The transition tool enforces this binding — it rejects
+the readiness while no command submitted under the current revision has
+terminal feedback — so submit the planner item first and transition only when
+that command finishes.

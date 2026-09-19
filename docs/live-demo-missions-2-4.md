@@ -17,10 +17,13 @@ Mission 2 uses the original `offshore_dock_1/collision/0` recording with a
 demo-only initial drone pose near its first forecast risk; the recording,
 prediction inputs and evaluator truth remain unchanged.
 Mission 3 defaults to the three-ship standalone inspection fixture. Mission 4
-defaults to the standalone search package/fixture and replays the two timed
-requests in `examples/mission4_requests.json`; its third pane records durable
-worker receipts. Its demo profile uses a 15 m sensor radius so dock coverage
-requires physical traversal and distinct fixture views. The shared launcher
+defaults to the static ground-team assistance scenario on the assembled
+offshore_dock_1 map: the runtime checkout's `config/mission4_offshore_demo.yaml`
+(offshore map, scenario ships, 100 m visibility, seed 22) with the generated
+package, fixture and answers under its
+`docs/mission_desc/mission4_offshore_non_collision_0/`; it replays the three
+timed ground-team tasks in `examples/mission4_requests.json` and its third pane
+records durable worker receipts. The shared launcher
 prints every resolved input and the isolated run directory. Mission 1 retains
 `var/live_demo_with_wm/run.*`; Missions 2–4 write to
 `var/live_demo_with_wm/mission2/run.*`, `mission3/run.*`, and `mission4/run.*`,
@@ -72,3 +75,23 @@ For Mission 4, the scripted worker remains active until the runtime accepts the
 Agent's terminal report. Additional manual requests can use
 `python -m onr.adapters.mission4_worker --help` and the run's public environment,
 worker session and physical `search_requests/` directory.
+
+The printed audit command passes `--mission4-answers <private answers.json>`
+(the generated `answers.json` by default). It runs the runtime-side static
+evaluator and writes `mission4-answer-metrics.json` into the run root;
+the per-task location error (m), direction error (deg) and animal-type
+correctness are embedded in `live-acceptance.json` as informational
+`mission4_answer_metrics` and never change the audit's pass/fail status. The
+audit's private-key ban on run artifacts now also covers the `answers` key.
+
+A successful Mission 4 run terminates its search with reason `all_found` —
+the audit fails any other terminal search state — and retains audited worker
+receipts. Its planner is expected to exercise `navigate`, `search_area` and
+`investigate` physical commands as public evidence requires. End-to-end
+live-run confirmation of the full offshore scenario: run `run.4TD3gn`
+(2026-09-20) terminated `all_found` at sim 207.5 s of the 900 s budget
+(final FSM `search-complete`, six plan revisions) with the physical chain
+navigate → navigate → investigate → search_area → investigate, audit PASS,
+and all static-answer metrics resolved — worker:1/worker:2 person locations
+at 1.0 m error, worker:3 animal location at 1.0 m with animal type bear
+correct and escape-direction error 1.99 deg.

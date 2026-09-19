@@ -79,13 +79,16 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
         )
     if mode == "mission4":
         assert physical[physical.index("--scenario-config") + 1].endswith(
-            "config/mission4_live_demo.yaml"
+            "config/mission4_offshore_demo.yaml"
         )
         assert physical[physical.index("--mission4-package") + 1].endswith(
-            "docs/mission_desc/mission4_package.json"
+            "docs/mission_desc/mission4_offshore_non_collision_0/package.json"
         )
         assert physical[physical.index("--mission4-fixture") + 1].endswith(
-            "docs/mission_desc/mission4_fixture.json"
+            "docs/mission_desc/mission4_offshore_non_collision_0/fixture.json"
+        )
+        assert audit[audit.index("--mission4-answers") + 1].endswith(
+            "docs/mission_desc/mission4_offshore_non_collision_0/answers.json"
         )
         worker = commands["Worker command"]
         assert worker[worker.index("--script") + 1].endswith(

@@ -54,8 +54,10 @@ version: '3.7.0'
    entity where applicable, opaque report identities, observation window, and
    the recall/estimation/omission utility breakdown. Maneuver Control chooses
    `navigate` or `pursue` and its adapter parameters at runtime.
-   For Mission 4, preserve the active objective revision, target/area identity,
-   useful viewpoint or search polygon, deadline and evidence condition. Enter a
+   For Mission 4, allowed planner actions are `navigate` (useful viewpoint),
+   `search_area` (authorized polygon), `investigate` (orbit a located track),
+   and `report` (terminal). Preserve the active objective revision,
+   objective/area/track identity, deadline and evidence condition. Enter a
    terminal state only for an evidence-backed `all_found` result or an explicit
    runtime deadline/failure outcome; area coverage alone remains nonterminal.
    An omission-search fixed view can have empty report IDs and nonzero omission

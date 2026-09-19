@@ -10,6 +10,7 @@ from onr.agents.structured_output import (
     StructuredOutputFailure,
     StructuredOutputRetriesExhausted,
     invoke_with_structured_output_recovery,
+    summarize_mission4_coverage,
 )
 
 
@@ -149,3 +150,37 @@ def test_unstructured_errors_propagate_without_retry() -> None:
 
     assert caught.value is failure
     assert call_count == 1
+
+
+def test_summarize_mission4_coverage_replaces_cell_lists_with_counts() -> None:
+    cells = [[-577.1, -112.9], [-575.1, -122.9], [-573.1, -110.9]]
+    payload: dict[str, object] = {
+        "environment_data": {
+            "world_model_info": {
+                "mission_mode": "mission4",
+                "mission4": {
+                    "objectives": {"worker:1": {"description": "find"}},
+                    "coverage": {
+                        "task:1": {"grid_resolution_m": 2.0, "observed_cells": cells},
+                        "task:2": {"grid_resolution_m": 2.0, "observed_cells": []},
+                    },
+                },
+            }
+        }
+    }
+
+    summarize_mission4_coverage(payload)
+
+    mission4 = cast(dict[str, object], payload["environment_data"])["world_model_info"]["mission4"]
+    assert mission4["coverage"] == {
+        "task:1": {"grid_resolution_m": 2.0, "observed_cell_count": 3},
+        "task:2": {"grid_resolution_m": 2.0, "observed_cell_count": 0},
+    }
+    assert mission4["objectives"] == {"worker:1": {"description": "find"}}
+
+
+def test_summarize_mission4_coverage_leaves_other_payloads_untouched() -> None:
+    payload: dict[str, object] = {"environment_data": {"world_model_info": {"mission_mode": "mission1"}}}
+    summarize_mission4_coverage(payload)
+    assert payload == {"environment_data": {"world_model_info": {"mission_mode": "mission1"}}}
+    summarize_mission4_coverage({})

@@ -8,6 +8,17 @@ Runtime contracts/examples live in the sibling `onr_physical_runtime` checkout's
 `docs/mission_desc/mission4_contract.md`. Agent modules do not import runtime,
 private sensor fixtures or evaluator truth.
 
+The original container-search contract remains valid. Mission 4 additionally
+supports a static ground-team assistance variant on the offshore_dock_1 map:
+a ground team at a stated position asks for a person in distress to be
+located, or for an animal to be located or identified together with an
+escape/follow direction recommendation. The sibling runtime's
+`scripts/build_mission4_static_package.py` generates the demo artifacts under
+its `docs/mission_desc/mission4_offshore_non_collision_0/` (`package.json`
+public; `fixture.json` and `answers.json` private). `examples/mission4.json`
+carries the ground-team mission text and `examples/mission4_requests.json`
+the three demo tasks.
+
 ## Belief-manager extension (#31)
 
 `BayesianBeliefManager.for_object_search(mission_id, package)` constructs the
@@ -80,6 +91,16 @@ Supported examples:
 - `change worker:1 to blue container in dock` — explicit description/area amendment.
 - `extend deadline to 400 seconds` — absolute mission-time deadline change.
 - `remove worker:2`, `cancel search`, `show progress`, `show evidence`.
+- `A party of 4 mechanics are on watchout at (-477.60, -111.86). ... a person in need of help ... in the direction of (-0.62, -0.79). Where is the person in need of assistance located?` — static ground-team rescue task.
+- `An assembly of 2 volunteers are located at (-263.60, -394.36). ... on patrol for an animal. What direction should they head to in order to escape from the animal, and what type of animal are they trying to run away from, and where is the animal located?` — static animal task asking direction, animal type and location.
+
+Static ground-team text parses through the same deterministic intake: the
+stated group position `at (north, east)`, an optional `direction of (u, v)`
+hint, rescue cues (a person plus an assist/rescue/distress need) versus animal
+cues (`animal` or a named species), escape versus follow intent, and named
+versus unnamed species. Areas bind by polygon containment of the stated group
+position, not by area name. Text that matches neither grammar asks for
+clarification as before.
 
 Each target accepts one value per named attribute from the configured vocabulary.
 Unknown words, negation, competing values and unknown areas require clarification.
@@ -99,6 +120,16 @@ bounds repeated investigation; unresolved targets remain explicit when search is
 exhausted. Public geometry and runtime execution enforce restrictions. Private
 target coordinates/labels never enter the planner.
 
+For static ground-team tasks the planner flies a hint-directed first view —
+the stated group position plus 75 m along the hint direction — then decides
+`investigate` on precise-position tracks whose attributes remain unresolved.
+Orbit view sectors and the area sweep interleave as evidence arrives rather
+than following a fixed order.
+All mission4 maneuvers use an 8 m/s speed. Final report rows carry
+`answers: {location, animal_type, direction}` computed from public
+observation-derived positions only — rescue and follow directions point toward
+the person/animal, escape points away from the animal.
+
 `Mission4ReplanGate` is wired into Context Coordination alongside existing mission
 gates. It wakes planning on a new search decision and stays inactive for other
 mission modes. Physical command completion still comes from environment feedback.
@@ -116,6 +147,10 @@ python -u -m onr.adapters.mission4_worker --mission-id mission4 \
 
 Remove `--dry-run` from the worker command to queue/publish its request. The session
 owner calls `advance` on subsequent public snapshots to consume acknowledgements
-and publish queued requests. `examples/mission4_requests.json` supplies a two-request
-script for the later integration runner. Full loop commands and evidence belong to
-#33; these checks do not claim that flight or integration has run.
+and publish queued requests. `examples/mission4_requests.json` supplies the
+three-task ground-team script. The full live loop has flown: run `run.4TD3gn`
+(2026-09-20) reached terminal `all_found` at sim 207.5 s of the 900 s budget
+with the maneuver chain navigate → navigate → investigate → search_area →
+investigate, audit PASS (failures: []), and all three answer metrics within
+tolerance (locations 1.0 m, direction error 1.99°, animal type bear correct).
+Audit command and per-leg evidence are recorded in `live-demo-missions-2-4.md`.

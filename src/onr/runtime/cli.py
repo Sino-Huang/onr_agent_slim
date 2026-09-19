@@ -18,6 +18,12 @@ from onr.application.context_coordination import (
     ActivePlanRevision,
     ClosedLoopRunResult,
 )
+from onr.application.mission4_planning import (
+    Mission4Decision,
+)
+from onr.application.mission4_planning import (
+    decision_from_trigger as mission4_decision_from_trigger,
+)
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot, BeliefKey
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import HyperHeartbeatInvocation, MissionInput
@@ -220,6 +226,7 @@ def _run_hyper_revision(
     recursion_limit: int,
     belief_service: Any | None = None,
     refresh_planning_context: Callable[[], MissionSnapshot] | None = None,
+    mission4_gate_decision: Mission4Decision | None = None,
 ) -> ActivePlanRevision | None:
     revision_root = artifact_root / f"revision-{revision:03d}"
     workflow = runtime.create_hyper_workflow(
@@ -241,6 +248,7 @@ def _run_hyper_revision(
         backend_root=backend_root,
         belief_service=belief_service,
         refresh_planning_context=refresh_planning_context,
+        mission4_gate_decision=mission4_gate_decision,
     )
     result = workflow.run(
         context,
@@ -418,7 +426,11 @@ def run_closed_loop_demo(
         snapshot: MissionSnapshot,
         latest_planning_view: EnvironmentPlanningView,
     ) -> ActivePlanRevision | None:
-        _ = invocation
+        mission4_decision = None
+        for trigger in getattr(invocation, "trigger_identities", ()):
+            mission4_decision = mission4_decision_from_trigger(trigger)
+            if mission4_decision is not None:
+                break
         return _run_hyper_revision(
             runtime,
             mission_input,
@@ -440,6 +452,7 @@ def run_closed_loop_demo(
             recursion_limit=recursion_limit,
             belief_service=belief_service,
             refresh_planning_context=refresh_planning_context,
+            mission4_gate_decision=mission4_decision,
         )
 
     context_coordination = runtime.create_context_coordination(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -30,6 +31,7 @@ from onr.agents.hyper_workflow import (
     submit_planner_attempt,
     submit_statechart_draft,
 )
+from onr.application.mission4_planning import Mission4Decision
 from onr.application.reporting_reliability import (
     FileReportingReliabilityStore,
     ReportingReliabilityManager,
@@ -378,6 +380,72 @@ def test_record_planning_intent_accepts_none_string_for_prior_knowledge(
     assert arguments.prior_knowledge is None
     result = tool.func(**arguments.model_dump(), runtime=_runtime(_context(tmp_path)))
     assert "Planning intent accepted" in result
+
+
+def test_record_planning_intent_prematerializes_a_mission4_gate_decision(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    context.environment_event = TransportEvent(
+        2,
+        "environment:planning:1",
+        context.mission_input.mission_id,
+        1,
+        "environment_data",
+        {
+            "source_environment_event_id": context.mission_snapshot.environment_data,
+            "mission_time_seconds": 98.5,
+        },
+    )
+    decision = Mission4Decision(
+        "search_area",
+        "joint_area_search",
+        {
+            "polygon": [{"x": -163.6, "y": -394.36}, {"x": -263.6, "y": -294.36}],
+            "speed": 8.0,
+            "deadline_time": 900.0,
+        },
+        ("worker:3",),
+    )
+    context.mission4_gate_decision = decision
+
+    result = _record(context, "minizinc")
+
+    host = context.artifact_root / "workspace" / "001"
+    manifest = json.loads((host / "mission4-decision.json").read_text())
+    assert manifest == {
+        "status": "PASS",
+        "mission_time_seconds": 98.5,
+        "decision": json.loads(json.dumps(decision.to_dict())),
+    }
+    assert "selected_index = 1;" in (host / "data.dzn").read_text()
+    assert (host / "model.mzn").is_file()
+    assert "pre-materialized" in result
+    assert "artifacts/workspace/001/mission4-decision.json" in result
+    assert "Do not run onr.application.mission4_planning" in result
+
+    # The materialized manifest feeds the checked-in Statechart generator, so the
+    # accepted chart encodes the gate's decision rather than a fresh re-derivation.
+    generator = (
+        Path(__file__).parents[1]
+        / "conf/skills/hyper/creating-statechart-files/examples/adaptive-mission/prepare_statechart.py"
+    )
+    artifact = host / "planner-artifact.jsonl"
+    artifact.write_text(
+        json.dumps(
+            {"type": "solution", "output": {"default": '{"selected_index": 1}'}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    spec = importlib.util.spec_from_file_location("prepare_statechart", generator)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    chart = module.create_statechart("mission4", artifact, host / "mission4-decision.json")
+    assert chart["entry_state"] == "search-action"
+    assert chart["state_context"]["search-action"]["planner_item"] == json.loads(
+        json.dumps(decision.to_dict())
+    )
 
 
 def test_recorded_choice_accepts_planning_projection_of_snapshot_live_event(

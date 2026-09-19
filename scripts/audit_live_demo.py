@@ -3,9 +3,45 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from onr.application.live_demo_audit import audit_live_demo
+
+_DEFAULT_MISSION4_EVALUATOR = (
+    "/data/ccu/sukaih/ONR/onr_physical_runtime/scripts/evaluate_mission4_static.py"
+)
+
+
+def _mission4_answer_metrics(run_root: Path, answers_path: Path) -> dict[str, object]:
+    """Run the static Mission 4 evaluator; its metrics are informational only."""
+    evaluator = Path(
+        os.environ.get("ONR_MISSION4_EVALUATOR", _DEFAULT_MISSION4_EVALUATOR)
+    )
+    metrics_path = run_root / "mission4-answer-metrics.json"
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(evaluator),
+                "--run-root",
+                str(run_root),
+                "--answers",
+                str(answers_path),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            return {"error": detail or f"evaluator exited {completed.returncode}"}
+        return json.loads(metrics_path.read_text(encoding="utf-8"))
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 def main() -> int:
@@ -19,7 +55,14 @@ def main() -> int:
         type=Path,
         help="Private Mission 2 scenario used only for terminal metric scoring",
     )
+    parser.add_argument(
+        "--mission4-answers",
+        type=Path,
+        help="Private Mission 4 answer key used only for terminal answer metrics",
+    )
     args = parser.parse_args()
+    if args.mission4_answers is not None and args.mission_mode != "mission4":
+        parser.error("--mission4-answers is only valid with --mission-mode mission4")
     mission_metrics = None
     if args.mission_mode == "mission2":
         if args.mission2_scenario_dir is None:
@@ -39,6 +82,15 @@ def main() -> int:
         args.mission_mode,
         mission_metrics=mission_metrics,
     )
+    if args.mission4_answers is not None and audit["status"] == "PASS":
+        audit = audit_live_demo(
+            args.run_root,
+            args.mission_mode,
+            mission_metrics=mission_metrics,
+            mission4_answer_metrics=_mission4_answer_metrics(
+                args.run_root, args.mission4_answers
+            ),
+        )
     print(json.dumps(audit, sort_keys=True), flush=True)
     return 0 if audit["status"] == "PASS" else 1
 

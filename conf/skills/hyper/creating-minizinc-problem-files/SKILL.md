@@ -1,7 +1,7 @@
 ---
 name: creating-minizinc-problem-files
 description: Apply after MiniZinc is selected to generate and repair planner-native model and data files from current Mission evidence.
-version: '2.23.0'
+version: '2.24.0'
 ---
 
 # Creating MiniZinc Problem Files
@@ -16,7 +16,11 @@ For Mission 3, run `python -m onr.application.mission3_planning
 <environment-file> --output <shell-workspace>/mission3-decision.json --model
 <shell-workspace>/model.mzn --data <shell-workspace>/data.dzn`. For Mission 4,
 use the identical arguments with `onr.application.mission4_planning` and
-`mission4-decision.json`. Use the exact returned execute paths. These
+`mission4-decision.json`. Use the exact returned execute paths. Exception: when
+the planning-intent acceptance reports a pre-materialized Mission 4 decision
+manifest and MiniZinc files, those code-owned files already encode the
+triggering adaptive decision; do not run `onr.application.mission4_planning`
+for that revision and submit the exact pre-materialized paths instead. These
 code-owned adaptive policies consume current public evidence and write a
 MiniZinc selection receipt; keep the generated model and data unchanged, then
 submit and execute them through the normal external MiniZinc tools. Do not

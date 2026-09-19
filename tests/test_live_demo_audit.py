@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -193,3 +194,85 @@ def test_live_demo_audit_orders_content_addressed_events_by_mission_time(
     write(stream / "z-old.json", old)
 
     assert audit_live_demo(tmp_path, "mission3")["status"] == "PASS"
+
+
+def _evaluator_stub(path: Path, body: str) -> Path:
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _run_audit_cli(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "ONR_MISSION4_EVALUATOR": str(tmp_path / "evaluator.py"),
+    }
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "scripts/audit_live_demo.py"),
+            "--run-root",
+            str(tmp_path),
+            *extra,
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env=env,
+    )
+
+
+def test_mission4_live_demo_audit_embeds_answer_metrics(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission4")
+    _evaluator_stub(
+        tmp_path / "evaluator.py",
+        "import json, pathlib, sys\n"
+        "run_root = pathlib.Path(sys.argv[sys.argv.index('--run-root') + 1])\n"
+        "(run_root / 'mission4-answer-metrics.json').write_text("
+        "json.dumps({'tasks': [], 'aggregate': {'tasks_total': 2}}))\n",
+    )
+    result = _run_audit_cli(
+        tmp_path,
+        "--mission-mode",
+        "mission4",
+        "--mission4-answers",
+        str(tmp_path / "answers.json"),
+    )
+    assert result.returncode == 0, result.stderr
+    acceptance = json.loads((tmp_path / "live-acceptance.json").read_text())
+    assert acceptance["mission4_answer_metrics"] == {
+        "tasks": [],
+        "aggregate": {"tasks_total": 2},
+    }
+    assert acceptance["status"] == "PASS"
+
+
+def test_mission4_live_demo_audit_records_evaluator_error_informationally(
+    tmp_path: Path,
+) -> None:
+    run_tree(tmp_path, "mission4")
+    _evaluator_stub(tmp_path / "evaluator.py", "import sys\nsys.exit('boom')\n")
+    result = _run_audit_cli(
+        tmp_path,
+        "--mission-mode",
+        "mission4",
+        "--mission4-answers",
+        str(tmp_path / "answers.json"),
+    )
+    assert result.returncode == 0, result.stderr
+    acceptance = json.loads((tmp_path / "live-acceptance.json").read_text())
+    assert "error" in acceptance["mission4_answer_metrics"]
+    assert acceptance["status"] == "PASS"
+
+
+def test_mission4_answers_flag_requires_mission4_mode(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission3")
+    result = _run_audit_cli(
+        tmp_path,
+        "--mission-mode",
+        "mission3",
+        "--mission4-answers",
+        str(tmp_path / "answers.json"),
+    )
+    assert result.returncode == 2
+    assert "--mission4-answers" in result.stderr

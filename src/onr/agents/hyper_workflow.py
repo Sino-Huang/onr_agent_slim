@@ -32,8 +32,10 @@ from onr.agents.hyper_agent import (
     _parse_planning_intent_response,
 )
 from onr.application.hyper_agent import HyperAgent
+from onr.application.mission4_planning import write_minizinc_problem
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
+from onr.contracts.environment import environment_mission_time
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.hyper_workflow import HyperWorkflowOutcome
@@ -326,6 +328,7 @@ class HyperWorkflowContext:
     belief_service: Any = None
     communication_port: Any = None
     refresh_planning_context: Callable[[], MissionSnapshot] | None = None
+    mission4_gate_decision: Any = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_input, MissionInput):
@@ -823,6 +826,45 @@ def record_planning_intent(
     planner_label = "MiniZinc" if selected_planner == "minizinc" else "PDDL"
     file_lines = "\n".join(f"{name}: {path}" for name, path in locations.items())
     shell_workspace = f"{context.planner_shell_workspace_location}/001"
+    mission4_lines = ""
+    gate_decision = context.mission4_gate_decision
+    if gate_decision is not None:
+        to_dict = getattr(gate_decision, "to_dict", None)
+        if not callable(to_dict):
+            raise TypeError("Mission 4 gate decision must expose to_dict")
+        host_workspace = context.artifact_root / "workspace" / "001"
+        host_workspace.mkdir(parents=True, exist_ok=True)
+        manifest_path = host_workspace / "mission4-decision.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "mission_time_seconds": environment_mission_time(
+                        context.environment_event.payload
+                    ),
+                    "decision": to_dict(),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_minizinc_problem(
+            gate_decision,
+            host_workspace / "model.mzn",
+            host_workspace / "data.dzn",
+        )
+        mission4_lines = (
+            "Mission 4 code-owned adaptive decision pre-materialized from the "
+            "triggering replan gate:\n"
+            f"Decision manifest for execute: {shell_workspace}/mission4-decision.json\n"
+            f"MiniZinc model for execute: {shell_workspace}/model.mzn\n"
+            f"MiniZinc data for execute: {shell_workspace}/data.dzn\n"
+            "Do not run onr.application.mission4_planning for this revision; "
+            "submit the pre-materialized model.mzn and data.dzn exactly as "
+            "returned, then use the decision manifest as the Statechart "
+            "manifest.\n"
+        )
     if context.belief_file_location is None:
         belief_lines = "Belief file: none (no belief snapshot was supplied)."
     else:
@@ -846,7 +888,8 @@ def record_planning_intent(
         "Inspect the execute path with jq. Start with `jq 'keys' <file>` and use "
         "`jq '.static_info | length' <file>` for the exact event count; never "
         "manually count an inline event list.\n"
-        f"{belief_lines}"
+        f"{belief_lines}\n"
+        f"{mission4_lines}"
     )
 
 

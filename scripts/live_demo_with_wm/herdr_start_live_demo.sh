@@ -25,8 +25,9 @@ readonly DIAGNOSTIC_PRIOR="${ONR_DEMO_DIAGNOSTIC_PRIOR:-}"
 readonly MISSION1_PLANNING_INPUT="${ONR_DEMO_MISSION1_PLANNING_INPUT:-}"
 readonly MISSION3_DESCRIPTION="${ONR_DEMO_MISSION3_DESCRIPTION:-$AGENT_ROOT/examples/mission3_description.json}"
 readonly MISSION3_FIXTURE="${ONR_DEMO_MISSION3_FIXTURE:-}"
-readonly MISSION4_PACKAGE="${ONR_DEMO_MISSION4_PACKAGE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_package.json}"
-readonly MISSION4_FIXTURE="${ONR_DEMO_MISSION4_FIXTURE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_fixture.json}"
+readonly MISSION4_PACKAGE="${ONR_DEMO_MISSION4_PACKAGE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/package.json}"
+readonly MISSION4_FIXTURE="${ONR_DEMO_MISSION4_FIXTURE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/fixture.json}"
+readonly MISSION4_ANSWERS="${ONR_DEMO_MISSION4_ANSWERS:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/answers.json}"
 readonly MISSION4_REQUESTS="${ONR_DEMO_MISSION4_REQUESTS:-$AGENT_ROOT/examples/mission4_requests.json}"
 readonly MISSION4_WORKER_TIMEOUT_SECONDS="${ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS:-3600}"
 readonly VIEWER_PORT="${ONR_DEMO_VIEWER_PORT:-5066}"
@@ -262,6 +263,9 @@ fi
 audit_args=(python scripts/audit_live_demo.py --run-root "$run_root" --mission-mode "$MISSION_MODE")
 if [ "$MISSION_MODE" = "mission2" ]; then
     audit_args+=(--mission2-scenario-dir "$MISSION2_SCENARIO")
+fi
+if [ "$MISSION_MODE" = "mission4" ]; then
+    audit_args+=(--mission4-answers "$MISSION4_ANSWERS")
 fi
 printf -v audit_command '%q ' "${audit_args[@]}"
 

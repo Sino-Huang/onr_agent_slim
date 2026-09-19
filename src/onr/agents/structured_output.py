@@ -38,6 +38,33 @@ _LANGCHAIN_MULTIPLE_ISSUE: Final = (
 T = TypeVar("T")
 
 
+def summarize_mission4_coverage(payload: dict[str, object]) -> None:
+    """Replace Mission 4 coverage cell lists with cell counts in a model-bound payload."""
+    environment = payload.get("environment_data")
+    if not isinstance(environment, dict):
+        return
+    info = environment.get("world_model_info")
+    if not isinstance(info, dict):
+        return
+    mission4 = info.get("mission4")
+    if not isinstance(mission4, dict):
+        return
+    coverage = mission4.get("coverage")
+    if not isinstance(coverage, dict):
+        return
+    summarized: dict[str, object] = {}
+    for area_id, row in coverage.items():
+        cells = row.get("observed_cells") if isinstance(row, Mapping) else None
+        if not isinstance(row, Mapping) or not isinstance(cells, list):
+            summarized[area_id] = row
+            continue
+        summarized[area_id] = {
+            **{key: value for key, value in row.items() if key != "observed_cells"},
+            "observed_cell_count": len(cells),
+        }
+    mission4["coverage"] = summarized
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class StructuralIssue:
     """Stable, safe structural information suitable for model feedback."""

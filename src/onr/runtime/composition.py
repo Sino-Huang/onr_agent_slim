@@ -52,10 +52,6 @@ from onr.application.bayesian_belief import (
     BayesianBeliefManager,
     BayesianBeliefService,
 )
-from onr.application.reporting_reliability import (
-    FileReportingReliabilityStore,
-    ReportingReliabilityService,
-)
 from onr.application.communication import TransportCommunicationPort
 from onr.application.context_coordination import ContextCoordination
 from onr.application.fsm import FSMRunner
@@ -67,12 +63,15 @@ from onr.application.hyper_agent import (
 )
 from onr.application.hyper_supervisor import HyperSupervisor
 from onr.application.maneuver_control import ManeuverControl
+from onr.application.reporting_reliability import (
+    FileReportingReliabilityStore,
+    ReportingReliabilityService,
+)
 from onr.contracts.bayesian_belief import (
     BayesianBeliefSnapshot,
     BeliefKey,
     ForbiddenBeliefCombination,
 )
-from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus, ManeuverFeedback
 from onr.contracts.human_decision import (
@@ -96,6 +95,7 @@ from onr.contracts.planning_evidence import (
     PlannerChoiceRecord,
     PlannerGenerationAttempt,
 )
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.transport import (
     TransportEvent,
 )
@@ -503,6 +503,7 @@ class RuntimeComposition:
                 observation_topic=observation_topic,
                 context_topic=context_topic,
                 clock=clock or (lambda: datetime.now(UTC).isoformat()),
+                prior_policy=self.config.beliefs.reporting_reliability_prior,
             )
         if belief_kind != "binary":
             raise ValueError("unsupported Bayesian belief kind")
@@ -910,14 +911,19 @@ class RuntimeComposition:
         environment_file: Path,
         *,
         artifact_root: Path,
-        belief_snapshot: BayesianBeliefSnapshot | ReportingReliabilitySnapshot | None = None,
+        belief_snapshot: BayesianBeliefSnapshot
+        | ReportingReliabilitySnapshot
+        | None = None,
         belief_file: Path | None = None,
         backend_root: Path | None = None,
         fsm_runner: FSMRunner | None = None,
         environment_authority: object | None = None,
-        belief_service: BayesianBeliefService | ReportingReliabilityService | None = None,
+        belief_service: BayesianBeliefService
+        | ReportingReliabilityService
+        | None = None,
         communication_port: object | None = None,
         refresh_planning_context: Callable[[], MissionSnapshot] | None = None,
+        mission4_gate_decision: object | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""
 
@@ -975,6 +981,7 @@ class RuntimeComposition:
             belief_service=belief_service,
             communication_port=communication_port,
             refresh_planning_context=refresh_planning_context,
+            mission4_gate_decision=mission4_gate_decision,
         )
 
     def run_planning_mission(

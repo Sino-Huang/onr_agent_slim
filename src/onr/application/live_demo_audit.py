@@ -48,7 +48,9 @@ def _agent_debug_records(run_root: Path) -> list[Mapping[str, Any]]:
 
 def _contains_private_fixture_key(value: object) -> bool:
     if isinstance(value, Mapping):
-        if {"private_id", "fixture", "target_positions", "ground_truth"} & set(value):
+        if {"answers", "private_id", "fixture", "target_positions", "ground_truth"} & set(
+            value
+        ):
             return True
         return any(_contains_private_fixture_key(item) for item in value.values())
     if isinstance(value, (list, tuple)):
@@ -61,6 +63,7 @@ def audit_live_demo(
     mission_mode: str,
     *,
     mission_metrics: Mapping[str, object] | None = None,
+    mission4_answer_metrics: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
@@ -170,6 +173,8 @@ def audit_live_demo(
     }
     if mission_metrics is not None:
         audit["mission_metrics"] = dict(mission_metrics)
+    if mission4_answer_metrics is not None:
+        audit["mission4_answer_metrics"] = dict(mission4_answer_metrics)
     (root / "live-acceptance.json").write_text(
         json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

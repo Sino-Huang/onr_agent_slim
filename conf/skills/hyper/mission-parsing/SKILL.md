@@ -102,16 +102,18 @@ only a producer's explicit sufficient normal/abnormal verdict resolves a ship,
 and a value rule that prioritizes resolving the remaining roster within the
 recording/budget limit. Mission 3 has no reporting-reliability belief input.
 
-### Worker-requested object search
+### Worker-requested ground-team assistance
 
 A Mission 4 search is a temporal adaptive-search problem. Select MiniZinc and
 use only the accepted objectives, allowed areas, coverage, observations and
-accumulated match evidence in `world_model_info.mission4`. Preserve unresolved
-objectives when a new request revision arrives. Plan additional useful views
-while match or location uncertainty remains, and end only when the public
-evidence supports `all_found` or an explicit deadline/failure outcome. Mission 4
-has no reporting-reliability belief input; the object-search belief represented
-in its public planning evidence owns found decisions.
+accumulated match evidence in `world_model_info.mission4`. Objectives locate a
+person in distress or locate/identify an animal for a ground team at a stated
+position. Preserve unresolved objectives when a new request revision arrives.
+Plan additional useful views while match or location uncertainty remains, and
+end only when the public evidence supports `all_found` or an explicit
+deadline/failure outcome. Mission 4 has no reporting-reliability belief input;
+the object-search belief represented in its public planning evidence owns found
+decisions.
 
 ## Gotchas
 
