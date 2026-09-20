@@ -63,6 +63,17 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
   For generic shapes, start with `jq 'keys' <file>` and obtain an exact event
   count from the discovered event container. Never manually count an inline list.
 
+### Out-of-scope Mission Intent
+
+Parse only bounded operational objectives executable by the controlled
+vehicles and sensors in the supplied environment. When the operator Mission
+Intent is not such an objective — personal errands, general questions, or
+requests outside the environment's capabilities — never record a Planning
+Intent: call `reject_mission_intent` with a concise public reason instead,
+then return the final `HyperWorkflowResultCandidate` with outcome
+`mission_rejected`. Rejection is available only before
+`record_planning_intent` is accepted and ends the workflow at intent parsing.
+
 ### 3. Generate planner files
 
 - For Mission 1 MiniZinc, apply the supplied `creating-minizinc-problem-files`, pass the

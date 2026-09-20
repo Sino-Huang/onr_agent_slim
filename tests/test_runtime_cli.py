@@ -606,3 +606,83 @@ def test_cli_reports_system_prompt_loading_failure(
     assert result == 1 and captured.out == ""
     assert "system prompt loading" in captured.err
     assert "ValueError" in captured.err
+
+
+def test_run_hyper_revision_raises_mission_rejected_with_operator_reason(
+    tmp_path: Path,
+) -> None:
+    from onr.contracts.hyper_workflow import HyperWorkflowOutcome, MissionRejection
+
+    class FakeWorkflow:
+        def run(
+            self,
+            context: object,
+            *,
+            thread_id: str,
+            recursion_limit: int,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                outcome=HyperWorkflowOutcome.MISSION_REJECTED,
+                mission_rejection=MissionRejection(reason="buy me a coffee"),
+            )
+
+    runtime = SimpleNamespace(
+        create_hyper_workflow=lambda **kwargs: FakeWorkflow(),
+        create_hyper_workflow_context=lambda *args, **kwargs: object(),
+    )
+
+    with pytest.raises(runtime_cli.MissionRejectedError, match="buy me a coffee"):
+        runtime_cli._run_hyper_revision(
+            runtime,
+            MissionInput("mission:demo", "buy me a coffee", "operator"),
+            model=object(),
+            system_prompt="prompt",
+            skill_catalog=object(),
+            backend_root=tmp_path,
+            artifact_root=tmp_path / "artifacts",
+            planning_snapshot=object(),
+            environment_event=object(),
+            environment_file=tmp_path / "environment.json",
+            belief_snapshot=None,
+            belief_file=None,
+            revision=1,
+            recursion_limit=4,
+        )
+
+
+def test_cli_reports_mission_rejection_as_clean_operator_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime = SimpleNamespace(
+        transport=FileTransport(tmp_path / "var/transport"),
+        lease=RuntimeLeaseStore(tmp_path / "var/storage/runtime"),
+        config=SimpleNamespace(
+            environment_profile=SimpleNamespace(adapter_kind="external_transport"),
+            storage=SimpleNamespace(
+                planner_artifacts=tmp_path / "configured-planner-artifacts"
+            ),
+        ),
+        verify_llm_reachability=lambda: None,
+        runtime_session=lambda: nullcontext(),
+    )
+    monkeypatch.setattr(runtime_cli, "_create_runtime", lambda **kwargs: runtime)
+
+    def reject(*args: object, **kwargs: object) -> object:
+        raise runtime_cli.MissionRejectedError("buy me a coffee")
+
+    monkeypatch.setattr(runtime_cli, "run_closed_loop_demo", reject)
+    _role_prompt_files(tmp_path)
+
+    result = runtime_cli.main(
+        [
+            "--mission-file",
+            str(_mission_file(tmp_path)),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-runtime-artifact-rollover",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1 and captured.out == ""
+    assert captured.err.strip() == "Mission rejected: buy me a coffee"

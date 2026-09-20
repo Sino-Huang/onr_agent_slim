@@ -25,7 +25,7 @@ from onr.contracts.hyper_agent import (
     MissionInput,
     ReplanRequest,
 )
-from onr.contracts.hyper_workflow import HyperWorkflowOutcome
+from onr.contracts.hyper_workflow import HyperWorkflowOutcome, MissionRejection
 from onr.contracts.maneuver_control import (
     InvocationOverlay,
     ManeuverCommand,
@@ -88,6 +88,7 @@ __all__ = [
     "ManeuverInvocation",
     "ManeuverTransitionCandidate",
     "MissionInput",
+    "MissionRejection",
     "MissionSnapshot",
     "NonPhysicalChoice",
     "PhysicalAction",

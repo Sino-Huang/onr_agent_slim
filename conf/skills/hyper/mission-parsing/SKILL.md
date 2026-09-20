@@ -1,7 +1,7 @@
 ---
 name: mission-parsing
 description: Apply when deriving PlanningIntent from MissionInput while preserving source authority.
-version: '1.11.0'
+version: '1.12.0'
 ---
 
 # Mission Parsing
@@ -18,6 +18,21 @@ version: '1.11.0'
 5. When Mission Intent supplies prior knowledge, pass a versioned `prior_knowledge` object to `record_planning_intent`. Preserve qualitative claims and stated bounds exactly. The active belief service owns numeric prior derivation.
 6. Apply `planner-selection`: named ships or actions do not make a mission symbolic. If drone position at event times, travel timing, FoV coverage, time windows, or weighted coverage determines feasibility or value, select MiniZinc.
 7. Call `record_planning_intent` with the objective, planner choice, rationale, details, prior knowledge (use `null` when Mission Intent supplies none), and concise public reflection. Its acceptance immediately supplies the exact evidence and MiniZinc or PDDL file locations selected by that Planner Choice.
+
+## Out-of-scope Mission Intent
+
+A Mission is a bounded operational objective the controlled vehicles and
+sensors in the supplied environment can execute (patrol, monitor, survey,
+inspection, search, or rescue, with its constraints and desired outcome).
+When the operator Mission Intent is not such an objective — personal errands,
+general knowledge questions, or requests outside the environment's capabilities
+— do not derive or record a PlanningIntent. Call `reject_mission_intent` once
+with a concise public reason, then return the final result with outcome
+`mission_rejected`. Rejection is terminal and available only before
+`record_planning_intent` is accepted.
+
+In scope: "Patrol and confirm every reported event is accounted for."
+Out of scope: "buy me a coffee", "what is the weather today".
 
 ## Mission patterns
 

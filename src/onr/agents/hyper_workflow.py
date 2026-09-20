@@ -38,7 +38,7 @@ from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.environment import environment_mission_time
 from onr.contracts.fsm import FSMStatus, Statechart, TransitionCandidate
 from onr.contracts.hyper_agent import MissionInput
-from onr.contracts.hyper_workflow import HyperWorkflowOutcome
+from onr.contracts.hyper_workflow import HyperWorkflowOutcome, MissionRejection
 from onr.contracts.planner_translation import validate_environment_data
 from onr.contracts.planning import (
     PlannerExecutionEvidence,
@@ -63,6 +63,7 @@ HYPER_WORKFLOW_RESULT_SCHEMA: dict[str, Any] = {
                 "execution_ready",
                 "planner_rejected",
                 "statechart_rejected",
+                "mission_rejected",
             ]
         },
     },
@@ -300,6 +301,7 @@ class HyperWorkflowContext:
     planner_shell_workspace_location: str = field(default="", init=False)
     planning_intent: Any = field(default=None, init=False)
     planner_choice: Any = field(default=None, init=False)
+    mission_rejection: Any = field(default=None, init=False)
     submitted_planner_choice: str | None = field(default=None, init=False)
     submitted_file_locations: tuple[str, ...] = field(default=(), init=False)
     submitted_assets: Any = field(default=None, init=False)
@@ -467,6 +469,7 @@ class HyperWorkflowContext:
 _PHASE_CONTROLLED_TOOLS = frozenset(
     {
         "record_planning_intent",
+        "reject_mission_intent",
         "write_file",
         "edit_file",
         "initialize_event_data_materialization",
@@ -483,8 +486,10 @@ _DISCOVERY_TOOLS = frozenset({"glob", "ls"})
 
 
 def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
+    if context.mission_rejection is not None:
+        return frozenset({"HyperWorkflowResultCandidate"})
     if context.planning_intent is None or context.planner_choice is None:
-        return frozenset({"record_planning_intent"})
+        return frozenset({"record_planning_intent", "reject_mission_intent"})
     if context.static_accepted and (
         context.current_attempt_number > context.executed_attempt_number
     ):
@@ -650,6 +655,7 @@ class HyperWorkflowRunResult:
     todos: tuple[Mapping[str, str], ...]
     messages: tuple[BaseMessage, ...]
     planning_intent: PlanningIntent | None
+    mission_rejection: MissionRejection | None
     planner_choice: PlannerChoiceRecord | None
     planner_plan: PlannerPlan | None
     statechart: Statechart | None
@@ -890,6 +896,55 @@ def record_planning_intent(
         "manually count an inline event list.\n"
         f"{belief_lines}\n"
         f"{mission4_lines}"
+    )
+
+
+@tool(parse_docstring=True)
+def reject_mission_intent(
+    reason: str,
+    reflection: str,
+    runtime: ToolRuntime[HyperWorkflowContext],
+) -> str:
+    """Reject an out-of-scope Mission Intent and end the workflow at intent parsing.
+
+    Use only when the operator Mission Intent is not a bounded operational
+    objective executable by the controlled vehicles and sensors in the supplied
+    environment. This is terminal: no PlanningIntent is recorded and no planner
+    files are generated.
+
+    Args:
+        reason: Concise public operator-facing rejection rationale.
+        reflection: Concise public summary of observed evidence and the immediate
+            next action. Do not include private reasoning.
+
+    Returns:
+        Terminal instruction to finalize with outcome mission_rejected.
+    """
+
+    context = _context(runtime)
+    if context.planning_intent is not None or context.planner_choice is not None:
+        raise ValueError("Planning intent was already accepted for this workflow")
+    if not isinstance(reason, str) or not reason.strip():
+        return "Mission rejection not recorded: reason must be a non-empty string"
+    rejection = MissionRejection(reason=reason.strip())
+    if context.mission_rejection is not None:
+        if context.mission_rejection != rejection:
+            raise ValueError("recorded Mission rejection conflicts with this request")
+        return (
+            "Mission rejection was already recorded. Return the final "
+            "HyperWorkflowResultCandidate with outcome mission_rejected."
+        )
+    context.mission_rejection = rejection
+    _emit(
+        context,
+        "planning-intent",
+        "rejected",
+        details={"reason": rejection.reason},
+    )
+    return (
+        "Mission rejection recorded. The workflow ends at intent parsing: no "
+        "PlanningIntent was recorded and no planner files are generated. Return "
+        "the final HyperWorkflowResultCandidate with outcome mission_rejected."
     )
 
 
@@ -2104,6 +2159,7 @@ def create_hyper_workflow_agent(
         ),
         tools=[
             record_planning_intent,
+            reject_mission_intent,
             build_mission1_revision,
             initialize_event_data_materialization,
             materialize_event_information_data,
@@ -2274,6 +2330,17 @@ class DeepAgentsHyperWorkflow:
                 or context.current_attempt_number < context.max_planner_attempts
             ):
                 raise ValueError("Hyper workflow rejection lacks planner evidence")
+        elif outcome is HyperWorkflowOutcome.MISSION_REJECTED:
+            if (
+                context.mission_rejection is None
+                or context.planning_intent is not None
+                or context.planner_choice is not None
+                or context.planner_plan is not None
+                or context.statechart is not None
+            ):
+                raise ValueError(
+                    "Hyper workflow mission rejection lacks rejection evidence"
+                )
         elif (
             context.planner_plan is None
             or context.current_statechart_attempt < context.max_statechart_attempts
@@ -2300,6 +2367,7 @@ class DeepAgentsHyperWorkflow:
             todos=todos,
             messages=tuple(cast(list[BaseMessage], raw_messages)),
             planning_intent=context.planning_intent,
+            mission_rejection=context.mission_rejection,
             planner_choice=context.planner_choice,
             planner_plan=context.planner_plan,
             statechart=context.statechart,
@@ -2320,6 +2388,7 @@ __all__ = [
     "materialize_event_information_data",
     "planner_executor",
     "record_planning_intent",
+    "reject_mission_intent",
     "submit_planner_attempt",
     "submit_statechart_draft",
 ]

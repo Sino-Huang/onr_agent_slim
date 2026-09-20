@@ -19,6 +19,8 @@ from onr.adapters.inprocess_transport import InProcessTransport
 from onr.adapters.operational_log import InProcessOperationalLog
 from onr.adapters.python_statemachine import PythonStateMachineFactory
 from onr.agents.hyper_workflow import (
+    HYPER_WORKFLOW_RESULT_SCHEMA,
+    DeepAgentsHyperWorkflow,
     HyperWorkflowContext,
     _allowed_workflow_tools,
     _gate_workflow_tools,
@@ -28,6 +30,7 @@ from onr.agents.hyper_workflow import (
     materialize_event_information_data,
     planner_executor,
     record_planning_intent,
+    reject_mission_intent,
     submit_planner_attempt,
     submit_statechart_draft,
 )
@@ -42,6 +45,7 @@ from onr.contracts.communication import AgentMessage
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
 from onr.contracts.hyper_agent import MissionInput
+from onr.contracts.hyper_workflow import HyperWorkflowOutcome, MissionRejection
 from onr.contracts.planning import (
     PlannerExecutionEvidence,
     PlannerExecutionResult,
@@ -1746,3 +1750,183 @@ def test_statechart_submission_accepts_only_returned_path_and_repairs_same_files
     assert repaired["attempt_number"] == 3
     assert repaired["required_next_action"] == "Return HyperWorkflowResultCandidate."
     assert (context.artifact_root / "statechart-attempts/003/statechart.json").is_file()
+
+
+def _reject(
+    context: HyperWorkflowContext, reason: str = "Not an operational mission."
+) -> str:
+    return cast(Any, reject_mission_intent).func(
+        reason=reason,
+        reflection="Recording mission rejection.",
+        runtime=_runtime(context),
+    )
+
+
+class _StructuredAgent:
+    def __init__(self, response: Mapping[str, object]) -> None:
+        self._response = response
+
+    def invoke(self, *_args: object, **_kwargs: object) -> Mapping[str, object]:
+        return self._response
+
+
+def _mission_rejected_response() -> dict[str, object]:
+    return {
+        "structured_response": {
+            "mission_id": "mission-1",
+            "outcome": "mission_rejected",
+        },
+        "todos": [],
+        "messages": [],
+    }
+
+
+def test_mission_rejection_requires_a_non_empty_reason() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        MissionRejection(reason="  ")
+
+
+def test_result_schema_admits_mission_rejected_outcome() -> None:
+    outcomes = HYPER_WORKFLOW_RESULT_SCHEMA["properties"]["outcome"]["enum"]
+    assert "mission_rejected" in outcomes
+
+
+def test_reject_mission_intent_records_terminal_rejection(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+
+    result = _reject(context)
+
+    assert context.mission_rejection == MissionRejection(
+        reason="Not an operational mission."
+    )
+    assert "mission_rejected" in result
+    assert context.planning_intent is None
+    assert _allowed_workflow_tools(context) == {"HyperWorkflowResultCandidate"}
+
+
+def test_reject_mission_intent_terminal_gate_exposes_only_structured_response(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _reject(context)
+    response_format = object()
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=context),
+        tools=[
+            SimpleNamespace(name="read_file"),
+            SimpleNamespace(name="write_file"),
+        ],
+        response_format=response_format,
+        state={"todos": []},
+    )
+    request.override = lambda **changes: changes
+
+    overridden = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+
+    assert overridden["tools"] == []
+    assert overridden["response_format"] is response_format
+
+
+def test_stage_one_gate_exposes_record_and_reject_tools(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    request = SimpleNamespace(
+        runtime=SimpleNamespace(context=context),
+        tools=[
+            SimpleNamespace(name="record_planning_intent"),
+            SimpleNamespace(name="reject_mission_intent"),
+            SimpleNamespace(name="write_file"),
+        ],
+        response_format=object(),
+        state={"todos": []},
+    )
+    request.override = lambda **changes: changes
+
+    update = cast(Any, _gate_workflow_tools).wrap_model_call(
+        request, lambda value: value
+    )
+
+    assert [tool.name for tool in update["tools"]] == [
+        "record_planning_intent",
+        "reject_mission_intent",
+    ]
+    assert update["response_format"] is None
+
+
+def test_reject_mission_intent_requires_a_public_reason(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+
+    result = _reject(context, "   ")
+
+    assert result.startswith("Mission rejection not recorded")
+    assert context.mission_rejection is None
+    assert _allowed_workflow_tools(context) == {
+        "record_planning_intent",
+        "reject_mission_intent",
+    }
+
+
+def test_reject_mission_intent_conflicts_after_acceptance(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+
+    with pytest.raises(ValueError, match="already accepted"):
+        _reject(context)
+
+    assert context.mission_rejection is None
+
+
+def test_reject_mission_intent_repeat_is_idempotent_and_conflict_fails(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _reject(context)
+
+    repeat = _reject(context)
+
+    assert "already recorded" in repeat
+    with pytest.raises(ValueError, match="conflicts"):
+        _reject(context, "A different reason.")
+
+
+def test_run_accepts_terminal_mission_rejection_with_recorded_evidence(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _reject(context, "Buying coffee is not an operational mission.")
+
+    result = DeepAgentsHyperWorkflow(
+        _StructuredAgent(_mission_rejected_response())
+    ).run(context, thread_id="planning-run:mission-1:1", recursion_limit=4)
+
+    assert result.outcome is HyperWorkflowOutcome.MISSION_REJECTED
+    assert result.mission_rejection == MissionRejection(
+        reason="Buying coffee is not an operational mission."
+    )
+    assert result.planning_intent is None
+    assert result.planner_plan is None
+
+
+def test_run_requires_recorded_rejection_for_mission_rejected_outcome(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+
+    with pytest.raises(ValueError, match="lacks rejection evidence"):
+        DeepAgentsHyperWorkflow(_StructuredAgent(_mission_rejected_response())).run(
+            context, thread_id="planning-run:mission-1:1", recursion_limit=4
+        )
+
+
+def test_run_rejects_mission_rejection_with_recorded_planning_intent(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    _record(context, "minizinc")
+    context.mission_rejection = MissionRejection(reason="Conflicting evidence.")
+
+    with pytest.raises(ValueError, match="lacks rejection evidence"):
+        DeepAgentsHyperWorkflow(_StructuredAgent(_mission_rejected_response())).run(
+            context, thread_id="planning-run:mission-1:1", recursion_limit=4
+        )

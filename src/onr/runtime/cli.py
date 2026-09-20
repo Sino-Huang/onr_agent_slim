@@ -208,6 +208,14 @@ def _mission_end_time(
     return float(world_model_info["mission_end_time_s"])
 
 
+class MissionRejectedError(RuntimeError):
+    """The Hyper workflow refused the operator Mission Intent as out of scope."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Mission rejected: {reason}")
+        self.reason = reason
+
+
 def _run_hyper_revision(
     runtime: RuntimeComposition,
     mission_input: MissionInput,
@@ -255,6 +263,11 @@ def _run_hyper_revision(
         thread_id=f"planning-run:{mission_input.mission_id}:{revision}",
         recursion_limit=recursion_limit,
     )
+    if result.outcome is HyperWorkflowOutcome.MISSION_REJECTED:
+        rejection = result.mission_rejection
+        raise MissionRejectedError(
+            "out-of-scope Mission Intent" if rejection is None else rejection.reason
+        )
     if result.outcome is not HyperWorkflowOutcome.EXECUTION_READY:
         return None
     if (
@@ -431,29 +444,33 @@ def run_closed_loop_demo(
             mission4_decision = mission4_decision_from_trigger(trigger)
             if mission4_decision is not None:
                 break
-        return _run_hyper_revision(
-            runtime,
-            mission_input,
-            model=hyper_model,
-            system_prompt=hyper_prompt,
-            skill_catalog=skills,
-            backend_root=planning_backend_root,
-            artifact_root=planner_artifacts,
-            planning_snapshot=snapshot,
-            environment_event=latest_planning_view.environment_event,
-            environment_file=latest_planning_view.environment_file,
-            belief_snapshot=None
-            if belief_service is None
-            else belief_service.load_current_snapshot(),
-            belief_file=None
-            if belief_service is None
-            else belief_service.current_snapshot_path(),
-            revision=revision,
-            recursion_limit=recursion_limit,
-            belief_service=belief_service,
-            refresh_planning_context=refresh_planning_context,
-            mission4_gate_decision=mission4_decision,
-        )
+        try:
+            return _run_hyper_revision(
+                runtime,
+                mission_input,
+                model=hyper_model,
+                system_prompt=hyper_prompt,
+                skill_catalog=skills,
+                backend_root=planning_backend_root,
+                artifact_root=planner_artifacts,
+                planning_snapshot=snapshot,
+                environment_event=latest_planning_view.environment_event,
+                environment_file=latest_planning_view.environment_file,
+                belief_snapshot=None
+                if belief_service is None
+                else belief_service.load_current_snapshot(),
+                belief_file=None
+                if belief_service is None
+                else belief_service.current_snapshot_path(),
+                revision=revision,
+                recursion_limit=recursion_limit,
+                belief_service=belief_service,
+                refresh_planning_context=refresh_planning_context,
+                mission4_gate_decision=mission4_decision,
+            )
+        except MissionRejectedError:
+            # A replan refusal keeps the currently accepted plan revision.
+            return None
 
     context_coordination = runtime.create_context_coordination(
         mission_id=mission_input.mission_id,
@@ -541,6 +558,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         print(json.dumps(result_payload, sort_keys=True))
         return 0
+    except MissionRejectedError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except Exception as exc:
         print(
             f"mission runtime failed during {stage} ({type(exc).__name__})",
@@ -549,7 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-__all__ = ["load_mission_file", "main"]
+__all__ = ["MissionRejectedError", "load_mission_file", "main"]
 
 
 if __name__ == "__main__":
