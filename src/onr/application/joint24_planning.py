@@ -367,11 +367,18 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
             # The run terminates at the Mission 2 recording end, however the
             # schedule ordered the blocks.
             readiness = {"mission_time_at_or_after": {"seconds": mission_end}}
+        elif source == "scheduling" and target == "mission4-block":
+            # Immediate entry, but never through the Mission 1/2 deterministic
+            # entry dispatch (no surveillance_mode on a Mission 4 block).
+            readiness = {"not_before": {"seconds": now}}
         elif source == "scheduling":
             readiness = {"mission_time_at_or_after": {"seconds": now}}
+        elif source == "mission2-block" and target == "mission4-block":
+            # Mission 2 block completion still follows its observation window,
+            # enforced as a deterministic time bound without routing the entry
+            # through the Mission 1/2 assignment dispatch.
+            readiness = {"not_before": {"seconds": candidate_end}}
         elif source == "mission2-block":
-            # Mission 2 block completion follows its observation window (the
-            # checked-in Mission 2 shape).
             readiness = {"mission_time_at_or_after": {"seconds": candidate_end}}
         else:
             # Mission 4 block completion follows terminal maneuver feedback

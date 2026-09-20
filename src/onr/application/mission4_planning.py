@@ -207,7 +207,15 @@ class Mission4AdaptivePlanner:
                     self.data["completed_areas"].append(choice["id"])
         found=self._resolved_targets(snapshot,section)
         unresolved=[tid for tid in section["objectives"] if tid not in found]
-        if section["status"]!="active" or now>=section["deadline_s"]:
+        deadline=float(section["deadline_s"])
+        if world.get("mission_mode")=="joint24":
+            # The joint24 run terminates at the Mission 2 recording end; the
+            # explicit-unresolved report is due by then even when the worker
+            # deadline lies beyond it.
+            end=world.get("mission_end_time_s")
+            if type(end) in (int,float):
+                deadline=min(deadline,float(end))
+        if section["status"]!="active" or now>=deadline:
             return self.final_report(section,section.get("reason") or "mission_deadline")
         if section["objectives"] and not unresolved:
             return self.final_report(section,"all_found")

@@ -214,6 +214,10 @@ def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
     assert m2_context["candidate_id"] == schedule["selected_m2_candidate"]["candidate_id"]
     assert m2_context["observation_window"]["end_s"] == schedule["selected_m2_candidate"]["end_s"]
     transitions = {(t["source"], t["target"]): t for t in chart["transitions"]}
+    # Mission 4 entries never route through the Mission 1/2 deterministic entry
+    # dispatch; scheduling commits them immediately via a deterministic bound.
+    m4_entry = transitions[("scheduling", "mission4-block")]
+    assert m4_entry["context"]["readiness"] == {"not_before": {"seconds": 0.0}}
     m2_done = transitions[("mission2-block", "joint24-complete")]
     assert m2_done["context"]["readiness"] == {
         "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]}
@@ -221,6 +225,24 @@ def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
     # Mission 4 shape: block completion follows terminal maneuver feedback.
     m4_done = transitions[("mission4-block", "mission2-block")]
     assert m4_done["context"]["readiness"] == {"matching_maneuver_lifecycle_terminal": True}
+
+    # A Mission 2 -> Mission 4 handoff is time-bounded by the observation window
+    # without routing the Mission 4 entry through the assignment dispatch.
+    m2_first_plan = tmp_path / "m2_first_plan"
+    m2_first_plan.write_text(
+        "0: (serve-m2-from-drone) [13125]\n1: (serve-m4-from-m2-site) [80000]\n; cost = 93125 (general cost)\n",
+        encoding="utf-8",
+    )
+    m2_first_chart_path = tmp_path / "m2_first_statechart.json"
+    joint24_planning.emit_joint24_statechart(schedule, m2_first_plan, m2_first_chart_path)
+    m2_first_chart = json.loads(m2_first_chart_path.read_text(encoding="utf-8"))
+    m2_first_transitions = {(t["source"], t["target"]): t for t in m2_first_chart["transitions"]}
+    assert m2_first_transitions[("scheduling", "mission2-block")]["context"]["readiness"] == {
+        "mission_time_at_or_after": {"seconds": 0.0}
+    }
+    assert m2_first_transitions[("mission2-block", "mission4-block")]["context"]["readiness"] == {
+        "not_before": {"seconds": schedule["selected_m2_candidate"]["end_s"]}
+    }
 
     # A deferred mission's block is omitted.
     defer_plan = tmp_path / "defer_plan"
@@ -248,3 +270,20 @@ def test_mode_guards_active_under_joint24() -> None:
     # The Mission 4 adaptive planner decides under joint24 instead of rejecting.
     decision = Mission4AdaptivePlanner("joint24-mission").decide(environment)
     assert decision is not None
+
+
+def test_joint24_reports_unresolved_at_recording_end() -> None:
+    environment = _environment(m2_point=(65.0, 0.0, 5.0), m4_deadline_s=900.0, now=200.0)
+    environment["world_model_info"]["mission_end_time_s"] = 182.5
+    # The worker deadline (900 s) lies beyond the Mission 2 recording end; the
+    # explicit-unresolved report is due once the recording finishes.
+    decision = Mission4AdaptivePlanner("joint24-mission").decide(environment)
+    assert decision is not None
+    assert decision.action == "report"
+    assert decision.reason == "mission_deadline"
+
+    # Mission 4 standalone ignores the recording end and follows its own
+    # worker deadline.
+    environment["world_model_info"]["mission_mode"] = "mission4"
+    standalone = Mission4AdaptivePlanner("joint24-mission").decide(environment)
+    assert standalone is None or standalone.action != "report"
