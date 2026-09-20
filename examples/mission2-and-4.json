@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Perform ship collision-risk monitoring and worker-requested object search together until the scenario recording ends. Share the drone between both missions. Scheduling policy: worker search requests with imminent deadlines and fresh collision alerts are preemptive; routine monitoring and routine search are preemptible. Preemption replaces in-flight preemptible work only at maneuver-boundary reconciliation after a replan; it never interrupts a maneuver mid-flight. Exploit observations that serve both missions. Keep collision pair recall/precision and warning-lead results separate from search location/direction/animal-type answers. Use current public predictions, the search ledger, and worker request deadlines to choose the next mission block, and replan as evidence changes.",
+  "source_authority": "demo-operator"
+}

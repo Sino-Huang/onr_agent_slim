@@ -529,6 +529,7 @@ class ContextCoordination:
                     "mission2",
                     "mission3",
                     "mission4",
+                    "joint24",
                 }
 
                 while True:

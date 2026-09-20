@@ -16,7 +16,7 @@ readonly PHYSICAL_ROOT="/data/ccu/sukaih/ONR/onr_physical_runtime"
 readonly CONDA_INIT="/home/sukaih/miniconda3/etc/profile.d/conda.sh"
 readonly MISSION_ID="mission:demo"
 readonly VEHICLE_ID="drone-1"
-readonly SCENARIO_CONFIG="${ONR_DEMO_SCENARIO_CONFIG:-$PHYSICAL_ROOT/config/harbor_world.yaml}"
+SCENARIO_CONFIG="${ONR_DEMO_SCENARIO_CONFIG:-$PHYSICAL_ROOT/config/harbor_world.yaml}"
 readonly MISSION_INSTANCE="${ONR_DEMO_MISSION1_INSTANCE:-$PHYSICAL_ROOT/data/harbor_world/mission1_instances/demo-001}"
 readonly MISSION_MODE="${ONR_DEMO_MISSION_MODE:-mission1}"
 readonly MISSION2_SCENARIO="${ONR_DEMO_MISSION2_SCENARIO:-/data/ccu/sukaih/ONR/onr_scenario/offshore_dock_1/collision/0}"
@@ -25,10 +25,10 @@ readonly DIAGNOSTIC_PRIOR="${ONR_DEMO_DIAGNOSTIC_PRIOR:-}"
 readonly MISSION1_PLANNING_INPUT="${ONR_DEMO_MISSION1_PLANNING_INPUT:-}"
 readonly MISSION3_DESCRIPTION="${ONR_DEMO_MISSION3_DESCRIPTION:-$AGENT_ROOT/examples/mission3_description.json}"
 readonly MISSION3_FIXTURE="${ONR_DEMO_MISSION3_FIXTURE:-}"
-readonly MISSION4_PACKAGE="${ONR_DEMO_MISSION4_PACKAGE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/package.json}"
-readonly MISSION4_FIXTURE="${ONR_DEMO_MISSION4_FIXTURE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/fixture.json}"
-readonly MISSION4_ANSWERS="${ONR_DEMO_MISSION4_ANSWERS:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/answers.json}"
-readonly MISSION4_REQUESTS="${ONR_DEMO_MISSION4_REQUESTS:-$AGENT_ROOT/examples/mission4_requests.json}"
+MISSION4_PACKAGE="${ONR_DEMO_MISSION4_PACKAGE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/package.json}"
+MISSION4_FIXTURE="${ONR_DEMO_MISSION4_FIXTURE:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/fixture.json}"
+MISSION4_ANSWERS="${ONR_DEMO_MISSION4_ANSWERS:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/answers.json}"
+MISSION4_REQUESTS="${ONR_DEMO_MISSION4_REQUESTS:-$AGENT_ROOT/examples/mission4_requests.json}"
 readonly MISSION4_WORKER_TIMEOUT_SECONDS="${ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS:-3600}"
 readonly VIEWER_PORT="${ONR_DEMO_VIEWER_PORT:-5066}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
@@ -44,9 +44,27 @@ case "$MISSION_MODE" in
     mission3) default_mission_file="$AGENT_ROOT/examples/mission3.json" ;;
     mission4) default_mission_file="$AGENT_ROOT/examples/mission4.json" ;;
     joint) default_mission_file="$AGENT_ROOT/examples/mission1-and-2.json" ;;
-    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2, mission3, mission4 or joint." >&2; exit 2 ;;
+    joint24) default_mission_file="$AGENT_ROOT/examples/mission2-and-4.json" ;;
+    *) echo "ONR_DEMO_MISSION_MODE must be mission1, mission2, mission3, mission4, joint or joint24." >&2; exit 2 ;;
 esac
 readonly MISSION_FILE="${ONR_DEMO_MISSION_FILE:-$default_mission_file}"
+if [ "$MISSION_MODE" = "joint24" ]; then
+    if [ -z "${ONR_DEMO_SCENARIO_CONFIG:-}" ]; then
+        SCENARIO_CONFIG="$PHYSICAL_ROOT/config/joint24_demo.yaml"
+    fi
+    if [ -z "${ONR_DEMO_MISSION4_PACKAGE:-}" ]; then
+        MISSION4_PACKAGE="$PHYSICAL_ROOT/docs/mission_desc/mission4_harbor_collision_0/mission4_offshore_collision_0/package.json"
+    fi
+    if [ -z "${ONR_DEMO_MISSION4_FIXTURE:-}" ]; then
+        MISSION4_FIXTURE="$PHYSICAL_ROOT/docs/mission_desc/mission4_harbor_collision_0/mission4_offshore_collision_0/fixture.json"
+    fi
+    if [ -z "${ONR_DEMO_MISSION4_ANSWERS:-}" ]; then
+        MISSION4_ANSWERS="$PHYSICAL_ROOT/docs/mission_desc/mission4_harbor_collision_0/mission4_offshore_collision_0/answers.json"
+    fi
+    if [ -z "${ONR_DEMO_MISSION4_REQUESTS:-}" ]; then
+        MISSION4_REQUESTS="$AGENT_ROOT/examples/mission2and4_requests.json"
+    fi
+fi
 
 # The launcher's own shell parses herdr JSON with jq. Use the repository's
 # vendored jq (the same copy the hyper agent backend puts on PATH) so jq is
@@ -106,6 +124,15 @@ if [ "$MISSION_MODE" = "mission4" ]; then
     fi
     mission_args+=(--mission-mode mission4 --mission4-package "$MISSION4_PACKAGE" --mission4-fixture "$MISSION4_FIXTURE")
 fi
+if [ "$MISSION_MODE" = "joint24" ]; then
+    if [ ! -r "$MISSION2_SCENARIO/ships/events.json" ]; then
+        echo "Mission 2 scenario is missing." >&2; exit 1
+    fi
+    if [ ! -r "$MISSION4_PACKAGE" ] || [ ! -r "$MISSION4_FIXTURE" ] || [ ! -r "$MISSION4_REQUESTS" ]; then
+        echo "Mission 4 package, fixture or request script is missing." >&2; exit 1
+    fi
+    mission_args+=(--mission-mode joint24 --mission2-scenario-dir "$MISSION2_SCENARIO" --mission4-package "$MISSION4_PACKAGE" --mission4-fixture "$MISSION4_FIXTURE")
+fi
 
 if [ "$DRY_RUN" != "1" ]; then
 # Fail fast with actionable guidance before any side effect when the caller's
@@ -164,7 +191,7 @@ fi
 # parents so their output cannot be mistaken for the original Mission 1 runs.
 run_parent="$AGENT_ROOT/var/live_demo_with_wm"
 case "$MISSION_MODE" in
-    mission2|mission3|mission4) run_parent="$run_parent/$MISSION_MODE" ;;
+    mission2|mission3|mission4|joint24) run_parent="$run_parent/$MISSION_MODE" ;;
 esac
 mkdir -p "$run_parent"
 run_root="$(mktemp -d "$run_parent/run.XXXXXX")"
@@ -242,7 +269,7 @@ if [ "$prepare_mission1_planning_input" = "1" ]; then
 fi
 agent_ready_file="$initial_event"
 agent_ready_description="physical runtime initial update"
-if [ "$MISSION_MODE" = "mission4" ]; then
+if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ]; then
     agent_ready_file="$mission4_worker_ready"
     agent_ready_description="initial Mission 4 worker request receipt"
 fi
@@ -250,7 +277,7 @@ agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT';
 printf -v agent_command 'bash -lc %q' "$agent_inner"
 
 worker_command=""
-if [ "$MISSION_MODE" = "mission4" ]; then
+if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ]; then
     worker_args=(python -u -m onr.adapters.mission4_worker --mission-id "$MISSION_ID"
         --session "$mission4_worker_state" --request-directory "$physical_state_root/search_requests"
         --transport-root "$transport_root" --script "$MISSION4_REQUESTS" --ready-file "$mission4_worker_ready"
@@ -261,10 +288,10 @@ if [ "$MISSION_MODE" = "mission4" ]; then
 fi
 
 audit_args=(python scripts/audit_live_demo.py --run-root "$run_root" --mission-mode "$MISSION_MODE")
-if [ "$MISSION_MODE" = "mission2" ]; then
+if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint24" ]; then
     audit_args+=(--mission2-scenario-dir "$MISSION2_SCENARIO")
 fi
-if [ "$MISSION_MODE" = "mission4" ]; then
+if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ]; then
     audit_args+=(--mission4-answers "$MISSION4_ANSWERS")
 fi
 printf -v audit_command '%q ' "${audit_args[@]}"
@@ -298,9 +325,9 @@ echo "Run data: $run_root"
 echo "Scenario: $SCENARIO_CONFIG"
 echo "Mission mode: $MISSION_MODE; Mission Input: $MISSION_FILE"
 if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 1 instance: $MISSION_INSTANCE"; fi
-if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
+if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ] || [ "$MISSION_MODE" = "joint24" ]; then echo "Mission 2 scenario: $MISSION2_SCENARIO"; fi
 if [ "$MISSION_MODE" = "mission3" ]; then echo "Mission 3 description: $MISSION3_DESCRIPTION; fixture: ${MISSION3_FIXTURE:-live}"; fi
-if [ "$MISSION_MODE" = "mission4" ]; then echo "Mission 4 package: $MISSION4_PACKAGE; fixture: $MISSION4_FIXTURE; requests: $MISSION4_REQUESTS"; fi
+if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ]; then echo "Mission 4 package: $MISSION4_PACKAGE; fixture: $MISSION4_FIXTURE; requests: $MISSION4_REQUESTS"; fi
 echo "Terminal audit: $audit_command"
 echo "World-model frame stream: http://127.0.0.1:$VIEWER_PORT"
 echo "Attach with: herdr --session $sessname"

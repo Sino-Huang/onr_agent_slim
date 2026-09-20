@@ -67,8 +67,8 @@ def audit_live_demo(
 ) -> dict[str, object]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
-    if mission_mode not in {"mission2", "mission3", "mission4"}:
-        raise ValueError("live demo audit supports mission2, mission3 or mission4")
+    if mission_mode not in {"mission2", "mission3", "mission4", "joint24"}:
+        raise ValueError("live demo audit supports mission2, mission3, mission4 or joint24")
     result_path = root / "closed-loop-result.json"
     result = _read(result_path) if result_path.is_file() else None
     environments = _environment_events(root)
@@ -121,7 +121,7 @@ def audit_live_demo(
     world = latest.get("world_model_info", {}) if isinstance(latest, Mapping) else {}
     if world.get("mission_mode") != mission_mode:
         failures.append("mission_mode_mismatch")
-    if mission_mode == "mission2":
+    if mission_mode in {"mission2", "joint24"}:
         snapshots = [
             item.get("world_model_info", {}).get("perception_predictions", {})
             for item in environments
@@ -145,9 +145,19 @@ def audit_live_demo(
         evidence = inspection.get("evidence", ()) if isinstance(inspection, Mapping) else ()
         if not evidence or any(item.get("source") != "simulated" for item in evidence):
             failures.append("mission3_fixture_evidence_missing")
-    else:
+    if mission_mode in {"mission4", "joint24"}:
         search = world.get("mission4", {})
-        if search.get("status") != "completed" or search.get("reason") != "all_found":
+        all_found = search.get("status") == "completed" and search.get("reason") == "all_found"
+        terminal = all_found
+        if not terminal and mission_mode == "joint24":
+            # joint24 also accepts the explicit-unresolved report the M4 gate
+            # publishes when the search ends without resolving every request.
+            reports = root / "transport/topics/mission4-agent-reports"
+            terminal = any(
+                _read(path).get("event_kind") == "mission4-agent-report"
+                for path in sorted(reports.glob("missions/*/*.json"))
+            )
+        if not terminal:
             failures.append("mission4_not_all_found")
         if len(search.get("requests", ())) < 2:
             failures.append("mission4_requests_missing")

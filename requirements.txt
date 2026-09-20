@@ -4,3 +4,6 @@ playwright==1.62.0
 
 # Read-only sampling profiler for runtime investigations
 py-spy==0.4.2
+
+# Build tool for vendored native modules (VAL plan validator)
+cmake<4

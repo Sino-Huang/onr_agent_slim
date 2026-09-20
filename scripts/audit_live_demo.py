@@ -48,7 +48,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Audit a terminal model-backed live demo")
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument(
-        "--mission-mode", choices=("mission2", "mission3", "mission4"), required=True
+        "--mission-mode", choices=("mission2", "mission3", "mission4", "joint24"), required=True
     )
     parser.add_argument(
         "--mission2-scenario-dir",
@@ -61,10 +61,10 @@ def main() -> int:
         help="Private Mission 4 answer key used only for terminal answer metrics",
     )
     args = parser.parse_args()
-    if args.mission4_answers is not None and args.mission_mode != "mission4":
-        parser.error("--mission4-answers is only valid with --mission-mode mission4")
+    if args.mission4_answers is not None and args.mission_mode not in {"mission4", "joint24"}:
+        parser.error("--mission4-answers is only valid with --mission-mode mission4 or joint24")
     mission_metrics = None
-    if args.mission_mode == "mission2":
+    if args.mission_mode in {"mission2", "joint24"}:
         if args.mission2_scenario_dir is None:
             parser.error("Mission 2 audit requires --mission2-scenario-dir")
         from onr_physical_runtime.mission2_evaluation import score_recorded_run

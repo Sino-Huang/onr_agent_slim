@@ -110,7 +110,7 @@ class _Mission2LifecycleMatch:
 def collision_observation_candidates(environment: Mapping) -> tuple[CollisionObservationCandidate, ...]:
     """Rank feasible refresh opportunities using public positions and travel time."""
     world = environment.get("world_model_info", {})
-    if world.get("mission_mode") not in {"mission2", "joint"}:
+    if world.get("mission_mode") not in {"mission2", "joint", "joint24"}:
         return ()
     predictions = world.get("perception_predictions")
     if not isinstance(predictions, Mapping):
@@ -495,7 +495,7 @@ def assess_mission2_replan(
     world = environment.get("world_model_info", {})
     assignment = _active_mission2_assignment(status)
     current_id = assignment.candidate_id if assignment is not None else None
-    if world.get("mission_mode") not in {"mission2", "joint"}:
+    if world.get("mission_mode") not in {"mission2", "joint", "joint24"}:
         return _decision(False, "not_mission2", risk_revision, current_candidate_id=current_id)
     if risk_revision.mission_end_reached or status.active_state == "scenario-recording-end":
         return _decision(False, "mission_complete", risk_revision, current_candidate_id=current_id)
@@ -745,7 +745,7 @@ class Mission2ReplanGate:
 
     def assess(self, environment: Mapping, status: FSMStatus) -> Mission2GateDecision:
         world = environment.get("world_model_info", {})
-        if world.get("mission_mode") not in {"mission2", "joint"}:
+        if world.get("mission_mode") not in {"mission2", "joint", "joint24"}:
             revision = Mission2RiskRevision(
                 self._revision,
                 self._run_id or "",

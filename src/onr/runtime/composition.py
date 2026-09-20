@@ -924,6 +924,7 @@ class RuntimeComposition:
         communication_port: object | None = None,
         refresh_planning_context: Callable[[], MissionSnapshot] | None = None,
         mission4_gate_decision: object | None = None,
+        joint24_trigger_identities: tuple[str, ...] | None = None,
     ) -> HyperWorkflowContext:
         """Bind one Mission Run's authorized evidence to workflow planner tools."""
 
@@ -982,6 +983,7 @@ class RuntimeComposition:
             communication_port=communication_port,
             refresh_planning_context=refresh_planning_context,
             mission4_gate_decision=mission4_gate_decision,
+            joint24_trigger_identities=joint24_trigger_identities,
         )
 
     def run_planning_mission(

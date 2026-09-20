@@ -185,7 +185,7 @@ class Mission4AdaptivePlanner:
 
     def decide(self, environment: Mapping) -> Mission4Decision | None:
         world=environment.get("world_model_info",{})
-        if world.get("mission_mode")!="mission4":
+        if world.get("mission_mode") not in {"mission4","joint24"}:
             return None
         section=plain(world["mission4"])
         now=float(environment["mission_time_seconds"])
