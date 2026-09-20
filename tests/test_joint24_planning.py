@@ -273,11 +273,16 @@ def test_mode_guards_active_under_joint24() -> None:
 
 
 def test_joint24_reports_unresolved_at_recording_end() -> None:
-    environment = _environment(m2_point=(65.0, 0.0, 5.0), m4_deadline_s=900.0, now=200.0)
+    environment = _environment(m2_point=(65.0, 0.0, 5.0), m4_deadline_s=900.0, now=180.0)
     environment["world_model_info"]["mission_end_time_s"] = 182.5
-    # The worker deadline (900 s) lies beyond the Mission 2 recording end; the
-    # explicit-unresolved report is due once the recording finishes.
-    decision = Mission4AdaptivePlanner("joint24-mission").decide(environment)
+    planner = Mission4AdaptivePlanner("joint24-mission")
+    # A heartbeat before the recording ends keeps searching.
+    first = planner.decide(environment)
+    assert first is None or first.action != "report"
+    # The recording ends with an unchanged ledger: the signature alone must not
+    # suppress the explicit-unresolved report owed at the recording end.
+    environment["mission_time_seconds"] = 182.5
+    decision = planner.decide(environment)
     assert decision is not None
     assert decision.action == "report"
     assert decision.reason == "mission_deadline"
