@@ -45,6 +45,31 @@ def run_tree(root: Path, mode: str) -> None:
                 "evidence": [{"source": "simulated"}],
             }
         }
+    elif mode == "joint34":
+        section = {
+            "mission4": {
+                "status": "completed",
+                "reason": "all_found",
+                "requests": [{}, {}],
+                "observations": [{}],
+                "source": "simulated",
+            },
+            "mission3": {
+                "schema_version": 1,
+                "selected_ship_ids": [4, 5, 6],
+                "target_observations": [
+                    {"ship_id": 4, "sampled_at_s": 5.0, "age_s": 0.0}
+                ],
+                "ships": [
+                    {"ship_id": ship_id, "resolution": {"status": "unresolved"}}
+                    for ship_id in (4, 5, 6)
+                ],
+            },
+        }
+        write(
+            root / "mission4-worker-session.json",
+            {"history": [{"kind": "accepted"}, {"kind": "accepted"}]},
+        )
     else:
         section = {
             "mission4": {
@@ -86,14 +111,46 @@ def run_tree(root: Path, mode: str) -> None:
         root / "debug/agent/hyper-agent/mission%3Ademo/1.json",
         {"kind": "llm", "completion_state": "complete", "error": None},
     )
+    if mode == "joint34":
+        write(
+            log / "3.json",
+            {
+                "source": "fsm-runner",
+                "event_kind": "fsm",
+                "outcome": "transitioned",
+                "details": {"state": "mission3-block"},
+            },
+        )
+        write(
+            root
+            / "transport/topics/hyper-heartbeat-outcomes/missions/mission%3Ademo/1.json",
+            {"trigger_identities": ["mission3-gate:mission_budget:report:none"]},
+        )
 
 
-@pytest.mark.parametrize("mode", ["mission2", "mission3", "mission4"])
+@pytest.mark.parametrize("mode", ["mission2", "mission3", "mission4", "joint34"])
 def test_live_demo_audit_accepts_terminal_mission_receipts(tmp_path: Path, mode: str) -> None:
     run_tree(tmp_path, mode)
     result = audit_live_demo(tmp_path, mode)
     assert result["status"] == "PASS"
     assert json.loads((tmp_path / "live-acceptance.json").read_text())["status"] == "PASS"
+
+
+def test_live_demo_audit_joint34_requires_block_and_report(tmp_path: Path) -> None:
+    run_tree(tmp_path, "joint34")
+    oplog = tmp_path / "agent-storage/operational-log/mission:demo/events/3.json"
+    oplog.unlink()
+    trigger = (
+        tmp_path
+        / "transport/topics/hyper-heartbeat-outcomes/missions/mission%3Ademo/1.json"
+    )
+    trigger.unlink()
+    audit = audit_live_demo(tmp_path, "joint34")
+    assert audit["status"] == "FAIL"
+    assert set(audit["failures"]) >= {
+        "mission3_block_not_entered",
+        "mission3_report_evidence_missing",
+    }
 
 
 def test_live_demo_audit_records_failures(tmp_path: Path) -> None:
