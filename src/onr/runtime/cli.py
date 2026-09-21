@@ -163,7 +163,7 @@ def _mission_mode_context(
     world_model_info: Mapping[str, object],
 ) -> tuple[str, tuple[int | str, ...]]:
     mode = world_model_info.get("mission_mode", "mission1")
-    if mode not in {"mission1", "mission2", "mission3", "mission4", "joint", "joint24"}:
+    if mode not in {"mission1", "mission2", "mission3", "mission4", "joint", "joint24", "joint34"}:
         raise ValueError("environment planning view has an unsupported mission mode")
     if mode in {"mission1", "joint"}:
         reports = world_model_info.get("ship_event_reports")
@@ -236,6 +236,7 @@ def _run_hyper_revision(
     refresh_planning_context: Callable[[], MissionSnapshot] | None = None,
     mission4_gate_decision: Mission4Decision | None = None,
     joint24_trigger_identities: tuple[str, ...] | None = None,
+    joint34_trigger_identities: tuple[str, ...] | None = None,
 ) -> ActivePlanRevision | None:
     revision_root = artifact_root / f"revision-{revision:03d}"
     workflow = runtime.create_hyper_workflow(
@@ -259,6 +260,7 @@ def _run_hyper_revision(
         refresh_planning_context=refresh_planning_context,
         mission4_gate_decision=mission4_gate_decision,
         joint24_trigger_identities=joint24_trigger_identities,
+        joint34_trigger_identities=joint34_trigger_identities,
     )
     result = workflow.run(
         context,
@@ -331,7 +333,7 @@ def run_closed_loop_demo(
     if not isinstance(world_model_info, Mapping):
         raise TypeError("environment planning view has no world-model evidence")
     mode, ship_ids = _mission_mode_context(world_model_info)
-    if mode in {"mission2", "mission3", "mission4", "joint", "joint24"}:
+    if mode in {"mission2", "mission3", "mission4", "joint", "joint24", "joint34"}:
         simulation_limit_seconds = min(
             simulation_limit_seconds, _mission_end_time(world_model_info, mode)
         )
@@ -400,6 +402,7 @@ def run_closed_loop_demo(
         belief_service=belief_service,
         refresh_planning_context=refresh_planning_context,
         joint24_trigger_identities=() if mode == "joint24" else None,
+        joint34_trigger_identities=() if mode == "joint34" else None,
     )
     if active is None:
         raise RuntimeError(
@@ -473,6 +476,11 @@ def run_closed_loop_demo(
                 joint24_trigger_identities=(
                     tuple(str(trigger) for trigger in getattr(invocation, "trigger_identities", ()))
                     if mode == "joint24"
+                    else None
+                ),
+                joint34_trigger_identities=(
+                    tuple(str(trigger) for trigger in getattr(invocation, "trigger_identities", ()))
+                    if mode == "joint34"
                     else None
                 ),
             )

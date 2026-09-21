@@ -133,7 +133,7 @@ class Mission3Decision:
 
 def _mission3(environment: Mapping[str, object]) -> Mapping[str, object] | None:
     world = environment.get("world_model_info")
-    if not isinstance(world, Mapping) or world.get("mission_mode") != "mission3":
+    if not isinstance(world, Mapping) or world.get("mission_mode") not in {"mission3", "joint34"}:
         return None
     inspection = world.get("mission3")
     if not isinstance(inspection, Mapping) or inspection.get("schema_version") != 1:

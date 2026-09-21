@@ -185,7 +185,7 @@ class Mission4AdaptivePlanner:
 
     def decide(self, environment: Mapping) -> Mission4Decision | None:
         world=environment.get("world_model_info",{})
-        if world.get("mission_mode") not in {"mission4","joint24"}:
+        if world.get("mission_mode") not in {"mission4","joint24","joint34"}:
             return None
         section=plain(world["mission4"])
         now=float(environment["mission_time_seconds"])
@@ -197,8 +197,9 @@ class Mission4AdaptivePlanner:
         unresolved=[tid for tid in section["objectives"] if tid not in found]
         deadline=float(section["deadline_s"])
         recording_end=None
-        if world.get("mission_mode")=="joint24":
-            # The joint24 run terminates at the Mission 2 recording end; the
+        if world.get("mission_mode") in {"joint24","joint34"}:
+            # The joint24/joint34 run terminates at the shared mission end
+            # (the Mission 2 recording end, resp. the Mission 3 budget); the
             # explicit-unresolved report is due by then even when the worker
             # deadline lies beyond it.
             end=world.get("mission_end_time_s")

@@ -67,8 +67,10 @@ def audit_live_demo(
 ) -> dict[str, object]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
-    if mission_mode not in {"mission2", "mission3", "mission4", "joint24"}:
-        raise ValueError("live demo audit supports mission2, mission3, mission4 or joint24")
+    if mission_mode not in {"mission2", "mission3", "mission4", "joint24", "joint34"}:
+        raise ValueError(
+            "live demo audit supports mission2, mission3, mission4, joint24 or joint34"
+        )
     result_path = root / "closed-loop-result.json"
     result = _read(result_path) if result_path.is_file() else None
     environments = _environment_events(root)
@@ -145,13 +147,48 @@ def audit_live_demo(
         evidence = inspection.get("evidence", ()) if isinstance(inspection, Mapping) else ()
         if not evidence or any(item.get("source") != "simulated" for item in evidence):
             failures.append("mission3_fixture_evidence_missing")
-    if mission_mode in {"mission4", "joint24"}:
+    elif mission_mode == "joint34":
+        # No private Mission 3 fixture in the joint34 demo: the run-bound
+        # exhaustion marks remaining ships incomplete explicitly, so the
+        # roster must end resolved-or-incomplete, never unresolved.
+        inspection = world.get("mission3", {})
+        ships = inspection.get("ships", ()) if isinstance(inspection, Mapping) else ()
+        if (
+            not isinstance(inspection, Mapping)
+            or not inspection.get("selected_ship_ids")
+            or not ships
+        ):
+            failures.append("mission3_selection_missing")
+        elif any(
+            not isinstance(ship, Mapping)
+            or not isinstance(ship.get("resolution"), Mapping)
+            or ship["resolution"].get("status") not in {"resolved", "incomplete"}
+            for ship in ships
+        ):
+            failures.append("mission3_roster_not_resolved")
+        # The target tracker must have ingested live samples during the run.
+        if not any(
+            isinstance(item.get("world_model_info", {}).get("mission3"), Mapping)
+            and item["world_model_info"]["mission3"].get("target_observations")
+            for item in environments
+        ):
+            failures.append("mission3_target_observations_missing")
+        # The FSM must have served the Mission 3 block this run.
+        if not any(
+            record.get("source") == "fsm-runner"
+            and isinstance(record.get("details"), Mapping)
+            and record["details"].get("state") == "mission3-block"
+            for record in records
+        ):
+            failures.append("mission3_block_not_entered")
+    if mission_mode in {"mission4", "joint24", "joint34"}:
         search = world.get("mission4", {})
         all_found = search.get("status") == "completed" and search.get("reason") == "all_found"
         terminal = all_found
-        if not terminal and mission_mode == "joint24":
-            # joint24 also accepts the explicit-unresolved report the M4 gate
-            # publishes when the search ends without resolving every request.
+        if not terminal and mission_mode in {"joint24", "joint34"}:
+            # joint24/joint34 also accept the explicit-unresolved report the
+            # M4 gate publishes when the search ends without resolving every
+            # request.
             reports = root / "transport/topics/mission4-agent-reports"
             terminal = any(
                 _read(path).get("event_kind") == "mission4-agent-report"

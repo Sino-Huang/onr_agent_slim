@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Perform gate/vessel inspection of the selected ships and worker-requested object search together within the Mission 3 time budget that bounds the run. Share the drone between both missions. Scheduling policy: worker search requests with imminent deadlines and fresh inconclusive evidence or moved inspection targets are preemptive; routine inspection and routine search are preemptible. Preemption replaces in-flight preemptible work only at maneuver-boundary reconciliation after a replan; it never interrupts a maneuver mid-flight. Exploit observations that serve both missions. Keep inspection resolution verdicts separate from search location/type answers. Use the public inspection ledger, target tracker, the search ledger, and worker request deadlines to choose the next mission block, and replan as evidence changes.",
+  "source_authority": "demo-operator"
+}

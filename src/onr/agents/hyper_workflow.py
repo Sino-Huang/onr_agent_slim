@@ -34,6 +34,7 @@ from onr.agents.hyper_agent import (
 from onr.application.hyper_agent import HyperAgent
 from onr.application.mission4_planning import write_minizinc_problem
 from onr.application.joint24_planning import materialize_joint24_pddl
+from onr.application.joint34_planning import materialize_joint34_pddl
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.environment import environment_mission_time
@@ -333,6 +334,7 @@ class HyperWorkflowContext:
     refresh_planning_context: Callable[[], MissionSnapshot] | None = None
     mission4_gate_decision: Any = None
     joint24_trigger_identities: tuple[str, ...] | None = None
+    joint34_trigger_identities: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_input, MissionInput):
@@ -900,6 +902,33 @@ def record_planning_intent(
             "statechart_file_location shell path>` from the repository root, and "
             "submit the emitted statechart.json unchanged.\n"
         )
+    joint34_lines = ""
+    if context.joint34_trigger_identities is not None:
+        host_workspace = context.artifact_root / "workspace" / "001"
+        host_workspace.mkdir(parents=True, exist_ok=True)
+        materialize_joint34_pddl(
+            context.environment_event.payload,
+            None,
+            context.mission4_gate_decision,
+            host_workspace,
+            trigger_identities=context.joint34_trigger_identities,
+        )
+        joint34_lines = (
+            "Joint34 code-owned PDDL schedule pre-materialized from current public "
+            "evidence; this revision's Planner Choice is symbolic/fast-downward:\n"
+            f"Domain for execute: {shell_workspace}/domain.pddl\n"
+            f"Problem for execute: {shell_workspace}/problem.pddl\n"
+            f"Schedule metadata for execute: {shell_workspace}/joint34-schedule.json\n"
+            "Submit the pre-materialized domain.pddl and problem.pddl exactly as "
+            "written; never hand-invent numeric constants. After planner_executor "
+            "returns the validated plan, write the returned plan text to "
+            f"{shell_workspace}/sas_plan, then run `python -m "
+            "onr.application.joint34_planning --emit-statechart --plan "
+            f"{shell_workspace}/sas_plan --schedule "
+            f"{shell_workspace}/joint34-schedule.json --output <the exact "
+            "statechart_file_location shell path>` from the repository root, and "
+            "submit the emitted statechart.json unchanged.\n"
+        )
     if context.belief_file_location is None:
         belief_lines = "Belief file: none (no belief snapshot was supplied)."
     else:
@@ -926,6 +955,7 @@ def record_planning_intent(
         f"{belief_lines}\n"
         f"{mission4_lines}"
         f"{joint24_lines}"
+        f"{joint34_lines}"
     )
 
 

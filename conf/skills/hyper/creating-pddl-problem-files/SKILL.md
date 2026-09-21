@@ -28,6 +28,8 @@ Read `examples/survey-return/domain.pddl` and `examples/survey-return/problem.pd
 
 When `mission_mode` is `joint24` (Mission 2 + Mission 4 combined), apply the [joint24 mission scheduler reference](references/joint24-mission-scheduler.md): the checked-in scheduler domain at `examples/joint24-scheduler/domain.pddl` and the pre-materialized problem are submitted unchanged.
 
+When `mission_mode` is `joint34` (Mission 3 + Mission 4 combined), apply the [joint34 mission scheduler reference](references/joint34-mission-scheduler.md): the checked-in scheduler domain at `examples/joint34-scheduler/domain.pddl` and the pre-materialized problem are submitted unchanged.
+
 ## Authority boundary
 
 PDDL files and `sas_plan` are planning artifacts, not Mission authority. An accepted `sas_plan` remains planner-native and is interpreted into execution semantics only by the accepted Statechart/FSM.
