@@ -1,5 +1,5 @@
 [
-  {"at_s": 0.0, "text": "A party of 4 mechanics are on watchout at (-15.00, 10.00). They spotted a red container near the dock before taking cover. Where is the red container located?"},
-  {"at_s": 45.0, "text": "A group of 3 surveyors are standing by at (12.00, -14.00). They caught a glimpse of a blue container close to the dock before losing sight of it. Where is the blue container located?"},
-  {"at_s": 90.0, "text": "An assembly of 2 dockhands are waiting at (-8.00, 16.00). They heard reports of a truck arriving near the dock. Where is the truck located?"}
+  {"at_s": 0.0, "text": "find a red container in dock"},
+  {"at_s": 45.0, "text": "find a blue container in dock"},
+  {"at_s": 90.0, "text": "find a truck in dock"}
 ]
