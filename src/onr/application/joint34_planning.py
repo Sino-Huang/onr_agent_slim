@@ -82,10 +82,17 @@ def joint34_revision_class(
         if (
             isinstance(section, Mapping)
             and section.get("objectives")
-            and float(section.get("deadline_s", math.inf)) - now
-            <= JOINT34_PREEMPTIVE_DEADLINE_S
         ):
-            return "preemptive"
+            deadline = float(section.get("deadline_s", math.inf))
+            end = world.get("mission_end_time_s")
+            if isinstance(end, (int, float)):
+                # The M4 planner already clamps its deadline to the run
+                # bound; the scheduler's imminent-deadline test uses the
+                # same effective deadline, otherwise a ledger deadline past
+                # the bound never reads as imminent.
+                deadline = min(deadline, float(end))
+            if deadline - now <= JOINT34_PREEMPTIVE_DEADLINE_S:
+                return "preemptive"
     return "routine"
 
 

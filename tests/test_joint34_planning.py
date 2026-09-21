@@ -193,6 +193,18 @@ def test_revision_class_mapping() -> None:
     )
 
 
+def test_revision_class_clamps_deadline_to_run_bound() -> None:
+    # The ledger deadline (package budget 300 s) lies past the 120 s run
+    # bound; within 60 s of the bound the effective deadline is imminent and
+    # the revision flips preemptive, exactly like the M4 planner's clamp.
+    environment = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=300.0)
+    early = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=300.0, now=40.0)
+    triggers = ("mission4-gate:{\"deadline_s\": 300}",)
+    assert joint34_planning.joint34_revision_class(early, triggers) == "routine"
+    late = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=300.0, now=70.0)
+    assert joint34_planning.joint34_revision_class(late, triggers) == "preemptive"
+
+
 @pytest.mark.parametrize(
     ("m3_ship", "m4_site", "m4_deadline_s", "expected_order", "expected_deferred"),
     (
