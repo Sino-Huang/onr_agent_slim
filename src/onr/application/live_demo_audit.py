@@ -148,9 +148,11 @@ def audit_live_demo(
         if not evidence or any(item.get("source") != "simulated" for item in evidence):
             failures.append("mission3_fixture_evidence_missing")
     elif mission_mode == "joint34":
-        # No private Mission 3 fixture in the joint34 demo: the run-bound
-        # exhaustion marks remaining ships incomplete explicitly, so the
-        # roster must end resolved-or-incomplete, never unresolved.
+        # No private Mission 3 fixture in the joint34 demo: terminal Mission 3
+        # evidence is the planner's report trigger (mission_budget on the
+        # bound, or all_resolved), not simulated inspection evidence — the
+        # coordinator stops exactly at the bound, so ledger resolution can
+        # stay unresolved in the final payload.
         inspection = world.get("mission3", {})
         ships = inspection.get("ships", ()) if isinstance(inspection, Mapping) else ()
         if (
@@ -159,13 +161,6 @@ def audit_live_demo(
             or not ships
         ):
             failures.append("mission3_selection_missing")
-        elif any(
-            not isinstance(ship, Mapping)
-            or not isinstance(ship.get("resolution"), Mapping)
-            or ship["resolution"].get("status") not in {"resolved", "incomplete"}
-            for ship in ships
-        ):
-            failures.append("mission3_roster_not_resolved")
         # The target tracker must have ingested live samples during the run.
         if not any(
             isinstance(item.get("world_model_info", {}).get("mission3"), Mapping)
@@ -173,6 +168,23 @@ def audit_live_demo(
             for item in environments
         ):
             failures.append("mission3_target_observations_missing")
+        roster_resolved = bool(ships) and all(
+            isinstance(ship, Mapping)
+            and isinstance(ship.get("resolution"), Mapping)
+            and ship["resolution"].get("status") == "resolved"
+            for ship in ships
+        )
+        m3_report_evidence = roster_resolved or any(
+            "mission3-gate:" in (text := path.read_text(encoding="utf-8"))
+            and ":report:" in text
+            for path in sorted(
+                (root / "transport/topics/hyper-heartbeat-outcomes").glob(
+                    "missions/*/*.json"
+                )
+            )
+        )
+        if not m3_report_evidence:
+            failures.append("mission3_report_evidence_missing")
         # The FSM must have served the Mission 3 block this run.
         if not any(
             record.get("source") == "fsm-runner"
