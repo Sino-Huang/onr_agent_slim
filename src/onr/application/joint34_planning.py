@@ -15,10 +15,11 @@ Scheduling policy: priority classes + bounded preemption. A revision is
 preemptive-class when a Mission 4 request deadline falls within
 ``JOINT34_PREEMPTIVE_DEADLINE_S``, or a Mission 3 trigger reports fresh
 inconclusive evidence or a moved target; otherwise it is routine. Deferring a
-preemptive revision's work costs ``DEFER_COST_PREEMPTIVE`` (the Mission 2
-selection model's 100000 weight scale), so urgency always outranks travel;
-routine deferral costs ``DEFER_COST_ROUTINE``, letting the solver skip a
-low-urgency mission when switch travel outweighs it.
+preemptive revision's work costs ``DEFER_COST_PREEMPTIVE`` — priced above any
+feasible travel at the harbor scene's kilometer scale (the Mission 2 selection
+model's 100000 weight scale raised accordingly) — so urgency always outranks
+travel; routine deferral costs ``DEFER_COST_ROUTINE``, letting the solver skip
+a low-urgency mission when switch travel outweighs it.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from onr.application.mission3_planning import Mission3AdaptivePlanner
 from onr.application.mission4_planning import Mission4AdaptivePlanner
 
 JOINT34_PREEMPTIVE_DEADLINE_S = 60.0
-DEFER_COST_PREEMPTIVE = 100000
+DEFER_COST_PREEMPTIVE = 1000000
 DEFER_COST_ROUTINE = 1000
 JOINT34_M4_SERVICE_MILLIS = 60000
 # Mission 3 block service estimates follow the decision's maneuver step:

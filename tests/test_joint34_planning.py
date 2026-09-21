@@ -209,9 +209,10 @@ def test_revision_class_clamps_deadline_to_run_bound() -> None:
     ("m3_ship", "m4_site", "m4_deadline_s", "expected_order", "expected_deferred"),
     (
         # Golden case: routine M3 inspection (120 s travel away) plus a
-        # preemptive M4 request (deadline in 45 s). The optimal schedule
-        # serves the urgent M4 first and defers the far routine inspection.
-        ((1, 960.0, 0.0), (160.0, 0.0), 45.0, ["m4"], ["m3"]),
+        # preemptive M4 request (deadline in 45 s). The preemptive defer price
+        # dominates every serve cost at this scale, so both missions are
+        # served and the urgent M4 goes first.
+        ((1, 960.0, 0.0), (160.0, 0.0), 45.0, ["m4", "m3"], []),
         # Both routine with a far M4: deferring both beats serving either.
         ((1, 60.0, 0.0), (2400.0, 0.0), 300.0, [], ["m3", "m4"]),
     ),

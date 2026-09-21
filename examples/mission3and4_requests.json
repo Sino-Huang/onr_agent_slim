@@ -1,5 +1,5 @@
 [
   {"at_s": 0.0, "text": "find a red container in dock"},
-  {"at_s": 45.0, "text": "find a blue container in dock"},
-  {"at_s": 90.0, "text": "find a truck in dock"}
+  {"at_s": 6.0, "text": "find a blue container in dock"},
+  {"at_s": 12.0, "text": "find a truck in dock"}
 ]
