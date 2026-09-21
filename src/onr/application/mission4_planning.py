@@ -196,20 +196,27 @@ class Mission4AdaptivePlanner:
         found=self._resolved_targets(snapshot,section)
         unresolved=[tid for tid in section["objectives"] if tid not in found]
         deadline=float(section["deadline_s"])
+        recording_end=None
         if world.get("mission_mode")=="joint24":
             # The joint24 run terminates at the Mission 2 recording end; the
             # explicit-unresolved report is due by then even when the worker
             # deadline lies beyond it.
             end=world.get("mission_end_time_s")
             if type(end) in (int,float):
-                deadline=min(deadline,float(end))
+                recording_end=float(end)
+                deadline=min(deadline,recording_end)
         signature=[section["revision"],snapshot.belief_revision,section["status"],lifecycle]
         if section["status"]!="active" or now>=deadline:
             # The terminal report must fire even when nothing else changed on
             # this heartbeat: a joint24 run ends at the recording end with the
             # ledger still active, so the signature alone never opens it.
             self.data["last_signature"]=signature
-            return self.final_report(section,section.get("reason") or "mission_deadline")
+            reason=section.get("reason") or "mission_deadline"
+            if section["status"]=="active" and recording_end is not None and now>=recording_end:
+                # The recording end is an explicit-unresolved ending in the
+                # ledger's own vocabulary, so the worker accepts the report.
+                reason="search_exhausted"
+            return self.final_report(section,reason)
         if signature==self.data["last_signature"]:
             return None
         self.data["last_signature"]=signature

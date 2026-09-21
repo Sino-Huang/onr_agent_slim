@@ -285,7 +285,9 @@ def test_joint24_reports_unresolved_at_recording_end() -> None:
     decision = planner.decide(environment)
     assert decision is not None
     assert decision.action == "report"
-    assert decision.reason == "mission_deadline"
+    # The recording-end ending uses the ledger's explicit-unresolved vocabulary
+    # so the worker accepts the report and files its finish request.
+    assert decision.reason == "search_exhausted"
 
     # Mission 4 standalone ignores the recording end and follows its own
     # worker deadline.
