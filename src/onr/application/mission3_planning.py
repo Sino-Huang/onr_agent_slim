@@ -194,7 +194,9 @@ class Mission3AdaptivePlanner:
             if ships[ship_id]["resolution"]["status"] != "resolved"
         ]
         if not unresolved:
-            if self._lifecycle_active(lifecycle):
+            # Only an in-flight Mission 3 maneuver is cancelled on the early
+            # verdict; a joint34 run's other half keeps its maneuver.
+            if self._lifecycle_active(lifecycle) and active_target is not None:
                 return self._record(
                     self._cancel_with_hold(environment, "early_verdict_cancel")
                 )
@@ -211,8 +213,11 @@ class Mission3AdaptivePlanner:
                 or float(item.get("age_s", math.inf)) <= float(maximum_age)
             )
         }
-        if self._lifecycle_active(lifecycle):
-            assert active_target is not None
+        # The continue-current-leg logic applies only to the Mission 3 half's
+        # own in-flight maneuver; a joint34 run serves the other mission with
+        # commands that target no selected ship, and the inspection planner
+        # keeps deciding normally while those run.
+        if self._lifecycle_active(lifecycle) and active_target is not None:
             active_ship = ships.get(active_target)
             if active_ship is None:
                 raise ValueError("active Mission 3 maneuver targets an unselected ship")

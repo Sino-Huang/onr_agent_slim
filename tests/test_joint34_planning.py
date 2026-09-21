@@ -10,7 +10,7 @@ import pytest
 from onr.adapters.fast_downward import FastDownwardExecutor
 from onr.adapters.val import VALPlanValidator
 from onr.application import joint34_planning
-from onr.application.mission3_planning import Mission3ReplanGate
+from onr.application.mission3_planning import Mission3AdaptivePlanner, Mission3ReplanGate
 from onr.application.mission4_planning import Mission4AdaptivePlanner
 from onr.application.mission2_planning import Mission2ReplanGate
 from onr.contracts.fsm import FSMStatus
@@ -341,6 +341,22 @@ def test_mission3_report_block_completes_immediately(tmp_path) -> None:
     assert bound["context"]["readiness"] == {
         "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]}
     }
+
+
+def test_mission3_planner_tolerates_other_mission_maneuver() -> None:
+    environment = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=300.0)
+    # The joint34 scheduler serves the Mission 4 half first: an in-flight
+    # search command targets no selected ship. The inspection planner must
+    # keep deciding normally instead of asserting on the foreign maneuver.
+    environment["maneuver_lifecycle"] = {
+        "command_id": "command-9",
+        "action": "search_area",
+        "lifecycle": "active",
+        "parameters": {"polygon": [{"x": -20.0, "y": -20.0}, {"x": 20.0, "y": 20.0}]},
+    }
+    decision = Mission3AdaptivePlanner().decide(environment)
+    assert decision is not None
+    assert decision.action in {"navigate", "pursue"}
 
 
 def test_mode_guards_active_under_joint34() -> None:
