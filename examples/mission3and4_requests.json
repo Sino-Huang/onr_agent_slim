@@ -1,5 +1,7 @@
 [
   {"at_s": 0.0, "text": "find a red container in dock"},
-  {"at_s": 6.0, "text": "find a blue container in dock"},
-  {"at_s": 12.0, "text": "find a truck in dock"}
+  {"at_s": 1.0, "text": "set deadline to 60 seconds"},
+  {"at_s": 40.0, "text": "find a blue container in dock"},
+  {"at_s": 40.0, "text": "extend deadline to 100 seconds"},
+  {"at_s": 80.0, "text": "find a truck in dock"}
 ]

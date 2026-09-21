@@ -148,11 +148,16 @@ def audit_live_demo(
         if not evidence or any(item.get("source") != "simulated" for item in evidence):
             failures.append("mission3_fixture_evidence_missing")
     elif mission_mode == "joint34":
-        # No private Mission 3 fixture in the joint34 demo: terminal Mission 3
-        # evidence is the planner's report trigger (mission_budget on the
-        # bound, or all_resolved), not simulated inspection evidence — the
-        # coordinator stops exactly at the bound, so ledger resolution can
-        # stay unresolved in the final payload.
+        if isinstance(result, Mapping):
+            if result.get("final_fsm_state") != "joint34-complete":
+                failures.append("joint34_terminal_state_mismatch")
+            mission_end = world.get("mission_end_time_s")
+            if isinstance(mission_end, (int, float)) and float(
+                result.get("simulated_duration_seconds", 0)
+            ) < mission_end:
+                failures.append("mission3_stopped_before_budget")
+        # Live Mission 3 inspection has no private fixture. Require an issued
+        # report or a fully resolved roster, not merely a proposed gate action.
         inspection = world.get("mission3", {})
         ships = inspection.get("ships", ()) if isinstance(inspection, Mapping) else ()
         if (
@@ -174,15 +179,14 @@ def audit_live_demo(
             and ship["resolution"].get("status") == "resolved"
             for ship in ships
         )
-        m3_report_evidence = roster_resolved or any(
-            "mission3-gate:" in (text := path.read_text(encoding="utf-8"))
-            and ":report:" in text
+        m3_reports = [
+            report
             for path in sorted(
-                (root / "transport/topics/hyper-heartbeat-outcomes").glob(
-                    "missions/*/*.json"
-                )
+                (root / "transport/topics/mission3-agent-reports").glob("missions/*/*.json")
             )
-        )
+            if (report := _read(path)).get("event_kind") == "mission3-agent-report"
+        ]
+        m3_report_evidence = roster_resolved or bool(m3_reports)
         if not m3_report_evidence:
             failures.append("mission3_report_evidence_missing")
         # The FSM must have served the Mission 3 block this run.
@@ -230,6 +234,12 @@ def audit_live_demo(
         "operational_record_count": len(records),
         "agent_debug_record_count": len(debug_records),
     }
+    if mission_mode == "joint34":
+        audit["mission3_evidence"] = {
+            "inspection": dict(inspection),
+            "reports": m3_reports,
+            "block_entered": "mission3_block_not_entered" not in failures,
+        }
     if mission_metrics is not None:
         audit["mission_metrics"] = dict(mission_metrics)
     if mission4_answer_metrics is not None:

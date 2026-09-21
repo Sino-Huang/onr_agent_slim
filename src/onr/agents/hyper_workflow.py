@@ -1493,10 +1493,13 @@ def submit_planner_attempt(
     if static_check.accepted:
         instruction = (
             "Call planner_executor with the same planner_choice and "
-            "model_path and data_path. For MiniZinc, select coin-bc for "
-            "linear/integer-flow models, highs as the secondary linear-MIP "
-            "solver, or gecode for CP models; Fast Downward requires "
-            "minizinc_solver: null."
+            "model_path and data_path. "
+        )
+        instruction += (
+            "Set minizinc_solver to null for Fast Downward."
+            if planner_choice == "fast-downward"
+            else "Select minizinc_solver: coin-bc for linear/integer-flow models, "
+            "highs as the secondary linear-MIP solver, or gecode for CP models."
         )
     else:
         paths = ", ".join(file_locations)

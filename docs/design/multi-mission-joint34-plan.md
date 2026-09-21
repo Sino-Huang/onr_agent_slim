@@ -151,3 +151,131 @@ Prereqs: `conda activate onr`; both checkouts at `/data/ccu/sukaih/ONR/`; Fast D
 - **vLLM availability**: if the model service is unavailable at verification time, steps 1–2 and the dry-run still prove the system; record the live-run audit as blocked-on-service, not skipped silently.
 - **Concurrent agent**: another coding agent works both repos. Stage and commit only the files this plan names; if a named file was concurrently modified, re-read and re-apply on top — never revert.
 
+## Recovery and acceptance notes (2026-09-21)
+
+Issue #68 resumes implementation from the interrupted session; runtime tracking
+is [onr_physical_runtime#36](https://github.com/Sino-Huang/onr_physical_runtime/issues/36).
+The user clarified that acceptance at this stage is the world-model + agent
+integration launched through `scripts/live_demo_with_wm`, without AirSim.
+
+- Restore the requested 120 s selection budget and full 299.5 s harbor recording.
+  The standalone `mission4_live_demo.yaml` actually uses a 20 s smoke recording;
+  copying that path would silently shorten this demonstration.
+- Keep the prior session's preemptive defer price of 1,000,000 milliseconds;
+  routine deferral remains 1,000. This makes serving both missions affordable at
+  harbor-scale travel distances. The real-solver golden case checks the optimal
+  served order, and the routine case checks deferral.
+- Select actual harbor vessels 7, 15, and 16. Their changing geometry permits
+  inspection-first as well as dock-search-first scheduling during the run.
+- The worker script requests a 60 s deadline at t=1, adds a search at t=40,
+  extends the deadline to 100 s at t=40, and adds another search at t=80.
+  A generic add alone does not make a 300 s deadline imminent; both missions
+  correctly defer initially. Deadline commands occupy worker sequences 2 and
+  4, so search answer keys are 1, 3, and 5.
+- Decode both gates from semicolon-coalesced trigger identities. Otherwise an
+  M3 prefix hides a simultaneous imminent M4 deadline from the scheduler.
+- Urgency is a property of pending work, not just the latest trigger. In live
+  revision 5 an M3-only trigger erased an outstanding imminent M4 deadline and
+  incorrectly deferred both missions. Keep the active M4 ledger's deadline
+  preemptive across sibling-triggered revisions, until completion or expiry.
+  This corrects the trigger-only formulation in step 3.2 above.
+- Ground M4 navigation travel from its `x`/`y` parameters, as well as supporting
+  investigation centres and search polygons. A real Fast Downward + VAL case
+  checks that a distant navigation goal changes the selected mission order.
+- M4 must distinguish its own maneuver lifecycle from M3's. All M4 decisions
+  carry `deadline_time`; M3 decisions do not. Treating the sibling's active
+  navigation as continuation of a prior search suppressed timed worker
+  requests in the first live attempt. The regression reproduces that starvation
+  before the ownership fix and passes after it.
+- Publish actual `mission3-agent-reports` and embed inspection/report evidence
+  in `live-acceptance.json`. A proposed report trigger alone is not acceptance.
+- Keep lifecycle-based block completion and add a budget-exhaustion edge from
+  M3 to M4, so an unfinished M3 maneuver cannot strand the chart at the bound.
+- Terminal edges carry both `mission_time_at_or_after` (automatic dispatch) and
+  `not_before` (transition-tool enforcement). The first key alone allowed a
+  model-requested terminal transition at t=15.5 despite the 120 s budget.
+  The joint34 audit now rejects early completion and the wrong terminal state.
+- The `scheduling` context describes a **committed** validated decision, even
+  for an empty order. Describing it as an unfinished commit caused Hyper to
+  decline the urgent t=1.5 replan. Replaying that same recorded supervisor
+  request with corrected context returned `replan` from the real vLLM model.
+- Preserve the joint scheduling policy inside both mission blocks, with the
+  worker revision used to ground the plan. Otherwise Hyper treated the active
+  inspection block as authority to ignore later deadline-urgent worker
+  revisions, and independently misread per-attribute uncertainty as search
+  completion. Within-mission decisions remain owned by the M3/M4 middle tiers.
+  Real solver replay of the t=40 live feed selects M3→M4, whereas the initial
+  urgent revision selected M4→M3; Hyper must request that new PDDL revision.
+- Joint34 gates consume the same Mission Snapshot as the Hyper heartbeat.
+  Calling the live planning view just for gate assessment published a newer
+  worker revision before queued older updates were drained. The t=40 replan
+  was then rejected as not snapshot-authorized, delaying scheduling until
+  different vessel geometry arrived. The captured-revision regression checks
+  that a gate cannot propose targets from a newer, unauthorized worker view.
+- Distinguish a new urgent worker revision from another viewpoint for the
+  already-scheduled request. Run `run.6pTGpV` reached the correct 120 s terminal
+  state and audit PASS, but repeatedly restarting M4 completed its only
+  request at 16.5 s; later scripted requests correctly required a new run.
+  The joint scheduling policy now preserves the committed next mission block
+  for ordinary next-view progress. Replaying its t=5.5 supervisor input with
+  the real model returned `no_change`; replaying the t=40.5 urgent worker
+  arrival from `run.z782wG` still returned `replan`.
+- Restore the standalone harbor demo's 15 m camera range instead of the
+  interrupted session's 100 m override. Vessel positions remain public GPS
+  observations; camera range governs actual visual/search evidence.
+- Scope planner execution instructions to the selected planner; Fast Downward
+  receives `minizinc_solver=null`. Keep the executor's validation intact.
+- Remove the interrupted session's unconditional CLI traceback: exception text
+  can expose Mission Input or credentials. The safe-failure regression passes.
+
+Full-suite baseline observed during recovery: agent 1,182 passed / 2 failed
+before the CLI correction (the other failure is the pre-existing modified vLLM
+launcher's two-GPU default against a four-GPU default assertion). Runtime 662
+passed / 18 failed / 4 errors: unavailable live AirSim gates plus the seven
+M2/M4 loop failures already recorded on runtime #36. These are recorded, not
+re-pinned or silently suppressed; unrelated concurrent edits remain untouched.
+
+### Final combined-run acceptance (2026-09-22)
+
+Run: `var/live_demo_with_wm/joint34/run.7jruzl` (world model + agent,
+without AirSim). The terminal audit returned **PASS**, with no failures.
+The FSM reached `joint34-complete` at exactly 120.0 simulated seconds.
+There were four committed revisions and six physical navigation commands.
+
+| Revision | Mission time | Accepted worker revision | Validated served order |
+| --- | ---: | ---: | --- |
+| 1 | 0.0 | 1 | both deferred |
+| 2 | 1.5 | 2 | M4 → M3 |
+| 3 | 40.5 | 4 | M3 → M4 |
+| 4 | 97.0 | 5 | M4 → M3 |
+
+All five scripted worker operations were accepted. The new objective and
+deadline extension were accepted at t=40.0; Maneuver Control received
+`replan-activated:3` at t=40.5 while reconciling the in-flight M3 navigation.
+The final new search request was accepted at t=80.0.
+
+Evidence under the run directory:
+
+- `closed-loop-result.json`: terminal state, duration, revisions, and actions.
+- `live-acceptance.json`: audit PASS and both mission evidence branches.
+- `planner-artifacts/revision-00{2,3,4}/workspace/001/sas_plan`: both served
+  orders from the verified planner pipeline.
+- `debug/llm/maneuver-control/mission%3Ademo/00000000000000000010.json`:
+  t=40.5 activation of revision 3.
+- `mission4-worker-session.json`: accepted request/deadline receipts.
+- `mission4-answer-metrics.json`: evaluator output for three search targets.
+
+This is scheduling/integration acceptance, not a claim that every target was
+resolved. The M3 budget report explicitly records all three ships unresolved
+with `mission_budget`; no visual inspection evidence was obtained. M4 reports
+the blue container found and the red container and truck incomplete. The
+answer evaluator records zero answered location/direction/type questions.
+
+Final focused agent regression: **86 passed** across joint34, joint24,
+Mission 4 planning, closed-loop/gate coordination, audit, and launcher tests.
+Real-model policy replays separately verified `no_change` for ordinary
+same-request viewpoint progress and `replan` for the urgent t=40 worker
+revision. Full-suite baseline limitations are recorded above; this is not a
+claim that the unrelated repository-wide failures were repaired.
+Final focused runtime regression: **8 passed** (joint34, joint24, and actual
+FoV persistence), with one existing `pkg_resources` deprecation warning.

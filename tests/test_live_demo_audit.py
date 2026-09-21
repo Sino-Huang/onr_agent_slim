@@ -21,6 +21,7 @@ def run_tree(root: Path, mode: str) -> None:
         root / "closed-loop-result.json",
         {
             "terminal": True,
+            "final_fsm_state": "joint34-complete" if mode == "joint34" else "complete",
             "simulated_duration_seconds": 10.0,
             "physical_actions": ["navigate"],
             "feedback_count": 2,
@@ -47,6 +48,7 @@ def run_tree(root: Path, mode: str) -> None:
         }
     elif mode == "joint34":
         section = {
+            "mission_end_time_s": 10.0,
             "mission4": {
                 "status": "completed",
                 "reason": "all_found",
@@ -123,8 +125,8 @@ def run_tree(root: Path, mode: str) -> None:
         )
         write(
             root
-            / "transport/topics/hyper-heartbeat-outcomes/missions/mission%3Ademo/1.json",
-            {"trigger_identities": ["mission3-gate:mission_budget:report:none"]},
+            / "transport/topics/mission3-agent-reports/missions/mission%3Ademo/1.json",
+            {"event_kind": "mission3-agent-report", "payload": {"reason": "mission_budget"}},
         )
 
 
@@ -136,15 +138,29 @@ def test_live_demo_audit_accepts_terminal_mission_receipts(tmp_path: Path, mode:
     assert json.loads((tmp_path / "live-acceptance.json").read_text())["status"] == "PASS"
 
 
+def test_joint34_audit_rejects_premature_terminal(tmp_path: Path) -> None:
+    run_tree(tmp_path, "joint34")
+    result_path = tmp_path / "closed-loop-result.json"
+    result = json.loads(result_path.read_text())
+    result["simulated_duration_seconds"] = 5.0
+    write(result_path, result)
+    audit = audit_live_demo(tmp_path, "joint34")
+    assert "mission3_stopped_before_budget" in audit["failures"]
+
+
 def test_live_demo_audit_joint34_requires_block_and_report(tmp_path: Path) -> None:
     run_tree(tmp_path, "joint34")
     oplog = tmp_path / "agent-storage/operational-log/mission:demo/events/3.json"
     oplog.unlink()
     trigger = (
         tmp_path
-        / "transport/topics/hyper-heartbeat-outcomes/missions/mission%3Ademo/1.json"
+        / "transport/topics/mission3-agent-reports/missions/mission%3Ademo/1.json"
     )
     trigger.unlink()
+    write(
+        tmp_path / "transport/topics/hyper-heartbeat-outcomes/missions/mission%3Ademo/1.json",
+        {"trigger_identities": ["mission3-gate:mission_budget:report:none"]},
+    )
     audit = audit_live_demo(tmp_path, "joint34")
     assert audit["status"] == "FAIL"
     assert set(audit["failures"]) >= {

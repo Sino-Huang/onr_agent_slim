@@ -193,6 +193,12 @@ class Mission4AdaptivePlanner:
             self.beliefs=BayesianBeliefManager.for_object_search(self.mission_id,section["package"],self.data["belief"])
         snapshot=self.beliefs.ingest(section,now)
         lifecycle=plain(environment.get("maneuver_lifecycle"))
+        if (world.get("mission_mode") == "joint34" and lifecycle is not None
+                and "deadline_time" not in lifecycle.get("parameters", {})):
+            # Every M4 decision carries deadline_time; M3 decisions do not.
+            # A sibling inspection maneuver cannot continue or complete our
+            # previous search choice, or suppress a new worker request.
+            lifecycle = None
         found=self._resolved_targets(snapshot,section)
         unresolved=[tid for tid in section["objectives"] if tid not in found]
         deadline=float(section["deadline_s"])

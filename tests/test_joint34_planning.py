@@ -171,6 +171,13 @@ def test_revision_class_mapping() -> None:
         joint34_planning.joint34_revision_class(preemptive, ("mission4-gate:{\"deadline_s\": 45}",))
         == "preemptive"
     )
+    assert joint34_planning.joint34_revision_class(
+        preemptive, ("mission3-gate:adaptive_tour:navigate:1",)
+    ) == "preemptive"
+    preemptive["world_model_info"]["mission4"]["status"] = "completed"
+    assert joint34_planning.joint34_revision_class(
+        preemptive, ("mission3-gate:adaptive_tour:navigate:1",)
+    ) == "routine"
     # Fresh inconclusive evidence and a moved target are preemptive; a routine
     # adaptive-tour trigger is not.
     assert (
@@ -222,7 +229,7 @@ def test_materialize_solve_and_validate(
 ) -> None:
     environment = _environment(m3_ships=(m3_ship,), m4_deadline_s=m4_deadline_s)
     triggers = (
-        ("mission4-gate:{\"deadline_s\": %g}" % m4_deadline_s,) if m4_deadline_s <= 60.0 else ()
+        ("mission3-gate:adaptive_tour:navigate:1;mission4-gate:{\"deadline_s\": %g}" % m4_deadline_s,) if m4_deadline_s <= 60.0 else ()
     )
     domain_path, problem_path, schedule = joint34_planning.materialize_joint34_pddl(
         environment,
@@ -237,6 +244,19 @@ def test_materialize_solve_and_validate(
     assert sorted(deferred) == sorted(expected_deferred)
     # Served order and deferrals must be cost-minimal for the encoded problem.
     assert _plan_cost(schedule, tuple(order), tuple(deferred)) == _optimal_costs(schedule)[0]
+
+
+def test_navigation_grounding_changes_validated_mission_order(tmp_path) -> None:
+    environment = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=45.0)
+    domain, problem, _ = joint34_planning.materialize_joint34_pddl(
+        environment,
+        None,
+        {"action": "navigate", "parameters": {"x": 2400.0, "y": 0.0}},
+        tmp_path,
+        trigger_identities=("mission4-gate:request",),
+    )
+    plan = _solve(domain, problem, tmp_path / "solver")
+    assert joint34_planning.joint34_plan_order(plan) == (["m3", "m4"], [])
 
 
 def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
@@ -274,7 +294,8 @@ def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
     assert m4_entry["context"]["readiness"] == {"not_before": {"seconds": 0.0}}
     m3_done = transitions[("mission3-block", "joint34-complete")]
     assert m3_done["context"]["readiness"] == {
-        "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]}
+        "not_before": {"seconds": schedule["mission_end_time_s"]},
+        "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]},
     }
     # Both blocks complete on terminal maneuver feedback (maneuver-serving
     # decisions).
@@ -296,6 +317,13 @@ def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
     assert m3_first_transitions[("scheduling", "mission3-block")]["context"]["readiness"] == {
         "not_before": {"seconds": 0.0}
     }
+    budget_exit = next(
+        transition for transition in m3_first_chart["transitions"]
+        if transition["event"] == "mission3-budget-exhausted"
+    )
+    assert budget_exit["source"] == "mission3-block"
+    assert budget_exit["target"] == "mission4-block"
+    assert budget_exit["context"]["readiness"]["mission_time_at_or_after"] == {"seconds": 120.0}
 
     # A deferred mission's block is omitted.
     defer_plan = tmp_path / "defer_plan"
@@ -339,7 +367,8 @@ def test_mission3_report_block_completes_immediately(tmp_path) -> None:
     # The chart still terminates only at the run bound.
     bound = transitions[("mission4-block", "joint34-complete")]
     assert bound["context"]["readiness"] == {
-        "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]}
+        "not_before": {"seconds": schedule["mission_end_time_s"]},
+        "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]},
     }
 
 
@@ -357,6 +386,28 @@ def test_mission3_planner_tolerates_other_mission_maneuver() -> None:
     decision = Mission3AdaptivePlanner().decide(environment)
     assert decision is not None
     assert decision.action in {"navigate", "pursue"}
+
+
+def test_m4_request_replans_while_m3_maneuver_is_active() -> None:
+    environment = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=60.0)
+    planner = Mission4AdaptivePlanner("joint34-mission")
+    first = planner.decide(environment)
+    assert first is not None and first.action == "search_area"
+    environment["mission_time_seconds"] = 20.0
+    environment["maneuver_lifecycle"] = {
+        "command_id": "m3-navigation",
+        "action": "navigate",
+        "lifecycle": "active",
+        "parameters": {"x": 60.0, "y": 0.0, "z": -25.0},
+    }
+    search = environment["world_model_info"]["mission4"]
+    search["revision"] += 1
+    search["objectives"]["worker:3"] = {
+        **search["objectives"]["worker:1"], "description": "another red container"
+    }
+    decision = planner.decide(environment)
+    assert decision is not None
+    assert set(decision.target_ids) == {"worker:1", "worker:3"}
 
 
 def test_mode_guards_active_under_joint34() -> None:
@@ -403,3 +454,33 @@ def test_joint34_reports_unresolved_at_run_bound() -> None:
     environment["world_model_info"]["mission_mode"] = "mission4"
     standalone = Mission4AdaptivePlanner("joint34-mission").decide(environment)
     assert standalone is None or standalone.action != "report"
+
+
+def test_joint34_gates_use_snapshot_authorized_worker_revision() -> None:
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from test_mission2_closed_loop_gate import (
+        _CoordinationHarness, _Environment, _Hyper, _active_revision,
+    )
+    from onr.application.mission4_planning import decision_from_trigger
+
+    captured = _environment(m3_ships=((1, 60.0, 0.0),), m4_deadline_s=60.0)
+    unpublished = deepcopy(captured)
+    search = unpublished["world_model_info"]["mission4"]
+    search["revision"] = 2
+    search["objectives"] = {"worker:future": search["objectives"]["worker:1"]}
+
+    class AheadOfSnapshot(_Environment):
+        def planning_view(self):
+            return SimpleNamespace(environment_event=SimpleNamespace(payload=unpublished))
+
+    hyper = _Hyper()
+    coordinator = _CoordinationHarness(AheadOfSnapshot(captured), hyper)
+    coordinator.run(_active_revision(1))
+    decisions = [
+        decision
+        for invocation in hyper.invocations
+        for trigger in invocation.trigger_identities
+        if (decision := decision_from_trigger(trigger)) is not None
+    ]
+    assert [decision.target_ids for decision in decisions] == [("worker:1",)]

@@ -69,31 +69,31 @@ def _mission3_trigger_reasons(trigger_identities: Sequence[str]) -> frozenset[st
 def joint34_revision_class(
     environment: Mapping, trigger_identities: Sequence[str] = ()
 ) -> str:
-    """Map concatenated gate trigger identities to the revision's priority class."""
+    """Classify pending search deadlines and fresh inspection evidence."""
+    trigger_identities = tuple(
+        part
+        for trigger in trigger_identities
+        for part in re.split(r";(?=mission[34]-gate:)", trigger)
+    )
     now = float(environment["mission_time_seconds"])
     world = environment.get("world_model_info", {})
     reasons = _mission3_trigger_reasons(trigger_identities)
     if reasons & {"new_inconclusive_evidence", "target_moved"}:
         return "preemptive"
-    if any(
-        isinstance(trigger, str) and trigger.startswith("mission4-gate:")
-        for trigger in trigger_identities
+    # Request urgency survives revisions triggered by the other mission.
+    # Trigger identities describe what changed, not all work still pending.
+    section = world.get("mission4", {})
+    if (
+        isinstance(section, Mapping)
+        and section.get("status") == "active"
+        and section.get("objectives")
     ):
-        section = world.get("mission4", {})
-        if (
-            isinstance(section, Mapping)
-            and section.get("objectives")
-        ):
-            deadline = float(section.get("deadline_s", math.inf))
-            end = world.get("mission_end_time_s")
-            if isinstance(end, (int, float)):
-                # The M4 planner already clamps its deadline to the run
-                # bound; the scheduler's imminent-deadline test uses the
-                # same effective deadline, otherwise a ledger deadline past
-                # the bound never reads as imminent.
-                deadline = min(deadline, float(end))
-            if deadline - now <= JOINT34_PREEMPTIVE_DEADLINE_S:
-                return "preemptive"
+        deadline = float(section.get("deadline_s", math.inf))
+        end = world.get("mission_end_time_s")
+        if isinstance(end, (int, float)):
+            deadline = min(deadline, float(end))
+        if 0 < deadline - now <= JOINT34_PREEMPTIVE_DEADLINE_S:
+            return "preemptive"
     return "routine"
 
 
@@ -137,6 +137,8 @@ def _m4_site_position(
     if isinstance(decision, Mapping):
         parameters = decision.get("parameters")
         if isinstance(parameters, Mapping):
+            if {"x", "y"} <= set(parameters):
+                return float(parameters["x"]), float(parameters["y"])
             target = parameters.get("target")
             if isinstance(target, Mapping) and {"x", "y"} <= set(target):
                 return float(target["x"]), float(target["y"])
@@ -220,6 +222,7 @@ def build_joint34_grounding(
             decision.to_dict() if callable(to_dict4) else decision
         ),
         "mission4_deadline_s": section.get("deadline_s"),
+        "mission4_request_revision": section["revision"],
         "trigger_identities": [str(trigger) for trigger in trigger_identities],
     }
 
@@ -386,10 +389,38 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
     now = float(schedule["mission_time_seconds"])
     mission_end = float(schedule["mission_end_time_s"])
     blocks = [f"mission{mission[1]}-block" for mission in order]
+    scheduling_policy = (
+        f"This schedule covers Mission 4 worker revision {schedule['mission4_request_revision']}. "
+        "A newer accepted worker revision with an effective deadline within "
+        "60 seconds is preemptive: Hyper must replan the PDDL mission order, "
+        "including while the other mission's maneuver is active. The existing "
+        "reconciliation path applies that revision at a maneuver boundary. "
+        "An additional viewpoint for the same accepted worker revision is "
+        "within-mission progress, not a new priority. After a served maneuver "
+        "completes, continue the committed next mission block; do not restart "
+        "the served block solely for its next-view gate. Reconsider the mission "
+        "order for new urgent work or material route/feasibility invalidation, "
+        "not merely because the already-accounted-for deadline remains near. "
+        "The M3/M4 gate decisions own within-mission feasibility and search "
+        "completion. A non-report M4 gate means unresolved work; do not infer "
+        "completion by comparing individual attribute uncertainties with "
+        "found_threshold. Only the middle-tier report or terminal ledger "
+        "establishes completion."
+    )
     contexts: dict[str, object] = {
         "scheduling": {
-            "desired_outcome": "commit the VAL-validated joint mission order for this revision",
+            "desired_outcome": (
+                "The VAL-validated schedule is already committed. plan_order and "
+                "deferred are its final decisions, including an empty order; no "
+                "planning or commit is in progress. Execute served blocks, or "
+                "wait for fresh evidence if both missions were deferred. A "
+                "routine deferral must be replanned when an M4 request deadline "
+                "is within 60 seconds or M3 reports new_inconclusive_evidence "
+                "or target_moved: those triggers change the PDDL defer price "
+                "to preemptive, even when no physical route exists yet."
+            ),
             "revision_class": schedule["revision_class"],
+            "scheduling_policy": scheduling_policy,
             "plan_order": order,
             "deferred": deferred,
             "defer_cost_per_mission_millis": schedule["costs"]["defer-cost m3"],
@@ -406,6 +437,7 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
         decision3 = schedule["mission3_decision"]
         contexts["mission3-block"] = {
             "planner_item": decision3,
+            "scheduling_policy": scheduling_policy,
             "desired_outcome": (
                 decision3
                 if decision3 is not None
@@ -416,6 +448,7 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
         decision = schedule["mission4_decision"]
         contexts["mission4-block"] = {
             "planner_item": decision,
+            "scheduling_policy": scheduling_policy,
             "desired_outcome": (
                 decision
                 if decision is not None
@@ -428,7 +461,10 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
         if target == "joint34-complete":
             # The run terminates at the shared mission bound (the Mission 3
             # budget), however the schedule ordered the blocks.
-            readiness = {"mission_time_at_or_after": {"seconds": mission_end}}
+            readiness = {
+                "not_before": {"seconds": mission_end},
+                "mission_time_at_or_after": {"seconds": mission_end},
+            }
         elif source == "scheduling":
             # Immediate entry, but never through the Mission 1/2 deterministic
             # entry dispatch (no surveillance_mode on a joint34 block).
@@ -458,6 +494,21 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
                 },
             }
         )
+        if source == "mission3-block" and target == "mission4-block" and not _mission3_block_reports(schedule):
+            transitions.append(
+                {
+                    "event": "mission3-budget-exhausted",
+                    "source": source,
+                    "target": target,
+                    "context": {
+                        "readiness": {
+                            "not_before": {"seconds": mission_end},
+                            "mission_time_at_or_after": {"seconds": mission_end},
+                        },
+                        "desired_outcome": "issue the remaining Mission 4 result at the run bound",
+                    },
+                }
+            )
     return {
         "entry_state": "scheduling",
         "terminal_states": ["joint34-complete"],

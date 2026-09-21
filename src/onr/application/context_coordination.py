@@ -586,8 +586,12 @@ class ContextCoordination:
                     requested_hyper = bool(hyper.has_pending(mission_id))
                     gate_trigger: str | None = None
                     periodic_hyper: str | None = None
+                    # Joint34 gates and Hyper must assess the same captured
+                    # event; planning_view can publish a newer worker revision.
                     planning_environment = (
-                        environment.planning_view().environment_event.payload
+                        self._resolve_environment(snapshot)
+                        if initial_world.get("mission_mode") == "joint34"
+                        else environment.planning_view().environment_event.payload
                     )
                     if mission1_gate is not None:
                         reliability = self._resolve_belief(snapshot)
@@ -672,6 +676,11 @@ class ContextCoordination:
                             if gate_trigger is None
                             else gate_trigger + ";" + inspection_trigger
                         )
+                        inspection_decision = mission3_gate.last_decision
+                        if inspection_decision is not None and inspection_decision.action == "report":
+                            self._publish_mission3_report(
+                                mission_id, inspection_decision.reason, inspection_decision.report
+                            )
                     search_trigger = mission4_gate.assess(
                         planning_environment
                     )
@@ -1177,6 +1186,28 @@ class ContextCoordination:
                     f"planner-revision:{evidence.mission_id}:{evidence.plan_revision}"
                 ),
                 sequence=sequence,
+            ),
+        )
+
+    def _publish_mission3_report(
+        self, mission_id: str, reason: str, report: Mapping[str, object] | None
+    ) -> TransportEvent:
+        topic = "mission3-agent-reports"
+        event_id = f"mission3-agent-report:{mission_id}:{reason}"
+        existing = self._transport.latest_event(
+            topic, mission_id, event_kind="mission3-agent-report"
+        )
+        if existing is not None and existing.event_id == event_id:
+            return existing
+        return self._transport.publish_event(
+            topic,
+            TransportEvent(
+                schema_version=1,
+                event_id=event_id,
+                mission_id=mission_id,
+                sequence=self._transport.next_event_sequence(topic, mission_id),
+                event_kind="mission3-agent-report",
+                payload={"reason": reason, "report": {} if report is None else dict(report)},
             ),
         )
 

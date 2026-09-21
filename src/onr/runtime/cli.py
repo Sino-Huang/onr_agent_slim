@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import sys
-import traceback
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -579,7 +578,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     except Exception as exc:
-        traceback.print_exc()
         print(
             f"mission runtime failed during {stage} ({type(exc).__name__})",
             file=sys.stderr,
