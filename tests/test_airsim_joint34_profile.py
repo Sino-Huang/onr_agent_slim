@@ -456,6 +456,24 @@ class TestBundleDerivation:
         ]
         assert module.replan_times(windows) == [1.5, 40.5]
 
+    def test_committed_revision_counts_replan_activations(self) -> None:
+        module = _load_derivation_module()
+        # run.7jruzl shape: the initial schedule is not a replan window.
+        late = [1.5, 40.5, 97.0]
+        assert module.committed_revision_at(late, 0.0) == 1
+        assert module.committed_revision_at(late, 1.5) == 2
+        assert module.committed_revision_at(late, 40.0) == 2
+        assert module.committed_revision_at(late, 97.0) == 4
+        # run.BnfruM shape: the initial schedule IS published as a replan
+        # window at 0.0, so three windows commit revisions 1-3, not 2-4.
+        early = [0.0, 1.5, 52.0]
+        assert module.committed_revision_at(early, 0.0) == 1
+        assert module.committed_revision_at(early, 1.0) == 1
+        assert module.committed_revision_at(early, 1.5) == 2
+        assert module.committed_revision_at(early, 51.5) == 2
+        assert module.committed_revision_at(early, 52.0) == 3
+        assert module.committed_revision_at([], 5.0) == 1
+
     def test_block_at_follows_active_maneuver_intervals(self) -> None:
         module = _load_derivation_module()
         intervals = [

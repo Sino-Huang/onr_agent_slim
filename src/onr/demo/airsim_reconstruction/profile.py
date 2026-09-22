@@ -202,6 +202,7 @@ def _joint34_validate_metrics_factory(
         statuses = {
             task["target_id"]: task["status"]
             for task in metrics.get("mission4_answer_metrics", {}).get("tasks", [])
+            if task.get("target_id")
         }
         if statuses != expected_statuses:
             raise ValueError(

@@ -111,7 +111,7 @@ def replan_chapter(
     return (
         time_s,
         MID_CHAPTER_SECONDS,
-        f"Replan {revision - 1} commits order {order_label}",
+        f"Revision {revision} committed with order {order_label}",
         body,
     )
 
@@ -229,8 +229,8 @@ def derive_chapters(
             )
         )
     previous_order: str | None = None
-    for index, time_s in enumerate(replans):
-        revision = index + 2
+    for time_s in replans:
+        revision = committed_revision_at(list(replans), time_s)
         deadline = next(
             (
                 entry[2]
@@ -635,8 +635,13 @@ def plan_orders(run: Mapping[str, Any]) -> dict[int, str]:
 
 
 def committed_revision_at(replans: list[float], time_s: float) -> int:
-    """The plan revision committed at or before ``time_s``."""
-    return 1 + sum(1 for time in replans if time <= time_s)
+    """The plan revision committed at or before ``time_s``.
+
+    Revisions start at 1.  A replan activation at t=0.0 is the run's initial
+    schedule (revision 1, published as a window by some runs); every later
+    activation commits the next revision.
+    """
+    return 1 + sum(1 for time in replans if 0.0 < time <= time_s)
 
 
 def _deadline_label(deadline: Any) -> str:
@@ -1056,7 +1061,9 @@ def main(argv: list[str] | None = None) -> int:
     ship_ids = sorted(int(ship_id) for ship_id in inspection["selected_ship_ids"])
     evidence_count = len(inspection["evidence"])
     mission4_statuses = {
-        task["target_id"]: task["status"] for task in answer_metrics["tasks"]
+        task["target_id"]: task["status"]
+        for task in answer_metrics["tasks"]
+        if task.get("target_id")
     }
     latest_info = run["worlds"][max(run["worlds"])]["world_model_info"]
     objective_labels = {
