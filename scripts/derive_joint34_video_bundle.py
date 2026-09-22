@@ -150,6 +150,94 @@ def _load_run(run_root: Path) -> dict[str, Any]:
     }
 
 
+OVERLAY_LAYER_SPECS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "dock_aoi",
+        "aoi_polygons",
+        "world_model_info.mission4.package.areas[*].polygon",
+        "recorded package; drawn from the section that first publishes it",
+    ),
+    (
+        "keep_out_zones",
+        "koz_polygons",
+        "world_model_info.mission4.package.keep_out_zones",
+        "recorded package; drawn where the polygon intersects the pane window",
+    ),
+    (
+        "obstacles",
+        "obstacle_polygons",
+        "world_model_info.mission4.package.obstacles",
+        "recorded package; drawn where the polygon intersects the pane window",
+    ),
+    (
+        "target_potential_locations",
+        "targets",
+        "world_model_info.mission4.objectives with observations replayed "
+        "through onr.application.object_search_belief.ObjectSearchBeliefManager",
+        "best match per objective; observations gated on acquired_at_s <= "
+        "their section publication time",
+    ),
+    (
+        "selected_vessel_gps_fixes",
+        "ship_fixes",
+        "world_model_info.public_position_fixes",
+        "latest fix per selected vessel with sampled_at_s <= tick time, drawn "
+        "inside the pane window only",
+    ),
+    (
+        "planned_route",
+        "route_cells",
+        "runtime.env.current_planned_paths['navigation']",
+        "planner state at the tick, rendered engine-natively under the "
+        "overlay pass",
+    ),
+    ("legend", "legend", "static pane key", "always drawn"),
+)
+
+
+def overlay_layer_receipt(
+    per_tick: list[Mapping[str, Any]],
+    recorded_polygons: Mapping[str, int],
+    pane: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Per-layer draw record for the reconstruction receipt."""
+
+    receipt: dict[str, Any] = {"world_pane": dict(pane)}
+    for name, key, source, gating in OVERLAY_LAYER_SPECS:
+        ticks = [int(row["tick"]) for row in per_tick if row.get(key)]
+        entry: dict[str, Any] = {
+            "source_field": source,
+            "gating_rule": gating,
+            "total_draws": sum(int(row.get(key, 0)) for row in per_tick),
+            "frames_with_draws": len(ticks),
+            "first_tick": ticks[0] if ticks else None,
+            "last_tick": ticks[-1] if ticks else None,
+        }
+        if key in recorded_polygons:
+            entry["recorded_polygons"] = recorded_polygons[key]
+            if recorded_polygons[key] == 0:
+                entry["note"] = (
+                    "the recorded Mission 4 package carries no "
+                    f"{name.replace('_', ' ')}; the layer is honestly empty"
+                )
+        receipt[name] = entry
+    receipt["target_potential_locations"]["uncertainty_circles_total"] = sum(
+        int(row.get("uncertainty_circles", 0)) for row in per_tick
+    )
+    return receipt
+
+
+def recorded_polygon_counts(worlds: Mapping[float, Mapping[str, Any]]) -> dict[str, int]:
+    """Package polygon counts of the run's recorded Mission 4 package."""
+
+    latest = worlds[max(worlds)]["world_model_info"]["mission4"]["package"]
+    return {
+        "aoi_polygons": len(latest.get("areas") or {}),
+        "koz_polygons": len(latest.get("keep_out_zones") or []),
+        "obstacle_polygons": len(latest.get("obstacles") or []),
+    }
+
+
 def replan_times(inference_windows: list[Mapping[str, Any]]) -> list[float]:
     """Recorded replan-activation completion times, in order."""
     return sorted(
@@ -429,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import numpy as np
     from PIL import Image
+    from onr.demo.airsim_reconstruction import world_pane
     from onr_physical_runtime.runtime import PhysicalRuntime
     from onr_physical_runtime.scenario import ScenarioConfig
     from onr_physical_runtime.service import (
@@ -460,6 +549,14 @@ def main(argv: list[str] | None = None) -> int:
     if acceptance.get("status") != "PASS":
         raise ValueError("source run acceptance is not PASS")
 
+    # Deterministic replay of the agent-side public-evidence belief: the
+    # manager raises on any observation dated after its section, so a
+    # future-dated potential location cannot be drawn early.
+    snapshots = world_pane.belief_snapshots(
+        world_pane.mission4_sections(run["worlds"]),
+        str(run["result"]["mission_id"]),
+    )
+
     # Recorded worker request envelopes, republished at their recorded times.
     requests = [
         (float(entry["at_s"]), entry["result"]["request"])
@@ -487,7 +584,18 @@ def main(argv: list[str] | None = None) -> int:
 
     frames = output / "world-frames"
     frames.mkdir()
+    pane_summary = {
+        "tile_size": world_pane.TILE_SIZE,
+        "resolution_m": float(runtime.env.converter.multigrid_resolution),
+        "window_cells": int(runtime.env.partition_metadata.grid_width),
+        "frames": last_tick + 1,
+        "note": (
+            "partition-local window that follows the drone; a layer outside "
+            "the current window is not drawn"
+        ),
+    }
     metadata: list[dict[str, Any]] = []
+    overlay_counts: list[dict[str, Any]] = []
     pose_errors: list[float] = []
     try:
         for tick in range(last_tick + 1):
@@ -514,27 +622,48 @@ def main(argv: list[str] | None = None) -> int:
                         f"{heading} vs recorded={expected} heading="
                         f"{expected_heading}"
                     )
-            runtime.env.tile_size = 8
-            frame = Image.fromarray(
-                runtime.env.render(show_fog=True, fog_unseen_brightness=0.42)
-            ).convert("RGB")
-            frame.save(frames / f"{tick:04d}.png")
+            runtime.env.tile_size = world_pane.TILE_SIZE
+            # Newest world model published at or before this tick; the pane may
+            # only draw evidence the run had already published.
+            row = world_pane.section_at(run["worlds"], now)
             available = [t for t in run["worlds"] if t <= now - step]
             info = (
-                run["worlds"][max(available)]["world_model_info"]
-                if available
+                row["world_model_info"]
+                if row is not None
                 else {"visible_ship_ids": [], "event_report_checks": []}
             )
+            planned = list(
+                runtime.env.get_current_planned_paths().get("navigation", [])
+            )
+            frame = Image.fromarray(
+                runtime.env.render(
+                    show_fog=True,
+                    fog_unseen_brightness=0.42,
+                    path_visualize=bool(planned),
+                    planned_grid_path=planned,
+                )
+            ).convert("RGB")
+            geometry = world_pane.PaneGeometry.from_partition_metadata(
+                runtime.env.partition_metadata, world_pane.TILE_SIZE
+            )
+            counts = world_pane.draw_overlays(
+                frame, geometry, world_pane.pane_state(row, snapshots, now)
+            )
+            counts["route_cells"] = len(planned)
+            overlay_counts.append({"tick": tick, "mission_time": now, **counts})
+            frame.save(frames / f"{tick:04d}.png")
             grid = list(map(int, runtime.env.agents[0].state.pos))
             metadata.append(
                 {
                     "tick": tick,
                     "mission_time": now,
                     "position_ned": actual,
-                    "drone_pixel": [(grid[0] + 0.5) * 8, (grid[1] + 0.5) * 8],
+                    "drone_pixel": [(grid[0] + 0.5) * world_pane.TILE_SIZE,
+                                    (grid[1] + 0.5) * world_pane.TILE_SIZE],
                     "visible_ship_ids": info["visible_ship_ids"],
                     "checks": len(info["event_report_checks"]),
                     "sensor_time": max(available) if available else 0.0,
+                    "m4_coverage_pct": world_pane.dock_coverage_pct(row),
                 }
             )
             (output / "replay-state" / "search_requests").mkdir(parents=True, exist_ok=True)
@@ -660,6 +789,11 @@ def main(argv: list[str] | None = None) -> int:
         "live_model_calls": 0,
         "mission_mode": "joint34",
         "final_fsm_state": terminal_state,
+        "overlay_layers": overlay_layer_receipt(
+            overlay_counts,
+            recorded_polygon_counts(run["worlds"]),
+            pane_summary,
+        ),
         "scope": "Reconstructed from recorded accepted commands and worker requests; no new live mission.",
     }
     (output / "reconstruction-receipt.json").write_text(

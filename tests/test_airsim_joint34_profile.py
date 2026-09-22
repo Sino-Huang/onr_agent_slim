@@ -113,11 +113,13 @@ class TestProfileSeam:
             **fields,
             "visible_ships": "none",
             "checks": 0,
+            "dock_coverage": "45.8%",
         }
         rendered = [line.template.format(**status) for line in JOINT34.status_lines]
         assert rendered[0] == "Active block: SCHEDULING"
         assert rendered[1] == "M3 ships 7/15/16: 3/3 unresolved"
         assert rendered[2] == "M4 evidence tracks: red blue"
+        assert rendered[3] == "Dock coverage: 45.8%"
 
     def test_joint34_metrics_gate_rejects_wrong_outcomes(self) -> None:
         base = {

@@ -239,8 +239,9 @@ JOINT34 = MissionProfile(
         StatusLine(
             "M4 evidence tracks: {m4_track_list}", 814, 19
         ),
+        StatusLine("Dock coverage: {dock_coverage}", 850, 17),
     ),
-    unmapped_ids_y=846,
+    unmapped_ids_y=878,
     execution_title=(
         "Execute the joint schedule. Observe the reconstructed harbor."
     ),

@@ -509,6 +509,12 @@ def _fit_image(image: Image.Image, size: tuple[int, int]) -> Image.Image:
     return result
 
 
+def _coverage_label(value: Any) -> str:
+    """Format the recorded dock-coverage percentage for the right pane."""
+
+    return "n/a" if value is None else f"{float(value):.1f}%"
+
+
 def _metric_at_time(
     metrics: Mapping[str, Any],
     mission_time_s: float,
@@ -686,6 +692,7 @@ def compose_frame(
         )
         or "none",
         "checks": int(metadata_row.get("checks", 0)),
+        "dock_coverage": _coverage_label(metadata_row.get("m4_coverage_pct")),
     }
     if paused and frame_spec.chapter is not None:
         chapter = frame_spec.chapter
