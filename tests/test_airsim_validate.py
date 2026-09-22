@@ -24,6 +24,57 @@ from onr.demo.airsim_reconstruction.validate import (
     metric_availability_by_frame,
     storyboard_hold_windows,
 )
+from onr.demo.airsim_reconstruction.validate import (
+    _validate_metric_timing as validate_metric_timing,
+)
+
+
+def _signature(bits: tuple[int, ...], width: int = 2000) -> np.ndarray:
+    """A 1x2000 strip signature tiled from a short light/dark pattern."""
+
+    tiled = np.tile(np.asarray(bits, dtype=bool), width // len(bits) + 1)[:width]
+    return tiled[None, :]
+
+
+def test_metric_timing_accepts_states_that_render_the_same_strip() -> None:
+    # A run may re-enter a display state (scheduling before and after a mission
+    # block); those frames render the same strip up to codec noise, so
+    # classification must be against distinct strip contents.
+    rng = np.random.default_rng(7)
+    base = _signature((1, 0, 1, 0, 0, 1, 0, 0))
+    other = _signature((0, 1, 0, 1, 1, 0, 1, 0))
+    repeated = np.repeat(base[None, :, :], 5, axis=0).copy()
+    # The repeated state carries a few flipped pixels per frame, as VP8 does.
+    for frame in repeated:
+        frame[0, rng.choice(repeated.shape[2], 3, replace=False)] ^= True
+    signatures = np.concatenate(
+        [
+            np.repeat(base[None, :, :], 5, axis=0),
+            np.repeat(other[None, :, :], 5, axis=0),
+            repeated,
+        ]
+    )
+    availability = [0.0] * 5 + [10.0] * 5 + [20.0] * 5
+    report = validate_metric_timing(signatures, availability)
+    assert report["status"] == "passed"
+    assert report["distinct_strip_states"] == 2
+    assert report["repeated_strip_states"] == 1
+
+
+def test_metric_timing_still_rejects_a_frame_showing_another_strip() -> None:
+    base = _signature((1, 0, 1, 0, 0, 1, 0, 0))
+    other = _signature((0, 1, 0, 1, 1, 0, 1, 0))
+    signatures = np.concatenate(
+        [
+            np.repeat(base[None, :, :], 4, axis=0),
+            np.repeat(other[None, :, :], 4, axis=0),
+            np.repeat(base[None, :, :], 3, axis=0),
+            other[None, :, :],
+        ]
+    )
+    availability = [0.0] * 4 + [10.0] * 4 + [20.0] * 4
+    with pytest.raises(AssertionError, match="classified outside"):
+        validate_metric_timing(signatures, availability)
 
 
 def test_storyboard_hold_windows_use_half_open_output_frame_ranges() -> None:

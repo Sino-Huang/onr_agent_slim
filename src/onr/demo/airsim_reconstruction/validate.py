@@ -426,18 +426,40 @@ def _validate_metric_timing(
     centroids = np.asarray(
         [np.mean(signatures[state_ids == state], axis=0) >= 0.5 for state in range(len(starts))]
     )
+    # A recorded run may re-enter a display state (for example scheduling
+    # before and after a mission block), and those states render the same
+    # strip by definition. Group states whose strips agree within the codec's
+    # own noise tolerance and classify every frame against the distinct group
+    # contents, so a repeated state is never reported as misclassified while a
+    # frame that really shows another strip still fails.
+    distinct: list[NDArray[np.bool_]] = []
+    group_of_state: list[int] = []
+    for centroid in centroids:
+        for index, reference in enumerate(distinct):
+            mismatch = float(np.mean(centroid != reference))
+            if mismatch <= METRIC_SIGNATURE_MISMATCH_TOLERANCE:
+                group_of_state.append(index)
+                break
+        else:
+            group_of_state.append(len(distinct))
+            distinct.append(centroid)
+    groups = np.asarray(group_of_state)
+    distinct_centroids = np.asarray(distinct)
     distances = np.mean(
-        signatures[:, None, :, :] != centroids[None, :, :, :], axis=(2, 3)
+        signatures[:, None, :, :] != distinct_centroids[None, :, :, :], axis=(2, 3)
     )
     predicted = distances.argmin(axis=1)
-    own_distances = distances[np.arange(len(signatures)), state_ids]
-    wrong = np.flatnonzero(predicted != state_ids)
+    expected_groups = groups[state_ids]
+    own_distances = distances[np.arange(len(signatures)), expected_groups]
+    wrong = np.flatnonzero(predicted != expected_groups)
     wrong_details = [
         {
             "frame": int(index),
             "availability": float(values[index]),
             "expected_state": int(state_ids[index]),
-            "closest_state": int(predicted[index]),
+            "closest_state": int(
+                np.flatnonzero(groups == predicted[index])[0]
+            ),
             "expected_distance": round(float(own_distances[index]), 8),
             "closest_distance": round(float(distances[index, predicted[index]]), 8),
         }
@@ -477,6 +499,8 @@ def _validate_metric_timing(
         "status": "passed",
         "transition_count": len(starts) - 1,
         "transitions": transition_rows,
+        "distinct_strip_states": len(distinct),
+        "repeated_strip_states": int(len(starts) - len(distinct)),
         "final_availability_frame": final_start,
         "final_hold_frames": len(signatures) - final_start,
         "maximum_signature_mismatch": round(maximum_mismatch, 8),
