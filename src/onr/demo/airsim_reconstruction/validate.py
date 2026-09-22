@@ -39,7 +39,7 @@ from .render import (
     load_capture_ticks,
     load_storyboard,
 )
-from .profile import MISSION1, MissionProfile, load_profile
+from .profile import MISSION1, MissionProfile, load_profile, load_profile_from_file
 
 EXPECTED_FRAMES = 1966
 EXPECTED_DURATION_SECONDS = EXPECTED_FRAMES / FPS
@@ -812,6 +812,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--metrics", type=Path, default=DEFAULT_METRICS)
     parser.add_argument("--storyboard", type=Path, default=DEFAULT_STORYBOARD)
     parser.add_argument("--profile", default=MISSION1.name)
+    parser.add_argument(
+        "--profile-file",
+        type=Path,
+        help=(
+            "derived joint34 expectations document written by "
+            "scripts/derive_joint34_video_bundle.py"
+        ),
+    )
     return parser
 
 
@@ -821,6 +829,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     output_path = args.video.with_suffix(".validation.json")
     try:
+        profile = (
+            load_profile_from_file(args.profile_file)
+            if args.profile_file
+            else load_profile(args.profile)
+        )
         result = validate(
             args.video,
             args.receipt,
@@ -828,7 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.metadata,
             args.metrics,
             args.storyboard,
-            profile=load_profile(args.profile),
+            profile=profile,
         )
     except Exception as exc:  # noqa: BLE001 - serialize all CLI validation failures.
         result = {

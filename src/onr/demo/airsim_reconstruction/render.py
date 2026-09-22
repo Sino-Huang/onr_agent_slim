@@ -26,7 +26,7 @@ from .overlays import (
     compute_object_overlays,
     decode_instance_ids,
 )
-from .profile import MISSION1, MissionProfile, load_profile
+from .profile import MISSION1, MissionProfile, load_profile, load_profile_from_file
 
 WIDTH = 1920
 HEIGHT = 1080
@@ -964,6 +964,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticks", type=parse_tick_range, default=(0, 599))
     parser.add_argument("--min-pixels", type=int, default=100)
     parser.add_argument("--profile", default=MISSION1.name)
+    parser.add_argument(
+        "--profile-file",
+        type=Path,
+        help=(
+            "derived joint34 expectations document written by "
+            "scripts/derive_joint34_video_bundle.py"
+        ),
+    )
     return parser
 
 
@@ -971,6 +979,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the AirSim reconstruction renderer command-line interface."""
 
     args = _parser().parse_args(argv)
+    profile = (
+        load_profile_from_file(args.profile_file)
+        if args.profile_file
+        else load_profile(args.profile)
+    )
     result = render_video(
         args.capture_manifest,
         args.mapping,
@@ -984,7 +997,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ffmpeg_path=args.ffmpeg,
         bitrate_kbps=args.bitrate_kbps,
         min_pixels=args.min_pixels,
-        profile=load_profile(args.profile),
+        cpu_used=args.cpu_used,
+        profile=profile,
     )
     print(
         f"Rendered {result.frame_count} frames to {result.output_path} "

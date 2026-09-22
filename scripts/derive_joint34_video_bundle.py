@@ -14,89 +14,296 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 TICK_S = 0.5
+# Editorial pause lengths only; chapter times come from the recorded run.
+CHAPTER_SECONDS = 7
+MID_CHAPTER_SECONDS = 6
+FINAL_CHAPTER_SECONDS = 8
 
-# Chapters are pinned to recorded event times (see derive_storyboard); the
-# pause lengths are editorial only.
-CHAPTERS: tuple[tuple[float, int, str, str], ...] = (
-    (
-        0.0,
-        7,
-        "Two missions, one routine deferral",
-        "The operator selects harbor vessels 7, 15 and 16 for inspection and "
-        "asks for a red container in the dock. The VAL-validated schedule "
-        "(revision 1) defers both missions: the container deadline is 300 s "
-        "out and no ship has been observed, so the planner waits for "
-        "evidence instead of burning the budget.",
-    ),
-    (
-        1.5,
-        7,
-        "An urgent deadline reorders the plan",
-        "At t=1.0 s the worker tightens the Mission 4 deadline to 60 s. "
-        "That deadline is now inside the 60 s preemptive window, so the "
-        "supervisor activates a replan at t=1.5 s: revision 2 serves "
-        "Mission 4 first, then Mission 3. The drone flies the first "
-        "red-container view while the ships keep moving.",
-    ),
-    (
-        40.0,
-        6,
-        "A new objective and a longer deadline",
-        "At t=40 s the worker adds a blue container and extends the "
-        "deadline to 100 s. Both requests are accepted immediately as "
-        "worker revisions 3 and 4; the currently committed revision 2 "
-        "covers neither, so a replan is due.",
-    ),
-    (
-        40.5,
-        7,
-        "Replan activated while Mission 3 is in flight",
-        "Revision 3 is committed at t=40.5 s with order serve_m3 then "
-        "serve_m4. The in-flight ship-16 screening maneuver is cancelled "
-        "and re-targeted to ship 7 - the third replan activation of the "
-        "run reverses the mission order mid-flight.",
-    ),
-    (
-        80.0,
-        6,
-        "A truck request without a fixture target",
-        "At t=80 s the worker asks for a truck in the dock (worker "
-        "revision 5). No truck exists in the recorded fixture, so the "
-        "objective can never resolve; the search continues honestly "
-        "without inventing a detection.",
-    ),
-    (
-        97.0,
-        7,
-        "Revision 4 returns to Mission 4",
-        "The Mission 4 view maneuver completes at t=97 s. The supervisor "
-        "commits revision 4 (Mission 4 first) and the drone takes another "
-        "dock view; it fails at t=100.5 s and the final ship-15 screening "
-        "maneuver takes over.",
-    ),
-    (
-        120.0,
-        8,
+
+def objective_phrase(objective: Mapping[str, Any]) -> str:
+    """Public description of one Mission 4 objective."""
+
+    attributes = objective.get("attributes") or {}
+    described = " ".join(
+        str(attributes[key]) for key in ("color", "type") if attributes.get(key)
+    )
+    return described or str(objective.get("description") or "an objective")
+
+
+def worker_request_chapter(
+    at_s: float,
+    request: Mapping[str, Any],
+    committed_revision: int,
+    order_label: str,
+) -> tuple[float, int, str, str]:
+    """One chapter for a recorded worker request acceptance."""
+
+    operation = str(request.get("operation"))
+    revision = int(request.get("base_revision", 0)) + 1
+    if operation == "deadline":
+        deadline = float(request["deadline_s"])
+        title = f"Worker sets the Mission 4 deadline to {deadline:g} s"
+        body = (
+            f"At t={at_s:g} s the worker revises the container deadline to "
+            f"{deadline:g} s (worker revision {revision}). The committed plan "
+            f"revision {committed_revision} ({order_label}) was scheduled "
+            "against the earlier deadline, so the supervisor re-scores it."
+        )
+    elif operation == "add":
+        objective = request.get("objective") or {}
+        title = f"A new objective: {objective_phrase(objective)}"
+        body = (
+            f"At t={at_s:g} s the worker adds {objective_phrase(objective)} in "
+            f"{'/'.join(objective.get('area_ids') or [])} as worker revision "
+            f"{revision}. Accepted immediately; the committed plan revision "
+            f"{committed_revision} ({order_label}) covers neither it nor its "
+            "deadline, so a replan is due."
+        )
+    elif operation in {"remove", "cancel"}:
+        title = "The worker drops an objective"
+        body = (
+            f"At t={at_s:g} s the worker {operation}s "
+            f"{request.get('target_id', 'an objective')} as worker revision "
+            f"{revision}; the committed plan revision {committed_revision} "
+            f"({order_label}) is re-scored against the reduced objective set."
+        )
+    else:
+        title = f"Worker {operation} request"
+        body = (
+            f"At t={at_s:g} s the worker publishes revision {revision} while "
+            f"plan revision {committed_revision} ({order_label}) is committed."
+        )
+    return (at_s, MID_CHAPTER_SECONDS, title, body)
+
+
+def replan_chapter(
+    time_s: float,
+    revision: int,
+    order_label: str,
+    previous_order: str | None,
+    worker_revision: int,
+    deadline_s: Any,
+) -> tuple[float, int, str, str]:
+    """One chapter for a recorded replan activation."""
+
+    deadline_text = (
+        "no Mission 4 deadline" if deadline_s is None else f"a {float(deadline_s):g} s deadline"
+    )
+    reversal = (
+        ""
+        if previous_order is None or previous_order == order_label
+        else (
+            f" The order changes from {previous_order} to {order_label}, "
+            "reversing which mission is served first."
+        )
+    )
+    body = (
+        f"Revision {revision} is committed at t={time_s:g} s with order "
+        f"{order_label}. The worker revision in force is {worker_revision} "
+        f"with {deadline_text}.{reversal} The in-flight maneuver is "
+        "re-evaluated against the new order while the drone keeps flying."
+    )
+    return (
+        time_s,
+        MID_CHAPTER_SECONDS,
+        f"Replan {revision - 1} commits order {order_label}",
+        body,
+    )
+
+
+def maneuver_chapter(
+    time_s: float, maneuver_id: str, lifecycle: str, reason: Any
+) -> tuple[float, int, str, str]:
+    """One chapter for a recorded dock-view maneuver that ended short."""
+
+    block = "Mission 4 dock view" if maneuver_id.startswith("m4") else "Mission 3 screening"
+    outcome = {"failed": "ends without a result", "cancelled": "is cancelled"}.get(
+        lifecycle, lifecycle
+    )
+    reason_text = "" if reason is None else f" Reason: {reason}."
+    return (
+        time_s,
+        MID_CHAPTER_SECONDS,
+        f"A {block} {outcome}",
+        (
+            f"At t={time_s:g} s the {block} {outcome} ({maneuver_id})."
+            f"{reason_text} The recorded run keeps its outcome: no detection, "
+            "no inspection evidence, and no answer is invented for it."
+        ),
+    )
+
+
+def closing_chapter(
+    mission_end_s: float,
+    terminal_state: str,
+    ship_ids: Sequence[int],
+    inspection_evidence_count: int,
+    mission4_statuses: Mapping[str, str],
+    mission4_labels: Mapping[str, str],
+    replans: Sequence[float],
+) -> tuple[float, int, str, str]:
+    """The final chapter at the recorded mission budget."""
+
+    status_text = ", ".join(
+        f"{mission4_labels.get(target, target)} {status}"
+        for target, status in sorted(mission4_statuses.items())
+    ) or "no objectives"
+    vessel_text = (
+        f"Vessels {'/'.join(str(ship) for ship in ship_ids)} end unresolved "
+        "with no visual inspection evidence"
+        if not inspection_evidence_count
+        else (
+            f"Vessels {'/'.join(str(ship) for ship in ship_ids)} leave "
+            f"{inspection_evidence_count} inspection evidence record(s)"
+        )
+    )
+    body = (
+        f"The {mission_end_s:g} s budget ends the run in {terminal_state} "
+        f"after {len(replans)} replan activation(s). {vessel_text}. "
+        f"Mission 4: {status_text}. Every reported outcome stays as recorded."
+    )
+    return (
+        mission_end_s,
+        FINAL_CHAPTER_SECONDS,
         "Final report at the mission budget",
-        "The 120 s Mission 3 budget ends the run in joint34-complete. All "
-        "three selected vessels remain unresolved with no visual "
-        "inspection evidence. Mission 4 found the blue container; the red "
-        "container and the truck remain incomplete, and no location, "
-        "direction, or type question was answered.",
-    ),
-)
+        body,
+    )
 
-ENDING = (
-    "Joint34 run run.7jruzl: joint34-complete at 120.0 s. Four plan "
-    "revisions, three replan activations (t=1.5, 40.5, 97.0 s). Vessels "
-    "7, 15 and 16 end unresolved with no inspection evidence. Mission 4: "
-    "blue container found; red container and truck incomplete; all "
-    "answers unanswered."
-)
+
+def derive_chapters(
+    *,
+    mission_end_s: float,
+    terminal_state: str,
+    ship_ids: Sequence[int],
+    inspection_evidence_count: int,
+    mission4_statuses: Mapping[str, str],
+    mission4_labels: Mapping[str, str],
+    request_default_objective: str,
+    requests: Sequence[tuple[float, Mapping[str, Any]]],
+    replans: Sequence[float],
+    orders: Mapping[int, str],
+    worker_revisions: Sequence[tuple[float, int, Any]],
+    maneuver_outcomes: Sequence[tuple[float, str, str, Any]],
+) -> tuple[tuple[float, int, str, str], ...]:
+    """Editorial chapters timed to this run's recorded events.
+
+    Every time is a recorded event (a worker acceptance, a replan completion
+    time, a maneuver outcome, or the mission budget) so the storyboard pauses
+    land exactly where the run made a decision.
+    """
+
+    def committed_at(time_s: float) -> int:
+        return committed_revision_at(list(replans), time_s)
+
+    def order_at(time_s: float) -> str:
+        return orders.get(committed_at(time_s), "none")
+
+    chapters: list[tuple[float, int, str, str]] = [
+        (
+            0.0,
+            CHAPTER_SECONDS,
+            "Two missions, one schedule",
+            (
+                f"The operator selects harbor vessels "
+                f"{'/'.join(str(ship) for ship in ship_ids)} for inspection "
+                f"and asks the worker for {request_default_objective}. The "
+                f"first VAL-validated schedule (revision 1) is "
+                f"{orders.get(1, 'none')}: the search objectives are not yet "
+                "imminent, so the planner waits for evidence instead of "
+                "burning the budget."
+            ),
+        )
+    ]
+    for at_s, request in requests:
+        chapters.append(
+            worker_request_chapter(
+                at_s,
+                request,
+                committed_at(at_s),
+                order_at(at_s),
+            )
+        )
+    previous_order: str | None = None
+    for index, time_s in enumerate(replans):
+        revision = index + 2
+        deadline = next(
+            (
+                entry[2]
+                for entry in reversed(worker_revisions)
+                if entry[0] <= time_s
+            ),
+            None,
+        )
+        worker_revision = next(
+            (entry[1] for entry in reversed(worker_revisions) if entry[0] <= time_s),
+            0,
+        )
+        label = orders.get(revision, "none")
+        chapters.append(
+            replan_chapter(
+                time_s,
+                revision,
+                label,
+                previous_order,
+                worker_revision,
+                deadline,
+            )
+        )
+        previous_order = label
+    for time_s, maneuver_id, lifecycle, reason in maneuver_outcomes:
+        chapters.append(maneuver_chapter(time_s, maneuver_id, lifecycle, reason))
+    chapters.append(
+        closing_chapter(
+            mission_end_s,
+            terminal_state,
+            ship_ids,
+            inspection_evidence_count,
+            mission4_statuses,
+            mission4_labels,
+            replans,
+        )
+    )
+    unique: dict[float, tuple[float, int, str, str]] = {}
+    for chapter in chapters:
+        unique.setdefault(chapter[0], chapter)
+    return tuple(unique[time] for time in sorted(unique))
+
+
+def derive_ending(
+    *,
+    run_label: str,
+    mission_end_s: float,
+    terminal_state: str,
+    ship_ids: Sequence[int],
+    inspection_evidence_count: int,
+    plan_revision_count: int,
+    replans: Sequence[float],
+    mission4_statuses: Mapping[str, str],
+    mission4_labels: Mapping[str, str],
+) -> str:
+    """Closing copy for this run's recorded outcome."""
+
+    status_text = "; ".join(
+        f"{mission4_labels.get(target, target)} {status}"
+        for target, status in sorted(mission4_statuses.items())
+    ) or "no objectives"
+    vessel_text = (
+        "no visual inspection evidence"
+        if not inspection_evidence_count
+        else f"{inspection_evidence_count} inspection evidence record(s)"
+    )
+    return (
+        f"Joint34 run {run_label}: {terminal_state} at {mission_end_s:g} s. "
+        f"{plan_revision_count} plan revisions, {len(replans)} replan "
+        f"activation(s) (t={', '.join(f'{time:g}' for time in replans)} s). "
+        f"Vessels {'/'.join(str(ship) for ship in ship_ids)}: {vessel_text}. "
+        f"Mission 4: {status_text}."
+    )
 
 
 def _records(path: Path) -> list[dict[str, Any]]:
@@ -172,24 +379,33 @@ OVERLAY_LAYER_SPECS: tuple[tuple[str, str, str, str], ...] = (
     (
         "target_potential_locations",
         "targets",
-        "world_model_info.mission4.objectives with observations replayed "
-        "through onr.application.object_search_belief.ObjectSearchBeliefManager",
-        "best match per objective; observations gated on acquired_at_s <= "
-        "their section publication time",
+        (
+            "world_model_info.mission4.objectives with observations replayed "
+            "through "
+            "onr.application.object_search_belief.ObjectSearchBeliefManager"
+        ),
+        (
+            "best match per objective; observations gated on acquired_at_s <= "
+            "their section publication time"
+        ),
     ),
     (
         "selected_vessel_gps_fixes",
         "ship_fixes",
         "world_model_info.public_position_fixes",
-        "latest fix per selected vessel with sampled_at_s <= tick time, drawn "
-        "inside the pane window only",
+        (
+            "latest fix per selected vessel with sampled_at_s <= tick time, "
+            "drawn inside the pane window only"
+        ),
     ),
     (
         "planned_route",
         "route_cells",
         "runtime.env.current_planned_paths['navigation']",
-        "planner state at the tick, rendered engine-natively under the "
-        "overlay pass",
+        (
+            "planner state at the tick, rendered engine-natively under the "
+            "overlay pass"
+        ),
     ),
     ("legend", "legend", "static pane key", "always drawn"),
 )
@@ -238,6 +454,101 @@ def recorded_polygon_counts(worlds: Mapping[float, Mapping[str, Any]]) -> dict[s
     }
 
 
+def worker_revisions(
+    run: Mapping[str, Any], package_budget: Any
+) -> list[tuple[float, int, Any]]:
+    """(acceptance time, worker revision, deadline in force) per recorded request."""
+
+    revisions: list[tuple[float, int, Any]] = []
+    deadline = package_budget
+    for entry in run["worker"]["history"]:
+        result = entry.get("result") or {}
+        if result.get("kind") != "request":
+            continue
+        request = result["request"]
+        if request.get("operation") == "deadline":
+            deadline = float(request["deadline_s"])
+        revisions.append(
+            (
+                float(entry["at_s"]),
+                int(request["base_revision"]) + 1,
+                deadline,
+            )
+        )
+    return revisions
+
+
+def dock_view_outcomes(run: Mapping[str, Any]) -> list[tuple[float, str, str, Any]]:
+    """The first recorded Mission 4 dock view that ended failed or cancelled."""
+
+    outcomes: list[tuple[float, str, str, Any]] = []
+    for event in run["maneuvers"]:
+        payload = event["payload"]
+        maneuver_id = str(payload.get("maneuver_id") or "")
+        if not maneuver_id.startswith("m4"):
+            continue
+        if payload.get("lifecycle") not in {"failed", "cancelled"}:
+            continue
+        outcomes.append(
+            (
+                float(payload["payload"]["mission_time_seconds"]),
+                maneuver_id,
+                str(payload["lifecycle"]),
+                payload["payload"].get("reason"),
+            )
+        )
+    return sorted(outcomes, key=lambda row: row[0])[:1]
+
+
+def video_expectations(
+    story_path: Path,
+    metadata: Sequence[Mapping[str, Any]],
+    tick_range: tuple[int, int],
+) -> dict[str, Any]:
+    """Profile expectations derived from this bundle's own storyboard.
+
+    Frames, hold windows and pause times are computed with the renderer's own
+    storyboard builder over the bundle's metadata and chapters, so a second
+    joint34 run needs no cloned constants; the validator still compares the
+    decoded video against these numbers.
+    """
+
+    from onr.demo.airsim_reconstruction.render import build_storyboard, load_storyboard
+    from onr.demo.airsim_reconstruction.validate import storyboard_hold_windows
+
+    chapters, _ = load_storyboard(story_path)
+    storyboard = build_storyboard(
+        metadata, chapters, range(tick_range[0], tick_range[1] + 1), tick_range
+    )
+    windows = storyboard_hold_windows(storyboard)
+    return {
+        "expected_frames": len(storyboard),
+        "expected_window_counts": [window.frame_count for window in windows],
+        "expected_pause_times": [
+            window.mission_time_s for window in windows if window.kind == "pause"
+        ],
+    }
+
+
+def receipt_final_state(
+    terminal_state: str,
+    unresolved_ships: int,
+    ship_count: int,
+    mission4_statuses: Mapping[str, str],
+    objective_labels: Mapping[str, str],
+) -> str:
+    """One-line terminal outcome string carried by the receipt and the profile."""
+
+    statuses = ", ".join(
+        f"{objective_labels.get(target, target)} {status}"
+        for target, status in sorted(mission4_statuses.items())
+    )
+    return (
+        f"{terminal_state}; M3 unresolved {unresolved_ships}/{ship_count}; "
+        f"M4 {statuses}"
+    )
+
+
 def replan_times(inference_windows: list[Mapping[str, Any]]) -> list[float]:
     """Recorded replan-activation completion times, in order."""
     return sorted(
@@ -275,9 +586,12 @@ def maneuver_blocks(maneuvers: list[Mapping[str, Any]]) -> list[tuple[float, flo
 
 
 def block_at(
-    intervals: list[tuple[float, float, str]], terminal_state: str, time_s: float
+    intervals: list[tuple[float, float, str]],
+    terminal_state: str,
+    time_s: float,
+    mission_end_s: float,
 ) -> str:
-    if time_s >= 120.0:
+    if time_s >= mission_end_s:
         return terminal_state
     for started, ended, block in intervals:
         if started <= time_s < ended:
@@ -338,6 +652,8 @@ def display_state(
     orders: Mapping[int, str],
     terminal_state: str,
     time_s: float,
+    *,
+    mission_end_s: float,
 ) -> dict[str, Any]:
     """Evidence available at or before ``time_s``, never later evidence."""
     available = [t for t in worlds if t <= time_s]
@@ -407,7 +723,9 @@ def display_state(
             ) or objective.get("description", "objective")
     return {
         "worker_request_label": request_label,
-        "mission_block": block_at(intervals, terminal_state, time_s),
+        "mission_block": block_at(
+            intervals, terminal_state, time_s, mission_end_s
+        ),
         "plan_revision": revision,
         "plan_order": orders[revision],
         "replan_count": sum(1 for time in replans if time <= time_s),
@@ -426,6 +744,8 @@ def build_timeline(
     orders: Mapping[int, str],
     terminal_state: str,
     final_state: Mapping[str, Any],
+    *,
+    mission_end_s: float,
 ) -> list[dict[str, Any]]:
     """Collapse per-observation display states into change-point rows.
 
@@ -447,7 +767,15 @@ def build_timeline(
     timeline: list[dict[str, Any]] = []
     last_key = None
     for time_s in sorted(worlds):
-        state = display_state(worlds, intervals, replans, orders, terminal_state, time_s)
+        state = display_state(
+            worlds,
+            intervals,
+            replans,
+            orders,
+            terminal_state,
+            time_s,
+            mission_end_s=mission_end_s,
+        )
         key = tuple(state[field] for field in display_fields)
         if key == last_key:
             continue
@@ -461,22 +789,24 @@ def build_timeline(
         last_key = key
     timeline.append(
         {
-            "mission_time_seconds": 120.0,
-            "evidence_available_at": 120.0,
+            "mission_time_seconds": mission_end_s,
+            "evidence_available_at": mission_end_s,
             **final_state,
         }
     )
     return timeline
 
 
-def derive_storyboard() -> dict[str, Any]:
+def derive_storyboard(
+    chapters: Sequence[tuple[float, int, str, str]],
+    ending: str,
+    *,
+    source_run: str,
+    scope: str,
+) -> dict[str, Any]:
     return {
-        "source_run": None,  # filled by main()
-        "scope": (
-            "Offline reconstruction of the accepted joint34 live run "
-            "run.7jruzl; recorded LLM/tool decisions replayed exactly, no "
-            "new live mission, model call, or AirSim recording."
-        ),
+        "source_run": source_run,
+        "scope": scope,
         "reasoning_chapters": [
             {
                 "time": time_s,
@@ -485,9 +815,9 @@ def derive_storyboard() -> dict[str, Any]:
                 "title": title,
                 "body": body,
             }
-            for time_s, seconds, title, body in CHAPTERS
+            for time_s, seconds, title, body in chapters
         ],
-        "ending": ENDING,
+        "ending": ending,
     }
 
 
@@ -515,7 +845,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
-    import numpy as np
     from PIL import Image
     from onr.demo.airsim_reconstruction import world_pane
     from onr_physical_runtime.runtime import PhysicalRuntime
@@ -536,12 +865,14 @@ def main(argv: list[str] | None = None) -> int:
 
     duration = float(run["result"]["simulated_duration_seconds"])
     terminal_state = str(run["result"]["final_fsm_state"])
-    if duration != 120.0 or terminal_state != "joint34-complete":
+    if terminal_state != "joint34-complete":
         raise ValueError(f"unexpected source run terminal state: {terminal_state}")
+    if duration <= 0.0:
+        raise ValueError(f"source run has no simulated duration: {duration}")
     last_tick = round(duration / TICK_S)
 
     replans = replan_times(run["result"]["inference_windows"])
-    if replans != [1.5, 40.5, 97.0]:
+    if not replans or sorted(set(replans)) != replans:
         raise ValueError(f"unexpected replan activation times: {replans}")
     intervals = maneuver_blocks(run["maneuvers"])
     orders = plan_orders(run)
@@ -721,31 +1052,47 @@ def main(argv: list[str] | None = None) -> int:
     answer_metrics = json.loads(
         (run_root / "mission4-answer-metrics.json").read_text(encoding="utf-8")
     )
+    inspection = acceptance["mission3_evidence"]["inspection"]
+    ship_ids = sorted(int(ship_id) for ship_id in inspection["selected_ship_ids"])
+    evidence_count = len(inspection["evidence"])
+    mission4_statuses = {
+        task["target_id"]: task["status"] for task in answer_metrics["tasks"]
+    }
+    latest_info = run["worlds"][max(run["worlds"])]["world_model_info"]
+    objective_labels = {
+        str(target): objective_phrase(objective)
+        for target, objective in (
+            latest_info["mission4"].get("objectives") or {}
+        ).items()
+    }
     final_state = display_state(
-        run["worlds"], intervals, replans, orders, terminal_state, 119.5
+        run["worlds"],
+        intervals,
+        replans,
+        orders,
+        terminal_state,
+        duration - step,
+        mission_end_s=duration,
     )
     final_state.update(
         {
             "mission_block": terminal_state,
-            "m4_target_status": {
-                task["target_id"]: task["status"] for task in answer_metrics["tasks"]
-            },
+            "m4_target_status": mission4_statuses,
             "m4_answer_metrics": answer_metrics["aggregate"],
             "m3_terminal_outcome": {
-                "selected_ship_ids": sorted(
-                    int(ship_id)
-                    for ship_id in acceptance["mission3_evidence"]["inspection"][
-                        "selected_ship_ids"
-                    ]
-                ),
-                "inspection_evidence_count": len(
-                    acceptance["mission3_evidence"]["inspection"]["evidence"]
-                ),
+                "selected_ship_ids": ship_ids,
+                "inspection_evidence_count": evidence_count,
             },
         }
     )
     timeline = build_timeline(
-        run["worlds"], intervals, replans, orders, terminal_state, final_state
+        run["worlds"],
+        intervals,
+        replans,
+        orders,
+        terminal_state,
+        final_state,
+        mission_end_s=duration,
     )
     metrics = {
         "source_run": str(run_root),
@@ -772,10 +1119,76 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
     )
 
-    story = derive_storyboard()
-    story["source_run"] = str(run_root)
+    chapters = derive_chapters(
+        mission_end_s=duration,
+        terminal_state=terminal_state,
+        ship_ids=ship_ids,
+        inspection_evidence_count=evidence_count,
+        mission4_statuses=mission4_statuses,
+        mission4_labels=objective_labels,
+        request_default_objective=objective_phrase(
+            requests[0][1].get("objective") or {}
+        ),
+        requests=requests,
+        replans=replans,
+        orders=orders,
+        worker_revisions=worker_revisions(
+            run,
+            (latest_info["mission4"].get("package") or {}).get(
+                "mission_time_budget_s"
+            ),
+        ),
+        maneuver_outcomes=dock_view_outcomes(run),
+    )
+    ending = derive_ending(
+        run_label=run_root.name,
+        mission_end_s=duration,
+        terminal_state=terminal_state,
+        ship_ids=ship_ids,
+        inspection_evidence_count=evidence_count,
+        plan_revision_count=len(run["result"]["plan_revisions"]),
+        replans=replans,
+        mission4_statuses=mission4_statuses,
+        mission4_labels=objective_labels,
+    )
+    story = derive_storyboard(
+        chapters,
+        ending,
+        source_run=str(run_root),
+        scope=(
+            "Offline reconstruction of the accepted joint34 live run "
+            f"{run_root.name}; recorded LLM/tool decisions replayed exactly, "
+            "no new live mission, model call, or AirSim recording."
+        ),
+    )
     (output / "story.json").write_text(
         json.dumps(story, indent=2) + "\n", encoding="utf-8"
+    )
+
+    terminal_receipt_state = receipt_final_state(
+        terminal_state,
+        int(final_state["m3_unresolved"]),
+        len(ship_ids),
+        mission4_statuses,
+        objective_labels,
+    )
+    profile_document = {
+        "profile": "joint34",
+        "name": f"joint34-{run_root.name}",
+        "source_run": str(run_root),
+        "tick_range": [0, last_tick],
+        "final_fsm_state": terminal_state,
+        "simulated_duration_seconds": duration,
+        "plan_revisions": list(run["result"]["plan_revisions"]),
+        "replan_activation_times_s": replans,
+        "mission4_statuses": mission4_statuses,
+        "receipt_final_state": terminal_receipt_state,
+        **video_expectations(
+            output / "story.json", metadata, (0, last_tick)
+        ),
+    }
+    (output / "video-profile.json").write_text(
+        json.dumps(profile_document, indent=2) + "\n", encoding="utf-8"
     )
 
     receipt = {

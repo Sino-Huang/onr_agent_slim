@@ -13,8 +13,12 @@ from PIL import Image, ImageDraw
 
 from onr.demo.airsim_reconstruction.profile import (
     JOINT34,
+    JOINT34_RUN_FACTS,
     MISSION1,
+    joint34_profile,
+    joint34_profile_from_document,
     load_profile,
+    load_profile_from_file,
 )
 from onr.demo.airsim_reconstruction.render import (
     FrameSpec,
@@ -323,6 +327,124 @@ class TestJoint34StoryboardAndTiming:
             _metric_at_time(metrics, -1.0, JOINT34.availability_field)
 
 
+class TestDerivedJoint34Profile:
+    """The joint34 profile seam for a second, run-derived bundle."""
+
+    def _document(self) -> dict[str, Any]:
+        return {
+            "profile": "joint34",
+            "name": "joint34-derived",
+            "source_run": "/runs/run.example",
+            "tick_range": [0, 240],
+            "final_fsm_state": "joint34-complete",
+            "simulated_duration_seconds": 120.0,
+            "plan_revisions": [1, 2, 3],
+            "replan_activation_times_s": [2.0, 41.0],
+            "mission4_statuses": {
+                "worker:1": "found",
+                "worker:3": "found",
+                "worker:5": "incomplete",
+            },
+            "receipt_final_state": (
+                "joint34-complete; M3 unresolved 3/3; M4 red container found, "
+                "blue container found, truck incomplete"
+            ),
+            "expected_frames": 1200,
+            "expected_window_counts": [100],
+            "expected_pause_times": [0.0],
+        }
+
+    def test_factory_mirrors_the_built_in_profile_for_the_recorded_run(self) -> None:
+        profile = joint34_profile(
+            name="joint34-mirror",
+            **JOINT34_RUN_FACTS,
+            expected_frames=JOINT34.expected_frames,
+            expected_window_counts=JOINT34.expected_window_counts,
+            expected_pause_times=JOINT34.expected_pause_times,
+        )
+        assert profile.expected_frames == JOINT34.expected_frames == 1408
+        assert profile.tick_range == JOINT34.tick_range == (0, 240)
+        assert profile.ending_title == JOINT34.ending_title
+        assert profile.retention_receipt_fields == JOINT34.retention_receipt_fields
+        assert [line.template for line in profile.strip_lines] == [
+            line.template for line in JOINT34.strip_lines
+        ]
+        assert [line.template for line in profile.status_lines] == [
+            line.template for line in JOINT34.status_lines
+        ]
+
+    def test_document_profile_pins_its_own_run_facts(self) -> None:
+        profile = joint34_profile_from_document(self._document())
+        assert profile.name == "joint34-derived"
+        assert profile.expected_frames == 1200
+        assert profile.expected_pause_times == (0.0,)
+        assert profile.tick_range == (0, 240)
+        assert profile.ending_title == "joint34-complete | outcomes remain honest"
+        assert profile.receipt_fields({}) == {
+            "final_state": self._document()["receipt_final_state"]
+        }
+        metrics = {
+            "final_fsm_state": "joint34-complete",
+            "simulated_duration_seconds": 120.0,
+            "plan_revisions": [1, 2, 3],
+            "replan_activation_times_s": [2.0, 41.0],
+            "timeline": [{"mission_time_seconds": 0.0}],
+            "mission4_answer_metrics": {
+                "tasks": [
+                    {"target_id": "worker:1", "status": "found"},
+                    {"target_id": "worker:3", "status": "found"},
+                    {"target_id": "worker:5", "status": "incomplete"},
+                ]
+            },
+        }
+        profile.validate_metrics(metrics)
+        wrong = json.loads(json.dumps(metrics))
+        wrong["replan_activation_times_s"] = [2.0]
+        with pytest.raises(ValueError, match="replan"):
+            profile.validate_metrics(wrong)
+        wrong = json.loads(json.dumps(metrics))
+        wrong["mission4_answer_metrics"]["tasks"][0]["status"] = "incomplete"
+        with pytest.raises(ValueError, match="Mission 4 terminal statuses"):
+            profile.validate_metrics(wrong)
+
+    def test_document_must_carry_every_expectation(self) -> None:
+        document = self._document()
+        del document["expected_frames"]
+        with pytest.raises(ValueError, match="expected_frames"):
+            joint34_profile_from_document(document)
+        document = self._document()
+        document["mission4_statuses"] = []
+        with pytest.raises(TypeError, match="mission4_statuses"):
+            joint34_profile_from_document(document)
+
+    def test_profile_file_loads_the_derived_document(self, tmp_path: Path) -> None:
+        path = tmp_path / "video-profile.json"
+        path.write_text(json.dumps(self._document()), encoding="utf-8")
+        assert load_profile_from_file(path).name == "joint34-derived"
+        document = self._document()
+        document["profile"] = "mission1"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ValueError, match="joint34"):
+            load_profile_from_file(path)
+
+    @pytest.mark.skipif(
+        not (_BUNDLE / "story.json").is_file(), reason="derived bundle not present"
+    )
+    def test_storyboard_derivation_reproduces_the_pinned_v1_expectations(self) -> None:
+        module = _load_derivation_module()
+        metadata = json.loads((_BUNDLE / "frame-metadata.json").read_text())
+        expectations = module.video_expectations(
+            _BUNDLE / "story.json", metadata, JOINT34.tick_range
+        )
+        assert expectations["expected_frames"] == JOINT34.expected_frames
+        assert expectations["expected_window_counts"] == list(
+            JOINT34.expected_window_counts
+        )
+        assert expectations["expected_pause_times"] == list(
+            JOINT34.expected_pause_times
+        )
+
+
 class TestBundleDerivation:
     def test_replan_times_filters_replan_windows(self) -> None:
         module = _load_derivation_module()
@@ -341,14 +463,16 @@ class TestBundleDerivation:
             (5.5, 40.5, "mission3-block"),
             (100.5, float("inf"), "mission3-block"),
         ]
-        assert module.block_at(intervals, "joint34-complete", 0.0) == "scheduling"
-        assert module.block_at(intervals, "joint34-complete", 2.0) == "mission4-block"
-        assert module.block_at(intervals, "joint34-complete", 20.0) == "mission3-block"
-        assert module.block_at(intervals, "joint34-complete", 101.0) == "mission3-block"
+        assert module.block_at(intervals, "joint34-complete", 0.0, 120.0) == "scheduling"
+        assert module.block_at(intervals, "joint34-complete", 2.0, 120.0) == "mission4-block"
+        assert module.block_at(intervals, "joint34-complete", 20.0, 120.0) == "mission3-block"
+        assert module.block_at(intervals, "joint34-complete", 101.0, 120.0) == "mission3-block"
         assert (
-            module.block_at(intervals, "joint34-complete", 120.0)
+            module.block_at(intervals, "joint34-complete", 120.0, 120.0)
             == "joint34-complete"
         )
+        # The mission end comes from the run, not from a pinned constant.
+        assert module.block_at(intervals, "joint34-complete", 90.0, 90.0) == "joint34-complete"
 
     def test_display_state_never_uses_future_evidence(self) -> None:
         module = _load_derivation_module()
@@ -363,11 +487,11 @@ class TestBundleDerivation:
 
         worlds = {0.0: world(1), 40.0: world(3)}
         state = module.display_state(
-            worlds, [], [], {1: "defer"}, "joint34-complete", 10.0
+            worlds, [], [], {1: "defer"}, "joint34-complete", 10.0, mission_end_s=120.0
         )
         assert state["worker_revision"] == 1
         state = module.display_state(
-            worlds, [], [], {1: "defer"}, "joint34-complete", 40.0
+            worlds, [], [], {1: "defer"}, "joint34-complete", 40.0, mission_end_s=120.0
         )
         assert state["worker_revision"] == 3
 
@@ -393,7 +517,9 @@ class TestBundleDerivation:
                 }
             },
         }
-        timeline = module.build_timeline(worlds, [], [], {1: "defer"}, "joint34-complete", {})
+        timeline = module.build_timeline(
+            worlds, [], [], {1: "defer"}, "joint34-complete", {}, mission_end_s=120.0
+        )
         assert [row["evidence_available_at"] for row in timeline] == [
             0.0,
             1.0,

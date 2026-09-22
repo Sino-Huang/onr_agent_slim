@@ -92,7 +92,7 @@ class PaneGeometry:
     @classmethod
     def from_partition_metadata(
         cls, metadata: Any, tile_size: int = TILE_SIZE
-    ) -> "PaneGeometry":
+    ) -> PaneGeometry:
         """Build the pane transform from a runtime partition metadata object."""
 
         return cls(

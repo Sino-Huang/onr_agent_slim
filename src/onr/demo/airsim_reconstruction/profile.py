@@ -9,8 +9,10 @@ behavior; the Joint34 profile adapts the same composition to the recorded
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -164,28 +166,49 @@ def _joint34_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _joint34_validate_metrics(metrics: Mapping[str, Any]) -> None:
-    if metrics.get("final_fsm_state") != "joint34-complete":
-        raise ValueError("joint34 metrics must end in joint34-complete")
-    if metrics.get("simulated_duration_seconds") != 120.0:
-        raise ValueError("joint34 metrics must span 120.0 seconds")
-    if list(metrics.get("plan_revisions") or []) != [1, 2, 3, 4]:
-        raise ValueError("joint34 metrics must carry plan revisions 1-4")
-    if list(metrics.get("replan_activation_times_s") or []) != [1.5, 40.5, 97.0]:
-        raise ValueError("joint34 replan activations must be t=1.5, 40.5, 97.0")
-    timeline = metrics.get("timeline")
-    if not isinstance(timeline, list) or not timeline:
-        raise ValueError("metrics timeline must be a non-empty list")
-    statuses = {
-        task["target_id"]: task["status"]
-        for task in metrics.get("mission4_answer_metrics", {}).get("tasks", [])
-    }
-    if statuses != {
-        "worker:1": "incomplete",
-        "worker:3": "found",
-        "worker:5": "incomplete",
-    }:
-        raise ValueError(f"unexpected Mission 4 terminal statuses: {statuses}")
+def _joint34_validate_metrics_factory(
+    *,
+    final_fsm_state: str,
+    simulated_duration_seconds: float,
+    plan_revisions: Sequence[int],
+    replan_activation_times_s: Sequence[float],
+    mission4_statuses: Mapping[str, str],
+) -> Callable[[Mapping[str, Any]], None]:
+    """Metrics gate pinning one recorded joint34 run's outcome."""
+
+    expected_revisions = list(plan_revisions)
+    expected_replans = list(replan_activation_times_s)
+    expected_statuses = dict(mission4_statuses)
+
+    def validate(metrics: Mapping[str, Any]) -> None:
+        if metrics.get("final_fsm_state") != final_fsm_state:
+            raise ValueError(f"joint34 metrics must end in {final_fsm_state}")
+        if metrics.get("simulated_duration_seconds") != simulated_duration_seconds:
+            raise ValueError(
+                "joint34 metrics must span "
+                f"{simulated_duration_seconds:g} seconds"
+            )
+        if list(metrics.get("plan_revisions") or []) != expected_revisions:
+            raise ValueError(
+                f"joint34 metrics must carry plan revisions {expected_revisions}"
+            )
+        if list(metrics.get("replan_activation_times_s") or []) != expected_replans:
+            raise ValueError(
+                f"joint34 replan activations must be t={expected_replans}"
+            )
+        timeline = metrics.get("timeline")
+        if not isinstance(timeline, list) or not timeline:
+            raise ValueError("metrics timeline must be a non-empty list")
+        statuses = {
+            task["target_id"]: task["status"]
+            for task in metrics.get("mission4_answer_metrics", {}).get("tasks", [])
+        }
+        if statuses != expected_statuses:
+            raise ValueError(
+                f"unexpected Mission 4 terminal statuses: {statuses}"
+            )
+
+    return validate
 
 
 def _joint34_pause_subtitle(seconds: float, actual_wait_seconds: float) -> str:
@@ -193,79 +216,195 @@ def _joint34_pause_subtitle(seconds: float, actual_wait_seconds: float) -> str:
     return f"Recorded in-tick decision → {seconds:g}s replay pause"
 
 
-def _joint34_receipt_fields(metrics: Mapping[str, Any]) -> dict[str, str]:
-    del metrics
-    return {
-        "final_state": (
-            "joint34-complete; M3 unresolved 3/3; M4 blue found, "
-            "red container and truck incomplete"
-        )
-    }
+def _joint34_receipt_fields_factory(
+    final_state: str,
+) -> Callable[[Mapping[str, Any]], dict[str, str]]:
+    def receipt_fields(metrics: Mapping[str, Any]) -> dict[str, str]:
+        del metrics
+        return {"final_state": final_state}
+
+    return receipt_fields
 
 
-JOINT34 = MissionProfile(
+_JOINT34_STRIP_LINES = (
+    StripLine(
+        "JOINT MISSION  /  {mission_block} · rev {plan_revision} · "
+        "{plan_order}",
+        (62, 927),
+        21,
+        AMBER,
+    ),
+    StripLine(
+        "WORKER rev {worker_revision} ({request_label}) · due "
+        "{deadline_label} · replans {replan_count}",
+        (795, 929),
+        19,
+        CYAN,
+    ),
+    StripLine(
+        "M3 unresolved {m3_unresolved}/3 · M4 tracks {m4_track_list}",
+        (1430, 932),
+        15,
+        MUTED,
+    ),
+)
+
+_JOINT34_STATUS_LINES = (
+    StatusLine("Active block: {mission_block}", 742, 19),
+    StatusLine("M3 ships {m3_ids}: {m3_unresolved}/3 unresolved", 778, 19),
+    StatusLine("M4 evidence tracks: {m4_track_list}", 814, 19),
+    StatusLine("Dock coverage: {dock_coverage}", 850, 17),
+)
+
+
+def joint34_profile(
+    *,
+    name: str,
+    tick_range: tuple[int, int],
+    expected_frames: int,
+    expected_window_counts: Sequence[int],
+    expected_pause_times: Sequence[float],
+    final_fsm_state: str,
+    simulated_duration_seconds: float,
+    plan_revisions: Sequence[int],
+    replan_activation_times_s: Sequence[float],
+    mission4_statuses: Mapping[str, str],
+    receipt_final_state: str,
+) -> MissionProfile:
+    """Build a joint34 profile from one recorded run's derived expectations.
+
+    Every mission-specific string and pane layout is shared; only the numbers
+    and facts of the recorded run are parameters, so a second joint34 run
+    validates without duplicating the profile.
+    """
+
+    return MissionProfile(
+        name=name,
+        tick_range=tick_range,
+        availability_field="evidence_available_at",
+        prepare_row=_joint34_row,
+        validate_metrics=_joint34_validate_metrics_factory(
+            final_fsm_state=final_fsm_state,
+            simulated_duration_seconds=simulated_duration_seconds,
+            plan_revisions=plan_revisions,
+            replan_activation_times_s=replan_activation_times_s,
+            mission4_statuses=mission4_statuses,
+        ),
+        strip_lines=_JOINT34_STRIP_LINES,
+        status_lines=_JOINT34_STATUS_LINES,
+        unmapped_ids_y=878,
+        execution_title=(
+            "Execute the joint schedule. Observe the reconstructed harbor."
+        ),
+        execution_banner="EXECUTION  /  SIMULATION ADVANCES AT 4x REPLAY SPEED",
+        execution_body=(
+            "The accepted maneuver executes against the recorded joint34 "
+            "timeline. AirSim provides visualization only; canonical "
+            "telemetry, mission evidence, and metric availability remain "
+            "authoritative."
+        ),
+        ending_title=f"{final_fsm_state} | outcomes remain honest",
+        ending_banner="MISSION FINISHED  /  SIMULATION STOPPED",
+        pause_subtitle=_joint34_pause_subtitle,
+        receipt_fields=_joint34_receipt_fields_factory(receipt_final_state),
+        expected_frames=expected_frames,
+        expected_window_counts=tuple(expected_window_counts),
+        expected_pause_times=tuple(expected_pause_times),
+        retention_receipt_fields={"final_state": receipt_final_state},
+        metrics_label="JOINT MISSION EVIDENCE",
+    )
+
+
+JOINT34_RUN_FACTS: Mapping[str, Any] = {
+    "tick_range": (0, 240),
+    "final_fsm_state": "joint34-complete",
+    "simulated_duration_seconds": 120.0,
+    "plan_revisions": (1, 2, 3, 4),
+    "replan_activation_times_s": (1.5, 40.5, 97.0),
+    "mission4_statuses": {
+        "worker:1": "incomplete",
+        "worker:3": "found",
+        "worker:5": "incomplete",
+    },
+    "receipt_final_state": (
+        "joint34-complete; M3 unresolved 3/3; M4 blue found, "
+        "red container and truck incomplete"
+    ),
+}
+
+JOINT34 = joint34_profile(
     name="joint34",
-    tick_range=(0, 240),
-    availability_field="evidence_available_at",
-    prepare_row=_joint34_row,
-    validate_metrics=_joint34_validate_metrics,
-    strip_lines=(
-        StripLine(
-            "JOINT MISSION  /  {mission_block} · rev {plan_revision} · "
-            "{plan_order}",
-            (62, 927),
-            21,
-            AMBER,
-        ),
-        StripLine(
-            "WORKER rev {worker_revision} ({request_label}) · due "
-            "{deadline_label} · replans {replan_count}",
-            (795, 929),
-            19,
-            CYAN,
-        ),
-        StripLine(
-            "M3 unresolved {m3_unresolved}/3 · M4 tracks {m4_track_list}",
-            (1430, 932),
-            15,
-            MUTED,
-        ),
-    ),
-    status_lines=(
-        StatusLine("Active block: {mission_block}", 742, 19),
-        StatusLine(
-            "M3 ships {m3_ids}: {m3_unresolved}/3 unresolved", 778, 19
-        ),
-        StatusLine(
-            "M4 evidence tracks: {m4_track_list}", 814, 19
-        ),
-        StatusLine("Dock coverage: {dock_coverage}", 850, 17),
-    ),
-    unmapped_ids_y=878,
-    execution_title=(
-        "Execute the joint schedule. Observe the reconstructed harbor."
-    ),
-    execution_banner="EXECUTION  /  SIMULATION ADVANCES AT 4x REPLAY SPEED",
-    execution_body=(
-        "The accepted maneuver executes against the recorded joint34 "
-        "timeline. AirSim provides visualization only; canonical telemetry, "
-        "mission evidence, and metric availability remain authoritative."
-    ),
-    ending_title="joint34-complete | outcomes remain honest",
-    ending_banner="MISSION FINISHED  /  SIMULATION STOPPED",
-    pause_subtitle=_joint34_pause_subtitle,
-    receipt_fields=_joint34_receipt_fields,
     expected_frames=1408,
     expected_window_counts=(112, 112, 96, 112, 96, 112, 128, 160),
     expected_pause_times=(0.0, 1.5, 40.0, 40.5, 80.0, 97.0, 120.0),
-    retention_receipt_fields={
-        "final_state": (
-            "joint34-complete; M3 unresolved 3/3; M4 blue found, "
-            "red container and truck incomplete"
-        )
-    },
-    metrics_label="JOINT MISSION EVIDENCE",
+    **JOINT34_RUN_FACTS,
 )
+
+
+def _document_value(document: Mapping[str, Any], key: str, kind: type) -> Any:
+    if key not in document:
+        raise ValueError(f"derived joint34 profile document is missing {key!r}")
+    value = document[key]
+    if not isinstance(value, kind):
+        expected = getattr(kind, "__name__", str(kind))
+        raise TypeError(
+            f"derived joint34 profile {key!r} must be {expected}, "
+            f"got {type(value).__name__}"
+        )
+    return value
+
+
+def joint34_profile_from_document(document: Mapping[str, Any]) -> MissionProfile:
+    """Build a joint34 profile from a derived bundle's expectations document.
+
+    The document is written by ``scripts/derive_joint34_video_bundle.py`` from
+    the recorded run's own artifacts, so the profile pins that run's frame
+    expectations and terminal facts without cloning them by hand.
+    """
+
+    if not isinstance(document, Mapping):
+        raise TypeError("derived joint34 profile document must be an object")
+    tick_range = _document_value(document, "tick_range", list)
+    if len(tick_range) != 2:
+        raise ValueError("derived joint34 profile tick_range must have two ends")
+    statuses = _document_value(document, "mission4_statuses", dict)
+    name = str(document.get("name") or "joint34-derived")
+    return joint34_profile(
+        name=name,
+        tick_range=(int(tick_range[0]), int(tick_range[1])),
+        expected_frames=int(_document_value(document, "expected_frames", int)),
+        expected_window_counts=_document_value(
+            document, "expected_window_counts", list
+        ),
+        expected_pause_times=_document_value(
+            document, "expected_pause_times", list
+        ),
+        final_fsm_state=str(_document_value(document, "final_fsm_state", str)),
+        simulated_duration_seconds=float(
+            _document_value(document, "simulated_duration_seconds", (int, float))
+        ),
+        plan_revisions=_document_value(document, "plan_revisions", list),
+        replan_activation_times_s=_document_value(
+            document, "replan_activation_times_s", list
+        ),
+        mission4_statuses={str(key): str(value) for key, value in statuses.items()},
+        receipt_final_state=str(
+            _document_value(document, "receipt_final_state", str)
+        ),
+    )
+
+
+def load_profile_from_file(path: str | Path) -> MissionProfile:
+    """Load a derived joint34 profile expectations document from disk."""
+
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if document.get("profile") != JOINT34.name:
+        raise ValueError(
+            "derived profile document must describe the joint34 profile, "
+            f"got {document.get('profile')!r}"
+        )
+    return joint34_profile_from_document(document)
+
 
 PROFILES: Mapping[str, MissionProfile] = {
     MISSION1.name: MISSION1,
