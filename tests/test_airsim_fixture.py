@@ -12,6 +12,7 @@ from onr.demo.airsim_reconstruction.fixture import (
     DEFAULT_STATIC_MESHES_PATH,
     DEFAULT_VESSELS_DIR,
     SCENARIO_NAME,
+    TRAJECTORY_NED_OFFSET_M,
     build_fixture,
 )
 
@@ -68,7 +69,12 @@ def _assert_canonical_window(
     assert len(output_pose) == LEAD_IN_ROWS + 600
     canonical = output_pose[LEAD_IN_ROWS:]
     for output_row, source_row in zip(canonical, source_pose, strict=True):
-        assert output_row[:4] == source_row[:4]
+        expected_position = [
+            source_row[axis] + TRAJECTORY_NED_OFFSET_M[axis] * 100.0
+            for axis in range(3)
+        ]
+        assert output_row[:3] == pytest.approx(expected_position)
+        assert output_row[3] == source_row[3]
         assert output_row[4] == DEFAULT_LEAD_IN_SECONDS + source_row[4]
 
 
@@ -175,8 +181,8 @@ def test_build_fixture_ship_schema_mapping_manifest_and_determinism(
     assert manifest["lead_in_seconds"] == DEFAULT_LEAD_IN_SECONDS
     assert manifest["lead_in_note"] == (
         "rows with t < lead_in_seconds are synthetic (ships: linear backward "
-        "extrapolation; passengers: held first pose); canonical window is verbatim "
-        "at t >= lead_in_seconds"
+        "extrapolation; passengers: held first pose); canonical trajectory positions "
+        "include trajectory_ned_offset at t >= lead_in_seconds"
     )
     assert manifest["canonical_params"] == {
         "seed": 5,
@@ -240,7 +246,15 @@ def test_passengers_are_verbatim_unique_and_cross_referenced(tmp_path: Path) -> 
         assert isinstance(source_passenger["pose"], list)
         _assert_canonical_window(passenger["pose"], source_passenger["pose"])
         first_source_row = source_passenger["pose"][0]
-        assert all(row[:4] == first_source_row[:4] for row in passenger["pose"][:LEAD_IN_ROWS])
+        expected_first = [
+            first_source_row[axis] + TRAJECTORY_NED_OFFSET_M[axis] * 100.0
+            for axis in range(3)
+        ]
+        assert all(
+            row[:3] == pytest.approx(expected_first)
+            and row[3] == first_source_row[3]
+            for row in passenger["pose"][:LEAD_IN_ROWS]
+        )
         for index, row in enumerate(passenger["pose"]):
             assert len(row) == 5
             assert row[4] == 0.5 * index
@@ -281,6 +295,16 @@ def test_lead_in_trajectory_seam_and_canonical_events(tmp_path: Path) -> None:
         (source_pose[4][axis] - source_pose[0][axis]) / 2.0
         for axis in range(3)
     )
+    offset_cm = tuple(value * 100.0 for value in TRAJECTORY_NED_OFFSET_M)
+    for index, output_row in enumerate(output_pose[:LEAD_IN_ROWS]):
+        expected_position = [
+            source_pose[0][axis]
+            + offset_cm[axis]
+            + velocity[axis] * (0.5 * index - DEFAULT_LEAD_IN_SECONDS)
+            for axis in range(3)
+        ]
+        assert output_row[:3] == pytest.approx(expected_position)
+        assert output_row[3] == source_pose[0][3]
     expected_seam_distance = math.sqrt(sum(value * value for value in velocity)) * 0.5
     actual_seam_distance = math.dist(
         output_pose[LEAD_IN_ROWS - 1][:3], output_pose[LEAD_IN_ROWS][:3]
@@ -299,6 +323,23 @@ def test_lead_in_trajectory_seam_and_canonical_events(tmp_path: Path) -> None:
             expected_flattened.append(event)
     expected_flattened.sort(key=lambda event: event.get("time", 0.0))
     assert flattened == expected_flattened
+
+
+def test_first_canonical_row_has_world_model_ned_offset(tmp_path: Path) -> None:
+    out_dir = _build(tmp_path)
+    ship = _load(_scenario_ships(out_dir) / "1.json")
+    source = _load(DEFAULT_VESSELS_DIR / "1.json")
+    assert isinstance(ship, dict)
+    assert isinstance(source, dict)
+
+    output_row = ship["pose"][LEAD_IN_ROWS]
+    source_row = source["pose"][0]
+
+    assert output_row[:2] == pytest.approx(
+        [source_row[0] + 25_370.0, source_row[1] + 4_550.0]
+    )
+    assert output_row[2] == source_row[2] == -250.0
+    assert output_row[3] == source_row[3]
 
 
 def test_required_ship_stationary_initial_velocity_is_rejected(

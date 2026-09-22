@@ -50,6 +50,16 @@ SHIP_MESH_KEYS = {
 }
 PASSENGER_KEYS = {"mesh", "name", "objectId", "pose"}
 PASSENGER_MESH_KEYS = {"MeshName", "AssetPath", "MinBounds", "MaxBounds"}
+
+# Meshes that never render into the instance segmentation pass, mapped to the
+# nearest seg-proven catalog mesh (same category). See _resolved_mesh.
+_SEG_PROVEN_MESH_SUBSTITUTIONS = {
+    "Fishing_trawler": "Fishing_boat_2",
+    "Fishing_boat": "Fishing_boat_2",
+    "Tug_boat": "Fishing_boat_2",
+    "SM_SpeedBoat": "SM_SpeedBoat_2_Black_Trim",
+    "SM_Boat_Defense_1": "SM_Boat_Defense_3",
+}
 BOUND_KEYS = {"X", "Y", "Z"}
 
 CANONICAL_PARAMS: dict[str, object] = {
@@ -63,10 +73,13 @@ CANONICAL_PARAMS: dict[str, object] = {
     "sensing": "world_model",
     "range_m": 300,
 }
+TRAJECTORY_NED_OFFSET_M = tuple(
+    float(value) for value in CANONICAL_PARAMS["trajectory_ned_offset"]
+)
 LEAD_IN_NOTE = (
     "rows with t < lead_in_seconds are synthetic (ships: linear backward "
-    "extrapolation; passengers: held first pose); canonical window is verbatim "
-    "at t >= lead_in_seconds"
+    "extrapolation; passengers: held first pose); canonical trajectory positions "
+    "include trajectory_ned_offset at t >= lead_in_seconds"
 )
 
 
@@ -188,6 +201,23 @@ def _maximum_xy_displacement_m(pose: Sequence[Sequence[object]]) -> float:
                 delta_x * delta_x + delta_y * delta_y,
             )
     return math.sqrt(maximum_squared_cm) / 100.0
+
+
+def _trajectory_with_ned_offset(
+    pose: Sequence[Sequence[Any]],
+) -> list[list[Any]]:
+    """Translate world-frame trajectory positions from generator to NED coordinates."""
+
+    offset_cm = tuple(value * 100.0 for value in TRAJECTORY_NED_OFFSET_M)
+    return [
+        [
+            float(row[0]) + offset_cm[0],
+            float(row[1]) + offset_cm[1],
+            float(row[2]) + offset_cm[2],
+            *copy.deepcopy(row[3:]),
+        ]
+        for row in pose
+    ]
 
 
 def _lead_in_row_count(lead_in_s: float) -> int:
@@ -357,6 +387,13 @@ def _resolved_mesh(
     bare_name = source_mesh.get("Mesh")
     if not isinstance(bare_name, str):
         raise TypeError(f"Ship {ship_id} source mesh has no string Mesh name")
+    # Segmentation-blind meshes never render into the engine's instance
+    # segmentation pass (verified across the full 600-tick capture on
+    # 2026-09-18: Fishing_trawler / Fishing_boat / Tug_boat / SM_SpeedBoat /
+    # SM_Boat_Defense_1 produced zero seg pixels mission-wide while the _2/_3
+    # variants rendered consistently). Substitute the nearest seg-proven mesh
+    # in the same category; trajectories and identity are unaffected.
+    bare_name = _SEG_PROVEN_MESH_SUBSTITUTIONS.get(bare_name, bare_name)
     try:
         entry = catalog[bare_name]
     except KeyError as exc:
@@ -380,6 +417,49 @@ def _resolved_mesh(
     _validate_bounds(mesh["MinBounds"], f"Ship {ship_id} MinBounds", require_floats=True)
     _validate_bounds(mesh["MaxBounds"], f"Ship {ship_id} MaxBounds", require_floats=True)
     return mesh
+
+
+def _resolved_static_mesh(
+    mesh_name: str, static_meshes_path: Path, label: str
+) -> dict[str, object]:
+    """Resolve a stationary actor mesh from its own catalog category."""
+
+    catalog = _read_json(static_meshes_path)
+    assets = catalog.get("Assets")
+    if not isinstance(assets, dict):
+        raise TypeError(f"Static mesh catalog {static_meshes_path} has no Assets object")
+    for category, group in assets.items():
+        if not isinstance(group, dict):
+            continue
+        for asset in group.get("AssetNames") or []:
+            if not isinstance(asset, dict) or asset.get("MeshName") != mesh_name:
+                continue
+            min_bounds = asset.get("MinBounds")
+            max_bounds = asset.get("MaxBounds")
+            _validate_bounds(
+                min_bounds, f"static mesh {mesh_name} MinBounds", require_floats=False
+            )
+            _validate_bounds(
+                max_bounds, f"static mesh {mesh_name} MaxBounds", require_floats=False
+            )
+            assert isinstance(min_bounds, dict)
+            assert isinstance(max_bounds, dict)
+            mesh: dict[str, object] = {
+                "MeshName": mesh_name,
+                "MinBounds": {
+                    axis: float(min_bounds[axis]) for axis in ("X", "Y", "Z")
+                },
+                "MaxBounds": {
+                    axis: float(max_bounds[axis]) for axis in ("X", "Y", "Z")
+                },
+                "AssetPath": f"{category}/{mesh_name}",
+            }
+            _require_exact_keys(mesh, PASSENGER_MESH_KEYS, f"Static {label} mesh")
+            return mesh
+    raise ValueError(
+        f"Static {label} mesh {mesh_name!r} not found in "
+        f"{static_meshes_path}"
+    )
 
 
 def _validate_embedded_passenger(passenger: object, ship_id: int, index: int) -> dict[str, Any]:
@@ -449,8 +529,16 @@ def build_fixture(
     static_meshes_path: str | Path,
     out_dir: str | Path,
     lead_in_s: float = DEFAULT_LEAD_IN_SECONDS,
+    *,
+    scenario_name: str = SCENARIO_NAME,
+    static_objects: Sequence[Mapping[str, Any]] = (),
 ) -> FixtureResult:
-    """Build and validate the recorded Mission 1 AirSim reconstruction fixture."""
+    """Build and validated recorded AirSim reconstruction fixture.
+
+    ``static_objects`` adds stationary scenario actors (for example the
+    Mission 4 fixture containers) as scenario passengers with constant
+    absolute trajectories and stable segmentation object IDs.
+    """
 
     vessels_path = Path(vessels_dir)
     meshes_path = Path(static_meshes_path)
@@ -493,6 +581,7 @@ def build_fixture(
         pose = _validate_trajectory(
             source.get("pose"), f"Ship {ship_id} pose", expected_z=-250.0
         )
+        pose = _trajectory_with_ned_offset(pose)
         displacement = _maximum_xy_displacement_m(pose)
         if displacement <= 1.0:
             raise ValueError(
@@ -604,7 +693,7 @@ def build_fixture(
                 f"Passenger {name!r} mesh differs between ship {ship_id} and file"
             )
 
-    ships_dir = output_path / "scenarios" / SCENARIO_NAME / "ships"
+    ships_dir = output_path / "scenarios" / scenario_name / "ships"
     output_passengers_dir = ships_dir / "passengers"
     output_passengers_dir.mkdir(parents=True)
 
@@ -614,9 +703,50 @@ def build_fixture(
         source_path, passenger = passenger_files[name]
         output_passenger = copy.deepcopy(passenger)
         output_passenger["pose"] = _passenger_pose_with_lead_in(
-            passenger["pose"], name, lead_in_s, lead_in_rows
+            _trajectory_with_ned_offset(passenger["pose"]),
+            name,
+            lead_in_s,
+            lead_in_rows,
         )
         _write_json(output_passengers_dir / source_path.name, output_passenger)
+
+    static_rows: dict[str, dict[str, Any]] = {}
+    for static_object in static_objects:
+        name = str(static_object["name"])
+        object_id = _require_int(static_object["object_id"], f"Static {name} objectId")
+        if not 1 <= object_id <= 0xFFFFFF:
+            raise ValueError(f"Static {name} objectId {object_id} is outside 1..0xFFFFFF")
+        if object_id in ship_object_ids or object_id in passenger_object_ids:
+            raise ValueError(f"Static {name} objectId {object_id} collides with a dynamic actor")
+        if object_id in static_rows:
+            raise ValueError(f"Duplicate static objectId {object_id}")
+        mesh = _resolved_static_mesh(
+            str(static_object["mesh"]), meshes_path, name
+        )
+        ned = [_require_finite_number(value, f"Static {name} ned") for value in static_object["ned_m"]]
+        if len(ned) != 3:
+            raise ValueError(f"Static {name} ned_m must have three values")
+        heading = _require_finite_number(static_object.get("heading_deg", 0.0), f"Static {name} heading")
+        total_rows = 600 + lead_in_rows
+        pose = [
+            [ned[0] * 100.0, ned[1] * 100.0, ned[2] * 100.0, heading, row * 0.5]
+            for row in range(total_rows)
+        ]
+        _write_json(output_passengers_dir / f"{name}.json", {
+            "name": name,
+            "objectId": object_id,
+            "mesh": mesh,
+            "pose": pose,
+        })
+        static_rows[name] = {
+            "name": name,
+            "object_id": object_id,
+            "mesh_name": mesh["MeshName"],
+            "asset_path": mesh["AssetPath"],
+            "ned_m": ned,
+            "heading_deg": heading,
+            "source": static_object.get("source", "fixture"),
+        }
 
     flattened_events: list[dict[str, Any]] = []
     for ship_id, source_event in canonical_events:
@@ -647,9 +777,10 @@ def build_fixture(
         )
     }
     mapping = {
-        "scenario_name": SCENARIO_NAME,
+        "scenario_name": scenario_name,
         "ships": ship_mapping,
         "passengers": passenger_mapping,
+        "static_objects": static_rows,
     }
     _write_json(output_path / "mapping.json", mapping)
 
@@ -672,14 +803,18 @@ def build_fixture(
         "outputs": outputs,
         "ship_motion_max_displacement_m": motion,
         "passengers_per_ship": passenger_counts,
+        "static_objects": {
+            row["name"]: {"object_id": row["object_id"], "ned_m": row["ned_m"]}
+            for row in static_rows.values()
+        },
     }
     _write_json(output_path / "manifest.json", manifest)
 
     return FixtureResult(
         out_dir=output_path,
-        scenario_dir=output_path / "scenarios" / SCENARIO_NAME,
+        scenario_dir=output_path / "scenarios" / scenario_name,
         ship_count=len(ships),
-        passenger_count=len(passenger_files),
+        passenger_count=len(passenger_files) + len(static_rows),
         output_count=len(outputs),
     )
 
@@ -696,6 +831,13 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_LEAD_IN_SECONDS,
         help="synthetic trajectory lead-in duration in seconds",
+    )
+    parser.add_argument("--scenario-name", default=SCENARIO_NAME)
+    parser.add_argument(
+        "--static-objects",
+        type=Path,
+        default=None,
+        help="JSON list of stationary actors: name, objectId, mesh, ned_m, heading_deg",
     )
     parser.add_argument(
         "--force",
@@ -719,11 +861,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             shutil.rmtree(out_dir)
         else:
             out_dir.unlink()
+    static_objects: Sequence[Mapping[str, Any]] = ()
+    if args.static_objects is not None:
+        value = _read_json(args.static_objects)
+        if isinstance(value, dict):
+            value = value.get("objects")
+        if not isinstance(value, list):
+            raise SystemExit(
+                "--static-objects must point at a JSON list or an object "
+                "with an objects list"
+            )
+        static_objects = value
     result = build_fixture(
         args.vessels,
         args.static_meshes,
         out_dir,
         lead_in_s=args.lead_in_s,
+        scenario_name=args.scenario_name,
+        static_objects=static_objects,
     )
     print(
         f"Built AirSim reconstruction fixture at {result.out_dir} "

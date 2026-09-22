@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source": "/data/ccu/sukaih/ONR/onr_physical_runtime/docs/mission_desc/mission4_fixture.json",
+  "note": "Stationary Mission 4 visualization actors for the Joint34 AirSim reconstruction fixture. Positions are the recorded fixture-truth NED positions; the truck request has no fixture object and stays absent. Fixture truth is visualization-only and never rewrites mission evidence.",
+  "objects": [
+    {
+      "name": "M4 red container",
+      "object_id": 47,
+      "mesh": "SM_MetalBox02.SM_MetalBox02",
+      "ned_m": [0.0, 0.0, -0.09],
+      "heading_deg": 0.0,
+      "fixture_private_id": "private-red"
+    },
+    {
+      "name": "M4 blue container",
+      "object_id": 48,
+      "mesh": "SM_Pallet_box.SM_Pallet_box",
+      "ned_m": [5.0, 0.0, -0.09],
+      "heading_deg": 0.0,
+      "fixture_private_id": "private-blue"
+    },
+    {
+      "name": "M4 decoy container (outside dock)",
+      "object_id": 49,
+      "mesh": "SM_MetalBox01.SM_MetalBox01",
+      "ned_m": [50.0, 0.0, -0.09],
+      "heading_deg": 0.0,
+      "fixture_private_id": "private-outside"
+    }
+  ]
+}

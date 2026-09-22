@@ -1,4 +1,4 @@
-"""Bounded live certification for the issue-65 AirSim reconstruction fixture."""
+"""Certify the issue-65 AirSim fixture with stepped beats and frozen holds."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from .beats import advance_to_phase, beat_landing_passed
 from .engine import EngineConfigSwap, launch_engine, preflight_ports_free
 
 ENGINE_CONFIG = Path(
@@ -38,17 +39,27 @@ VEHICLE_NAME = "SimpleFlight"
 TICK_S = 0.5
 POSITION_TOLERANCE_M = 0.5
 HEADING_TOLERANCE_DEG = 5.0
-SKEW_TOLERANCE_S = 0.25
-# Pause shortly after a discrete 0.5 s trajectory-row transition. The 0.08 s
-# window ceiling leaves 0.12 s for pause RPC latency before the 0.20 s gate.
-PAUSE_WINDOW_START_S = 0.03
-PAUSE_WINDOW_END_S = 0.08
-PAUSE_WINDOW_POLL_S = 0.005
-PAUSE_ALIGNMENT_TOLERANCE_S = 0.20
-PAUSE_PLACEMENT_TOLERANCE_S = 0.20
-PAUSE_HEADROOM_MARGIN_S = 5.0
-PAUSE_ALIGNMENT_MAX_ATTEMPTS = 20
-PHASE_COMPARISON_EPSILON_S = 1e-9
+PROJECTION_TOLERANCE_M = 0.05
+PHASE_TOLERANCE_S = 0.25
+STATIONARY_SPEED_MPS = 0.01
+INITIAL_AIRCRAFT_NED_M = (0.0, 0.0, -25.0)
+INITIAL_AIRCRAFT_YAW_DEGREES = 270.0
+# Mission tick 434 in the v1/v2 600-tick captures: open water with ship 5
+# visible at roughly 300 m, unlike the port-yard initial-pose view.
+SEGMENTATION_PROBE_NED_M = (1090.0, -800.0, -25.0)
+SEGMENTATION_PROBE_YAW_DEGREES = 90.0
+# front_center_custom geometry (settings_airsim_issue65.json): FOV 90 horizontal
+# on 1920x1080, pitched down 34 degrees to align with the world model's
+# 0-300 m ground-visibility swath. Horizontal gate keeps the historical 2
+# degree margin; the vertical gate is exact pinhole geometry (waterline
+# depression must fall between the top and bottom frame edges).
+SEGMENTATION_PROBE_HALF_FOV_DEGREES = 43.0
+SEGMENTATION_PROBE_PITCH_DOWN_DEGREES = 34.0
+SEGMENTATION_PROBE_VERTICAL_HALF_FOV_DEGREES = math.degrees(
+    math.atan(math.tan(math.radians(90.0 / 2)) * (1080.0 / 1920.0))
+)
+SEGMENTATION_PROBE_MAX_DISTANCE_M = 1000.0
+SEGMENTATION_PROBE_FLUSH_STEP_S = 0.1
 
 
 def utc_now() -> str:
@@ -89,27 +100,6 @@ def pose_within_tolerance(
     )
 
 
-def image_pose_skew_s(
-    image_timestamp_ns: int,
-    prepared_mission_time_s: float,
-    *,
-    sensor_epoch_ns: int,
-    mission_epoch_s: float,
-) -> float:
-    """Map an image sensor timestamp to mission time and return signed skew."""
-    image_mission_time_s = float(mission_epoch_s) + (
-        int(image_timestamp_ns) - int(sensor_epoch_ns)
-    ) / 1e9
-    return image_mission_time_s - float(prepared_mission_time_s)
-
-
-def skew_within_tolerance(
-    skew_s: float, tolerance_s: float = SKEW_TOLERANCE_S
-) -> bool:
-    """Return whether a signed image/pose skew is within its absolute bound."""
-    return abs(float(skew_s)) <= float(tolerance_s)
-
-
 def trajectory_row_to_ned(row: Sequence[float]) -> tuple[float, float, float]:
     """Apply ``trajectory_phase``'s centimetre/UE-up to NED conversion."""
     if len(row) < 3:
@@ -117,109 +107,11 @@ def trajectory_row_to_ned(row: Sequence[float]) -> tuple[float, float, float]:
     return float(row[0]) / 100.0, float(row[1]) / 100.0, -float(row[2]) / 100.0
 
 
-def effective_mission_epoch(epoch_raw_s: float, lead_in_s: float) -> float:
-    """Translate the scene-clock epoch from lead-in time to mission time."""
-    return float(epoch_raw_s) - float(lead_in_s)
-
-
 def epoch_headroom_available(
     phase_at_pause_s: float, lead_in_s: float, *, margin_s: float = 2.0
 ) -> bool:
     """Return whether establish has enough lead-in remaining to certify its step."""
     return float(phase_at_pause_s) <= float(lead_in_s) - float(margin_s)
-
-
-def pause_window_delay_s(
-    scene_phase_s: float,
-    *,
-    tick_s: float = TICK_S,
-    window_start_s: float = PAUSE_WINDOW_START_S,
-    window_end_s: float = PAUSE_WINDOW_END_S,
-) -> float:
-    """Return seconds until the current or next post-tick pause window."""
-    phase = float(scene_phase_s)
-    if not math.isfinite(phase) or phase < 0.0:
-        raise ValueError("scene phase must be finite and non-negative")
-    if not 0.0 <= window_start_s <= window_end_s < tick_s:
-        raise ValueError("pause window must lie within one positive tick")
-    offset = phase % tick_s
-    if offset < window_start_s - PHASE_COMPARISON_EPSILON_S:
-        return window_start_s - offset
-    if offset <= window_end_s + PHASE_COMPARISON_EPSILON_S:
-        return 0.0
-    return tick_s - offset + window_start_s
-
-
-def pause_alignment_error_s(
-    scene_phase_s: float, *, tick_s: float = TICK_S
-) -> float:
-    """Return distance from scene phase to the nearest trajectory-row boundary."""
-    phase = float(scene_phase_s)
-    if not math.isfinite(phase) or phase < 0.0:
-        raise ValueError("scene phase must be finite and non-negative")
-    offset = phase % tick_s
-    return min(offset, tick_s - offset)
-
-
-def pause_alignment_acceptable(
-    scene_phase_s: float,
-    *,
-    tolerance_s: float = PAUSE_ALIGNMENT_TOLERANCE_S,
-    tick_s: float = TICK_S,
-) -> bool:
-    """Return whether a frozen phase is close enough to a trajectory row."""
-    return (
-        pause_alignment_error_s(scene_phase_s, tick_s=tick_s)
-        <= tolerance_s + PHASE_COMPARISON_EPSILON_S
-    )
-
-
-def sample_ship_trajectory_phases(
-    client: Any,
-    ships: Sequence[Mapping[str, Any]],
-    trajectory_phase_fn: Any,
-) -> list[dict[str, Any]]:
-    """Measure the trajectory phase of SceneClock's verification ships."""
-    samples: list[dict[str, Any]] = []
-    for ship in ships:
-        position = client.simGetObjectPose(ship["name"]).position
-        measured_ned = [position.x_val, position.y_val, position.z_val]
-        samples.append(
-            {
-                "id": int(ship["id"]),
-                "name": str(ship["name"]),
-                "trajectory_phase_s": float(
-                    trajectory_phase_fn(ship, measured_ned)
-                ),
-            }
-        )
-    return samples
-
-
-def pause_placement_error_s(
-    frozen_scene_phase_s: float,
-    ship_phase_samples: Sequence[Mapping[str, Any]],
-) -> float:
-    """Return the largest ship-phase mismatch at a frozen boundary."""
-    if not ship_phase_samples:
-        raise ValueError("at least one ship phase sample is required")
-    return max(
-        abs(float(sample["trajectory_phase_s"]) - float(frozen_scene_phase_s))
-        for sample in ship_phase_samples
-    )
-
-
-def pause_placement_acceptable(
-    frozen_scene_phase_s: float,
-    ship_phase_samples: Sequence[Mapping[str, Any]],
-    *,
-    tolerance_s: float = PAUSE_PLACEMENT_TOLERANCE_S,
-) -> bool:
-    """Return whether every sampled ship agrees with the frozen scene phase."""
-    return (
-        pause_placement_error_s(frozen_scene_phase_s, ship_phase_samples)
-        <= tolerance_s + PHASE_COMPARISON_EPSILON_S
-    )
 
 
 def resolve_lead_in_s(
@@ -299,6 +191,197 @@ def expected_ship_pose(
     return trajectory_row_to_ned(row), float(row[3]) % 360.0, index
 
 
+def expected_probe_visible_ship_ids(
+    ships: Sequence[Mapping[str, Any]],
+    mission_time_s: float,
+    lead_in_s: float,
+    *,
+    probe_ned_m: Sequence[float] = SEGMENTATION_PROBE_NED_M,
+    probe_yaw_degrees: float = SEGMENTATION_PROBE_YAW_DEGREES,
+    half_fov_degrees: float = SEGMENTATION_PROBE_HALF_FOV_DEGREES,
+    max_distance_m: float = SEGMENTATION_PROBE_MAX_DISTANCE_M,
+    pitch_down_degrees: float = SEGMENTATION_PROBE_PITCH_DOWN_DEGREES,
+    vertical_half_fov_degrees: float = SEGMENTATION_PROBE_VERTICAL_HALF_FOV_DEGREES,
+    timestamp_indexes: Mapping[int, Mapping[float, int]] | None = None,
+) -> set[int]:
+    """Return fixture ship object IDs expected in the pointed probe frustum."""
+
+    if len(probe_ned_m) != 3:
+        raise ValueError("probe NED pose must contain exactly three coordinates")
+    top_edge_depression = pitch_down_degrees - vertical_half_fov_degrees
+    bottom_edge_depression = pitch_down_degrees + vertical_half_fov_degrees
+    expected: set[int] = set()
+    for ship in ships:
+        ship_id = int(ship["id"])
+        timestamp_index = (
+            timestamp_indexes[ship_id] if timestamp_indexes is not None else None
+        )
+        ship_ned, _heading, _row = expected_ship_pose(
+            ship,
+            mission_time_s,
+            lead_in_s=lead_in_s,
+            timestamp_index=timestamp_index,
+        )
+        delta = tuple(
+            float(ship_ned[axis]) - float(probe_ned_m[axis]) for axis in range(3)
+        )
+        distance_m = math.sqrt(sum(value * value for value in delta))
+        ground_range_m = math.hypot(delta[0], delta[1])
+        # Waterline depression below the horizon; the pitched frustum only
+        # covers depressions between its top and bottom frame edges.
+        depression_degrees = math.degrees(math.atan2(delta[2], ground_range_m))
+        bearing_degrees = math.degrees(math.atan2(delta[1], delta[0])) % 360.0
+        bearing_error = angular_error_degrees(bearing_degrees, probe_yaw_degrees)
+        in_range = distance_m <= max_distance_m or math.isclose(
+            distance_m, max_distance_m, abs_tol=1e-9
+        )
+        in_fov = bearing_error <= half_fov_degrees or math.isclose(
+            bearing_error, half_fov_degrees, abs_tol=1e-9
+        )
+        in_vertical = top_edge_depression <= depression_degrees <= (
+            bottom_edge_depression
+        )
+        if in_range and in_fov and in_vertical:
+            expected.add(int(ship["objectId"]))
+    return expected
+
+
+def measure_ship_phase(
+    pose_rows: Sequence[Sequence[float]],
+    measured_ned: Sequence[float],
+    *,
+    center_s: float | None = None,
+    window_s: float | None = None,
+) -> tuple[float, float, float]:
+    """Project a measured NED pose onto a trajectory and return phase/error/speed."""
+    poses = np.asarray(pose_rows, dtype=float)
+    if poses.ndim != 2 or poses.shape[0] < 2 or poses.shape[1] < 5:
+        raise ValueError("trajectory requires at least two five-value pose rows")
+    xyz = poses[:, :3] / 100.0
+    xyz[:, 2] *= -1.0
+    delta = np.diff(xyz, axis=0)
+    measured = np.asarray(measured_ned, dtype=float)
+    if (
+        center_s is not None
+        and float(center_s) >= float(poses[-1, 4]) - TICK_S
+        and not np.all(np.isfinite(measured))
+    ):
+        # The engine reports non-finite object coordinates once a ship is parked
+        # at the finite trajectory endpoint. Its phase is still the final time.
+        return float(poses[-1, 4]), 0.0, 0.0
+    denominator = np.maximum(np.sum(delta * delta, axis=1), 1e-12)
+    fraction = np.clip(
+        np.sum((measured - xyz[:-1]) * delta, axis=1) / denominator,
+        0.0,
+        1.0,
+    )
+    projected = xyz[:-1] + fraction[:, None] * delta
+    errors = np.linalg.norm(projected - measured, axis=1)
+    times = poses[:, 4]
+    candidate_indices = np.arange(delta.shape[0])
+    if center_s is not None and window_s is not None:
+        center = float(center_s)
+        window = float(window_s)
+        low, high = center - window, center + window
+        segment_low = np.minimum(times[:-1], times[1:])
+        segment_high = np.maximum(times[:-1], times[1:])
+        candidate_indices = np.flatnonzero(
+            (segment_high >= low) & (segment_low <= high)
+        )
+        if candidate_indices.size == 0:
+            # A finite fixture can be parked at its final row while the phase
+            # reader's rolling center has advanced beyond the trajectory end.
+            # Preserve normal window selection; only this empty-window fallback
+            # intersects the request with the available trajectory interval.
+            available_low = float(np.min(times))
+            available_high = float(np.max(times))
+            clamped_low = max(low, available_low)
+            clamped_high = min(high, available_high)
+            if clamped_low <= clamped_high:
+                candidate_indices = np.flatnonzero(
+                    (segment_high >= clamped_low) & (segment_low <= clamped_high)
+                )
+            else:
+                boundary = (
+                    available_high if low > available_high else available_low
+                )
+                endpoint = xyz[-1] if low > available_high else xyz[0]
+                endpoint_error_m = float(np.linalg.norm(measured - endpoint))
+                if endpoint_error_m > POSITION_TOLERANCE_M:
+                    raise ValueError(
+                        "no trajectory segments within phase window or parked "
+                        f"endpoint tolerance: endpoint_error_m={endpoint_error_m:.6f}"
+                    )
+                candidate_indices = np.flatnonzero(
+                    (segment_low <= boundary) & (segment_high >= boundary)
+                )
+            if candidate_indices.size == 0:
+                raise ValueError(
+                    "no trajectory segments within phase window or its "
+                    f"available interval [{available_low}, {available_high}]"
+                )
+    index = int(candidate_indices[np.argmin(errors[candidate_indices])])
+    duration_s = abs(float(times[index + 1] - times[index]))
+    if duration_s <= 1e-12:
+        raise ValueError("trajectory segment timestamps must increase")
+    phase_s = float(
+        times[index] + fraction[index] * (times[index + 1] - times[index])
+    )
+    projection_error_m = float(errors[index])
+    segment_speed_mps = float(np.linalg.norm(delta[index]) / duration_s)
+    return phase_s, projection_error_m, segment_speed_mps
+
+
+def interpolate_heading_degrees(start: float, end: float, fraction: float) -> float:
+    """Interpolate headings over the shortest wrapped angular path."""
+    delta = (float(end) - float(start) + 180.0) % 360.0 - 180.0
+    return (float(start) + float(fraction) * delta) % 360.0
+
+
+def trajectory_heading_at_phase(
+    pose_rows: Sequence[Sequence[float]], phase_s: float
+) -> float:
+    """Interpolate canonical heading between rows bracketing a scene phase."""
+    if len(pose_rows) < 2:
+        raise ValueError("trajectory requires at least two pose rows")
+    times = [float(row[4]) for row in pose_rows]
+    phase = float(phase_s)
+    if phase <= times[0]:
+        index, fraction = 0, 0.0
+    elif phase >= times[-1]:
+        index, fraction = len(times) - 2, 1.0
+    else:
+        index = int(np.searchsorted(times, phase, side="right")) - 1
+        duration = times[index + 1] - times[index]
+        if duration <= 0.0:
+            raise ValueError("trajectory timestamps must increase")
+        fraction = (phase - times[index]) / duration
+    return interpolate_heading_degrees(
+        float(pose_rows[index][3]),
+        float(pose_rows[index + 1][3]),
+        fraction,
+    )
+
+
+def parity_sample_passes(
+    *,
+    projection_error_m: float,
+    abs_phase_error_s: float,
+    segment_speed_mps: float,
+    position_error_m: float,
+    heading_error_deg: float,
+) -> bool:
+    """Apply moving-segment or stationary-segment ship parity gates."""
+    heading_passed = heading_error_deg <= HEADING_TOLERANCE_DEG
+    if segment_speed_mps < STATIONARY_SPEED_MPS:
+        return heading_passed and position_error_m <= POSITION_TOLERANCE_M
+    return (
+        heading_passed
+        and projection_error_m <= PROJECTION_TOLERANCE_M
+        and abs_phase_error_s <= PHASE_TOLERANCE_S
+    )
+
+
 def parity_errors(
     actual_ned: Sequence[float],
     actual_heading_deg: float,
@@ -332,14 +415,35 @@ def decode_segmentation_ids(
 
 
 def segmentation_ids_valid(
-    decoded_ids: Iterable[int], mapped_object_ids: Iterable[int]
+    decoded_ids: Iterable[int],
+    mapped_object_ids: Iterable[int],
+    static_object_ids: Iterable[int],
 ) -> bool:
-    """Accept mapped dynamic IDs and the reserved static-instance range."""
-    mapped = {int(value) for value in mapped_object_ids}
-    return all(
-        int(value) == 0 or int(value) in mapped or int(value) >= 21016
-        for value in decoded_ids
+    """Accept only background plus explicitly configured dynamic/static IDs."""
+    valid = (
+        {0}
+        | {int(value) for value in mapped_object_ids}
+        | {int(value) for value in static_object_ids}
     )
+    return all(int(value) in valid for value in decoded_ids)
+
+
+def parse_static_instance_ids(path: str | Path) -> set[int]:
+    """Parse ``actor thermal_id instance_id`` rows from an instance table."""
+    static_ids: set[int] = set()
+    for line_number, line in enumerate(Path(path).read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        fields = line.split()
+        if len(fields) != 3:
+            raise ValueError(f"invalid instance table row {line_number}")
+        try:
+            static_ids.add(int(fields[2]))
+        except ValueError as exc:
+            raise ValueError(f"invalid instance ID on row {line_number}") from exc
+    if not static_ids:
+        raise ValueError("instance table contains no IDs")
+    return static_ids
 
 
 def certification_times(
@@ -367,9 +471,9 @@ def certification_times(
 
 
 def mapped_dynamic_object_ids(mapping: Mapping[str, Any]) -> set[int]:
-    """Collect mapped ship and passenger object IDs."""
+    """Collect mapped ship, passenger, and static-fixture object IDs."""
     result: set[int] = set()
-    for section_name in ("ships", "passengers"):
+    for section_name in ("ships", "passengers", "static_objects"):
         section = mapping.get(section_name, {})
         rows = section.values() if isinstance(section, Mapping) else section
         for row in rows:
@@ -420,10 +524,17 @@ def _progress(report: dict[str, Any], stage: str, detail: str = "") -> None:
 
 
 def _validate_fixture(fixture: Path) -> dict[str, Path]:
-    scenario = fixture / "scenarios" / SCENARIO_NAME
+    mapping_path = fixture / "mapping.json"
+    if mapping_path.is_file():
+        mapping_scenario = json.loads(mapping_path.read_text()).get(
+            "scenario_name", SCENARIO_NAME
+        )
+    else:
+        mapping_scenario = SCENARIO_NAME
+    scenario = fixture / "scenarios" / str(mapping_scenario)
     ships = scenario / "ships"
     required = {
-        "mapping": fixture / "mapping.json",
+        "mapping": mapping_path,
         "manifest": fixture / "manifest.json",
         "settings": fixture / "engine" / "settings_airsim_issue65.json",
     }
@@ -586,238 +697,6 @@ def pause_patiently(
     raise PatientPauseError(max_attempts, last_error) from last_error
 
 
-def warm_up_stepped_playback(
-    freeze: Any,
-    *,
-    step_count: int = 3,
-    step_s: float = 1.0,
-    monotonic: Any = time.monotonic,
-) -> list[float]:
-    """Exercise stepped playback and return each step's wall duration."""
-    if step_count <= 0:
-        raise ValueError("step_count must be positive")
-    durations: list[float] = []
-    for _ in range(step_count):
-        started = monotonic()
-        freeze.step(step_s)
-        durations.append(float(monotonic() - started))
-    return durations
-
-
-def wait_for_pause_window(
-    clock: Any,
-    scenario_start_time_s: float,
-    lead_in_s: float,
-    *,
-    headroom_margin_s: float = PAUSE_HEADROOM_MARGIN_S,
-    poll_interval_s: float = PAUSE_WINDOW_POLL_S,
-    sleep: Any = time.sleep,
-) -> float:
-    """Wait unfrozen for a post-row-boundary pause window with headroom."""
-    while True:
-        phase_s = clock.time() - float(scenario_start_time_s)
-        if not epoch_headroom_available(
-            phase_s, lead_in_s, margin_s=headroom_margin_s
-        ):
-            raise RuntimeError(
-                "insufficient lead-in headroom while waiting for pause alignment: "
-                f"phase_s={phase_s:.6f}, "
-                f"required<={lead_in_s - headroom_margin_s:.6f}"
-            )
-        delay_s = pause_window_delay_s(phase_s)
-        if delay_s == 0.0:
-            return phase_s
-        sleep(min(float(poll_interval_s), delay_s))
-
-
-def prepare_verified_initial_pause(
-    freeze: Any,
-    clock: Any,
-    client: Any,
-    verification_ships: Sequence[Mapping[str, Any]],
-    trajectory_phase_fn: Any,
-    scenario_start_time_s: float,
-    lead_in_s: float,
-    measurements: dict[str, Any],
-    *,
-    progress: Any = None,
-) -> dict[str, Any]:
-    """Align, placement-check, and warm up the initial frozen scene."""
-    attempts: list[dict[str, Any]] = []
-    measurements["pause_alignment_attempts"] = attempts
-    warmup_step_wall_s: list[float] = []
-    measurements["warmup_step_wall_s"] = warmup_step_wall_s
-    pause_rpc_attempts = 0
-    warmup_completed = False
-    paused_clock_status: Mapping[str, Any] | None = None
-    phase_at_pause_s = float("nan")
-    alignment_error_s = float("inf")
-    placement_error_s = float("inf")
-
-    for alignment_attempt in range(1, PAUSE_ALIGNMENT_MAX_ATTEMPTS + 1):
-        phase_at_window_s = wait_for_pause_window(
-            clock, scenario_start_time_s, lead_in_s
-        )
-        try:
-            rpc_attempts = pause_patiently(
-                freeze,
-                max_attempts=3,
-                retry_delay_s=5.0,
-            )
-        except PatientPauseError as exc:
-            pause_rpc_attempts += exc.attempts
-            measurements["pause_attempts"] = pause_rpc_attempts
-            attempts.append(
-                {
-                    "attempt": alignment_attempt,
-                    "phase_at_window_s": phase_at_window_s,
-                    "pause_rpc_attempts": exc.attempts,
-                    "error": str(exc),
-                }
-            )
-            raise
-        pause_rpc_attempts += rpc_attempts
-        measurements["pause_attempts"] = pause_rpc_attempts
-        current_clock_status = clock.status()
-        paused_clock_status = current_clock_status
-        phase_at_pause_s = (
-            float(current_clock_status["frozen_ns"]) / 1e9
-            - scenario_start_time_s
-        )
-        alignment_error_s = pause_alignment_error_s(phase_at_pause_s)
-        clock_aligned = pause_alignment_acceptable(phase_at_pause_s)
-        has_headroom = epoch_headroom_available(
-            phase_at_pause_s,
-            lead_in_s,
-            margin_s=PAUSE_HEADROOM_MARGIN_S,
-        )
-        ship_phase_samples: list[dict[str, Any]] = []
-        placement_aligned = False
-        attempt_placement_error_s: float | None = None
-        if clock_aligned and has_headroom:
-            ship_phase_samples = sample_ship_trajectory_phases(
-                client,
-                verification_ships,
-                trajectory_phase_fn,
-            )
-            for sample in ship_phase_samples:
-                sample["phase_error_s"] = abs(
-                    sample["trajectory_phase_s"] - phase_at_pause_s
-                )
-            attempt_placement_error_s = pause_placement_error_s(
-                phase_at_pause_s, ship_phase_samples
-            )
-            placement_error_s = attempt_placement_error_s
-            placement_aligned = pause_placement_acceptable(
-                phase_at_pause_s, ship_phase_samples
-            )
-
-        pre_warmup: dict[str, Any] | None = None
-        warmup_performed = False
-        if clock_aligned and placement_aligned and not warmup_completed:
-            pre_warmup = {
-                "frozen_phase_s": phase_at_pause_s,
-                "alignment_error_s": alignment_error_s,
-                "pause_placement_error_s": attempt_placement_error_s,
-                "ships": [dict(sample) for sample in ship_phase_samples],
-            }
-            if progress is not None:
-                progress(
-                    "warmup",
-                    "exercising three one-second stepped-playback calls",
-                )
-            warmup_step_wall_s.extend(warm_up_stepped_playback(freeze))
-            warmup_completed = True
-            warmup_performed = True
-            current_clock_status = clock.status()
-            paused_clock_status = current_clock_status
-            phase_at_pause_s = (
-                float(current_clock_status["frozen_ns"]) / 1e9
-                - scenario_start_time_s
-            )
-            alignment_error_s = pause_alignment_error_s(phase_at_pause_s)
-            clock_aligned = pause_alignment_acceptable(phase_at_pause_s)
-            has_headroom = epoch_headroom_available(
-                phase_at_pause_s,
-                lead_in_s,
-                margin_s=PAUSE_HEADROOM_MARGIN_S,
-            )
-            ship_phase_samples = []
-            placement_aligned = False
-            attempt_placement_error_s = None
-            if has_headroom:
-                ship_phase_samples = sample_ship_trajectory_phases(
-                    client,
-                    verification_ships,
-                    trajectory_phase_fn,
-                )
-                for sample in ship_phase_samples:
-                    sample["phase_error_s"] = abs(
-                        sample["trajectory_phase_s"] - phase_at_pause_s
-                    )
-                attempt_placement_error_s = pause_placement_error_s(
-                    phase_at_pause_s, ship_phase_samples
-                )
-                placement_error_s = attempt_placement_error_s
-                placement_aligned = pause_placement_acceptable(
-                    phase_at_pause_s, ship_phase_samples
-                )
-            aligned = placement_aligned
-        else:
-            aligned = clock_aligned and placement_aligned
-
-        attempts.append(
-            {
-                "attempt": alignment_attempt,
-                "phase_at_window_s": phase_at_window_s,
-                "frozen_phase_s": phase_at_pause_s,
-                "alignment_error_s": alignment_error_s,
-                "pause_placement_error_s": attempt_placement_error_s,
-                "pause_rpc_attempts": rpc_attempts,
-                "clock_aligned": clock_aligned,
-                "placement_aligned": placement_aligned,
-                "ships": ship_phase_samples,
-                "warmup_performed": warmup_performed,
-                "pre_warmup": pre_warmup,
-                "aligned": aligned,
-                "epoch_headroom": has_headroom,
-            }
-        )
-        if not has_headroom:
-            raise RuntimeError(
-                "insufficient lead-in headroom at initial pause: "
-                f"phase_at_pause_s={phase_at_pause_s:.6f}, "
-                f"required<={lead_in_s - PAUSE_HEADROOM_MARGIN_S:.6f}"
-            )
-        if aligned:
-            break
-        if alignment_attempt == PAUSE_ALIGNMENT_MAX_ATTEMPTS:
-            ship_details = ", ".join(
-                f"ship {sample['id']}: "
-                f"trajectory_phase_s={sample['trajectory_phase_s']:.6f}"
-                for sample in ship_phase_samples
-            )
-            raise RuntimeError(
-                "placement-aligned initial pause failed after "
-                f"{PAUSE_ALIGNMENT_MAX_ATTEMPTS} attempts; "
-                f"frozen_phase_s={phase_at_pause_s:.6f}; "
-                f"{ship_details or 'no ship phases sampled'}"
-            )
-        freeze.resume()
-
-    assert paused_clock_status is not None
-    measurements["clock_at_initial_pause"] = paused_clock_status
-    measurements["phase_at_pause_s"] = phase_at_pause_s
-    measurements["pause_alignment_error_s"] = alignment_error_s
-    measurements["pause_placement_error_s"] = placement_error_s
-    return {
-        "clock_status": paused_clock_status,
-        "phase_at_pause_s": phase_at_pause_s,
-        "alignment_error_s": alignment_error_s,
-        "placement_error_s": placement_error_s,
-    }
-
-
 def reconcile_cleanup_failure(
     report: dict[str, Any],
     primary_error: BaseException | None,
@@ -852,18 +731,37 @@ def _load_ships(ships_directory: Path) -> list[dict[str, Any]]:
     return ships
 
 
-def _load_scene_clock_verification_ships(
-    ships_directory: Path,
-) -> list[dict[str, Any]]:
-    """Load the same lexicographic first-three ships used by SceneClock."""
+def _load_verification_ships(ships_directory: Path) -> list[dict[str, Any]]:
     ships = [
         json.loads(path.read_text())
         for path in sorted(ships_directory.glob("*.json"))
         if path.stem.isdigit()
     ][:3]
     if [int(ship["id"]) for ship in ships] != [1, 10, 11]:
-        raise ValueError("scene-clock verification ships must be 1, 10, and 11")
+        raise ValueError("verification ships must be 1, 10, and 11")
     return ships
+
+
+def _read_ship_phases(
+    client: Any,
+    ships: Sequence[Mapping[str, Any]],
+    *,
+    centers_s: Mapping[str, float] | None = None,
+    window_s: float | None = None,
+) -> dict[str, float]:
+    phases: dict[str, float] = {}
+    for ship in ships:
+        ship_id = str(int(ship["id"]))
+        position = client.simGetObjectPose(ship["name"]).position
+        center_s = centers_s.get(ship_id) if centers_s is not None else None
+        phase_s, _, _ = measure_ship_phase(
+            ship["pose"],
+            [position.x_val, position.y_val, position.z_val],
+            center_s=center_s,
+            window_s=window_s,
+        )
+        phases[ship_id] = phase_s
+    return phases
 
 
 def _sample_ship_parity(
@@ -874,8 +772,9 @@ def _sample_ship_parity(
     timestamp_indexes: Mapping[int, Mapping[float, int]],
     lead_in_s: float,
 ) -> None:
+    expected_phase_s = float(lead_in_s) + float(mission_time_s)
     for ship in ships:
-        expected_ned, expected_heading, index = expected_ship_pose(
+        expected_ned, _, index = expected_ship_pose(
             ship,
             mission_time_s,
             lead_in_s=lead_in_s,
@@ -884,42 +783,175 @@ def _sample_ship_parity(
         pose = client.simGetObjectPose(ship["name"])
         actual_ned = _vector(pose.position)
         actual_heading = _yaw_degrees(pose.orientation)
+        measured_phase_s, projection_error_m, segment_speed_mps = (
+            measure_ship_phase(
+                ship["pose"],
+                actual_ned,
+                center_s=expected_phase_s,
+                window_s=5.0,
+            )
+        )
+        # Heading is phase-compensated: compare against the trajectory heading
+        # at the ship's MEASURED phase, not the nominal phase. At ~50 deg/s
+        # turn rates a 0.25 s phase jitter would otherwise produce spurious
+        # ~12 deg heading errors (the position check is already phase-free
+        # via the projection metric).
+        expected_heading = trajectory_heading_at_phase(ship["pose"], measured_phase_s)
         position_error, heading_error = parity_errors(
             actual_ned, actual_heading, expected_ned, expected_heading
         )
+        abs_phase_error_s = abs(measured_phase_s - expected_phase_s)
+        sample_passed = parity_sample_passes(
+            projection_error_m=projection_error_m,
+            abs_phase_error_s=abs_phase_error_s,
+            segment_speed_mps=segment_speed_mps,
+            position_error_m=position_error,
+            heading_error_deg=heading_error,
+        )
         record = per_ship[str(int(ship["id"]))]
-        record["max_abs_position_error_m"] = max(
-            record["max_abs_position_error_m"], position_error
-        )
-        record["max_heading_error_deg"] = max(
-            record["max_heading_error_deg"], heading_error
-        )
-        if position_error >= record["max_abs_position_error_m"]:
+        if position_error > record["max_abs_position_error_m"]:
+            record["max_abs_position_error_m"] = position_error
             record["worst_position_time_s"] = mission_time_s
             record["worst_position_pose_index"] = index
-        if heading_error >= record["max_heading_error_deg"]:
+        if projection_error_m > record["max_projection_error_m"]:
+            record["max_projection_error_m"] = projection_error_m
+            record["worst_projection_time_s"] = mission_time_s
+        if abs_phase_error_s > record["max_abs_phase_error_s"]:
+            record["max_abs_phase_error_s"] = abs_phase_error_s
+            record["worst_phase_time_s"] = mission_time_s
+        if heading_error > record["max_heading_error_deg"]:
+            record["max_heading_error_deg"] = heading_error
             record["worst_heading_time_s"] = mission_time_s
+        record["passed"] = bool(record["passed"] and sample_passed)
+        record["samples"].append(
+            {
+                "mission_time_s": mission_time_s,
+                "expected_phase_s": expected_phase_s,
+                "measured_phase_s": measured_phase_s,
+                "projection_error_m": projection_error_m,
+                "abs_phase_error_s": abs_phase_error_s,
+                "segment_speed_mps": segment_speed_mps,
+                "position_error_m": position_error,
+                "heading_error_deg": heading_error,
+                "stationary": segment_speed_mps < STATIONARY_SPEED_MPS,
+                "passed": sample_passed,
+            }
+        )
 
 
-def _sample_aircraft(client: Any, mission_time_s: float) -> dict[str, Any]:
+def _sample_aircraft(
+    client: Any,
+    mission_time_s: float,
+    *,
+    expected_ned: Sequence[float] = INITIAL_AIRCRAFT_NED_M,
+    expected_yaw_degrees: float = INITIAL_AIRCRAFT_YAW_DEGREES,
+) -> dict[str, Any]:
     state = client.getMultirotorState(vehicle_name=VEHICLE_NAME)
     kinematics = state.kinematics_estimated
     actual_ned = _vector(kinematics.position)
     actual_heading = _yaw_degrees(kinematics.orientation)
-    expected_ned = [0.0, 0.0, -25.0]
+    expected = [float(value) for value in expected_ned]
     position_error, heading_error = parity_errors(
-        actual_ned, actual_heading, expected_ned, 270.0
+        actual_ned, actual_heading, expected, expected_yaw_degrees
     )
     return {
         "mission_time_s": mission_time_s,
         "sensor_timestamp_ns": int(state.timestamp),
-        "expected_ned_m": expected_ned,
-        "expected_yaw_degrees": 270.0,
+        "expected_ned_m": expected,
+        "expected_yaw_degrees": expected_yaw_degrees,
         "actual": _pose_record(kinematics.position, kinematics.orientation),
         "max_abs_position_error_m": position_error,
         "heading_error_deg": heading_error,
         "passed": pose_within_tolerance(position_error, heading_error),
     }
+
+
+def _verify_aircraft_pose(
+    client: Any,
+    ned_m: Sequence[float] = INITIAL_AIRCRAFT_NED_M,
+    yaw_degrees: float = INITIAL_AIRCRAFT_YAW_DEGREES,
+) -> dict[str, Any]:
+    """Measure the frozen aircraft against a commanded pose."""
+
+    if len(ned_m) != 3:
+        raise ValueError("aircraft NED pose must contain exactly three coordinates")
+    state = client.getMultirotorState(vehicle_name=VEHICLE_NAME)
+    kinematics = state.kinematics_estimated
+    measured_ned = _vector(kinematics.position)
+    measured_heading = _yaw_degrees(kinematics.orientation)
+    position_error, heading_error = parity_errors(
+        measured_ned, measured_heading, ned_m, yaw_degrees
+    )
+    return {
+        "commanded": {
+            "ned_m": [float(value) for value in ned_m],
+            "yaw_degrees": float(yaw_degrees),
+        },
+        "measured": _pose_record(
+            kinematics.position, kinematics.orientation
+        ),
+        "sensor_timestamp_ns": int(state.timestamp),
+        "max_abs_position_error_m": position_error,
+        "heading_error_deg": heading_error,
+        "passed": pose_within_tolerance(position_error, heading_error),
+    }
+
+
+def _place_aircraft_pose(
+    client: Any, ned_m: Sequence[float], yaw_degrees: float
+) -> None:
+    """Teleport the uncontrolled aircraft to a frozen NED pose."""
+
+    import airsim
+
+    if len(ned_m) != 3:
+        raise ValueError("aircraft NED pose must contain exactly three coordinates")
+    client.enableApiControl(True, vehicle_name=VEHICLE_NAME)
+    client.simSetVehiclePose(
+        airsim.Pose(
+            airsim.Vector3r(*(float(value) for value in ned_m)),
+            airsim.to_quaternion(0.0, 0.0, math.radians(yaw_degrees)),
+        ),
+        True,
+        vehicle_name=VEHICLE_NAME,
+    )
+
+
+def _place_aircraft_initial_pose(
+    client: Any,
+    ned_m: tuple[float, float, float] = INITIAL_AIRCRAFT_NED_M,
+    yaw_degrees: float = INITIAL_AIRCRAFT_YAW_DEGREES,
+) -> None:
+    """Teleport the uncontrolled aircraft to the canonical initial pose."""
+
+    _place_aircraft_pose(client, ned_m, yaw_degrees)
+
+
+def _record_segmentation_probe_pose(
+    report: dict[str, Any],
+    mission_time_s: float,
+    measured_min_ship_phase_s: float,
+    aircraft_pose: Mapping[str, Any],
+) -> None:
+    """Persist probe pose diagnostics before enforcing pose tolerance."""
+
+    record = {
+        "mission_time_s": float(mission_time_s),
+        "flush_step_s": SEGMENTATION_PROBE_FLUSH_STEP_S,
+        "measured_min_ship_phase_s": float(measured_min_ship_phase_s),
+        "aircraft_pose": dict(aircraft_pose),
+    }
+    report.setdefault("measurements", {})["segmentation_probe"] = record
+    if not aircraft_pose["passed"]:
+        raise RuntimeError(
+            "segmentation probe aircraft pose verification failed: "
+            f"mission_time_s={mission_time_s}, "
+            f"commanded={aircraft_pose.get('commanded')}, "
+            f"measured={aircraft_pose.get('measured')}, "
+            f"max_abs_position_error_m="
+            f"{aircraft_pose.get('max_abs_position_error_m')}, "
+            f"heading_error_deg={aircraft_pose.get('heading_error_deg')}"
+        )
 
 
 def _save_png(response: Any, destination: Path) -> None:
@@ -942,9 +974,15 @@ def _capture_sample(
     client: Any,
     airsim: Any,
     mission_time_s: float,
-    clock_context: Mapping[str, Any],
     samples_directory: Path,
     mapped_ids: set[int],
+    ships: Sequence[Mapping[str, Any]],
+    lead_in_s: float,
+    measured_min_ship_phase_s: float,
+    static_ids: set[int],
+    aircraft_pose: Mapping[str, Any],
+    *,
+    sleep: Any = time.sleep,
 ) -> dict[str, Any]:
     requests = [
         airsim.ImageRequest("front_center_custom", airsim.ImageType.Scene, False, False),
@@ -954,7 +992,20 @@ def _capture_sample(
         airsim.ImageRequest("third_person_demo", airsim.ImageType.Scene, False, False),
     ]
     host_started_ns = time.time_ns()
-    responses = client.simGetImages(requests, vehicle_name=VEHICLE_NAME)
+    capture_attempts = 0
+    responses: Sequence[Any] | None = None
+    for capture_attempts in range(1, 4):
+        try:
+            responses = client.simGetImages(
+                requests, vehicle_name=VEHICLE_NAME
+            )
+        except Exception:
+            if capture_attempts >= 3:
+                raise
+            sleep(2.0)
+        else:
+            break
+    assert responses is not None
     host_received_ns = time.time_ns()
     if len(responses) != 3:
         raise RuntimeError(f"expected three image responses, received {len(responses)}")
@@ -962,18 +1013,12 @@ def _capture_sample(
     labels = ("front-rgb", "front-seg", "third-rgb")
     response_records: list[dict[str, Any]] = []
     dimensions_passed = True
-    skew_passed = True
     segmentation_counts: Counter[int] | None = None
+    timestamps = [int(response.time_stamp) for response in responses]
+    timestamps_identical = len(set(timestamps)) == 1
     for label, response in zip(labels, responses):
         width, height = int(response.width), int(response.height)
         dimensions_passed = dimensions_passed and (width, height) == (1920, 1080)
-        skew_s = image_pose_skew_s(
-            int(response.time_stamp),
-            mission_time_s,
-            sensor_epoch_ns=int(clock_context["sensor_epoch_ns"]),
-            mission_epoch_s=float(clock_context["mission_epoch_s"]),
-        )
-        skew_passed = skew_passed and skew_within_tolerance(skew_s)
         output_path = samples_directory / (
             f"{_display_time(mission_time_s)}s_{label}.png"
         )
@@ -987,8 +1032,6 @@ def _capture_sample(
                 "camera_pose": _pose_record(
                     response.camera_position, response.camera_orientation
                 ),
-                "image_pose_skew_s": skew_s,
-                "skew_passed": skew_within_tolerance(skew_s),
                 "path": str(output_path),
             }
         )
@@ -1000,22 +1043,73 @@ def _capture_sample(
     if segmentation_counts is None:
         raise RuntimeError("segmentation response was not decoded")
     nonzero_ids = sorted(value for value in segmentation_counts if value != 0)
+    valid_ids = {0} | set(mapped_ids) | set(static_ids)
+    unknown_ids = sorted(
+        value for value in segmentation_counts if value not in valid_ids
+    )
     ship_counts = {
         str(object_id): int(segmentation_counts.get(object_id, 0))
         for object_id in range(1, 21)
     }
+    expected_phase_s = float(lead_in_s) + float(mission_time_s)
+    visible_ship_phase_offsets = []
+    for ship in ships:
+        object_id = int(ship["objectId"])
+        pixel_count = int(segmentation_counts.get(object_id, 0))
+        if pixel_count <= 0:
+            continue
+        position = client.simGetObjectPose(ship["name"]).position
+        measured_ned = _vector(position)
+        measured_phase_s, projection_error_m, segment_speed_mps = (
+            measure_ship_phase(
+                ship["pose"],
+                measured_ned,
+                center_s=expected_phase_s,
+                window_s=5.0,
+            )
+        )
+        visible_ship_phase_offsets.append(
+            {
+                "id": int(ship["id"]),
+                "object_id": object_id,
+                "pixel_count": pixel_count,
+                "expected_phase_s": expected_phase_s,
+                "measured_phase_s": measured_phase_s,
+                "phase_offset_s": measured_phase_s - expected_phase_s,
+                "projection_error_m": projection_error_m,
+                "segment_speed_mps": segment_speed_mps,
+            }
+        )
     return {
         "mission_time_s": mission_time_s,
         "host_request_started_ns": host_started_ns,
         "host_received_ns": host_received_ns,
         "host_received_utc": utc_now(),
+        "capture_attempts": capture_attempts,
+        "sensor_timestamp_ns": timestamps[0],
+        "measured_min_ship_phase_s": measured_min_ship_phase_s,
+        "aircraft_pose": dict(aircraft_pose),
         "responses": response_records,
         "dimensions_passed": dimensions_passed,
-        "skew_passed": skew_passed,
+        "timestamps_identical": timestamps_identical,
         "ship_pixel_counts": ship_counts,
+        "visible_ship_phase_offsets": visible_ship_phase_offsets,
         "decoded_nonzero_ids": nonzero_ids,
-        "decoded_ids_valid": segmentation_ids_valid(nonzero_ids, mapped_ids),
+        "unknown_segmentation_ids": unknown_ids,
+        "decoded_ids_valid": segmentation_ids_valid(
+            segmentation_counts, mapped_ids, static_ids
+        ),
     }
+
+
+def _require_beat_landing(landing: Mapping[str, Any]) -> None:
+    """Fail before sampling any beat outside the landing tolerance."""
+    if not beat_landing_passed(landing["landing_errors_s"]):
+        raise RuntimeError(
+            "beat landed outside tolerance: "
+            f"target={landing['target_phase_s']}, "
+            f"errors={landing['landing_errors_s']}"
+        )
 
 
 def _coverage(
@@ -1048,16 +1142,16 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
             "preflight_passed": False,
             "rpc_ready": False,
             "initial_pause_acknowledged": False,
-            "epoch_headroom": False,
             "ships_spawned": False,
-            "scene_clock_connected": False,
-            "epoch_covers_zero": False,
+            "epoch_headroom": False,
+            "coverage_passed": False,
+            "hold_passed": False,
+            "beats_landed_passed": True,
+            "final_beat_passed": False,
             "parity_passed": False,
             "aircraft_initial_pose_passed": False,
             "captures_passed": False,
             "segmentation_passed": False,
-            "coverage_passed": False,
-            "final_prepare_passed": False,
             "configuration_restored": False,
         },
         "measurements": {},
@@ -1074,7 +1168,6 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
     }
     process = None
     launch_clock = None
-    owner = None
     initial_freeze = None
     swap: EngineConfigSwap | None = None
     try:
@@ -1082,6 +1175,10 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
             args.lead_in_s, fixture / "manifest.json"
         )
         report["measurements"]["lead_in_s"] = lead_in_s
+        report["measurements"]["phase_lookup_window_s"] = {
+            "landing": 12.0,
+            "parity": 5.0,
+        }
         _progress(report, "preflight", "checking ports and fixture files")
         preflight_ports_free({int(args.airsim_port), 41451})
         paths = _validate_fixture(fixture)
@@ -1093,13 +1190,16 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
 
         mapping = json.loads(paths["mapping"].read_text())
         mapped_ids = mapped_dynamic_object_ids(mapping)
+        static_ids = parse_static_instance_ids(INSTANCE_OBJECT_IDS)
         ships = _load_ships(paths["ships"])
-        verification_ships = _load_scene_clock_verification_ships(paths["ships"])
+        verification_ships = _load_verification_ships(paths["ships"])
         timestamp_indexes = {
             int(ship["id"]): trajectory_timestamp_index(ship) for ship in ships
         }
         status_dir = output / "status"
-        scenario_times_path = status_dir / SCENARIO_NAME / "scenario_times.json"
+        scenario_times_path = (
+            status_dir / paths["scenario"].name / "scenario_times.json"
+        )
         swap = EngineConfigSwap(
             ENGINE_CONFIG,
             ENGINE_OBJECT_IDS,
@@ -1119,10 +1219,6 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     FullFreeze,
                     build_shim,
                 )
-                from onr_physical_runtime.sim.experimental_freeze.scene_clock import (
-                    SceneClock,
-                    trajectory_phase,
-                )
 
                 shim_directory = output / "shim"
                 library = build_shim(shim_directory)
@@ -1141,6 +1237,12 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                         paths["settings"],
                         output / "engine.log",
                         cuda_device=2,
+                        # Vulkan ignores SDL_HINT_CUDA_DEVICE; without the
+                        # explicit adapter the engine renders on GPU 0, where
+                        # the resident vLLM allocation leaves ~4 GB and the
+                        # first 1080p capture OOMs the Vulkan RHI (attempts
+                        # 9-10). Probe4 captures passed on GPU 2 (24 GB free).
+                        extra_args=("-graphicsadapter=2",),
                     )
                 report["provenance"]["engine_command"] = [
                     str(ENGINE_EXECUTABLE),
@@ -1149,6 +1251,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     "-ResX=640",
                     "-ResY=480",
                     "-windowed",
+                    "-graphicsadapter=2",
                     f"-settings={paths['settings']}",
                 ]
 
@@ -1188,29 +1291,26 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 scenario_start_time_s = float(
                     scenario_times["scenario_start_time"]
                 )
-                pause_result = prepare_verified_initial_pause(
-                    initial_freeze,
-                    launch_clock,
-                    patient_client,
-                    verification_ships,
-                    trajectory_phase,
-                    scenario_start_time_s,
-                    lead_in_s,
-                    report["measurements"],
-                    progress=lambda stage, detail: _progress(
-                        report, stage, detail
-                    ),
+                pause_attempts = pause_patiently(
+                    initial_freeze, max_attempts=3, retry_delay_s=5.0
                 )
-                phase_at_pause_s = float(pause_result["phase_at_pause_s"])
                 pause_ack = time.monotonic()
+                paused_clock_status = launch_clock.status()
+                phase_at_pause_s = (
+                    float(paused_clock_status["frozen_ns"]) / 1e9
+                    - scenario_start_time_s
+                )
+                report["measurements"]["pause_attempts"] = pause_attempts
+                report["measurements"]["clock_at_initial_pause"] = (
+                    paused_clock_status
+                )
+                report["measurements"]["phase_at_pause_s"] = phase_at_pause_s
                 report["checks"]["initial_pause_acknowledged"] = True
                 report["measurements"]["launch_to_pause_ack_s"] = (
                     pause_ack - launch_started
                 )
                 report["checks"]["epoch_headroom"] = epoch_headroom_available(
-                    phase_at_pause_s,
-                    lead_in_s,
-                    margin_s=PAUSE_HEADROOM_MARGIN_S,
+                    phase_at_pause_s, lead_in_s
                 )
                 _progress(
                     report,
@@ -1221,8 +1321,55 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     raise RuntimeError(
                         "insufficient lead-in headroom at initial pause: "
                         f"phase_at_pause_s={phase_at_pause_s:.6f}, "
-                        f"required<={lead_in_s - PAUSE_HEADROOM_MARGIN_S:.6f}"
+                        f"required<={lead_in_s - 2.0:.6f}"
                     )
+                client = patient_client
+
+                def read_verification_state(
+                    centers_s: Mapping[str, float] | None = None,
+                    window_s: float | None = None,
+                ) -> dict[str, Any]:
+                    state = client.getMultirotorState(vehicle_name=VEHICLE_NAME)
+                    return {
+                        "sensor_ns": int(state.timestamp),
+                        "phases": _read_ship_phases(
+                            client,
+                            verification_ships,
+                            centers_s=centers_s,
+                            window_s=window_s,
+                        ),
+                    }
+
+                _progress(report, "hold", "verifying five-second frozen hold")
+                hold_before = read_verification_state()
+                time.sleep(5.0)
+                hold_after = read_verification_state(
+                    hold_before["phases"], 5.0
+                )
+                hold_ship_deltas = {
+                    ship_id: hold_after["phases"][ship_id] - phase
+                    for ship_id, phase in hold_before["phases"].items()
+                }
+                hold_sensor_delta_ns = (
+                    hold_after["sensor_ns"] - hold_before["sensor_ns"]
+                )
+                report["measurements"]["hold_check"] = {
+                    "before": hold_before,
+                    "after": hold_after,
+                    "sensor_delta_ns": hold_sensor_delta_ns,
+                    "ship_phase_deltas_s": hold_ship_deltas,
+                }
+                report["checks"]["hold_passed"] = (
+                    hold_sensor_delta_ns == 0
+                    and all(delta == 0.0 for delta in hold_ship_deltas.values())
+                )
+                if not report["checks"]["hold_passed"]:
+                    raise RuntimeError("frozen hold changed sensor or ship phase")
+
+                _progress(report, "aircraft", "placing canonical initial pose")
+                _place_aircraft_initial_pose(
+                    client, args.initial_aircraft_ned, args.initial_aircraft_yaw
+                )
                 (output / "scenario_times.engine.json").write_bytes(
                     scenario_times_bytes
                 )
@@ -1235,68 +1382,32 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                     "coverage",
                     f"scenario coverage is {coverage_s:.3f} seconds",
                 )
-
-                _progress(report, "scene-clock", "connecting asynchronous follower")
-                from onr_physical_runtime.synchronization import NedPose
-
-                initial_pose = NedPose(
-                    north_m=0.0,
-                    east_m=0.0,
-                    down_m=-25.0,
-                    yaw_degrees=270.0,
+                capture_epoch = {
+                    "lead_in_s": lead_in_s,
+                    "phase_at_pause_s": phase_at_pause_s,
+                    "scenario_times": scenario_times,
+                    "model": "stepped-beat-v4",
+                }
+                (output / "capture-epoch.json").write_text(
+                    json.dumps(capture_epoch, indent=2) + "\n"
                 )
-                owner = SceneClock.connect(
-                    state_path,
-                    scenario_times_path,
-                    paths["ships"],
-                    vehicle=VEHICLE_NAME,
-                    initial_pose=initial_pose,
-                    runtime_id="issue65-bounded-certification",
-                    mode="asynchronous_follower",
-                    grid_cell_m=10.0,
-                    airsim_port=int(args.airsim_port),
-                    report_path=output / "scene-epoch.json",
-                )
-                report["checks"]["scene_clock_connected"] = True
-                launch_clock.close()
-                launch_clock = None
-                initial_freeze = None
-                client = owner.freeze.client
-                epoch_raw_s = float(owner.clock_context["mission_epoch_s"])
-                mission_epoch_effective_s = effective_mission_epoch(
-                    epoch_raw_s, lead_in_s
-                )
-                owner.clock_context["mission_epoch_s"] = mission_epoch_effective_s
-                owner._last_request = mission_epoch_effective_s
-                context = dict(owner.clock_context)
-                report["measurements"]["scene_clock_context"] = context
-                report["measurements"]["epoch_raw_s"] = epoch_raw_s
-                report["measurements"]["mission_epoch_effective_s"] = (
-                    mission_epoch_effective_s
-                )
-                if mission_epoch_effective_s > 0.0:
-                    raise RuntimeError(
-                        "effective scene-clock epoch does not cover mission zero: "
-                        f"epoch_raw_s={epoch_raw_s:.6f}, "
-                        f"lead_in_s={lead_in_s:.6f}, "
-                        f"mission_epoch_effective_s={mission_epoch_effective_s:.6f}"
-                    )
-                try:
-                    owner.prepare(0.0)
-                except Exception as exc:
-                    raise RuntimeError(
-                        "effective scene-clock epoch could not prepare mission zero"
-                    ) from exc
-                report["checks"]["epoch_covers_zero"] = True
 
                 parity_times = certification_times(
                     float(args.dense_end_s),
                     int(args.dense_step_ticks),
                     int(args.sparse_step_ticks),
+                    final_time_s=float(args.final_beat_time_s),
                 )
                 capture_times = sorted({_time_key(value) for value in args.capture_times_s})
+                probe_time = float(args.segmentation_probe_time_s)
+                if not math.isfinite(probe_time):
+                    raise ValueError("segmentation probe time must be finite")
+                probe_time_key = _time_key(probe_time) if probe_time >= 0.0 else None
+                probe_times = set() if probe_time_key is None else {probe_time_key}
                 all_times = sorted(
-                    {_time_key(value) for value in parity_times} | set(capture_times)
+                    {_time_key(value) for value in parity_times}
+                    | set(capture_times)
+                    | probe_times
                 )
                 parity_time_keys = {_time_key(value) for value in parity_times}
                 capture_time_keys = set(capture_times)
@@ -1305,30 +1416,86 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                         "name": ship["name"],
                         "object_id": int(ship["objectId"]),
                         "max_abs_position_error_m": 0.0,
+                        "max_projection_error_m": 0.0,
+                        "max_abs_phase_error_s": 0.0,
                         "max_heading_error_deg": 0.0,
                         "worst_position_time_s": None,
                         "worst_position_pose_index": None,
+                        "worst_projection_time_s": None,
+                        "worst_phase_time_s": None,
                         "worst_heading_time_s": None,
+                        "passed": True,
+                        "samples": [],
                     }
                     for ship in ships
                 }
                 captures: list[dict[str, Any]] = []
+                probe_sample: dict[str, Any] | None = None
+                probe_expected_ids: list[int] = []
                 aircraft: dict[str, Any] | None = None
+                beat_landings: list[dict[str, Any]] = []
+                report["measurements"]["beat_landings"] = beat_landings
+                phase_centers = dict(hold_after["phases"])
+
+                def read_beat_phases() -> dict[str, float]:
+                    phases = _read_ship_phases(
+                        client,
+                        verification_ships,
+                        centers_s=phase_centers,
+                        window_s=12.0,
+                    )
+                    phase_centers.update(phases)
+                    return phases
+
                 _progress(
                     report,
                     "sampling",
                     f"{len(parity_times)} parity boundaries and {len(capture_times)} captures",
                 )
                 for mission_time_s in all_times:
-                    owner.prepare(mission_time_s)
-                    if mission_time_s == 299.5:
-                        report["checks"]["final_prepare_passed"] = True
-                        report["measurements"]["phase_at_final_prepare_s"] = (
-                            float(owner.freeze.clock.status()["frozen_ns"]) / 1e9
-                            - float(scenario_times["scenario_start_time"])
-                        )
+                    target_phase_s = float(lead_in_s) + mission_time_s
+                    landing = advance_to_phase(
+                        initial_freeze,
+                        read_beat_phases,
+                        target_phase_s,
+                    )
+                    landing_passed = beat_landing_passed(
+                        landing["landing_errors_s"]
+                    )
+                    landing["mission_time_s"] = mission_time_s
+                    landing["passed"] = landing_passed
+                    beat_landings.append(landing)
+                    report["checks"]["beats_landed_passed"] = bool(
+                        report["checks"]["beats_landed_passed"]
+                        and landing_passed
+                    )
+                    if mission_time_s == float(args.final_beat_time_s):
+                        report["checks"]["final_beat_passed"] = landing_passed
+                    _require_beat_landing(landing)
                     if mission_time_s == 0.0:
-                        aircraft = _sample_aircraft(client, mission_time_s)
+                        _place_aircraft_initial_pose(
+                            client,
+                            args.initial_aircraft_ned,
+                            args.initial_aircraft_yaw,
+                        )
+                        aircraft_pose = _verify_aircraft_pose(
+                            client,
+                            ned_m=args.initial_aircraft_ned,
+                            yaw_degrees=args.initial_aircraft_yaw,
+                        )
+                        report["measurements"]["aircraft_pose_at_t0"] = (
+                            aircraft_pose
+                        )
+                        if not aircraft_pose["passed"]:
+                            raise RuntimeError(
+                                "aircraft pose verification failed at mission t=0"
+                            )
+                        aircraft = _sample_aircraft(
+                            client,
+                            mission_time_s,
+                            expected_ned=args.initial_aircraft_ned,
+                            expected_yaw_degrees=args.initial_aircraft_yaw,
+                        )
                     if mission_time_s in parity_time_keys:
                         _sample_ship_parity(
                             client,
@@ -1338,15 +1505,101 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                             timestamp_indexes,
                             lead_in_s,
                         )
+                    if mission_time_s == probe_time_key:
+                        _place_aircraft_pose(
+                            client,
+                            tuple(args.segmentation_probe_ned),
+                            args.segmentation_probe_yaw,
+                        )
+                        # Render one fresh frame after teleport while bounding drift.
+                        initial_freeze.step(SEGMENTATION_PROBE_FLUSH_STEP_S)
+                        measured_min_ship_phase_s = min(
+                            read_beat_phases().values()
+                        )
+                        probe_aircraft_pose = _verify_aircraft_pose(
+                            client,
+                            ned_m=tuple(args.segmentation_probe_ned),
+                            yaw_degrees=args.segmentation_probe_yaw,
+                        )
+                        _record_segmentation_probe_pose(
+                            report,
+                            mission_time_s,
+                            measured_min_ship_phase_s,
+                            probe_aircraft_pose,
+                        )
+                        probe_expected_ids = sorted(
+                            expected_probe_visible_ship_ids(
+                                ships,
+                                mission_time_s,
+                                lead_in_s,
+                                probe_ned_m=tuple(args.segmentation_probe_ned),
+                                probe_yaw_degrees=args.segmentation_probe_yaw,
+                                timestamp_indexes=timestamp_indexes,
+                            )
+                        )
+                        if not probe_expected_ids:
+                            raise RuntimeError(
+                                "segmentation probe pose is stale: fixture has no ships "
+                                f"within {SEGMENTATION_PROBE_HALF_FOV_DEGREES:g} degrees "
+                                f"bearing, the {SEGMENTATION_PROBE_PITCH_DOWN_DEGREES:g}-degree "
+                                "pitch frustum, and "
+                                f"{SEGMENTATION_PROBE_MAX_DISTANCE_M:g} m at "
+                                f"mission_time_s={mission_time_s}"
+                            )
+                        probe_sample = _capture_sample(
+                            client,
+                            airsim,
+                            mission_time_s,
+                            output / "samples",
+                            mapped_ids,
+                            ships,
+                            lead_in_s,
+                            measured_min_ship_phase_s,
+                            static_ids,
+                            probe_aircraft_pose,
+                        )
+                        probe_sample.update(
+                            {
+                                "probe": True,
+                                "probe_pose": {
+                                    "ned_m": list(args.segmentation_probe_ned),
+                                    "yaw_degrees": args.segmentation_probe_yaw,
+                                },
+                                "expected_visible_ship_ids": probe_expected_ids,
+                            }
+                        )
+                        captures.append(probe_sample)
                     if mission_time_s in capture_time_keys:
+                        _place_aircraft_initial_pose(
+                            client,
+                            args.initial_aircraft_ned,
+                            args.initial_aircraft_yaw,
+                        )
+                        aircraft_pose = _verify_aircraft_pose(
+                            client,
+                            ned_m=args.initial_aircraft_ned,
+                            yaw_degrees=args.initial_aircraft_yaw,
+                        )
+                        if not aircraft_pose["passed"]:
+                            raise RuntimeError(
+                                "aircraft pose verification failed before capture: "
+                                f"mission_time_s={mission_time_s}"
+                            )
+                        measured_min_ship_phase_s = min(
+                            read_beat_phases().values()
+                        )
                         captures.append(
                             _capture_sample(
                                 client,
                                 airsim,
                                 mission_time_s,
-                                context,
                                 output / "samples",
                                 mapped_ids,
+                                ships,
+                                lead_in_s,
+                                measured_min_ship_phase_s,
+                                static_ids,
+                                aircraft_pose,
                             )
                         )
 
@@ -1359,22 +1612,31 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 parity_position_max = max(
                     row["max_abs_position_error_m"] for row in per_ship.values()
                 )
+                parity_projection_max = max(
+                    row["max_projection_error_m"] for row in per_ship.values()
+                )
+                parity_phase_max = max(
+                    row["max_abs_phase_error_s"] for row in per_ship.values()
+                )
                 parity_heading_max = max(
                     row["max_heading_error_deg"] for row in per_ship.values()
                 )
-                parity_passed = pose_within_tolerance(
-                    parity_position_max, parity_heading_max
+                parity_passed = all(
+                    bool(row["passed"]) for row in per_ship.values()
                 )
                 report["measurements"]["ship_parity"] = {
                     "sample_times_s": parity_times,
                     "per_ship": per_ship,
                     "max_abs_position_error_m": parity_position_max,
+                    "max_projection_error_m": parity_projection_max,
+                    "max_abs_phase_error_s": parity_phase_max,
                     "max_heading_error_deg": parity_heading_max,
                 }
                 report["checks"]["parity_passed"] = parity_passed
                 report["measurements"]["captures"] = captures
                 report["checks"]["captures_passed"] = bool(captures) and all(
-                    sample["dimensions_passed"] and sample["skew_passed"]
+                    sample["dimensions_passed"]
+                    and sample["timestamps_identical"]
                     for sample in captures
                 )
                 ship_visible = any(
@@ -1384,31 +1646,48 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
                 decoded_ids_valid = all(
                     sample["decoded_ids_valid"] for sample in captures
                 )
+                probe_enabled = probe_time_key is not None
+                probe_expectation_passed = (
+                    probe_sample is not None
+                    and any(
+                        int(probe_sample["ship_pixel_counts"].get(str(ship_id), 0))
+                        > 0
+                        for ship_id in probe_expected_ids
+                    )
+                )
                 report["measurements"]["segmentation"] = {
                     "at_least_one_ship_visible": ship_visible,
                     "all_nonzero_ids_valid": decoded_ids_valid,
                     "mapped_dynamic_object_ids": sorted(mapped_ids),
+                    "probe": {
+                        "enabled": probe_enabled,
+                        "mission_time_s": probe_time_key,
+                        "pose": {
+                            "ned_m": list(args.segmentation_probe_ned),
+                            "yaw_degrees": args.segmentation_probe_yaw,
+                        },
+                        "expected_visible_ship_ids": probe_expected_ids,
+                        "passed": (
+                            probe_expectation_passed if probe_enabled else None
+                        ),
+                    },
                 }
                 report["checks"]["segmentation_passed"] = (
-                    ship_visible and decoded_ids_valid
+                    ship_visible
+                    and decoded_ids_valid
+                    and (probe_expectation_passed if probe_enabled else True)
                 )
             finally:
                 primary_error = sys.exc_info()[1]
                 _progress(report, "teardown", "freezing and stopping the engine")
-                if owner is not None:
-                    try:
-                        owner.close()
-                    except Exception as exc:  # noqa: BLE001 - cleanup must continue
-                        cleanup_errors.append(exc)
-                    owner = None
-                elif initial_freeze is not None:
+                if initial_freeze is not None:
                     try:
                         initial_freeze.pause()
                     except Exception as exc:  # noqa: BLE001 - cleanup must continue
                         cleanup_errors.append(exc)
                 if process is not None:
                     try:
-                        from onr_physical_runtime.sim.experimental_freeze import (
+                        from onr_physical_runtime.sim.processes import (
                             stop_process_group,
                         )
 
@@ -1437,7 +1716,7 @@ def run_certification(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         if process is not None:
             try:
-                from onr_physical_runtime.sim.experimental_freeze import (
+                from onr_physical_runtime.sim.processes import (
                     stop_process_group,
                 )
 
@@ -1489,6 +1768,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sparse-step-ticks", type=int, default=20)
     parser.add_argument(
         "--capture-times-s", type=float, nargs="+", default=[0.0, 30.0, 60.0]
+    )
+    parser.add_argument("--segmentation-probe-time-s", type=float, default=217.0)
+    parser.add_argument(
+        "--initial-aircraft-ned",
+        type=float,
+        nargs=3,
+        default=list(INITIAL_AIRCRAFT_NED_M),
+    )
+    parser.add_argument(
+        "--initial-aircraft-yaw",
+        type=float,
+        default=INITIAL_AIRCRAFT_YAW_DEGREES,
+    )
+    parser.add_argument(
+        "--segmentation-probe-ned",
+        type=float,
+        nargs=3,
+        default=list(SEGMENTATION_PROBE_NED_M),
+    )
+    parser.add_argument(
+        "--segmentation-probe-yaw",
+        type=float,
+        default=SEGMENTATION_PROBE_YAW_DEGREES,
+    )
+    parser.add_argument(
+        "--final-beat-time-s",
+        type=float,
+        default=299.5,
+        help="mission time of the certification's final beat landing",
     )
     return parser
 
