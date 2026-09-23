@@ -58,12 +58,98 @@ def _contains_private_fixture_key(value: object) -> bool:
     return False
 
 
+def aoi_trajectory_audit(run_root: Path, package_path: Path) -> dict[str, object]:
+    """Strict dock-ingress audit of the recorded joint34 ``search_area`` run.
+
+    Feeds recorded public maneuver feedback through the runtime repo's
+    geometry-only judge so the video bundle, the no-LLM smoke, and this
+    terminal gate share one definition of interior traversal (issue #71).
+    """
+
+    from onr_physical_runtime.ingress_audit import (
+        audit_dock_ingress,
+        ned_polygon,
+        samples_from_feedback,
+    )
+
+    def failure(reasons: list[str]) -> dict[str, object]:
+        return {"status": "fail", "failures": reasons, "action_ids": []}
+
+    package = _read(Path(package_path))
+    dock = package["areas"]["dock"]["polygon"]
+    feedback = [
+        value
+        for path in sorted((run_root / "physical-state" / "feedback").glob("*.json"))
+        if isinstance((value := _read(path)), Mapping)
+    ]
+    accepted_ids = sorted(
+        {
+            str(row["command_id"])
+            for row in feedback
+            if row.get("action") == "search_area"
+        }
+    )
+    if not accepted_ids:
+        return failure(["no_accepted_search_area_command"])
+    rows = [
+        row
+        for row in feedback
+        if row.get("action") == "search_area" and row.get("command_id") in accepted_ids
+    ]
+    samples = samples_from_feedback(rows, action="search_area")
+    coverage = [
+        {
+            "mission_time_s": float(row["mission_time_s"]),
+            "cleared_cells": int(row["progress"]["cleared_cells"]),
+            "total_cells": int(row["progress"]["total_cells"]),
+        }
+        for row in rows
+        if isinstance(row.get("progress"), Mapping)
+        and "cleared_cells" in row["progress"]
+        and "total_cells" in row["progress"]
+    ]
+    audit = audit_dock_ingress(
+        action_polygon=ned_polygon(
+            [
+                {"x": float(vertex["x"]), "y": float(vertex["y"])}
+                for vertex in _first_search_polygon(run_root, accepted_ids)
+            ]
+        ),
+        package_polygon=ned_polygon(dock),
+        keep_out_zones=[
+            ned_polygon(zone) for zone in (package.get("keep_out_zones") or ())
+        ],
+        samples=samples,
+        coverage=coverage,
+        search_completed=any(
+            row.get("lifecycle_state") == "completed" for row in rows
+        ),
+    ).to_dict()
+    audit["action_ids"] = accepted_ids
+    audit["action_polygon"] = _first_search_polygon(run_root, accepted_ids)
+    return audit
+
+
+def _first_search_polygon(run_root: Path, command_ids: list[str]) -> list[object]:
+    """The accepted search_area action polygon from the recorded commands."""
+
+    for path in sorted((run_root / "physical-state" / "commands").glob("*.json")):
+        command = _read(path)
+        if (
+            command.get("command_id") in command_ids
+            and command.get("intent", {}).get("action") == "search_area"
+        ):
+            return list(command["intent"]["parameters"]["polygon"])
+    raise ValueError("accepted search_area feedback has no recorded command")
+
+
 def audit_live_demo(
     run_root: Path,
     mission_mode: str,
     *,
     mission_metrics: Mapping[str, object] | None = None,
     mission4_answer_metrics: Mapping[str, object] | None = None,
+    mission4_package: Path | None = None,
 ) -> dict[str, object]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
@@ -224,6 +310,16 @@ def audit_live_demo(
         if _contains_private_fixture_key(latest):
             failures.append("private_fixture_data_exposed")
 
+    ingress: dict[str, object] | None = None
+    if mission_mode == "joint34" and mission4_package is not None:
+        # Issue #71 live-run gate: the recorded search_area maneuver must
+        # have entered and traversed the package area's interior with
+        # increasing coverage, staying inside the area and clear of the
+        # keep-out zones.  Outside-only sensor clearance fails here.
+        ingress = aoi_trajectory_audit(root, Path(mission4_package))
+        if ingress.get("status") != "pass":
+            failures.append("m4_dock_ingress_failed")
+
     audit = {
         "status": "PASS" if not failures else "FAIL",
         "mission_mode": mission_mode,
@@ -240,6 +336,8 @@ def audit_live_demo(
             "reports": m3_reports,
             "block_entered": "mission3_block_not_entered" not in failures,
         }
+        if ingress is not None:
+            audit["aoi_trajectory"] = ingress
     if mission_metrics is not None:
         audit["mission_metrics"] = dict(mission_metrics)
     if mission4_answer_metrics is not None:

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
+
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,12 @@ TICK_S = 0.5
 CHAPTER_SECONDS = 7
 MID_CHAPTER_SECONDS = 6
 FINAL_CHAPTER_SECONDS = 8
+WORLD_OVERVIEW_SIZE_M = 2000.0
+WORLD_OVERVIEW_WINDOW_CELLS = 256
+WORLD_OVERVIEW_RESOLUTION_M = WORLD_OVERVIEW_SIZE_M / WORLD_OVERVIEW_WINDOW_CELLS
+WORLD_OVERVIEW_OVERLAP_CELLS = 32
+WORLD_OVERVIEW_TILE_SIZE = 2
+
 
 
 def objective_phrase(objective: Mapping[str, Any]) -> str:
@@ -406,6 +414,36 @@ OVERLAY_LAYER_SPECS: tuple[tuple[str, str, str, str], ...] = (
             "planner state at the tick, rendered engine-natively under the "
             "overlay pass"
         ),
+    ),
+    (
+        "active_search_boundary",
+        "active_search_polygons",
+        "accepted search_area command intent polygon (replay active maneuver)",
+        (
+            "only while the recorded search_area maneuver is the active "
+            "maneuver; distinct from the static package AOI layer"
+        ),
+    ),
+    (
+        "area_search_plan",
+        "search_path_points",
+        "runtime.env.current_planned_paths['area_search'] reprojected to NED",
+        "only while the recorded search_area maneuver is the active maneuver",
+    ),
+    (
+        "drone_track",
+        "track_points",
+        (
+            "recorded controlled-vehicle NED positions with breadcrumbs "
+            "accumulated during the active search_area maneuver"
+        ),
+        "only while the recorded search_area maneuver is the active maneuver",
+    ),
+    (
+        "search_progress",
+        "progress_labels",
+        "recorded maneuver phase and cleared/total cell progress",
+        "chip drawn only while the recorded search_area maneuver is active",
     ),
     ("legend", "legend", "static pane key", "always drawn"),
 )
@@ -842,6 +880,13 @@ def _verify_world_info(recorded: Mapping[str, Any], replayed: Mapping[str, Any])
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pane", choices=("overview", "local"), default="overview", help=(
+        "world-pane projection: fixed 2 km north-up overview or the "
+        "partition-local window that follows the drone"
+    ))
+    parser.add_argument("--surface-alignment", type=Path, help=(
+        "paired pose/surface alignment audit JSON to embed in the receipts"
+    ))
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--scenario-config", type=Path, required=True)
     parser.add_argument("--mission3-selection", type=Path, required=True)
@@ -851,6 +896,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from PIL import Image
+    from onr.application.live_demo_audit import aoi_trajectory_audit
     from onr.demo.airsim_reconstruction import world_pane
     from onr_physical_runtime.runtime import PhysicalRuntime
     from onr_physical_runtime.scenario import ScenarioConfig
@@ -859,6 +905,8 @@ def main(argv: list[str] | None = None) -> int:
         _load_mission3_time_budget,
         _load_mission4_package,
     )
+    import numpy as np
+
 
     run_root = args.run.resolve()
     output = args.output.resolve()
@@ -894,14 +942,53 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Recorded worker request envelopes, republished at their recorded times.
+    # A terminal agent report (all_found) is part of the recorded ledger
+    # history but never appears in the worker session, so append any finish
+    # request from the recorded Mission 4 requests list.
     requests = [
         (float(entry["at_s"]), entry["result"]["request"])
         for entry in run["worker"]["history"]
         if entry.get("result", {}).get("kind") == "request"
     ]
+    worker_request_ids = {
+        entry["result"]["request"].get("request_id")
+        for entry in run["worker"]["history"]
+        if entry.get("result", {}).get("kind") == "request"
+    }
+    latest_mission4 = run["worlds"][max(run["worlds"])]["world_model_info"]["mission4"]
+    for entry in latest_mission4.get("requests") or ():
+        request = entry.get("request") or {}
+        if (
+            request.get("operation") == "finish"
+            and request.get("request_id") not in worker_request_ids
+        ):
+            requests.append((float(entry["accepted_at_s"]), request))
+    requests.sort(key=lambda item: item[0])
 
     scenario = ScenarioConfig.from_yaml(args.scenario_config)
     _, env, config = scenario.build()
+    pane_overview = args.pane == "overview"
+    overview_converter = overview_env = overview_geometry = None
+    overview_prev_direction = None
+    if pane_overview:
+        overview_scenario = replace(
+            scenario,
+            world_model=replace(
+                scenario.world_model,
+                grid_resolution_m=WORLD_OVERVIEW_RESOLUTION_M,
+                partition_size_cells=WORLD_OVERVIEW_WINDOW_CELLS,
+                partition_overlap_cells=WORLD_OVERVIEW_OVERLAP_CELLS,
+            ),
+        )
+        overview_converter, overview_env, _ = overview_scenario.build(
+            load_event_reports=False
+        )
+        for hidden_agent in overview_env.agents[1:]:
+            hidden_agent.state.terminated = True
+        overview_env.tile_size = WORLD_OVERVIEW_TILE_SIZE
+        overview_geometry = world_pane.PaneGeometry.from_partition_metadata(
+            overview_env.partition_metadata, WORLD_OVERVIEW_TILE_SIZE
+        )
     runtime = PhysicalRuntime(
         env,
         output / "replay-state",
@@ -920,19 +1007,41 @@ def main(argv: list[str] | None = None) -> int:
 
     frames = output / "world-frames"
     frames.mkdir()
-    pane_summary = {
-        "tile_size": world_pane.TILE_SIZE,
-        "resolution_m": float(runtime.env.converter.multigrid_resolution),
-        "window_cells": int(runtime.env.partition_metadata.grid_width),
-        "frames": last_tick + 1,
-        "note": (
-            "partition-local window that follows the drone; a layer outside "
-            "the current window is not drawn"
-        ),
-    }
+    if pane_overview:
+        overview_bounds = overview_env.partition_metadata
+        north_min, east_min = overview_bounds.ned_bounds_min
+        north_max, east_max = overview_bounds.ned_bounds_max
+        pane_summary = {
+            "tile_size": WORLD_OVERVIEW_TILE_SIZE,
+            "resolution_m": float(overview_converter.multigrid_resolution),
+            "window_cells": int(overview_bounds.grid_width),
+            "coverage_m": [float(north_max - north_min), float(east_max - east_min)],
+            "ned_bounds": {
+                "north": [float(north_min), float(north_max)],
+                "east": [float(east_min), float(east_max)],
+            },
+            "frames": last_tick + 1,
+            "note": (
+                "fixed 2 km north-up overview; fog, drone, route, and evidence "
+                "overlays follow the recorded run"
+            ),
+        }
+    else:
+        pane_summary = {
+            "tile_size": world_pane.TILE_SIZE,
+            "resolution_m": float(runtime.env.converter.multigrid_resolution),
+            "window_cells": int(runtime.env.partition_metadata.grid_width),
+            "frames": last_tick + 1,
+            "note": (
+                "partition-local window that follows the drone; fog, drone, "
+                "route, and evidence overlays follow the recorded run"
+            ),
+        }
     metadata: list[dict[str, Any]] = []
     overlay_counts: list[dict[str, Any]] = []
     pose_errors: list[float] = []
+    search_track: list[tuple[float, float]] = []
+    track_collecting = False
     try:
         for tick in range(last_tick + 1):
             now = tick * step
@@ -958,9 +1067,39 @@ def main(argv: list[str] | None = None) -> int:
                         f"{heading} vs recorded={expected} heading="
                         f"{expected_heading}"
                     )
-            runtime.env.tile_size = world_pane.TILE_SIZE
-            # Newest world model published at or before this tick; the pane may
-            # only draw evidence the run had already published.
+            # Reproject the authoritative NED pose and path into a fixed,
+            # coarse partition rather than cropping around the drone.
+            north, east, down = actual
+            if pane_overview:
+                overview_x, overview_y = overview_converter.ned_to_grid(
+                    north, east, overview_env.partition_metadata
+                )
+                if not (
+                    0 <= overview_x < overview_env.width
+                    and 0 <= overview_y < overview_env.height
+                ):
+                    raise AssertionError(
+                        f"recorded pose is outside the overview at t={now}: {actual}"
+                    )
+            if pane_overview:
+                overview_env.agents[0].state.pos = np.asarray(
+                    [overview_x, overview_y], dtype=int
+                )
+                direction = int(runtime.env.agents[0].state.dir)
+                overview_env.agents[0].state.dir = direction
+                overview_env.agent_ned_positions[0] = tuple(actual)
+                overview_env.set_agent_ned_down(0, down)
+                overview_env.step_count = tick
+                overview_env._run_fog_update(
+                    agent_id=0,
+                    curr_ned_north=north,
+                    curr_ned_east=east,
+                    curr_ned_down=down,
+                    curr_direction=direction,
+                    prev_direction=overview_prev_direction,
+                )
+                overview_prev_direction = direction
+
             row = world_pane.section_at(run["worlds"], now)
             available = [t for t in run["worlds"] if t <= now - step]
             info = (
@@ -968,38 +1107,126 @@ def main(argv: list[str] | None = None) -> int:
                 if row is not None
                 else {"visible_ship_ids": [], "event_report_checks": []}
             )
+            # Time-gated active-search layers: only the maneuver that is the
+            # recorded active maneuver at this tick contributes, and the
+            # breadcrumb track restarts with every new search activation.
+            active = runtime._active
+            active_action = (
+                str(active.command.intent.action.value)
+                if hasattr(active.command.intent.action, "value")
+                else str(active.command.intent.action)
+            ) if active is not None else None
+            search_active = active_action == "search_area"
+            search_polygon = None
+            search_path_ned: list[tuple[float, float]] = []
+            search_progress_text = None
+            if search_active:
+                parameters = active.command.intent.parameters
+                search_polygon = [
+                    [float(vertex["x"]), float(vertex["y"])]
+                    for vertex in parameters["polygon"]
+                ]
+                for area_row, area_col in (
+                    runtime.env.get_current_planned_paths().get("area_search", [])
+                ):
+                    path_north, path_east = runtime.env.converter.grid_to_ned(
+                        area_col, area_row, runtime.env.partition_metadata
+                    )
+                    search_path_ned.append((path_north, path_east))
+                cleared = active.progress.get("cleared_cells")
+                total = active.progress.get("total_cells")
+                search_progress_text = (
+                    f"M4 SEARCH {active.phase} · {cleared}/{total} cells"
+                    if isinstance(cleared, int) and isinstance(total, int)
+                    else f"M4 SEARCH {active.phase}"
+                )
+                if not track_collecting:
+                    search_track = []
+                    track_collecting = True
+                search_track.append((north, east))
+            else:
+                track_collecting = False
+                search_track = []
             planned = list(
                 runtime.env.get_current_planned_paths().get("navigation", [])
             )
-            frame = Image.fromarray(
-                runtime.env.render(
-                    show_fog=True,
-                    fog_unseen_brightness=0.42,
-                    path_visualize=bool(planned),
-                    planned_grid_path=planned,
+            if pane_overview:
+                overview_planned = []
+                for row_index, col_index in planned:
+                    path_north, path_east = runtime.env.converter.grid_to_ned(
+                        col_index, row_index, runtime.env.partition_metadata
+                    )
+                    path_x, path_y = overview_converter.ned_to_grid(
+                        path_north, path_east, overview_env.partition_metadata
+                    )
+                    if (
+                        0 <= path_x < overview_env.width
+                        and 0 <= path_y < overview_env.height
+                    ):
+                        overview_planned.append((path_y, path_x))
+                if len(overview_planned) != len(planned):
+                    raise AssertionError(
+                        f"planned route leaves the fixed overview at t={now}"
+                    )
+                frame = Image.fromarray(
+                    overview_env.render(
+                        show_fog=True,
+                        fog_unseen_brightness=0.42,
+                        path_visualize=bool(overview_planned),
+                        planned_grid_path=overview_planned,
+                    )
+                ).convert("RGB")
+                pane_geometry = overview_geometry
+                route_cells = len(overview_planned)
+            else:
+                runtime.env.tile_size = world_pane.TILE_SIZE
+                frame = Image.fromarray(
+                    runtime.env.render(
+                        show_fog=True,
+                        path_visualize=bool(planned),
+                        planned_grid_path=planned,
+                    )
+                ).convert("RGB")
+                pane_geometry = world_pane.PaneGeometry.from_partition_metadata(
+                    runtime.env.partition_metadata, world_pane.TILE_SIZE
                 )
-            ).convert("RGB")
-            geometry = world_pane.PaneGeometry.from_partition_metadata(
-                runtime.env.partition_metadata, world_pane.TILE_SIZE
-            )
-            counts = world_pane.draw_overlays(
-                frame, geometry, world_pane.pane_state(row, snapshots, now)
-            )
-            counts["route_cells"] = len(planned)
+                route_cells = len(planned)
+            state = world_pane.pane_state(row, snapshots, now)
+            if search_active:
+                state = replace(
+                    state,
+                    active_search_polygon=search_polygon,
+                    search_path=tuple(search_path_ned),
+                    drone_track=tuple(search_track),
+                    drone_position=(north, east),
+                    search_progress=search_progress_text,
+                )
+            counts = world_pane.draw_overlays(frame, pane_geometry, state)
+            counts["route_cells"] = route_cells
             overlay_counts.append({"tick": tick, "mission_time": now, **counts})
             frame.save(frames / f"{tick:04d}.png")
-            grid = list(map(int, runtime.env.agents[0].state.pos))
+            if pane_overview:
+                drone_pixel = [
+                    (overview_x + 0.5) * WORLD_OVERVIEW_TILE_SIZE,
+                    (overview_y + 0.5) * WORLD_OVERVIEW_TILE_SIZE,
+                ]
+            else:
+                grid = list(map(int, runtime.env.agents[0].state.pos))
+                drone_pixel = [
+                    (grid[0] + 0.5) * world_pane.TILE_SIZE,
+                    (grid[1] + 0.5) * world_pane.TILE_SIZE,
+                ]
             metadata.append(
                 {
                     "tick": tick,
                     "mission_time": now,
                     "position_ned": actual,
-                    "drone_pixel": [(grid[0] + 0.5) * world_pane.TILE_SIZE,
-                                    (grid[1] + 0.5) * world_pane.TILE_SIZE],
+                    "drone_pixel": drone_pixel,
                     "visible_ship_ids": info["visible_ship_ids"],
                     "checks": len(info["event_report_checks"]),
                     "sensor_time": max(available) if available else 0.0,
                     "m4_coverage_pct": world_pane.dock_coverage_pct(row),
+                    "m4_search_phase": active.phase if search_active else None,
                 }
             )
             (output / "replay-state" / "search_requests").mkdir(parents=True, exist_ok=True)
@@ -1027,6 +1254,8 @@ def main(argv: list[str] | None = None) -> int:
                     json.dumps(run["accepted"][now])
                 )
             if tick < last_tick:
+                if pane_overview:
+                    overview_converter.advance_fog_of_war_step()
                 runtime.tick()
             if tick % 60 == 0:
                 print(f"replayed {now:.1f}/{duration:.1f} s", flush=True)
@@ -1115,6 +1344,7 @@ def main(argv: list[str] | None = None) -> int:
             if entry.get("result", {}).get("kind") == "request"
         ],
         "mission4_answer_metrics": answer_metrics,
+        "aoi_trajectory": aoi_trajectory_audit(run_root, args.mission4_package),
         "timeline_rule": (
             "Stepwise by recorded world-model publication time; displayed "
             "fields change only at recorded availability boundaries and "
@@ -1213,6 +1443,12 @@ def main(argv: list[str] | None = None) -> int:
             overlay_counts,
             recorded_polygon_counts(run["worlds"]),
             pane_summary,
+        ),
+        "aoi_trajectory": metrics["aoi_trajectory"],
+        "surface_alignment": (
+            json.loads(args.surface_alignment.read_text(encoding="utf-8"))
+            if args.surface_alignment is not None
+            else None
         ),
         "scope": "Reconstructed from recorded accepted commands and worker requests; no new live mission.",
     }

@@ -330,6 +330,9 @@ fi
 if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ] || [ "$MISSION_MODE" = "joint34" ]; then
     audit_args+=(--mission4-answers "$MISSION4_ANSWERS")
 fi
+if [ "$MISSION_MODE" = "joint34" ]; then
+    audit_args+=(--mission4-package "$MISSION4_PACKAGE")
+fi
 printf -v audit_command '%q ' "${audit_args[@]}"
 
 if [ "$DRY_RUN" = "1" ]; then

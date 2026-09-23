@@ -349,3 +349,106 @@ def test_mission4_answers_flag_requires_mission4_mode(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "--mission4-answers" in result.stderr
+
+
+def _search_command(root: Path, polygon: list[dict]) -> None:
+    write(
+        root / "physical-state/commands/cmd-search-1.json",
+        {
+            "schema_version": 1,
+            "command_id": "cmd-search-1",
+            "mission_id": "mission:demo",
+            "vehicle_id": "drone-1",
+            "plan_revision": 1,
+            "intent": {
+                "action": "search_area",
+                "parameters": {"polygon": polygon, "speed_mps": 8.0},
+            },
+        },
+    )
+
+
+def _search_feedback(
+    root: Path,
+    positions: list[tuple[float, float, float]],
+    *,
+    cleared: list[int],
+    phase: str = "clear",
+) -> None:
+    for index, (north, east, down) in enumerate(positions):
+        write(
+            root / f"physical-state/feedback/{index + 1:08d}-feedback.json",
+            {
+                "action": "search_area",
+                "command_id": "cmd-search-1",
+                "feedback_kind": "lifecycle",
+                "lifecycle_state": "active" if index else "accepted",
+                "mission_time_s": index * 0.5,
+                "phase": "accepted" if index == 0 else phase,
+                "progress": {
+                    "cleared_cells": cleared[min(index, len(cleared) - 1)],
+                    "total_cells": 702,
+                    "remaining_cells": 702 - cleared[min(index, len(cleared) - 1)],
+                },
+                "telemetry": {
+                    "phase": "accepted" if index == 0 else phase,
+                    "position": {"x": north, "y": east, "z": down},
+                },
+            },
+        )
+
+
+_DOCK_PACKAGE = {
+    "schema_version": 1,
+    "vocabulary": {"type": ["container"], "color": ["red"]},
+    "areas": {
+        "dock": {"polygon": [[-20, -20], [20, -20], [20, 20], [-20, 20]], "prior": 1.0}
+    },
+    "obstacles": [],
+    "keep_out_zones": [[[22, 4], [40, 4], [40, 16], [22, 16]]],
+    "mission_time_budget_s": 300.0,
+    "found_threshold": 0.1,
+}
+
+
+def test_joint34_audit_requires_dock_interior_traversal(tmp_path: Path) -> None:
+    run_tree(tmp_path, "joint34")
+    package = tmp_path / "package.json"
+    write(package, _DOCK_PACKAGE)
+    _search_command(
+        tmp_path,
+        [{"x": -20.0, "y": -20.0}, {"x": 20.0, "y": -20.0}, {"x": 20.0, "y": 20.0}, {"x": -20.0, "y": 20.0}],
+    )
+    # Enter from the north, sweep the interior, coverage rises after entry.
+    positions = [(40.0, 0.0, -25.0), (19.5, 0.0, -25.0)] + [
+        (north, 0.0, -25.0) for north in (17.5, 13.5, 9.5, 5.5, 1.5, -2.5)
+    ]
+    _search_feedback(tmp_path, positions, cleared=[115, 115, 300, 400, 500, 600, 650, 700])
+    result = audit_live_demo(tmp_path, "joint34", mission4_package=package)
+    assert result["status"] == "PASS", result["failures"]
+    assert result["aoi_trajectory"]["status"] == "pass"
+    assert result["aoi_trajectory"]["action_ids"] == ["cmd-search-1"]
+
+
+def test_joint34_audit_rejects_outside_only_coverage(tmp_path: Path) -> None:
+    run_tree(tmp_path, "joint34")
+    package = tmp_path / "package.json"
+    write(package, _DOCK_PACKAGE)
+    _search_command(
+        tmp_path,
+        [{"x": -20.0, "y": -20.0}, {"x": 20.0, "y": -20.0}, {"x": 20.0, "y": 20.0}, {"x": -20.0, "y": 20.0}],
+    )
+    # The generic harbor gate would accept this: the sensor clears every
+    # dock cell during an approach that never enters the area.
+    positions = [
+        (40.0, 0.0, -25.0),
+        (30.0, 0.0, -25.0),
+        (25.0, 0.0, -25.0),
+        (24.5, 0.0, -25.0),
+        (24.0, 0.0, -25.0),
+    ]
+    _search_feedback(tmp_path, positions, cleared=[302, 500, 650, 702, 702])
+    result = audit_live_demo(tmp_path, "joint34", mission4_package=package)
+    assert result["status"] == "FAIL"
+    assert "m4_dock_ingress_failed" in result["failures"]
+    assert result["aoi_trajectory"]["status"] == "fail"

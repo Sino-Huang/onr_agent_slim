@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -447,7 +448,9 @@ class TestOverlayDrawing:
             if frame.getpixel((x, y)) != baseline.getpixel((x, y))
         ]
         assert changed
-        assert all(y <= 80 for _, y in changed)
+        # The pane key now spans three rows (AOI/KOZ/obstacle, targets/GPS/
+        # route, and the active-search key); no recorded geometry is invented.
+        assert all(y <= 96 for _, y in changed)
 
     def test_overlays_are_byte_identical_for_identical_inputs(self) -> None:
         state = pane_state(section_at(_worlds(), 40.0), _snapshots(), 40.0)
@@ -467,6 +470,87 @@ class TestOverlayDrawing:
             draw_overlays(frame, _DOCK_PANE, state)
 
 
+class TestActiveSearchLayers:
+    """The issue #71 time-gated active-search overlay contract."""
+
+    def _frame(self, geometry: PaneGeometry) -> Image.Image:
+        return Image.new("RGB", geometry.size_px, "#0d1a2b")
+
+    def _state(self, **overrides: Any) -> PaneState:
+        base = pane_state(section_at(_worlds(), 40.0), _snapshots(), 40.0)
+        return replace(
+            base,
+            active_search_polygon=[[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]],
+            search_path=((0.0, -16.0), (0.0, 0.0), (0.0, 16.0)),
+            drone_track=((-8.0, -16.0), (-8.0, 0.0), (-8.0, 16.0)),
+            drone_position=(-8.0, 0.0),
+            search_progress="M4 SEARCH clear · 300/702 cells",
+            **overrides,
+        )
+
+    def test_pane_state_never_fills_search_layers_from_the_row(self) -> None:
+        # No recorded row publishes an active maneuver: the fields can only
+        # come from the caller's time-gated replay state, never from future
+        # or private data.
+        for probe in (0.0, 40.0, 120.0):
+            state = pane_state(section_at(_worlds(), probe), _snapshots(), probe)
+            assert state.active_search_polygon is None
+            assert state.search_path == ()
+            assert state.drone_track == ()
+            assert state.drone_position is None
+            assert state.search_progress is None
+
+    def test_active_layers_draw_with_distinct_counts(self) -> None:
+        counts = draw_overlays(self._frame(_DOCK_PANE), _DOCK_PANE, self._state())
+        assert counts["active_search_polygons"] == 1
+        assert counts["search_path_points"] == 2
+        assert counts["track_points"] >= 2
+        assert counts["progress_labels"] == 1
+
+    def test_inactive_layers_leave_the_pane_unchanged(self) -> None:
+        base = pane_state(section_at(_worlds(), 40.0), _snapshots(), 40.0)
+        counts = draw_overlays(self._frame(_DOCK_PANE), _DOCK_PANE, base)
+        assert counts["active_search_polygons"] == 0
+        assert counts["search_path_points"] == 0
+        assert counts["track_points"] == 0
+        assert counts["progress_labels"] == 0
+
+    def test_boundary_plan_and_track_paint_distinct_colors(self) -> None:
+        frame = self._frame(_DOCK_PANE)
+        baseline = frame.copy()
+        draw_overlays(frame, _DOCK_PANE, self._state())
+        # Solid red active boundary on the dock's north edge (north=20):
+        boundary = frame.getpixel((392, 237))
+        assert boundary[0] > baseline.getpixel((392, 237))[0] + 40
+        # Yellow planned search path along north=0 (y=316).
+        plan = frame.getpixel((392, 316))
+        assert plan[0] > baseline.getpixel((392, 316))[0] + 40
+        assert plan[1] > baseline.getpixel((392, 316))[1] + 40
+        # White recorded track along north=-8, sampled away from the current
+        # drone marker at east=0 (x=392): all channels rise.
+        track = frame.getpixel((360, 348))
+        assert track[0] > baseline.getpixel((360, 348))[0] + 40
+        assert track[2] > baseline.getpixel((360, 348))[2] + 40
+
+    def test_progress_chip_renders_in_the_pane_corner(self) -> None:
+        frame = self._frame(_DOCK_PANE)
+        baseline = frame.copy()
+        draw_overlays(frame, _DOCK_PANE, self._state())
+        width, height = _DOCK_PANE.size_px
+        changed = [
+            (x, y)
+            for x in range(width - 220, width, 4)
+            for y in range(height - 40, height, 3)
+            if frame.getpixel((x, y)) != baseline.getpixel((x, y))
+        ]
+        assert len(changed) > 20
+
+    def test_layers_skip_points_outside_the_window(self) -> None:
+        counts = draw_overlays(self._frame(_EMPTY_PANE), _EMPTY_PANE, self._state())
+        assert counts["active_search_polygons"] == 0
+        assert counts["track_points"] == 0
+
+
 class TestDockCoverage:
     def test_coverage_percentage_uses_recorded_observed_cells(self) -> None:
         # The dock polygon is 40 x 40 m at 2 m/cell: 400 cells.
@@ -482,14 +566,14 @@ class TestDockCoverage:
 
 
 def test_recorded_bundle_overlay_receipt_documents_every_layer() -> None:
-    """The derived Phase-1 bundle receipt stays in step with the layer specs."""
+    """The derived bundle receipt stays in step with the layer specs."""
 
     receipt_path = (
         _REPO
-        / "var/demo-video/joint34-20260929-airsim/bundle/reconstruction-receipt.json"
+        / "var/demo-video/joint34-aoi-entry-20260924-airsim/bundle/reconstruction-receipt.json"
     )
     if not receipt_path.is_file():
-        pytest.skip("enriched Phase-1 bundle not present")
+        pytest.skip("issue #71 dock-entry bundle not present")
     module = _load_derivation_module()
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     layers = receipt["overlay_layers"]
@@ -500,8 +584,13 @@ def test_recorded_bundle_overlay_receipt_documents_every_layer() -> None:
         assert layers[name]["source_field"] == source
         assert layers[name]["gating_rule"] == gating
     assert layers["dock_aoi"]["total_draws"] > 0
-    assert layers["keep_out_zones"]["recorded_polygons"] == 0
-    assert layers["keep_out_zones"]["total_draws"] == 0
+    assert layers["keep_out_zones"]["recorded_polygons"] >= 1
     assert layers["target_potential_locations"]["uncertainty_circles_total"] > 0
     assert layers["selected_vessel_gps_fixes"]["total_draws"] > 0
     assert layers["planned_route"]["total_draws"] > 0
+    # The issue #71 layers must document a real recorded search traversal.
+    assert layers["active_search_boundary"]["total_draws"] > 0
+    assert layers["area_search_plan"]["total_draws"] > 0
+    assert layers["drone_track"]["total_draws"] > 0
+    assert layers["search_progress"]["total_draws"] > 0
+    assert receipt["aoi_trajectory"]["status"] == "pass"

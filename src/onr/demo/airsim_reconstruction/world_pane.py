@@ -36,6 +36,10 @@ TARGET_COLORS = {"red": "#ff7b7b", "blue": "#5aa9ff"}
 TARGET_DEFAULT_COLOR = "#ffd078"
 GPS_COLOR = "#b28dff"
 ROUTE_COLOR = "#90ee90"
+ACTIVE_SEARCH_COLOR = "#ff2b2b"
+SEARCH_PATH_COLOR = "#ffd400"
+TRACK_COLOR = "#ffffff"
+DRONE_COLOR = "#ff8c00"
 LEGEND_FILL = (9, 19, 33, 215)
 
 LABEL_SIZE = 20
@@ -52,6 +56,10 @@ COUNT_KEYS = (
     "targets",
     "uncertainty_circles",
     "ship_fixes",
+    "active_search_polygons",
+    "search_path_points",
+    "track_points",
+    "progress_labels",
     "legend",
 )
 
@@ -62,6 +70,12 @@ _LEGEND_ROWS = (
         ("GPS fix", GPS_COLOR),
         ("route", ROUTE_COLOR),
         ("(dashed = not found)", "#a2b7cf"),
+    ),
+    (
+        ("ACTIVE M4 SEARCH", ACTIVE_SEARCH_COLOR),
+        ("M4 search plan", SEARCH_PATH_COLOR),
+        ("drone track", TRACK_COLOR),
+        ("drone", DRONE_COLOR),
     ),
 )
 
@@ -193,6 +207,13 @@ class PaneState:
     obstacles: tuple[Sequence[Sequence[float]], ...] = ()
     targets: tuple[TargetMarker, ...] = ()
     ship_fixes: tuple[ShipFix, ...] = ()
+    # Layers below exist only while a Mission 4 area-search maneuver is the
+    # active recorded maneuver; every point is NED (north, east).
+    active_search_polygon: Sequence[Sequence[float]] | None = None
+    search_path: tuple[Sequence[float], ...] = ()
+    drone_track: tuple[Sequence[float], ...] = ()
+    drone_position: Sequence[float] | None = None
+    search_progress: str | None = None
 
 
 def _world_info(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -349,11 +370,28 @@ def pane_state(
     row: Mapping[str, Any] | None,
     snapshots: Mapping[float, SearchBeliefSnapshot],
     mission_time_s: float,
+    *,
+    active_search_polygon: Sequence[Sequence[float]] | None = None,
+    search_path: Sequence[Sequence[float]] = (),
+    drone_track: Sequence[Sequence[float]] = (),
+    drone_position: Sequence[float] | None = None,
+    search_progress: str | None = None,
 ) -> PaneState:
-    """Assemble the time-gated layer state for one pane frame."""
+    """Assemble the time-gated layer state for one pane frame.
+
+    The active-search layers are supplied by the caller from the recorded
+    maneuver that is active at ``mission_time_s``; ``pane_state`` itself never
+    looks ahead in the recording.
+    """
 
     if row is None:
-        return PaneState()
+        return PaneState(
+            active_search_polygon=None,
+            search_path=(),
+            drone_track=(),
+            drone_position=None,
+            search_progress=None,
+        )
     info = _world_info(row)
     mission4 = info.get("mission4") or {}
     package = mission4.get("package") or {}
@@ -374,6 +412,11 @@ def pane_state(
             (info.get("mission3") or {}).get("selected_ship_ids") or (),
             mission_time_s,
         ),
+        active_search_polygon=active_search_polygon,
+        search_path=tuple(search_path),
+        drone_track=tuple(drone_track),
+        drone_position=drone_position,
+        search_progress=search_progress,
     )
 
 
@@ -677,6 +720,93 @@ def _draw_ship_fix(
     return True
 
 
+def _draw_active_search(
+    layer: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    geometry: PaneGeometry,
+    polygon: Sequence[Sequence[float]],
+    placed: list[tuple[float, float, float, float]],
+) -> bool:
+    """The active maneuver's own search polygon: solid red runtime boundary."""
+
+    points = _polygon_pixels(geometry, polygon)
+    if len(points) < 3 or not _region_visible(geometry, polygon):
+        return False
+    for start, end in zip(points, points[1:] + points[:1]):
+        draw.line((start, end), fill=ACTIVE_SEARCH_COLOR, width=4)
+    corner = min(points, key=lambda point: (point[1], point[0]))
+    _label_near(
+        draw,
+        geometry,
+        (corner[0], corner[1] - 16.0),
+        "ACTIVE M4 SEARCH",
+        ACTIVE_SEARCH_COLOR,
+        placed,
+    )
+    return True
+
+
+def _draw_ned_polyline(
+    draw: ImageDraw.ImageDraw,
+    geometry: PaneGeometry,
+    points: Sequence[Sequence[float]],
+    color: str,
+    *,
+    width: int = 2,
+    dot_radius: int = 2,
+) -> int:
+    pane_width, pane_height = geometry.size_px
+    pixels = [
+        (x, y)
+        for x, y in (
+            geometry.pixel(float(north), float(east)) for north, east in points
+        )
+        if 0.0 <= x < pane_width and 0.0 <= y < pane_height
+    ]
+    drawn = 0
+    for start, end in zip(pixels, pixels[1:]):
+        draw.line((start, end), fill=color, width=width)
+    for x, y in pixels[::2]:
+        draw.ellipse((x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius), fill=color)
+        drawn += 1
+    return drawn
+
+
+def _draw_drone_track(
+    draw: ImageDraw.ImageDraw,
+    geometry: PaneGeometry,
+    track: Sequence[Sequence[float]],
+    position: Sequence[float] | None,
+) -> int:
+    """Recorded flight path as white breadcrumbs plus the current marker."""
+
+    drawn = _draw_ned_polyline(draw, geometry, track, TRACK_COLOR, width=2, dot_radius=1)
+    if position is not None and geometry.contains(float(position[0]), float(position[1])):
+        x, y = geometry.pixel(float(position[0]), float(position[1]))
+        draw.ellipse((x - 5.0, y - 5.0, x + 5.0, y + 5.0), outline=DRONE_COLOR, width=3)
+        draw.point((x, y), fill=DRONE_COLOR)
+        drawn += 1
+    return drawn
+
+
+def _draw_progress_chip(
+    draw: ImageDraw.ImageDraw,
+    geometry: PaneGeometry,
+    text: str,
+) -> int:
+    width = draw.textlength(text, font=_font(LABEL_SIZE)) + 2 * CHIP_PADDING
+    height = LABEL_SIZE + 8
+    pane_width, pane_height = geometry.size_px
+    box = (
+        pane_width - width - 8.0,
+        pane_height - height - 8.0,
+        pane_width - 8.0,
+        pane_height - 8.0,
+    )
+    _chip(draw, box, text, "#f0f5ff", LABEL_SIZE)
+    return 1
+
+
 def _legend_box(draw: ImageDraw.ImageDraw) -> tuple[float, float, float, float]:
     """Rectangle the pane key occupies, so marker labels can avoid it."""
 
@@ -768,6 +898,20 @@ def draw_overlays(
         counts["uncertainty_circles"] += circle
     for fix in state.ship_fixes:
         counts["ship_fixes"] += _draw_ship_fix(draw, geometry, fix, placed)
+    if state.active_search_polygon is not None:
+        counts["active_search_polygons"] += _draw_active_search(
+            layer, draw, geometry, state.active_search_polygon, placed
+        )
+    counts["search_path_points"] += _draw_ned_polyline(
+        draw, geometry, state.search_path, SEARCH_PATH_COLOR, width=2, dot_radius=2
+    )
+    counts["track_points"] += _draw_drone_track(
+        draw, geometry, state.drone_track, state.drone_position
+    )
+    if state.search_progress:
+        counts["progress_labels"] += _draw_progress_chip(
+            draw, geometry, state.search_progress
+        )
     composited = Image.alpha_composite(frame.convert("RGBA"), layer)
     frame.paste(composited.convert("RGB"))
     return counts

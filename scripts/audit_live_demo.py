@@ -62,6 +62,14 @@ def main() -> int:
         type=Path,
         help="Private Mission 4 answer key used only for terminal answer metrics",
     )
+    parser.add_argument(
+        "--mission4-package",
+        type=Path,
+        help=(
+            "Public Mission 4 package; for joint34 runs it enables the strict "
+            "dock-ingress gate over the recorded search_area maneuver"
+        ),
+    )
     args = parser.parse_args()
     if args.mission4_answers is not None and args.mission_mode not in {"mission4", "joint24", "joint34"}:
         parser.error("--mission4-answers is only valid with --mission-mode mission4, joint24 or joint34")
@@ -83,6 +91,7 @@ def main() -> int:
         args.run_root,
         args.mission_mode,
         mission_metrics=mission_metrics,
+        mission4_package=args.mission4_package,
     )
     if args.mission4_answers is not None and audit["status"] == "PASS":
         audit = audit_live_demo(
@@ -92,6 +101,7 @@ def main() -> int:
             mission4_answer_metrics=_mission4_answer_metrics(
                 args.run_root, args.mission4_answers
             ),
+            mission4_package=args.mission4_package,
         )
     print(json.dumps(audit, sort_keys=True), flush=True)
     return 0 if audit["status"] == "PASS" else 1
