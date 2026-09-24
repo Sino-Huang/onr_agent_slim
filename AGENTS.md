@@ -19,3 +19,7 @@ Canonical triage roles use the default five GitHub label strings. See `docs/agen
 ### Domain docs
 
 This repository uses a single-context domain documentation layout. See `docs/agents/domain.md`.
+
+### AirSim demo videos
+
+Before creating or revising an AirSim multi-mission demo video, read `docs/airsim-multi-mission-video-workflow.md`. It documents reusable capture/render/validation stages and combination-specific bundle requirements.
