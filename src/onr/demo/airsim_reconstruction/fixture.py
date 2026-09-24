@@ -204,11 +204,11 @@ def _maximum_xy_displacement_m(pose: Sequence[Sequence[object]]) -> float:
 
 
 def _trajectory_with_ned_offset(
-    pose: Sequence[Sequence[Any]],
+    pose: Sequence[Sequence[Any]], offset_m: Sequence[float]
 ) -> list[list[Any]]:
-    """Translate world-frame trajectory positions from generator to NED coordinates."""
+    """Translate source actor positions by the configured NED offset."""
 
-    offset_cm = tuple(value * 100.0 for value in TRAJECTORY_NED_OFFSET_M)
+    offset_cm = tuple(value * 100.0 for value in offset_m)
     return [
         [
             float(row[0]) + offset_cm[0],
@@ -532,6 +532,7 @@ def build_fixture(
     *,
     scenario_name: str = SCENARIO_NAME,
     static_objects: Sequence[Mapping[str, Any]] = (),
+    trajectory_ned_offset_m: Sequence[float] = TRAJECTORY_NED_OFFSET_M,
 ) -> FixtureResult:
     """Build and validated recorded AirSim reconstruction fixture.
 
@@ -550,6 +551,9 @@ def build_fixture(
     if not meshes_path.is_file():
         raise ValueError(f"Static mesh catalog does not exist: {meshes_path}")
     lead_in_rows = _lead_in_row_count(lead_in_s)
+    ned_offset_m = tuple(float(value) for value in trajectory_ned_offset_m)
+    if len(ned_offset_m) != 3:
+        raise ValueError("trajectory_ned_offset_m must contain three values")
 
     source_paths = _ship_source_paths(vessels_path)
     catalog = _load_mesh_catalog(meshes_path)
@@ -581,7 +585,7 @@ def build_fixture(
         pose = _validate_trajectory(
             source.get("pose"), f"Ship {ship_id} pose", expected_z=-250.0
         )
-        pose = _trajectory_with_ned_offset(pose)
+        pose = _trajectory_with_ned_offset(pose, ned_offset_m)
         displacement = _maximum_xy_displacement_m(pose)
         if displacement <= 1.0:
             raise ValueError(
@@ -703,7 +707,7 @@ def build_fixture(
         source_path, passenger = passenger_files[name]
         output_passenger = copy.deepcopy(passenger)
         output_passenger["pose"] = _passenger_pose_with_lead_in(
-            _trajectory_with_ned_offset(passenger["pose"]),
+            _trajectory_with_ned_offset(passenger["pose"], ned_offset_m),
             name,
             lead_in_s,
             lead_in_rows,
@@ -797,7 +801,10 @@ def build_fixture(
         "created_utc": datetime.now(UTC).isoformat(),
         "source_dir": str(vessels_path.resolve()),
         "source_sha256": source_sha256,
-        "canonical_params": CANONICAL_PARAMS,
+        "canonical_params": {
+            **CANONICAL_PARAMS,
+            "trajectory_ned_offset": list(ned_offset_m),
+        },
         "lead_in_seconds": lead_in_s,
         "lead_in_note": LEAD_IN_NOTE,
         "outputs": outputs,
@@ -831,6 +838,14 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_LEAD_IN_SECONDS,
         help="synthetic trajectory lead-in duration in seconds",
+    )
+    parser.add_argument(
+        "--trajectory-ned-offset",
+        type=float,
+        nargs=3,
+        metavar=("NORTH_M", "EAST_M", "DOWN_M"),
+        default=TRAJECTORY_NED_OFFSET_M,
+        help="constant NED offset applied to source vessel tracks in metres",
     )
     parser.add_argument("--scenario-name", default=SCENARIO_NAME)
     parser.add_argument(
@@ -877,6 +892,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.static_meshes,
         out_dir,
         lead_in_s=args.lead_in_s,
+        trajectory_ned_offset_m=args.trajectory_ned_offset,
         scenario_name=args.scenario_name,
         static_objects=static_objects,
     )

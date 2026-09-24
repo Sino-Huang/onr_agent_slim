@@ -342,6 +342,35 @@ def test_first_canonical_row_has_world_model_ned_offset(tmp_path: Path) -> None:
     assert output_row[3] == source_row[3]
 
 
+def test_explicit_zero_ned_offset_preserves_runtime_ship_positions(
+    tmp_path: Path,
+) -> None:
+    lead_in_s = 60.0
+    out_dir = tmp_path / "runtime-aligned"
+    build_fixture(
+        DEFAULT_VESSELS_DIR,
+        DEFAULT_STATIC_MESHES_PATH,
+        out_dir,
+        lead_in_s=lead_in_s,
+        trajectory_ned_offset_m=(0.0, 0.0, 0.0),
+    )
+
+    source = _load(DEFAULT_VESSELS_DIR / "15.json")
+    fixture = _load(out_dir / "scenarios" / SCENARIO_NAME / "ships" / "15.json")
+    manifest = _load(out_dir / "manifest.json")
+    assert isinstance(source, dict)
+    assert isinstance(fixture, dict)
+    assert isinstance(manifest, dict)
+    source_pose = next(row for row in source["pose"] if row[4] == 60.0)
+    fixture_pose = next(row for row in fixture["pose"] if row[4] == 120.0)
+    assert fixture_pose[:3] == source_pose[:3]
+    assert manifest["canonical_params"]["trajectory_ned_offset"] == [
+        0.0,
+        0.0,
+        0.0,
+    ]
+
+
 def test_required_ship_stationary_initial_velocity_is_rejected(
     tmp_path: Path,
 ) -> None:
