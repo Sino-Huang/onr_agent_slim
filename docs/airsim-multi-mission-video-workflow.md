@@ -72,7 +72,7 @@ bundle's `reconstruction-receipt.json` for the derivation boundary.
 
 The current Joint34 scenario uses a 2 m runtime grid, 64-cell partition (128 m per side), and a 15 m visibility cap. The video’s default `overview` projection instead spans 2 km using 256 cells at 7.8125 m per cell, rendered with two pixels per cell and then resized to 440×440 pixels. The configured range is unchanged, but a 15 m footprint is only about 3 pixels in radius in that overview and its edge is coarser. This is normal for the overview, not evidence that runtime visibility changed.
 
-Use `--pane overview` for harbor context; use `--pane local` when the viewer needs to compare the visibility footprint with the runtime’s partition-local display. Distinguish sensor visibility/fog from Mission 4 dock-search coverage: they are different quantities.
+Use `--pane overview` for harbor context; use `--pane windowed` for a 256 m drone-following window at 2 m cells (crisp targets plus harbor context — the default choice for inspection runs); use `--pane local` when the viewer needs to compare the visibility footprint with the runtime's partition-local display. Distinguish sensor visibility/fog from Mission 4 dock-search coverage: they are different quantities.
 
 ## 5. Capture every tick and close it out
 

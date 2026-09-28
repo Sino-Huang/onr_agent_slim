@@ -29,6 +29,10 @@ WORLD_OVERVIEW_WINDOW_CELLS = 256
 WORLD_OVERVIEW_RESOLUTION_M = WORLD_OVERVIEW_SIZE_M / WORLD_OVERVIEW_WINDOW_CELLS
 WORLD_OVERVIEW_OVERLAP_CELLS = 32
 WORLD_OVERVIEW_TILE_SIZE = 2
+WORLD_WINDOWED_RESOLUTION_M = 2.0
+WORLD_WINDOWED_WINDOW_CELLS = 128
+WORLD_WINDOWED_OVERLAP_CELLS = 32
+WORLD_WINDOWED_TILE_SIZE = 4
 
 
 
@@ -928,9 +932,10 @@ def _seed_recorded_pose(env, converter, actual, direction, tick, previous_direct
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pane", choices=("overview", "local"), default="overview", help=(
-        "world-pane projection: fixed 2 km north-up overview or the "
-        "partition-local window that follows the drone"
+    parser.add_argument("--pane", choices=("overview", "windowed", "local"), default="overview", help=(
+        "world-pane projection: fixed 2 km north-up overview, a 256 m "
+        "drone-following window at 2 m cells, or the partition-local window "
+        "that follows the drone"
     ))
     parser.add_argument("--surface-alignment", type=Path, help=(
         "paired pose/surface alignment audit JSON to embed in the receipts"
@@ -1008,8 +1013,27 @@ def main(argv: list[str] | None = None) -> int:
     scenario = ScenarioConfig.from_yaml(args.scenario_config)
     converter, env, config = scenario.build()
     pane_overview = args.pane == "overview"
+    pane_windowed = args.pane == "windowed"
     overview_converter = overview_env = overview_geometry = None
     overview_prev_direction = None
+    windowed_converter = windowed_env = None
+    windowed_prev_direction = None
+    if pane_windowed:
+        windowed_scenario = replace(
+            scenario,
+            world_model=replace(
+                scenario.world_model,
+                grid_resolution_m=WORLD_WINDOWED_RESOLUTION_M,
+                partition_size_cells=WORLD_WINDOWED_WINDOW_CELLS,
+                partition_overlap_cells=WORLD_WINDOWED_OVERLAP_CELLS,
+            ),
+        )
+        windowed_converter, windowed_env, _ = windowed_scenario.build(
+            load_event_reports=False
+        )
+        for hidden_agent in windowed_env.agents[1:]:
+            hidden_agent.state.terminated = True
+        windowed_env.tile_size = WORLD_WINDOWED_TILE_SIZE
     if pane_overview:
         overview_scenario = replace(
             scenario,
@@ -1052,6 +1076,20 @@ def main(argv: list[str] | None = None) -> int:
             "note": (
                 "fixed 2 km north-up overview; fog, drone, route, and evidence "
                 "overlays follow the recorded run"
+            ),
+        }
+    elif pane_windowed:
+        pane_summary = {
+            "tile_size": WORLD_WINDOWED_TILE_SIZE,
+            "resolution_m": float(windowed_converter.multigrid_resolution),
+            "window_cells": WORLD_WINDOWED_WINDOW_CELLS,
+            "coverage_m": [
+                WORLD_WINDOWED_WINDOW_CELLS * WORLD_WINDOWED_RESOLUTION_M
+            ] * 2,
+            "frames": last_tick + 1,
+            "note": (
+                "256 m drone-following window at 2 m cells; fog, drone, route, "
+                "and evidence overlays follow the recorded run"
             ),
         }
     else:
@@ -1102,6 +1140,12 @@ def main(argv: list[str] | None = None) -> int:
                 overview_prev_direction,
             )
             overview_prev_direction = direction
+        if pane_windowed:
+            windowed_env, (windowed_x, windowed_y), _ = _seed_recorded_pose(
+                windowed_env, windowed_converter, actual, direction, tick,
+                windowed_prev_direction,
+            )
+            windowed_prev_direction = direction
         previous_direction = direction
         north, east, down = actual
         while (
@@ -1200,6 +1244,36 @@ def main(argv: list[str] | None = None) -> int:
                 (overview_x + 0.5) * WORLD_OVERVIEW_TILE_SIZE,
                 (overview_y + 0.5) * WORLD_OVERVIEW_TILE_SIZE,
             ]
+        elif pane_windowed:
+            windowed_planned = []
+            windowed_env.tile_size = WORLD_WINDOWED_TILE_SIZE
+            for path_row, col in planned:
+                path_north, path_east = converter.grid_to_ned(
+                    col, path_row, env.partition_metadata
+                )
+                path_x, path_y = windowed_converter.ned_to_grid(
+                    path_north, path_east, windowed_env.partition_metadata
+                )
+                # The window follows the drone; route cells beyond it are
+                # clipped at the edge rather than failing the frame.
+                if 0 <= path_x < windowed_env.width and 0 <= path_y < windowed_env.height:
+                    windowed_planned.append((path_y, path_x))
+            frame = Image.fromarray(
+                windowed_env.render(
+                    show_fog=True,
+                    fog_unseen_brightness=0.42,
+                    path_visualize=bool(windowed_planned),
+                    planned_grid_path=windowed_planned,
+                )
+            ).convert("RGB")
+            pane_geometry = world_pane.PaneGeometry.from_partition_metadata(
+                windowed_env.partition_metadata, WORLD_WINDOWED_TILE_SIZE
+            )
+            route_cells = len(windowed_planned)
+            drone_pixel = [
+                (windowed_x + 0.5) * WORLD_WINDOWED_TILE_SIZE,
+                (windowed_y + 0.5) * WORLD_WINDOWED_TILE_SIZE,
+            ]
         else:
             env.tile_size = world_pane.TILE_SIZE
             frame = Image.fromarray(
@@ -1248,6 +1322,8 @@ def main(argv: list[str] | None = None) -> int:
             converter.advance_fog_of_war_step()
             if pane_overview:
                 overview_converter.advance_fog_of_war_step()
+            if pane_windowed:
+                windowed_converter.advance_fog_of_war_step()
         if tick % 60 == 0:
             print(f"derived {now:.1f}/{duration:.1f} s", flush=True)
 
@@ -1395,6 +1471,8 @@ def main(argv: list[str] | None = None) -> int:
         "world_label": (
             "WORLD MODEL / 2 KM OVERVIEW"
             if pane_overview
+            else "WORLD MODEL / 256 M WINDOW"
+            if pane_windowed
             else "WORLD MODEL / LOCAL WINDOW"
         ),
         **video_expectations(
