@@ -60,6 +60,7 @@ class MissionProfile:
     expected_pause_times: Sequence[float]
     retention_receipt_fields: Mapping[str, str]
     metrics_label: str = "OFFLINE METRICS"
+    world_label: str = "WORLD MODEL / 2 KM OVERVIEW"
 
 
 MUTED = "#a2b7cf"
@@ -272,6 +273,7 @@ def joint34_profile(
     replan_activation_times_s: Sequence[float],
     mission4_statuses: Mapping[str, str],
     receipt_final_state: str,
+    world_label: str = "WORLD MODEL / 2 KM OVERVIEW",
 ) -> MissionProfile:
     """Build a joint34 profile from one recorded run's derived expectations.
 
@@ -314,6 +316,7 @@ def joint34_profile(
         expected_pause_times=tuple(expected_pause_times),
         retention_receipt_fields={"final_state": receipt_final_state},
         metrics_label="JOINT MISSION EVIDENCE",
+        world_label=world_label,
     )
 
 
@@ -393,6 +396,7 @@ def joint34_profile_from_document(document: Mapping[str, Any]) -> MissionProfile
         receipt_final_state=str(
             _document_value(document, "receipt_final_state", str)
         ),
+        world_label=str(document.get("world_label") or "WORLD MODEL / 2 KM OVERVIEW"),
     )
 
 

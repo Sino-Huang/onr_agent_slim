@@ -1392,6 +1392,11 @@ def main(argv: list[str] | None = None) -> int:
         "replan_activation_times_s": replans,
         "mission4_statuses": mission4_statuses,
         "receipt_final_state": terminal_receipt_state,
+        "world_label": (
+            "WORLD MODEL / 2 KM OVERVIEW"
+            if pane_overview
+            else "WORLD MODEL / LOCAL WINDOW"
+        ),
         **video_expectations(
             output / "story.json", metadata, (0, last_tick)
         ),
