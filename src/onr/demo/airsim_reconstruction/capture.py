@@ -51,6 +51,7 @@ from .certify import (
     wait_for_ship_spawns,
 )
 from .overlays import decode_instance_ids
+from ...paths import repo_tmp_root
 
 DEFAULT_FRAME_METADATA = Path(
     "var/demo-video/mission1-20260916-prior-guided/frame-metadata.json"
@@ -178,14 +179,18 @@ def choose_staging_dir(
     pid: int | None = None,
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
 ) -> Path:
-    """Prefer shared memory with >=200 MB free, otherwise use local temp."""
+    """Prefer shared memory with >=200 MB free, otherwise repository scratch."""
     process_id = os.getpid() if pid is None else int(pid)
     shared = Path("/dev/shm")
     if shared.is_dir() and int(disk_usage(shared).free) >= STAGING_MIN_FREE_BYTES:
         path = shared / f"airsim-capture-{process_id}"
         path.mkdir(parents=True, exist_ok=True)
         return path
-    return Path(tempfile.mkdtemp(prefix=f"airsim-capture-{process_id}-"))
+    return Path(
+        tempfile.mkdtemp(
+            prefix=f"airsim-capture-{process_id}-", dir=repo_tmp_root()
+        )
+    )
 
 
 def write_manifest_atomic(

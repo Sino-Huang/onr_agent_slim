@@ -40,6 +40,8 @@ from .render import (
     load_storyboard,
 )
 from .profile import MISSION1, MissionProfile, load_profile, load_profile_from_file
+from ...paths import repo_tmp_root
+
 
 EXPECTED_FRAMES = 1966
 EXPECTED_DURATION_SECONDS = EXPECTED_FRAMES / FPS
@@ -632,8 +634,7 @@ def _validate_browser(
     thread.start()
     screenshots: list[dict[str, Any]] = []
     try:
-        with tempfile.TemporaryDirectory(prefix="airsim-validate-") as temporary:
-            os.environ.setdefault("TMPDIR", temporary)
+        with tempfile.TemporaryDirectory(prefix="airsim-validate-", dir=repo_tmp_root()) as temporary:
             with sync_playwright() as playwright:
                 try:
                     browser = playwright.chromium.launch(

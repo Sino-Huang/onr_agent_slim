@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from onr.contracts.planning import PlannerExecutionEvidence, PlannerStaticCheckResult
+from onr.paths import repo_tmp_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +94,7 @@ class VALPlanValidator:
                 stderr="VAL static check requires non-empty domain.pddl and problem.pddl.",
             )
         try:
-            with tempfile.TemporaryDirectory(prefix="val-check-") as temporary:
+            with tempfile.TemporaryDirectory(prefix="val-check-", dir=repo_tmp_root()) as temporary:
                 directory = Path(temporary).resolve()
                 domain = directory / "domain.pddl"
                 problem = directory / "problem.pddl"

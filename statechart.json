@@ -1,0 +1,1436 @@
+{
+  "entry_state": "patrol-awaiting-first-assignment",
+  "terminal_states": [
+    "patrol-objective-complete"
+  ],
+  "states": [
+    "patrol-awaiting-first-assignment",
+    "assignment-1-in-progress",
+    "assignment-2-in-progress",
+    "assignment-3-in-progress",
+    "assignment-4-in-progress",
+    "assignment-5-in-progress",
+    "assignment-6-in-progress",
+    "assignment-7-in-progress",
+    "assignment-8-in-progress",
+    "assignment-9-in-progress",
+    "assignment-10-in-progress",
+    "assignment-11-in-progress",
+    "assignment-12-in-progress",
+    "assignment-13-in-progress",
+    "patrol-objective-complete"
+  ],
+  "state_context": {
+    "patrol-awaiting-first-assignment": {
+      "desired_outcome": "patrol is ready to begin"
+    },
+    "assignment-1-in-progress": {
+      "candidate_id": "candidate-c0b63565ac5495099a55c17c",
+      "planner_order": 1,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-a9aff49155f6e1ef793d5c84"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 59,
+          "ticks_per_second": 2,
+          "seconds": 29.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-c0b63565ac5495099a55c17c",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 59,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 59,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 573,
+          "y": 43,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-a9aff49155f6e1ef793d5c84"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 573,
+          "y": 43
+        },
+        "arrival_deadline": {
+          "tick": 59,
+          "ticks_per_second": 2,
+          "seconds": 29.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-2-in-progress": {
+      "candidate_id": "candidate-86505b0ce730544664a000c7",
+      "planner_order": 2,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-e44e6347dac41332568425d7"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 95,
+          "ticks_per_second": 2,
+          "seconds": 47.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-86505b0ce730544664a000c7",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 95,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 95,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 560,
+          "y": 29,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-e44e6347dac41332568425d7"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 560,
+          "y": 29
+        },
+        "arrival_deadline": {
+          "tick": 95,
+          "ticks_per_second": 2,
+          "seconds": 47.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-3-in-progress": {
+      "candidate_id": "candidate-b92cef689a5b36300f4b74fa",
+      "planner_order": 3,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-27486c6cd005fa585c786ce1"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 113,
+          "ticks_per_second": 2,
+          "seconds": 56.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-b92cef689a5b36300f4b74fa",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 113,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 113,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 572,
+          "y": 44,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-27486c6cd005fa585c786ce1"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 572,
+          "y": 44
+        },
+        "arrival_deadline": {
+          "tick": 113,
+          "ticks_per_second": 2,
+          "seconds": 56.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-4-in-progress": {
+      "candidate_id": "candidate-2f14d00d96b47f29749e328a",
+      "planner_order": 4,
+      "surveillance_mode": "pursue_ship",
+      "target_entity_id": 2,
+      "target_report_ids": [
+        "report-8a921a7a0dba5a72aead1c2d",
+        "report-c5ccb32c6fdd8871238e41da"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 162,
+          "ticks_per_second": 2,
+          "seconds": 81.0
+        },
+        "duration": {
+          "tick": 27,
+          "ticks_per_second": 2,
+          "seconds": 13.5
+        }
+      },
+      "utility": {
+        "recall": 132918,
+        "estimation": 1000000,
+        "omission_yield": 34967,
+        "combined": 1167885,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-2f14d00d96b47f29749e328a",
+        "surveillance_mode": "pursue_ship",
+        "entity_id": 2,
+        "start": 162,
+        "duration": 27,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 162,
+          "duration": 27,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 995,
+          "y": -172,
+          "target_posterior_risk": 132918,
+          "expected_omission_probability": 66459,
+          "public_report_rate": 40472,
+          "rate_scale": 1000000,
+          "report_span": 26,
+          "time_scale": 2,
+          "report_ids": [
+            "report-8a921a7a0dba5a72aead1c2d",
+            "report-c5ccb32c6fdd8871238e41da"
+          ],
+          "utility": {
+            "recall": 132918,
+            "estimation": 1000000,
+            "omission_yield": 34967,
+            "combined": 1167885,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "maintain_moving_entity_visibility",
+        "entity_id": 2,
+        "evidence_window": {
+          "start": {
+            "tick": 162,
+            "ticks_per_second": 2,
+            "seconds": 81.0
+          },
+          "duration": {
+            "tick": 27,
+            "ticks_per_second": 2,
+            "seconds": 13.5
+          }
+        },
+        "physical_action": "pursue",
+        "acquisition_rendezvous": {
+          "location": {
+            "x": 995,
+            "y": -172
+          },
+          "arrival_deadline": {
+            "tick": 162,
+            "ticks_per_second": 2,
+            "seconds": 81.0
+          },
+          "position_source": "planner_public_report"
+        }
+      }
+    },
+    "assignment-5-in-progress": {
+      "candidate_id": "candidate-67fad7c86de99e33462979d5",
+      "planner_order": 5,
+      "surveillance_mode": "pursue_ship",
+      "target_entity_id": 16,
+      "target_report_ids": [
+        "report-0066c19b7de340805787db62",
+        "report-c678d1ee70ef38fe49d38feb"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 205,
+          "ticks_per_second": 2,
+          "seconds": 102.5
+        },
+        "duration": {
+          "tick": 33,
+          "ticks_per_second": 2,
+          "seconds": 16.5
+        }
+      },
+      "utility": {
+        "recall": 132918,
+        "estimation": 1000000,
+        "omission_yield": 46939,
+        "combined": 1179857,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-67fad7c86de99e33462979d5",
+        "surveillance_mode": "pursue_ship",
+        "entity_id": 16,
+        "start": 205,
+        "duration": 33,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 205,
+          "duration": 33,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 1046,
+          "y": -116,
+          "target_posterior_risk": 132918,
+          "expected_omission_probability": 66459,
+          "public_report_rate": 44143,
+          "rate_scale": 1000000,
+          "report_span": 32,
+          "time_scale": 2,
+          "report_ids": [
+            "report-0066c19b7de340805787db62",
+            "report-c678d1ee70ef38fe49d38feb"
+          ],
+          "utility": {
+            "recall": 132918,
+            "estimation": 1000000,
+            "omission_yield": 46939,
+            "combined": 1179857,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "maintain_moving_entity_visibility",
+        "entity_id": 16,
+        "evidence_window": {
+          "start": {
+            "tick": 205,
+            "ticks_per_second": 2,
+            "seconds": 102.5
+          },
+          "duration": {
+            "tick": 33,
+            "ticks_per_second": 2,
+            "seconds": 16.5
+          }
+        },
+        "physical_action": "pursue",
+        "acquisition_rendezvous": {
+          "location": {
+            "x": 1046,
+            "y": -116
+          },
+          "arrival_deadline": {
+            "tick": 205,
+            "ticks_per_second": 2,
+            "seconds": 102.5
+          },
+          "position_source": "planner_public_report"
+        }
+      }
+    },
+    "assignment-6-in-progress": {
+      "candidate_id": "candidate-9bd8ffd2502f11eb0296431e",
+      "planner_order": 6,
+      "surveillance_mode": "pursue_ship",
+      "target_entity_id": 3,
+      "target_report_ids": [
+        "report-149147a415b7417b9659fb63",
+        "report-e27c2b93ed4f88d2d27a8a58"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 251,
+          "ticks_per_second": 2,
+          "seconds": 125.5
+        },
+        "duration": {
+          "tick": 4,
+          "ticks_per_second": 2,
+          "seconds": 2.0
+        }
+      },
+      "utility": {
+        "recall": 132918,
+        "estimation": 1000000,
+        "omission_yield": 4715,
+        "combined": 1137633,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-9bd8ffd2502f11eb0296431e",
+        "surveillance_mode": "pursue_ship",
+        "entity_id": 3,
+        "start": 251,
+        "duration": 4,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 251,
+          "duration": 4,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 983,
+          "y": -188,
+          "target_posterior_risk": 132918,
+          "expected_omission_probability": 66459,
+          "public_report_rate": 47297,
+          "rate_scale": 1000000,
+          "report_span": 3,
+          "time_scale": 2,
+          "report_ids": [
+            "report-149147a415b7417b9659fb63",
+            "report-e27c2b93ed4f88d2d27a8a58"
+          ],
+          "utility": {
+            "recall": 132918,
+            "estimation": 1000000,
+            "omission_yield": 4715,
+            "combined": 1137633,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "maintain_moving_entity_visibility",
+        "entity_id": 3,
+        "evidence_window": {
+          "start": {
+            "tick": 251,
+            "ticks_per_second": 2,
+            "seconds": 125.5
+          },
+          "duration": {
+            "tick": 4,
+            "ticks_per_second": 2,
+            "seconds": 2.0
+          }
+        },
+        "physical_action": "pursue",
+        "acquisition_rendezvous": {
+          "location": {
+            "x": 983,
+            "y": -188
+          },
+          "arrival_deadline": {
+            "tick": 251,
+            "ticks_per_second": 2,
+            "seconds": 125.5
+          },
+          "position_source": "planner_public_report"
+        }
+      }
+    },
+    "assignment-7-in-progress": {
+      "candidate_id": "candidate-54d4d1ed571c0b13d2fd70c9",
+      "planner_order": 7,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-54ab920dcd2627ebec9bb364"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 269,
+          "ticks_per_second": 2,
+          "seconds": 134.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-54d4d1ed571c0b13d2fd70c9",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 269,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 269,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 1040,
+          "y": -213,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-54ab920dcd2627ebec9bb364"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 1040,
+          "y": -213
+        },
+        "arrival_deadline": {
+          "tick": 269,
+          "ticks_per_second": 2,
+          "seconds": 134.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-8-in-progress": {
+      "candidate_id": "candidate-7f05ae071ab29962d32ecbff",
+      "planner_order": 8,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-b877b7ba67d9e0e01eaea582"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 278,
+          "ticks_per_second": 2,
+          "seconds": 139.0
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-7f05ae071ab29962d32ecbff",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 278,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 278,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 1056,
+          "y": -269,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-b877b7ba67d9e0e01eaea582"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 1056,
+          "y": -269
+        },
+        "arrival_deadline": {
+          "tick": 278,
+          "ticks_per_second": 2,
+          "seconds": 139.0
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-9-in-progress": {
+      "candidate_id": "candidate-60297a0368ace7bc0f219d67",
+      "planner_order": 9,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-ed7bfd904501080bb042459f"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 283,
+          "ticks_per_second": 2,
+          "seconds": 141.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-60297a0368ace7bc0f219d67",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 283,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 283,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 1043,
+          "y": -273,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-ed7bfd904501080bb042459f"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 1043,
+          "y": -273
+        },
+        "arrival_deadline": {
+          "tick": 283,
+          "ticks_per_second": 2,
+          "seconds": 141.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-10-in-progress": {
+      "candidate_id": "candidate-e6dc77aedc21dcca975ba156",
+      "planner_order": 10,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-afa7a6f65842b6c348cd3c30"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 359,
+          "ticks_per_second": 2,
+          "seconds": 179.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-e6dc77aedc21dcca975ba156",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 359,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 359,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 501,
+          "y": -107,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-afa7a6f65842b6c348cd3c30"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 501,
+          "y": -107
+        },
+        "arrival_deadline": {
+          "tick": 359,
+          "ticks_per_second": 2,
+          "seconds": 179.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-11-in-progress": {
+      "candidate_id": "candidate-162bac1c1ef376cd787d5bdf",
+      "planner_order": 11,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-5cb6274dbddd3af3721f2a84"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 409,
+          "ticks_per_second": 2,
+          "seconds": 204.5
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 66459,
+        "estimation": 500000,
+        "omission_yield": 0,
+        "combined": 566459,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-162bac1c1ef376cd787d5bdf",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 409,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 409,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 505,
+          "y": 337,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-5cb6274dbddd3af3721f2a84"
+          ],
+          "utility": {
+            "recall": 66459,
+            "estimation": 500000,
+            "omission_yield": 0,
+            "combined": 566459,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": 505,
+          "y": 337
+        },
+        "arrival_deadline": {
+          "tick": 409,
+          "ticks_per_second": 2,
+          "seconds": 204.5
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "assignment-12-in-progress": {
+      "candidate_id": "candidate-c83a15e97559b7c1eac30cd2",
+      "planner_order": 12,
+      "surveillance_mode": "pursue_ship",
+      "target_entity_id": 6,
+      "target_report_ids": [
+        "report-e0ba8a81b7da07261e40f55f",
+        "report-8ab2a3434aec857c71e46fc2"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 430,
+          "ticks_per_second": 2,
+          "seconds": 215.0
+        },
+        "duration": {
+          "tick": 65,
+          "ticks_per_second": 2,
+          "seconds": 32.5
+        }
+      },
+      "utility": {
+        "recall": 132918,
+        "estimation": 1000000,
+        "omission_yield": 119253,
+        "combined": 1252171,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-c83a15e97559b7c1eac30cd2",
+        "surveillance_mode": "pursue_ship",
+        "entity_id": 6,
+        "start": 430,
+        "duration": 65,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 430,
+          "duration": 65,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": 512,
+          "y": 318,
+          "target_posterior_risk": 132918,
+          "expected_omission_probability": 66459,
+          "public_report_rate": 56075,
+          "rate_scale": 1000000,
+          "report_span": 64,
+          "time_scale": 2,
+          "report_ids": [
+            "report-e0ba8a81b7da07261e40f55f",
+            "report-8ab2a3434aec857c71e46fc2"
+          ],
+          "utility": {
+            "recall": 132918,
+            "estimation": 1000000,
+            "omission_yield": 119253,
+            "combined": 1252171,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "maintain_moving_entity_visibility",
+        "entity_id": 6,
+        "evidence_window": {
+          "start": {
+            "tick": 430,
+            "ticks_per_second": 2,
+            "seconds": 215.0
+          },
+          "duration": {
+            "tick": 65,
+            "ticks_per_second": 2,
+            "seconds": 32.5
+          }
+        },
+        "physical_action": "pursue",
+        "acquisition_rendezvous": {
+          "location": {
+            "x": 512,
+            "y": 318
+          },
+          "arrival_deadline": {
+            "tick": 430,
+            "ticks_per_second": 2,
+            "seconds": 215.0
+          },
+          "position_source": "planner_public_report"
+        }
+      }
+    },
+    "assignment-13-in-progress": {
+      "candidate_id": "candidate-de98e41f0a8a13f3804598d5",
+      "planner_order": 13,
+      "surveillance_mode": "fixed_view",
+      "target_entity_id": null,
+      "target_report_ids": [
+        "report-087c76f1f4212838a61886d0",
+        "report-0a3fb812fa58c88f66b16a51",
+        "report-0c6315d0c61a8d137a1d14af",
+        "report-3e838595aa372c2b3201e90d",
+        "report-41386609268b8c9aa0a1a29f",
+        "report-4e3e26c80b3fca7ec9d5ef49",
+        "report-53693a0c5d7c71d621b6e4b6",
+        "report-592a1a4b7be4ec90cd294044",
+        "report-656193a0d7b74a8a61726484",
+        "report-71d3671aa880e8e379ca25c6",
+        "report-878a547d1eb21c8fb0eb49ac",
+        "report-9ab09e356c1bc9fe9ccb5af3",
+        "report-a2f5106f20400d376255c548",
+        "report-ce8a516d08f56d52a6b9ca1c",
+        "report-d3d3b54695e6cf9dc3fc036c",
+        "report-d8e7c5f3df2493ccfb8035f4",
+        "report-f0cba98f6a544453d5cc0a70",
+        "report-f60f970e475703aea0ac2e31"
+      ],
+      "observation_window": {
+        "start": {
+          "tick": 598,
+          "ticks_per_second": 2,
+          "seconds": 299.0
+        },
+        "duration": {
+          "tick": 1,
+          "ticks_per_second": 2,
+          "seconds": 0.5
+        }
+      },
+      "utility": {
+        "recall": 1196261,
+        "estimation": 9000000,
+        "omission_yield": 0,
+        "combined": 10196261,
+        "scale": 1000000
+      },
+      "dependencies": [],
+      "planner_item": {
+        "candidate_id": "candidate-de98e41f0a8a13f3804598d5",
+        "surveillance_mode": "fixed_view",
+        "entity_id": null,
+        "start": 598,
+        "duration": 1,
+        "time_scale": 2,
+        "observation_window": {
+          "start": 598,
+          "duration": 1,
+          "time_scale": 2
+        },
+        "parameters": {
+          "x": -884,
+          "y": 474,
+          "target_posterior_risk": null,
+          "expected_omission_probability": null,
+          "public_report_rate": null,
+          "rate_scale": 1000000,
+          "report_span": 0,
+          "time_scale": 2,
+          "report_ids": [
+            "report-087c76f1f4212838a61886d0",
+            "report-0a3fb812fa58c88f66b16a51",
+            "report-0c6315d0c61a8d137a1d14af",
+            "report-3e838595aa372c2b3201e90d",
+            "report-41386609268b8c9aa0a1a29f",
+            "report-4e3e26c80b3fca7ec9d5ef49",
+            "report-53693a0c5d7c71d621b6e4b6",
+            "report-592a1a4b7be4ec90cd294044",
+            "report-656193a0d7b74a8a61726484",
+            "report-71d3671aa880e8e379ca25c6",
+            "report-878a547d1eb21c8fb0eb49ac",
+            "report-9ab09e356c1bc9fe9ccb5af3",
+            "report-a2f5106f20400d376255c548",
+            "report-ce8a516d08f56d52a6b9ca1c",
+            "report-d3d3b54695e6cf9dc3fc036c",
+            "report-d8e7c5f3df2493ccfb8035f4",
+            "report-f0cba98f6a544453d5cc0a70",
+            "report-f60f970e475703aea0ac2e31"
+          ],
+          "utility": {
+            "recall": 1196261,
+            "estimation": 9000000,
+            "omission_yield": 0,
+            "combined": 10196261,
+            "scale": 1000000
+          }
+        }
+      },
+      "desired_outcome": {
+        "kind": "arrive_and_observe_fixed_view",
+        "location": {
+          "x": -884,
+          "y": 474
+        },
+        "arrival_deadline": {
+          "tick": 598,
+          "ticks_per_second": 2,
+          "seconds": 299.0
+        },
+        "visibility_outcome": "target reports are checked from the fixed FoV"
+      }
+    },
+    "patrol-objective-complete": {
+      "desired_outcome": "every planner-selected patrol assignment is complete"
+    }
+  },
+  "transitions": [
+    {
+      "event": "assignment-1-may-begin",
+      "source": "patrol-awaiting-first-assignment",
+      "target": "assignment-1-in-progress",
+      "context": {
+        "desired_outcome": "begin the first planner-selected assignment",
+        "readiness": {
+          "mission_time_at_or_after": {
+            "tick": 0,
+            "ticks_per_second": 2,
+            "seconds": 0.0
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-1-outcome-confirmed",
+      "source": "assignment-1-in-progress",
+      "target": "assignment-2-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 60,
+            "ticks_per_second": 2,
+            "seconds": 30.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-a9aff49155f6e1ef793d5c84"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-2-outcome-confirmed",
+      "source": "assignment-2-in-progress",
+      "target": "assignment-3-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 96,
+            "ticks_per_second": 2,
+            "seconds": 48.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-e44e6347dac41332568425d7"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-3-outcome-confirmed",
+      "source": "assignment-3-in-progress",
+      "target": "assignment-4-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 114,
+            "ticks_per_second": 2,
+            "seconds": 57.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-27486c6cd005fa585c786ce1"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-4-outcome-confirmed",
+      "source": "assignment-4-in-progress",
+      "target": "assignment-5-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the pursued vessel is held in the FoV",
+          "not_before": {
+            "tick": 189,
+            "ticks_per_second": 2,
+            "seconds": 94.5
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-8a921a7a0dba5a72aead1c2d",
+              "report-c5ccb32c6fdd8871238e41da"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-5-outcome-confirmed",
+      "source": "assignment-5-in-progress",
+      "target": "assignment-6-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the pursued vessel is held in the FoV",
+          "not_before": {
+            "tick": 238,
+            "ticks_per_second": 2,
+            "seconds": 119.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-0066c19b7de340805787db62",
+              "report-c678d1ee70ef38fe49d38feb"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-6-outcome-confirmed",
+      "source": "assignment-6-in-progress",
+      "target": "assignment-7-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the pursued vessel is held in the FoV",
+          "not_before": {
+            "tick": 255,
+            "ticks_per_second": 2,
+            "seconds": 127.5
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-149147a415b7417b9659fb63",
+              "report-e27c2b93ed4f88d2d27a8a58"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-7-outcome-confirmed",
+      "source": "assignment-7-in-progress",
+      "target": "assignment-8-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 270,
+            "ticks_per_second": 2,
+            "seconds": 135.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-54ab920dcd2627ebec9bb364"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-8-outcome-confirmed",
+      "source": "assignment-8-in-progress",
+      "target": "assignment-9-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 279,
+            "ticks_per_second": 2,
+            "seconds": 139.5
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-b877b7ba67d9e0e01eaea582"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-9-outcome-confirmed",
+      "source": "assignment-9-in-progress",
+      "target": "assignment-10-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 284,
+            "ticks_per_second": 2,
+            "seconds": 142.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-ed7bfd904501080bb042459f"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-10-outcome-confirmed",
+      "source": "assignment-10-in-progress",
+      "target": "assignment-11-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 360,
+            "ticks_per_second": 2,
+            "seconds": 180.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-afa7a6f65842b6c348cd3c30"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-11-outcome-confirmed",
+      "source": "assignment-11-in-progress",
+      "target": "assignment-12-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 410,
+            "ticks_per_second": 2,
+            "seconds": 205.0
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-5cb6274dbddd3af3721f2a84"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-12-outcome-confirmed",
+      "source": "assignment-12-in-progress",
+      "target": "assignment-13-in-progress",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the pursued vessel is held in the FoV",
+          "not_before": {
+            "tick": 495,
+            "ticks_per_second": 2,
+            "seconds": 247.5
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-e0ba8a81b7da07261e40f55f",
+              "report-8ab2a3434aec857c71e46fc2"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    },
+    {
+      "event": "assignment-13-outcome-confirmed",
+      "source": "assignment-13-in-progress",
+      "target": "patrol-objective-complete",
+      "context": {
+        "desired_outcome": "confirm the completed evidence interval",
+        "readiness": {
+          "live_evidence": "the drone is at the selected location",
+          "not_before": {
+            "tick": 599,
+            "ticks_per_second": 2,
+            "seconds": 299.5
+          },
+          "sensed_evidence": {
+            "report_ids": [
+              "report-087c76f1f4212838a61886d0",
+              "report-0a3fb812fa58c88f66b16a51",
+              "report-0c6315d0c61a8d137a1d14af",
+              "report-3e838595aa372c2b3201e90d",
+              "report-41386609268b8c9aa0a1a29f",
+              "report-4e3e26c80b3fca7ec9d5ef49",
+              "report-53693a0c5d7c71d621b6e4b6",
+              "report-592a1a4b7be4ec90cd294044",
+              "report-656193a0d7b74a8a61726484",
+              "report-71d3671aa880e8e379ca25c6",
+              "report-878a547d1eb21c8fb0eb49ac",
+              "report-9ab09e356c1bc9fe9ccb5af3",
+              "report-a2f5106f20400d376255c548",
+              "report-ce8a516d08f56d52a6b9ca1c",
+              "report-d3d3b54695e6cf9dc3fc036c",
+              "report-d8e7c5f3df2493ccfb8035f4",
+              "report-f0cba98f6a544453d5cc0a70",
+              "report-f60f970e475703aea0ac2e31"
+            ],
+            "report_check_ledger": "world_model_info.event_report_checks"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -2,6 +2,10 @@
 
 We are using `onr` conda environment, please always activate this conda environment before running commands. If the environment is missing packages, install it and update the `requirements.txt` file.
 
+### Scratch space
+
+Never use `/tmp` (or tempfile defaults that resolve to it): this workstation mounts `/tmp` as a small partition, and filling it has killed live-run services. Use the repository's own `var/tmp` (via `onr.paths.repo_tmp_root()`) for scratch, and keep large artifacts under `var/`. Pytest is pinned to `var/pytest-tmp` via `--basetemp` in `pyproject.toml`.
+
 ### Live-demo launchers
 
 The `scripts/live_demo_with_wm/*.sh` launchers need `jq` and `python` in their own shell. `jq` is vendored at `modules/jq/jq` and the launcher prepends it to `PATH` automatically (the hyper agent's shell backend sources jq the same way). `python` and `herdr` must come from the caller's environment, so run the launchers with the `onr` conda environment activated; the launcher fails fast with an explicit message when a required tool is missing.

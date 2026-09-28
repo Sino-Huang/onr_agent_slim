@@ -26,7 +26,7 @@ dev = ["httpx", "pytest", "playwright", "pyright", "ruff"]
 packages = ["src/onr"]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not live'"
+addopts = "-m 'not live' --basetemp=var/pytest-tmp"
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = ["live: requires the pre-running vLLM endpoint and real solver pipeline"]

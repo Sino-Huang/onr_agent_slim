@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission:demo",
+  "mission_text": "Inspect selected harbor vessels for attached objects and report unresolved ships explicitly.",
+  "source_authority": "demo-operator",
+  "target_ids": [2, 3],
+  "mission_time_budget_s": 300.0
+}
