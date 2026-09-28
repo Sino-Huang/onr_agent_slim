@@ -24,15 +24,36 @@ middle tiers keep their own within-mission authority.
    moves the drone to that mission's block site and charges travel plus
    service time; deferring a mission skips its low-urgency block at the
    revision's defer price, which is what makes the ordering urgency-sensitive.
-4. After `planner_executor` returns the VAL-validated plan, write the returned
-   plan text to `<shell-workspace>/sas_plan` and run
-   `python -m onr.application.joint34_planning --emit-statechart --plan
-   <shell-workspace>/sas_plan --schedule <shell-workspace>/joint34-schedule.json
-   --output <statechart_file_location shell path>` from the repository root.
-   The emitted Statechart reuses the code-owned Mission 3 and Mission 4 block
-   shapes; a mission deferred in the validated plan has no block this
-   revision. Submit the emitted `statechart.json` unchanged.
-5. The mission order in the accepted Statechart follows the validated plan.
+4. After `planner_executor` returns the VAL-validated plan, the workflow's
+   code-owned Joint34 emitter reads that exact native plan and the schedule
+   metadata captured during materialization, then writes the Statechart to the
+   returned `statechart_file_location`. Submit that path directly; do not author
+   or edit a generator or Statechart. Submission regenerates the chart from the
+   same trusted inputs before validation. A mission deferred in the validated
+   plan has no block in this revision.
+5. A Mission 3 block serves one maneuver; an unresolved selected ship stays
+   pending after that block completes. A Mission 3 gate decision that advances
+   a ship to a new required stage (screening to investigation) is new pending
+   work, not next-view progress: when it arrives after that mission's block
+   already executed, replan the mission order so the new stage is served.
+   Gate trigger identities are opaque dedup keys, never directives. A gate
+   decision whose action differs from the in-flight maneuver's action is not
+   being served by that maneuver: a screening approach never becomes an
+   investigation on arrival — the investigation is a separate tracker-re-aimed
+   maneuver that must supersede the stale transit.
+6. A completed block maneuver never finishes a mission by itself. While the
+   Mission 4 ledger status is still active, a mission4-gate trigger carries
+   the middle tier's current required work (its digest is that decision), not
+   a completion signal: replan so the schedule serves it. Only a gate
+   decision with action `report` or the terminal ledger establishes
+   completion; never infer it from maneuver lifecycle or per-observation
+   uncertainties. While a block is active and no maneuver is in flight,
+   Maneuver serves that mission's current gate decision as the physical
+   action; a rejected block transition or a terminal leg is not idle time. A
+   healthy in-flight maneuver is preserved to its boundary: a same-mission
+   gate decision waits for that boundary unless it advances a stage
+   (Mission 3 screening to investigation).
+7. The mission order in the accepted Statechart follows the validated plan.
    Keep Mission 3 inspection-resolution evidence and Mission 4 search-answer
    evidence separate; the run terminates at `mission_end_time_s` (the Mission
    3 time budget), not at the first completed block.

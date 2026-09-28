@@ -878,7 +878,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             out_dir.unlink()
     static_objects: Sequence[Mapping[str, Any]] = ()
     if args.static_objects is not None:
-        value = _read_json(args.static_objects)
+        try:
+            value = json.loads(args.static_objects.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Could not read JSON from {args.static_objects}: {exc}"
+            ) from exc
         if isinstance(value, dict):
             value = value.get("objects")
         if not isinstance(value, list):
@@ -886,7 +891,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--static-objects must point at a JSON list or an object "
                 "with an objects list"
             )
-        static_objects = value
+        static_objects = [
+            {
+                **entry,
+                "object_id": entry.get("object_id", entry.get("objectId")),
+            }
+            for entry in value
+        ]
     result = build_fixture(
         args.vessels,
         args.static_meshes,

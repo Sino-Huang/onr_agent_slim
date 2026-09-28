@@ -8,11 +8,10 @@ Runtime contracts/examples live in the sibling `onr_physical_runtime` checkout's
 `docs/mission_desc/mission4_contract.md`. Agent modules do not import runtime,
 private sensor fixtures or evaluator truth.
 
-The original container-search contract remains valid. Mission 4 additionally
-supports a static ground-team assistance variant on the offshore_dock_1 map:
-a ground team at a stated position asks for a person in distress to be
-located, or for an animal to be located or identified together with an
-escape/follow direction recommendation. The sibling runtime's
+Mission 4 is a worker-requested ground-team assistance search on the
+offshore_dock_1 map: a ground team at a stated position asks for a person in
+distress to be located, or for an animal to be located or identified together
+with an escape/follow direction recommendation. The sibling runtime's
 `scripts/build_mission4_static_package.py` generates the demo artifacts under
 its `docs/mission_desc/mission4_offshore_non_collision_0/` (`package.json`
 public; `fixture.json` and `answers.json` private). `examples/mission4.json`
@@ -86,9 +85,9 @@ pending. Text parsing does not reset or directly mutate runtime mission state.
 
 Supported examples:
 
-- `Please find a red container in dock` — adds a target.
-- `also find a blue truck` — adds another target across configured areas.
-- `change worker:1 to blue container in dock` — explicit description/area amendment.
+- `find … in …` / `also find …` — adds a target described with declared
+  attribute vocabulary and configured area names.
+- `change worker:1 to …` — explicit description/area amendment.
 - `extend deadline to 400 seconds` — absolute mission-time deadline change.
 - `remove worker:2`, `cancel search`, `show progress`, `show evidence`.
 - `A party of 4 mechanics are on watchout at (-477.60, -111.86). ... a person in need of help ... in the direction of (-0.62, -0.79). Where is the person in need of assistance located?` — static ground-team rescue task.
@@ -142,7 +141,8 @@ Bounded, nonmutating checks on a captured public environment JSON:
 python -u -m onr.application.mission4_planning environment.json --dry-run
 python -u -m onr.adapters.mission4_worker --mission-id mission4 \
   --session var/mission4-worker.json --request-directory var/runtime/search_requests \
-  --environment environment.json --text 'find red container in dock' --dry-run
+  --environment environment.json \
+  --text "$(jq -r '.[0].text' examples/mission4_requests.json)" --dry-run
 ```
 
 Remove `--dry-run` from the worker command to queue/publish its request. The session

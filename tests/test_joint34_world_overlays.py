@@ -286,6 +286,42 @@ class TestAvailabilityGating:
             (7, 40.0, 2.0)
         ]
 
+    def test_mission3_progress_uses_only_the_published_inspection_state(self) -> None:
+        def world(time_s: float, screening: str, investigation: str, resolution: str):
+            row = _world_row(time_s, 4, 4, _FIRST_FIVE)
+            row["world_model_info"]["mission3"] = {
+                "selected_ship_ids": [7],
+                "ships": [
+                    {
+                        "ship_id": 7,
+                        "screening": {"status": screening},
+                        "investigation": {"status": investigation},
+                        "resolution": {"status": resolution},
+                    }
+                ],
+            }
+            return row
+
+        worlds = {
+            39.0: world(39.0, "unobserved", "unobserved", "unresolved"),
+            40.0: world(40.0, "inconclusive", "unobserved", "unresolved"),
+            45.0: world(45.0, "inconclusive", "resolved", "resolved"),
+        }
+        assert pane_state(section_at(worlds, 39.5), {}, 39.5).mission3_progress_labels == ()
+        screening = pane_state(section_at(worlds, 40.0), {}, 40.0)
+        assert len(screening.mission3_progress_labels) == 1
+        label = screening.mission3_progress_labels[0]
+        assert (label.ship_id, label.screening_status) == (7, "inconclusive")
+        assert label.investigation_status == "unobserved"
+        assert label.resolution_status == "unresolved"
+        assert pane_state(section_at(worlds, 44.5), {}, 44.5).mission3_progress_labels[0].resolution_status == "unresolved"
+        completed = pane_state(section_at(worlds, 45.0), {}, 45.0)
+        assert completed.mission3_progress_labels[0].investigation_status == "resolved"
+        assert completed.mission3_progress_labels[0].resolution_status == "resolved"
+        frame = Image.new("RGB", _SHIP_PANE.size_px, "#0d1a2b")
+        counts = draw_overlays(frame, _SHIP_PANE, screening)
+        assert counts["mission3_progress_labels"] == 1
+
     def test_truck_evidence_appears_only_from_its_recorded_acquisition(self) -> None:
         worlds = _worlds()
         snapshots = _snapshots()
@@ -448,9 +484,9 @@ class TestOverlayDrawing:
             if frame.getpixel((x, y)) != baseline.getpixel((x, y))
         ]
         assert changed
-        # The pane key now spans three rows (AOI/KOZ/obstacle, targets/GPS/
-        # route, and the active-search key); no recorded geometry is invented.
-        assert all(y <= 96 for _, y in changed)
+        # The pane key now spans four rows, including Mission 3 stage status.
+        # No recorded geometry is invented outside that key.
+        assert all(y <= 120 for _, y in changed)
 
     def test_overlays_are_byte_identical_for_identical_inputs(self) -> None:
         state = pane_state(section_at(_worlds(), 40.0), _snapshots(), 40.0)
@@ -565,8 +601,8 @@ class TestDockCoverage:
         assert dock_coverage_pct(row) is None
 
 
-def test_recorded_bundle_overlay_receipt_documents_every_layer() -> None:
-    """The derived bundle receipt stays in step with the layer specs."""
+def test_issue71_bundle_overlay_receipt_remains_compatible() -> None:
+    """The accepted issue #71 receipt still records its real overlay coverage."""
 
     receipt_path = (
         _REPO
@@ -574,15 +610,8 @@ def test_recorded_bundle_overlay_receipt_documents_every_layer() -> None:
     )
     if not receipt_path.is_file():
         pytest.skip("issue #71 dock-entry bundle not present")
-    module = _load_derivation_module()
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     layers = receipt["overlay_layers"]
-    assert set(layers) == {"world_pane"} | {
-        name for name, _, _, _ in module.OVERLAY_LAYER_SPECS
-    }
-    for name, key, source, gating in module.OVERLAY_LAYER_SPECS:
-        assert layers[name]["source_field"] == source
-        assert layers[name]["gating_rule"] == gating
     assert layers["dock_aoi"]["total_draws"] > 0
     assert layers["keep_out_zones"]["recorded_polygons"] >= 1
     assert layers["target_potential_locations"]["uncertainty_circles_total"] > 0

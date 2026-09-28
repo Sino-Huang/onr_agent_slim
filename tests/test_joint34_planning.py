@@ -13,7 +13,7 @@ from onr.application import joint34_planning
 from onr.application.mission3_planning import Mission3AdaptivePlanner, Mission3ReplanGate
 from onr.application.mission4_planning import Mission4AdaptivePlanner
 from onr.application.mission2_planning import Mission2ReplanGate
-from onr.contracts.fsm import FSMStatus
+from onr.contracts.fsm import FSMStatus, Statechart
 from onr.contracts.planning import PlanningOutcome
 from onr.runtime.cli import _mission_mode_context
 
@@ -220,8 +220,11 @@ def test_revision_class_clamps_deadline_to_run_bound() -> None:
         # dominates every serve cost at this scale, so both missions are
         # served and the urgent M4 goes first.
         ((1, 960.0, 0.0), (160.0, 0.0), 45.0, ["m4", "m3"], []),
-        # Both routine with a far M4: deferring both beats serving either.
-        ((1, 60.0, 0.0), (2400.0, 0.0), 300.0, [], ["m3", "m4"]),
+        # Nearby routine work is still served together rather than yielding
+        # an empty plan or deferring either mission.
+        ((1, 60.0, 0.0), (40.0, 0.0), 150.0, ["m3", "m4"], []),
+        # A far routine M4 request can be deferred, but local M3 work must run.
+        ((1, 60.0, 0.0), (2400.0, 0.0), 300.0, ["m3"], ["m4"]),
     ),
 )
 def test_materialize_solve_and_validate(
@@ -258,6 +261,41 @@ def test_navigation_grounding_changes_validated_mission_order(tmp_path) -> None:
     plan = _solve(domain, problem, tmp_path / "solver")
     assert joint34_planning.joint34_plan_order(plan) == (["m3", "m4"], [])
 
+
+def test_mobile_mission3_precedes_routine_search_when_both_fit(tmp_path) -> None:
+    environment = _environment(
+        m3_ships=((16, 105.4814, 256.8554), (7, 108.6531, 318.2175)),
+        m4_deadline_s=150.0,
+    )
+    environment["world_model_info"]["mission_end_time_s"] = 299.5
+    environment["controlled_vehicle"]["position"] = {
+        "x": 41.0,
+        "y": 0.0,
+        "z": -25.0,
+    }
+    environment["controlled_vehicle"]["max_velocity"] = 10.0
+    search = {
+        "action": "search_area",
+        "parameters": {
+            "polygon": [
+                {"x": -20.0, "y": -20.0},
+                {"x": 20.0, "y": -20.0},
+                {"x": 20.0, "y": 20.0},
+                {"x": -20.0, "y": 20.0},
+            ]
+        },
+    }
+    domain, problem, schedule = joint34_planning.materialize_joint34_pddl(
+        environment,
+        {"action": "navigate", "parameters": {"entity_id": 16}},
+        search,
+        tmp_path,
+    )
+
+    plan = _solve(domain, problem, tmp_path / "solver")
+
+    assert joint34_planning.joint34_plan_order(plan) == (["m3", "m4"], [])
+    assert _plan_cost(schedule, ("m3", "m4"), ()) == _optimal_costs(schedule)[0]
 
 def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
     environment = _environment(m3_ships=((1, 960.0, 0.0),), m4_deadline_s=45.0)
@@ -297,10 +335,13 @@ def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
         "not_before": {"seconds": schedule["mission_end_time_s"]},
         "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]},
     }
-    # Both blocks complete on terminal maneuver feedback (maneuver-serving
-    # decisions).
+    # A terminal maneuver is not enough to leave Mission 4; all worker
+    # objectives must have a terminal all_found report.
     m4_done = transitions[("mission4-block", "mission3-block")]
-    assert m4_done["context"]["readiness"] == {"matching_maneuver_lifecycle_terminal": True}
+    assert m4_done["context"]["readiness"] == {
+        "matching_maneuver_lifecycle_terminal": True,
+        "mission4_terminal_all_found": True,
+    }
 
     # A M3-first handoff is time-bounded by the same not_before rule.
     m3_first_plan = tmp_path / "m3_first_plan"
@@ -311,8 +352,52 @@ def test_emit_statechart_blocks_follow_plan(tmp_path) -> None:
     m3_first_chart_path = tmp_path / "m3_first_statechart.json"
     joint34_planning.emit_joint34_statechart(schedule, m3_first_plan, m3_first_chart_path)
     m3_first_chart = json.loads(m3_first_chart_path.read_text(encoding="utf-8"))
+    Statechart.from_dict(
+        {
+            "schema_version": 2,
+            "mission_id": "joint34-mission",
+            "plan_revision": 1,
+            "mission_snapshot_id": "joint34-mission:snapshot:1",
+            "planning_profile": "temporal",
+            **m3_first_chart,
+        }
+    )
+    assert m3_first_chart["states"] == [
+        "scheduling",
+        "mission3-block",
+        "mission3-completed",
+        "mission4-block",
+        "joint34-complete",
+    ]
+    m3_complete = next(
+        transition
+        for transition in m3_first_chart["transitions"]
+        if transition["event"] == "mission3-block-complete"
+    )
+    assert (m3_complete["source"], m3_complete["target"]) == (
+        "mission3-block",
+        "mission3-completed",
+    )
+    completion_handoff = next(
+        transition
+        for transition in m3_first_chart["transitions"]
+        if transition["event"] == "mission3-completion-handoff"
+    )
+    assert (completion_handoff["source"], completion_handoff["target"]) == (
+        "mission3-completed",
+        "mission4-block",
+    )
+    assert completion_handoff["context"]["readiness"] == {
+        "matching_maneuver_lifecycle_terminal": True
+    }
     m3_first_transitions = {
         (t["source"], t["target"]): t for t in m3_first_chart["transitions"]
+    }
+    m4_complete = m3_first_transitions[("mission4-block", "joint34-complete")]
+    assert m4_complete["context"]["readiness"] == {
+        "not_before": {"seconds": schedule["mission_end_time_s"]},
+        "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]},
+        "mission4_terminal_all_found": True,
     }
     assert m3_first_transitions[("scheduling", "mission3-block")]["context"]["readiness"] == {
         "not_before": {"seconds": 0.0}
@@ -369,6 +454,7 @@ def test_mission3_report_block_completes_immediately(tmp_path) -> None:
     assert bound["context"]["readiness"] == {
         "not_before": {"seconds": schedule["mission_end_time_s"]},
         "mission_time_at_or_after": {"seconds": schedule["mission_end_time_s"]},
+        "mission4_terminal_all_found": True,
     }
 
 

@@ -6,10 +6,8 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
-from onr.contracts.bayesian_belief import canonical_sha256
-from onr.contracts.bayesian_belief import canonical_json
+from onr.contracts.bayesian_belief import canonical_json, canonical_sha256
 
 
 def _probability(value: object, label: str) -> float:
@@ -31,6 +29,38 @@ def _interval(value: object, label: str) -> tuple[float, float]:
     return lower, upper
 
 
+@dataclass(frozen=True, slots=True)
+class ReportingPriorPolicy:
+    """Versioned code-owned mapping from qualitative claims to probabilities."""
+
+    policy_id: str = "reporting-reliability-v1"
+    matched_entity_mass: float = 0.9
+    window_weighting: str = "report_count"
+
+    def __post_init__(self) -> None:
+        if self.policy_id != "reporting-reliability-v1":
+            raise ValueError("unsupported reporting prior policy")
+        mass = _probability(self.matched_entity_mass, "matched entity mass")
+        if mass == 0.0:
+            raise ValueError("matched entity mass must be positive")
+        object.__setattr__(self, "matched_entity_mass", mass)
+        if self.window_weighting not in {"report_count", "uniform"}:
+            raise ValueError(
+                "reporting prior window weighting must be report_count or uniform"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "policy_id": self.policy_id,
+            "matched_entity_mass": self.matched_entity_mass,
+            "window_weighting": self.window_weighting,
+        }
+
+
+DEFAULT_REPORTING_PRIOR_POLICY = ReportingPriorPolicy()
+
+
 @dataclass(frozen=True, order=True, slots=True)
 class ShipReportingReliability:
     entity_id: int
@@ -43,20 +73,55 @@ class ShipReportingReliability:
     outcome_counts: Mapping[str, int]
 
     def __post_init__(self) -> None:
-        if isinstance(self.entity_id, bool) or not isinstance(self.entity_id, int) or self.entity_id <= 0:
+        if (
+            isinstance(self.entity_id, bool)
+            or not isinstance(self.entity_id, int)
+            or self.entity_id <= 0
+        ):
             raise ValueError("reporting entity ID must be a positive integer")
         object.__setattr__(self, "mean", _probability(self.mean, "corruption mean"))
-        if isinstance(self.variance, bool) or not isinstance(self.variance, (int, float)) or not math.isfinite(float(self.variance)) or self.variance < 0:
+        if (
+            isinstance(self.variance, bool)
+            or not isinstance(self.variance, (int, float))
+            or not math.isfinite(float(self.variance))
+            or self.variance < 0
+        ):
             raise ValueError("corruption variance must be finite and non-negative")
         object.__setattr__(self, "variance", float(self.variance))
-        object.__setattr__(self, "credible_interval", _interval(self.credible_interval, "corruption credible interval"))
-        object.__setattr__(self, "honest_probability", _probability(self.honest_probability, "honest probability"))
-        object.__setattr__(self, "expected_omission_probability", _probability(self.expected_omission_probability, "expected omission probability"))
-        if isinstance(self.expected_variance_reduction, bool) or not isinstance(self.expected_variance_reduction, (int, float)) or not math.isfinite(float(self.expected_variance_reduction)) or self.expected_variance_reduction < 0:
-            raise ValueError("expected variance reduction must be finite and non-negative")
-        object.__setattr__(self, "expected_variance_reduction", float(self.expected_variance_reduction))
+        object.__setattr__(
+            self,
+            "credible_interval",
+            _interval(self.credible_interval, "corruption credible interval"),
+        )
+        object.__setattr__(
+            self,
+            "honest_probability",
+            _probability(self.honest_probability, "honest probability"),
+        )
+        object.__setattr__(
+            self,
+            "expected_omission_probability",
+            _probability(
+                self.expected_omission_probability, "expected omission probability"
+            ),
+        )
+        if (
+            isinstance(self.expected_variance_reduction, bool)
+            or not isinstance(self.expected_variance_reduction, (int, float))
+            or not math.isfinite(float(self.expected_variance_reduction))
+            or self.expected_variance_reduction < 0
+        ):
+            raise ValueError(
+                "expected variance reduction must be finite and non-negative"
+            )
+        object.__setattr__(
+            self, "expected_variance_reduction", float(self.expected_variance_reduction)
+        )
         counts = dict(self.outcome_counts)
-        if set(counts) != {"clean", "altered", "omitted"} or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts.values()):
+        if set(counts) != {"clean", "altered", "omitted"} or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counts.values()
+        ):
             raise ValueError("reporting outcome counts are invalid")
         object.__setattr__(self, "outcome_counts", counts)
 
@@ -96,10 +161,19 @@ class SharedOmissionReliability:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mean", _probability(self.mean, "omission mean"))
-        if isinstance(self.variance, bool) or not isinstance(self.variance, (int, float)) or not math.isfinite(float(self.variance)) or self.variance < 0:
+        if (
+            isinstance(self.variance, bool)
+            or not isinstance(self.variance, (int, float))
+            or not math.isfinite(float(self.variance))
+            or self.variance < 0
+        ):
             raise ValueError("omission variance must be finite and non-negative")
         object.__setattr__(self, "variance", float(self.variance))
-        object.__setattr__(self, "credible_interval", _interval(self.credible_interval, "omission credible interval"))
+        object.__setattr__(
+            self,
+            "credible_interval",
+            _interval(self.credible_interval, "omission credible interval"),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -133,11 +207,19 @@ class ReportingReliabilitySnapshot:
             raise ValueError("unsupported reporting reliability snapshot")
         if not isinstance(self.mission_id, str) or not self.mission_id.strip():
             raise ValueError("snapshot Mission ID must be non-empty")
-        if isinstance(self.belief_revision, bool) or not isinstance(self.belief_revision, int) or self.belief_revision < 1:
+        if (
+            isinstance(self.belief_revision, bool)
+            or not isinstance(self.belief_revision, int)
+            or self.belief_revision < 1
+        ):
             raise ValueError("snapshot belief revision must be positive")
         if not isinstance(self.input_event_id, str) or not self.input_event_id.strip():
             raise ValueError("snapshot input event ID must be non-empty")
-        if isinstance(self.input_revision, bool) or not isinstance(self.input_revision, int) or self.input_revision < 0:
+        if (
+            isinstance(self.input_revision, bool)
+            or not isinstance(self.input_revision, int)
+            or self.input_revision < 0
+        ):
             raise ValueError("snapshot input revision must be non-negative")
         timestamp = datetime.fromisoformat(self.created_at)
         if timestamp.tzinfo is None:
@@ -219,13 +301,17 @@ class ReportingReliabilitySnapshot:
             input_event_id=value["input_event_id"],
             input_revision=value["input_revision"],
             created_at=value["created_at"],
-            ships=tuple(ShipReportingReliability.from_dict(item) for item in value["ships"]),
+            ships=tuple(
+                ShipReportingReliability.from_dict(item) for item in value["ships"]
+            ),
             omission=SharedOmissionReliability.from_dict(value["omission"]),
             content_sha256=value["content_sha256"],
         )
 
 
 __all__ = [
+    "DEFAULT_REPORTING_PRIOR_POLICY",
+    "ReportingPriorPolicy",
     "ReportingReliabilitySnapshot",
     "SharedOmissionReliability",
     "ShipReportingReliability",

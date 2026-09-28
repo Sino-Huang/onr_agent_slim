@@ -17,7 +17,7 @@ A structured, non-authoritative interpretation derived from the raw MissionInput
 _Avoid_: Source authority, planner-native asset, verification record
 
 **Prior Knowledge**:
-Versioned qualitative claims derived from Mission Intent and interpreted by the active belief service before initial planning. It is recorded with Planning Intent, while numeric Bayesian parameters remain code-owned and observed evidence owns later posterior updates.
+Versioned qualitative claims derived from Mission Intent and interpreted by the active belief service before initial planning. It is recorded with Planning Intent, while a named, versioned client-configured policy deterministically derives numeric Bayesian parameters and observed evidence owns later posterior updates.
 _Avoid_: Ground truth, repeated posterior override, planner utility bonus
 
 **Mission Run**:

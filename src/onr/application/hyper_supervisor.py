@@ -120,7 +120,29 @@ class HyperSupervisor:
                 belief_snapshot=invocation.belief_snapshot,
                 maneuver_requests=requests,
             )
-            decision = self._decide(effective)
+            required = [
+                request
+                for request in effective.maneuver_requests
+                if request.request_kind == "reachability_required"
+            ]
+            if required:
+                request_identities = tuple(
+                    identity
+                    for request in required
+                    for identity in (
+                        request.coalesced_request_ids or (request.request_id,)
+                    )
+                )
+                decision = HyperHeartbeatDecision(
+                    mission_id,
+                    invocation.plan_revision,
+                    "replan",
+                    "Maneuver Control requires a planner-selected reachable recovery rendezvous.",
+                    invocation.trigger_identities,
+                    request_identities,
+                )
+            else:
+                decision = self._decide(effective)
             if (
                 decision.mission_id != mission_id
                 or decision.plan_revision != invocation.plan_revision
@@ -222,6 +244,13 @@ class HyperSupervisor:
             requester=latest.requester,
             observed_plan_revision=latest.observed_plan_revision,
             source_revisions=revisions,
+            request_kind=(
+                "reachability_required"
+                if any(
+                    item.request_kind == "reachability_required" for item in requests
+                )
+                else "advisory"
+            ),
             coalesced_request_ids=tuple(sorted({item.request_id for item in requests})),
             coalesced_reasons=tuple(sorted({item.reason for item in requests})),
         )

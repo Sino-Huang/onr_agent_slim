@@ -14,6 +14,7 @@ from onr.demo.airsim_reconstruction.fixture import (
     SCENARIO_NAME,
     TRAJECTORY_NED_OFFSET_M,
     build_fixture,
+    main as fixture_main,
 )
 
 SHIP_KEYS = {
@@ -84,6 +85,49 @@ def _build(tmp_path: Path, name: str = "fixture") -> Path:
     assert result.ship_count == 20
     assert result.passenger_count == 26
     return out_dir
+
+def test_cli_accepts_static_object_list_with_public_object_id_keys(
+    tmp_path: Path,
+) -> None:
+    static_objects = tmp_path / "static-objects.json"
+    static_objects.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "M4 red container",
+                    "objectId": 47,
+                    "mesh": "SM_MetalBox02.SM_MetalBox02",
+                    "ned_m": [0.0, 0.0, -0.09],
+                    "heading_deg": 0.0,
+                    "fixture_private_id": "private-red",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "joint34-fixture"
+
+    assert fixture_main(
+        [
+            "--out",
+            str(out_dir),
+            "--scenario-name",
+            "joint34-fixture",
+            "--static-objects",
+            str(static_objects),
+            "--trajectory-ned-offset",
+            "0",
+            "0",
+            "0",
+        ]
+    ) == 0
+
+    mapping = _load(out_dir / "mapping.json")
+    assert isinstance(mapping, dict)
+    static_mapping = mapping["static_objects"]
+    assert isinstance(static_mapping, dict)
+    assert static_mapping["M4 red container"]["object_id"] == 47
+    assert static_mapping["M4 red container"]["ned_m"] == [0.0, 0.0, -0.09]
 
 
 def test_build_fixture_ship_schema_mapping_manifest_and_determinism(

@@ -13,6 +13,10 @@ from urllib.parse import urlparse
 import yaml
 
 from onr.contracts.maneuver_control import PhysicalAction
+from onr.contracts.reporting_reliability import (
+    DEFAULT_REPORTING_PRIOR_POLICY,
+    ReportingPriorPolicy,
+)
 
 
 def _text(value: object, label: str) -> str:
@@ -154,6 +158,14 @@ DEFAULT_AGENTS_CONFIG = AgentsConfig(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class BeliefsConfig:
+    reporting_reliability_prior: ReportingPriorPolicy
+
+
+DEFAULT_BELIEFS_CONFIG = BeliefsConfig(DEFAULT_REPORTING_PRIOR_POLICY)
+
+
 class EnvironmentUpdateOwnership(StrEnum):
     """The authority that advances environment updates."""
 
@@ -281,6 +293,7 @@ class RuntimeConfig:
     debug: bool
     agent_name: str
     agents: AgentsConfig = DEFAULT_AGENTS_CONFIG
+    beliefs: BeliefsConfig = DEFAULT_BELIEFS_CONFIG
     environment_profile: EnvironmentProfile = DEFAULT_ENVIRONMENT_PROFILE
 
 
@@ -371,9 +384,7 @@ def load_environment_profile(
     elif adapter_kind == "external_transport":
         top = _exact(raw, common_fields | {"external"}, "environment profile")
     else:
-        raise ValueError(
-            "environment.adapter_kind must be fake or external_transport"
-        )
+        raise ValueError("environment.adapter_kind must be fake or external_transport")
 
     protocol_values = _exact(
         top["protocols"],
@@ -607,6 +618,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
             "agents",
         },
         "runtime configuration",
+        optional={"beliefs"},
     )
     agent_name = _text(top["agent_name"], "agent_name")
     debug = _boolean(top["debug"], "debug")
@@ -732,6 +744,26 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         hyper_agent=agent_records["hyper_agent"],
         maneuver_control=agent_records["maneuver_control"],
     )
+    beliefs = DEFAULT_BELIEFS_CONFIG
+    if "beliefs" in top:
+        belief_values = _exact(top["beliefs"], {"reporting_reliability"}, "beliefs")
+        reliability_values = _exact(
+            belief_values["reporting_reliability"],
+            {"prior_policy"},
+            "beliefs.reporting_reliability",
+        )
+        policy_values = _exact(
+            reliability_values["prior_policy"],
+            {"policy_id", "matched_entity_mass", "window_weighting"},
+            "beliefs.reporting_reliability.prior_policy",
+        )
+        beliefs = BeliefsConfig(
+            ReportingPriorPolicy(
+                policy_id=policy_values["policy_id"],
+                matched_entity_mass=policy_values["matched_entity_mass"],
+                window_weighting=policy_values["window_weighting"],
+            )
+        )
     return RuntimeConfig(
         llm=LLMConfig(provider, base_url, model, api_key, temperature),
         planners=PlannersConfig(
@@ -744,6 +776,7 @@ def load_runtime_config(path: Path | None = None, *, repo_root: Path) -> Runtime
         debug=debug,
         agent_name=agent_name,
         agents=agents,
+        beliefs=beliefs,
         environment_profile=environment_profile,
     )
 

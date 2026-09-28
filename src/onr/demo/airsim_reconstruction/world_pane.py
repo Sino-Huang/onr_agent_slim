@@ -56,6 +56,7 @@ COUNT_KEYS = (
     "targets",
     "uncertainty_circles",
     "ship_fixes",
+    "mission3_progress_labels",
     "active_search_polygons",
     "search_path_points",
     "track_points",
@@ -77,6 +78,7 @@ _LEGEND_ROWS = (
         ("drone track", TRACK_COLOR),
         ("drone", DRONE_COLOR),
     ),
+    (("M3 S: screening", GPS_COLOR), ("I: investigation", "#83e89c")),
 )
 
 
@@ -199,6 +201,17 @@ class ShipFix:
 
 
 @dataclass(frozen=True, slots=True)
+class Mission3ProgressLabel:
+    """Public screening and investigation status at one recorded vessel fix."""
+
+    ship_id: int
+    north: float
+    east: float
+    screening_status: str
+    investigation_status: str
+    resolution_status: str
+
+@dataclass(frozen=True, slots=True)
 class PaneState:
     """Recorded, time-gated evidence for exactly one pane frame."""
 
@@ -214,6 +227,8 @@ class PaneState:
     drone_track: tuple[Sequence[float], ...] = ()
     drone_position: Sequence[float] | None = None
     search_progress: str | None = None
+
+    mission3_progress_labels: tuple[Mission3ProgressLabel, ...] = ()
 
 
 def _world_info(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -366,6 +381,35 @@ def ship_fixes(
     )
 
 
+def mission3_progress_labels(
+    inspection: Mapping[str, Any], fixes: Sequence[ShipFix]
+) -> tuple[Mission3ProgressLabel, ...]:
+    """Join recorded public stage status to the latest time-gated GPS fixes."""
+
+    ships = {
+        int(ship["ship_id"]): ship
+        for ship in inspection.get("ships", ())
+        if isinstance(ship, Mapping)
+    }
+    labels: list[Mission3ProgressLabel] = []
+    for fix in fixes:
+        ship = ships.get(fix.ship_id)
+        if ship is None:
+            continue
+        labels.append(
+            Mission3ProgressLabel(
+                ship_id=fix.ship_id,
+                north=fix.north,
+                east=fix.east,
+                screening_status=str(ship["screening"]["status"]),
+                investigation_status=str(ship["investigation"]["status"]),
+                resolution_status=str(ship["resolution"]["status"]),
+            )
+        )
+    return tuple(labels)
+
+
+
 def pane_state(
     row: Mapping[str, Any] | None,
     snapshots: Mapping[float, SearchBeliefSnapshot],
@@ -402,16 +446,19 @@ def pane_state(
     )
     published = [time for time in snapshots if time <= mission_time_s]
     snapshot = snapshots[max(published)] if published else None
+    mission3 = info.get("mission3") or {}
+    fixes = ship_fixes(
+        info.get("public_position_fixes") or (),
+        mission3.get("selected_ship_ids") or (),
+        mission_time_s,
+    )
     return PaneState(
         areas=areas,
         keep_out_zones=tuple(package.get("keep_out_zones") or ()),
         obstacles=tuple(package.get("obstacles") or ()),
         targets=target_markers(snapshot, mission4.get("objectives") or {}),
-        ship_fixes=ship_fixes(
-            info.get("public_position_fixes") or (),
-            (info.get("mission3") or {}).get("selected_ship_ids") or (),
-            mission_time_s,
-        ),
+        ship_fixes=fixes,
+        mission3_progress_labels=mission3_progress_labels(mission3, fixes),
         active_search_polygon=active_search_polygon,
         search_path=tuple(search_path),
         drone_track=tuple(drone_track),
@@ -720,6 +767,48 @@ def _draw_ship_fix(
     return True
 
 
+def _draw_mission3_progress(
+    draw: ImageDraw.ImageDraw,
+    geometry: PaneGeometry,
+    label: Mission3ProgressLabel,
+    placed: list[tuple[float, float, float, float]],
+) -> bool:
+    if not geometry.contains(label.north, label.east):
+        return False
+    center = geometry.pixel(label.north, label.east)
+    status = {
+        "unobserved": "new",
+        "inconclusive": "inconcl",
+        "suspected": "suspect",
+        "resolved": "done",
+        "unresolved": "open",
+        "incomplete": "incomplete",
+    }
+    color = (
+        "#83e89c"
+        if label.resolution_status == "resolved"
+        else "#ff5d5d"
+        if label.resolution_status == "incomplete"
+        else "#ffd078"
+        if label.investigation_status in {"inconclusive", "suspected"}
+        else GPS_COLOR
+    )
+    _label_near(
+        draw,
+        geometry,
+        center,
+        (
+            f"M3 {label.ship_id} · S:{status.get(label.screening_status, label.screening_status)} "
+            f"I:{status.get(label.investigation_status, label.investigation_status)} "
+            f"R:{status.get(label.resolution_status, label.resolution_status)}"
+        ),
+        color,
+        placed,
+    )
+    return True
+
+
+
 def _draw_active_search(
     layer: Image.Image,
     draw: ImageDraw.ImageDraw,
@@ -898,6 +987,10 @@ def draw_overlays(
         counts["uncertainty_circles"] += circle
     for fix in state.ship_fixes:
         counts["ship_fixes"] += _draw_ship_fix(draw, geometry, fix, placed)
+    for label in state.mission3_progress_labels:
+        counts["mission3_progress_labels"] += _draw_mission3_progress(
+            draw, geometry, label, placed
+        )
     if state.active_search_polygon is not None:
         counts["active_search_polygons"] += _draw_active_search(
             layer, draw, geometry, state.active_search_polygon, placed

@@ -73,6 +73,12 @@ def test_default_runtime_config_is_complete_and_repo_relative() -> None:
     assert config.heartbeats.summary_seconds == 30
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
+    assert config.beliefs.reporting_reliability_prior.to_dict() == {
+        "schema_version": 1,
+        "policy_id": "reporting-reliability-v1",
+        "matched_entity_mass": 0.9,
+        "window_weighting": "report_count",
+    }
     profile = config.environment_profile
     assert profile.source_path == (root / "conf/environment_physical.yaml").resolve()
     assert profile.adapter_kind == "external_transport"
@@ -221,6 +227,26 @@ def test_runtime_config_direct_construction_uses_shipped_agent_defaults() -> Non
     )
     assert config.agents.hyper_agent.output_structure_retry.max_retries == 2
     assert config.agents.maneuver_control.output_structure_retry.max_retries == 1
+    assert config.beliefs.reporting_reliability_prior.matched_entity_mass == 0.9
+
+
+def test_runtime_config_loads_client_reporting_prior_policy(tmp_path: Path) -> None:
+    root = Path(__file__).parents[1]
+    values = _shipped_runtime_values()
+    policy = values["beliefs"]["reporting_reliability"]["prior_policy"]
+    policy["matched_entity_mass"] = 0.75
+    policy["window_weighting"] = "uniform"
+    config_path = tmp_path / "runtime.yaml"
+    _write_runtime_values(config_path, values)
+
+    config = load_runtime_config(config_path, repo_root=root)
+
+    assert config.beliefs.reporting_reliability_prior.to_dict() == {
+        "schema_version": 1,
+        "policy_id": "reporting-reliability-v1",
+        "matched_entity_mass": 0.75,
+        "window_weighting": "uniform",
+    }
 
 
 def test_runtime_config_requires_agent_name(tmp_path: Path) -> None:

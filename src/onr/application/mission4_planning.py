@@ -193,11 +193,27 @@ class Mission4AdaptivePlanner:
             self.beliefs=BayesianBeliefManager.for_object_search(self.mission_id,section["package"],self.data["belief"])
         snapshot=self.beliefs.ingest(section,now)
         lifecycle=plain(environment.get("maneuver_lifecycle"))
-        if (world.get("mission_mode") == "joint34" and lifecycle is not None
+        if (lifecycle is not None
+                and lifecycle.get("action") == "investigate"
+                and lifecycle.get("lifecycle") in {"accepted", "active"}):
+            # A vessel investigation is in flight: the viewpoint decision
+            # must not supersede it (investigation views and camera tracking
+            # need the full maneuver window). Checked before the sibling
+            # filter below: inspection maneuvers carry no deadline_time, so
+            # the filter would otherwise hide the in-flight investigation.
+            selected = set(
+                world.get("mission3", {}).get("selected_ship_ids", ())
+            )
+            served = lifecycle.get("parameters", {}).get("entity_id")
+            if served is not None and served in selected:
+                return None
+        inspection_sibling=world.get("mission3")
+        if (isinstance(inspection_sibling, Mapping) and lifecycle is not None
                 and "deadline_time" not in lifecycle.get("parameters", {})):
-            # Every M4 decision carries deadline_time; M3 decisions do not.
-            # A sibling inspection maneuver cannot continue or complete our
-            # previous search choice, or suppress a new worker request.
+            # Every M4 decision carries deadline_time; sibling inspection
+            # decisions do not. A sibling inspection maneuver cannot continue
+            # or complete our previous search choice, or suppress a new
+            # worker request.
             lifecycle = None
         found=self._resolved_targets(snapshot,section)
         unresolved=[tid for tid in section["objectives"] if tid not in found]
@@ -428,9 +444,25 @@ class Mission4ReplanGate:
         if decision is None:
             return None
         self.last_decision=decision
+        # The serving maneuver's terminal state belongs in the trigger
+        # identity: when a block's maneuver fails or expires, the desired
+        # decision is unchanged but the block must be re-served, and a
+        # decision-only digest would suppress the re-schedule trigger.  The
+        # identity must NOT include the serving command's acceptance — a new
+        # acceptance would re-fire the trigger and supersede the command
+        # that was just queued.
+        lifecycle=environment.get("maneuver_lifecycle") or {}
+        if isinstance(lifecycle,Mapping):
+            serving_failed=(
+                lifecycle.get("lifecycle") in {"failed", "cancelled"}
+                and bool(lifecycle.get("command_id"))
+            )
+        else:
+            serving_failed=False
         digest=json.dumps({"action":decision.action,"reason":decision.reason,
                            "parameters":decision.parameters,"targets":decision.target_ids,
-                           "report":decision.report},
+                           "report":decision.report,
+                           "serving_failed":serving_failed},
                           sort_keys=True,default=str)
         trigger=f"{_GATE_TRIGGER_PREFIX}{digest}"
         if trigger==self._last_trigger:

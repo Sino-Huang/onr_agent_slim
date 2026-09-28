@@ -11,9 +11,9 @@ from types import MappingProxyType
 from typing import Any
 
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
-from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.fsm import FSMStatus
+from onr.contracts.reporting_reliability import ReportingReliabilitySnapshot
 
 _HYPER_AGENT_TOKEN = object()
 
@@ -109,6 +109,7 @@ class ReplanRequest:
     requester: str
     observed_plan_revision: int
     source_revisions: Mapping[str, int | None] = field(default_factory=dict)
+    request_kind: str = "advisory"
     coalesced_request_ids: tuple[str, ...] = ()
     coalesced_reasons: tuple[str, ...] = ()
 
@@ -121,6 +122,8 @@ class ReplanRequest:
         _nonnegative_int(self.observed_plan_revision, "observed plan revision")
         if not isinstance(self.source_revisions, Mapping):
             raise ValueError("source revisions must be a mapping")
+        if self.request_kind not in {"advisory", "reachability_required"}:
+            raise ValueError("unsupported replan request kind")
         revisions: dict[str, int | None] = {}
         for source, revision in self.source_revisions.items():
             _text(source, "source revision name")
@@ -157,6 +160,7 @@ class ReplanRequest:
             "requester": self.requester,
             "observed_plan_revision": self.observed_plan_revision,
             "source_revisions": _thaw(self.source_revisions),
+            "request_kind": self.request_kind,
             "coalesced_request_ids": list(self.coalesced_request_ids),
             "coalesced_reasons": list(self.coalesced_reasons),
         }
@@ -176,7 +180,10 @@ class ReplanRequest:
             "coalesced_request_ids",
             "coalesced_reasons",
         }
-        if not isinstance(value, Mapping) or set(value) != expected:
+        if not isinstance(value, Mapping) or set(value) not in {
+            frozenset(expected),
+            frozenset((*expected, "request_kind")),
+        }:
             raise ValueError("replan request contains unknown or missing fields")
         ids = value["coalesced_request_ids"]
         reasons = value["coalesced_reasons"]
@@ -189,6 +196,7 @@ class ReplanRequest:
             requester=value["requester"],
             observed_plan_revision=value["observed_plan_revision"],
             source_revisions=value["source_revisions"],
+            request_kind=value.get("request_kind", "advisory"),
             coalesced_request_ids=tuple(ids),
             coalesced_reasons=tuple(reasons),
         )

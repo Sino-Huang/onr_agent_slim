@@ -18,8 +18,13 @@ inconclusive evidence or a moved target; otherwise it is routine. Deferring a
 preemptive revision's work costs ``DEFER_COST_PREEMPTIVE`` — priced above any
 feasible travel at the harbor scene's kilometer scale (the Mission 2 selection
 model's 100000 weight scale raised accordingly) — so urgency always outranks
-travel; routine deferral costs ``DEFER_COST_ROUTINE``, letting the solver skip
-a low-urgency mission when switch travel outweighs it.
+travel; routine deferral costs ``DEFER_COST_ROUTINE``, priced above the
+harbor-scale switch travel so both joint34 missions stay served, while a
+genuinely distant site still defers.
+Before an M4 deadline enters its preemptive window, prefer Mission 3 first
+when the estimated M3-to-M4 service path still fits that deadline. Delaying
+inspection lets mobile targets' last public positions age; the dock search can
+wait.
 """
 
 from __future__ import annotations
@@ -36,7 +41,12 @@ from onr.application.mission4_planning import Mission4AdaptivePlanner
 
 JOINT34_PREEMPTIVE_DEADLINE_S = 60.0
 DEFER_COST_PREEMPTIVE = 1000000
-DEFER_COST_ROUTINE = 1000
+# Costs are milliseconds; 200 s keeps both joint34 blocks served at the
+# harbor recording's scale — the worst in-scenario switch travel (a dock
+# sweep plus a kilometer-scale inspection hop) still prices below deferring
+# either mission, while genuinely distant deferrals remain cheaper than
+# serving them.
+DEFER_COST_ROUTINE = 200000
 JOINT34_M4_SERVICE_MILLIS = 60000
 # Mission 3 block service estimates follow the decision's maneuver step:
 # approach/screening dwell for navigation and pursuit, one bounded
@@ -334,6 +344,35 @@ def materialize_joint34_pddl(
         "defer-cost m3": defer,
         "defer-cost m4": defer,
     }
+
+    decision4 = schedule["mission4_decision"]
+    if (
+        schedule["mission3_pending"]
+        and schedule["mission4_pending"]
+        and isinstance(decision4, Mapping)
+        and decision4.get("action") != "report"
+    ):
+        effective_m4_deadline = min(
+            float(schedule["mission4_deadline_s"]),
+            float(schedule["mission_end_time_s"]),
+        )
+        m4_time_left_millis = 1000.0 * (
+            effective_m4_deadline - float(schedule["mission_time_seconds"])
+        )
+        if m4_time_left_millis > 1000.0 * JOINT34_PREEMPTIVE_DEADLINE_S:
+            m3_first_millis = (
+                costs["serve-m3-from-drone-cost"]
+                + costs["serve-m4-from-m3-site-cost"]
+            )
+            m4_first_millis = (
+                costs["serve-m4-from-drone-cost"]
+                + costs["serve-m3-from-m4-site-cost"]
+            )
+            if m3_first_millis <= m4_time_left_millis:
+                costs["serve-m4-from-drone-cost"] += max(
+                    0, m3_first_millis - m4_first_millis + 1
+                )
+
     schedule["sites"] = {
         "drone": list(drone),
         "m3-site": list(m3_site),
@@ -389,23 +428,51 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
     now = float(schedule["mission_time_seconds"])
     mission_end = float(schedule["mission_end_time_s"])
     blocks = [f"mission{mission[1]}-block" for mission in order]
+    mission3_handoff = (
+        blocks == ["mission3-block", "mission4-block"]
+        and not _mission3_block_reports(schedule)
+    )
+    states = ["scheduling", *blocks]
+    if mission3_handoff:
+        states.insert(states.index("mission4-block"), "mission3-completed")
+    states.append("joint34-complete")
     scheduling_policy = (
         f"This schedule covers Mission 4 worker revision {schedule['mission4_request_revision']}. "
         "A newer accepted worker revision with an effective deadline within "
         "60 seconds is preemptive: Hyper must replan the PDDL mission order, "
         "including while the other mission's maneuver is active. The existing "
         "reconciliation path applies that revision at a maneuver boundary. "
-        "An additional viewpoint for the same accepted worker revision is "
         "within-mission progress, not a new priority. After a served maneuver "
         "completes, continue the committed next mission block; do not restart "
-        "the served block solely for its next-view gate. Reconsider the mission "
-        "order for new urgent work or material route/feasibility invalidation, "
-        "not merely because the already-accounted-for deadline remains near. "
-        "The M3/M4 gate decisions own within-mission feasibility and search "
-        "completion. A non-report M4 gate means unresolved work; do not infer "
-        "completion by comparing individual attribute uncertainties with "
-        "found_threshold. Only the middle-tier report or terminal ledger "
-        "establishes completion."
+        "the served block solely for its next-view gate. Gate trigger "
+        "identities are opaque dedup keys, never directives. A gate decision "
+        "whose action differs from the in-flight maneuver's action is not "
+        "being served by that maneuver: a screening approach never becomes an "
+        "investigation on arrival — the investigation is a separate "
+        "tracker-re-aimed maneuver that must supersede the stale transit. A "
+        "gate decision that advances a mission to a new required stage — "
+        "Mission 3 screening to investigation — while any of that mission's "
+        "selected work stays unresolved is new pending work, not next-view "
+        "progress: Hyper must replan the PDDL mission order so the new stage "
+        "is served. "
+        "Reconsider the mission order for new urgent work or material "
+        "route/feasibility invalidation, not merely because the "
+        "already-accounted-for deadline remains near. The M3/M4 gate "
+        "decisions own within-mission feasibility and search completion. A "
+        "completed block maneuver never finishes a mission by itself: while "
+        "the Mission 4 ledger status is still active, a mission4-gate trigger "
+        "carries the middle tier's current required work (its digest is that "
+        "decision), not a completion signal, and the schedule must serve it "
+        "through a replanned revision. While a block is active and no "
+        "maneuver is in flight, Maneuver serves that mission's current gate "
+        "decision as the physical action; a rejected block transition or a "
+        "terminal leg is not idle time. A healthy in-flight maneuver is "
+        "preserved to its boundary: a same-mission gate decision waits for "
+        "that boundary unless it advances a stage (Mission 3 screening to "
+        "investigation). Only a gate decision "
+        "with action report or the terminal ledger establishes completion; "
+        "do not infer completion by comparing individual attribute "
+        "uncertainties with found_threshold."
     )
     contexts: dict[str, object] = {
         "scheduling": {
@@ -455,6 +522,12 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
                 else "serve pending Mission 4 search requests with current public evidence"
             ),
         }
+    if mission3_handoff:
+        contexts["mission3-completed"] = {
+            "desired_outcome": (
+                "handoff the completed Mission 3 block to the scheduled Mission 4 block"
+            )
+        }
     transitions = []
     for index, target in enumerate([*blocks, "joint34-complete"]):
         source = "scheduling" if index == 0 else (blocks + ["joint34-complete"])[index - 1]
@@ -465,6 +538,8 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
                 "not_before": {"seconds": mission_end},
                 "mission_time_at_or_after": {"seconds": mission_end},
             }
+            if source == "mission4-block":
+                readiness["mission4_terminal_all_found"] = True
         elif source == "scheduling":
             # Immediate entry, but never through the Mission 1/2 deterministic
             # entry dispatch (no surveillance_mode on a joint34 block).
@@ -473,24 +548,47 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
             # A Mission 3 report decision completes its block immediately:
             # there is no maneuver feedback to await.
             readiness = {"not_before": {"seconds": now}}
+        elif source == "mission4-block":
+            # A failed or timed-out search is terminal too; all requests must
+            # be found before advancing.
+            readiness = {
+                "matching_maneuver_lifecycle_terminal": True,
+                "mission4_terminal_all_found": True,
+            }
         else:
-            # Block completion follows terminal maneuver feedback (the
-            # checked-in per-mission shapes).
+            # Other maneuver-serving blocks complete on terminal feedback.
             readiness = {"matching_maneuver_lifecycle_terminal": True}
+        transition_target = (
+            "mission3-completed"
+            if mission3_handoff
+            and source == "mission3-block"
+            and target == "mission4-block"
+            else target
+        )
+        if source == "mission4-block":
+            desired_outcome = (
+                "the authoritative run bound is reached after every requested "
+                "Mission 4 target is reported found"
+                if target == "joint34-complete"
+                else "every requested Mission 4 target is reported found before "
+                "the next mission block"
+            )
+        elif target == "joint34-complete":
+            desired_outcome = "the authoritative run bound has been reached"
+        elif transition_target == "mission3-completed":
+            desired_outcome = "record Mission 3 completion before handing off to Mission 4"
+        else:
+            desired_outcome = "the validated schedule advances to the next mission block"
         transitions.append(
             {
                 "event": (
                     "schedule-committed" if source == "scheduling" else f"{source}-complete"
                 ),
                 "source": source,
-                "target": target,
+                "target": transition_target,
                 "context": {
                     "readiness": readiness,
-                    "desired_outcome": (
-                        "the authoritative run bound has been reached"
-                        if target == "joint34-complete"
-                        else "the validated schedule advances to the next mission block"
-                    ),
+                    "desired_outcome": desired_outcome,
                 },
             }
         )
@@ -509,10 +607,22 @@ def create_statechart(schedule: Mapping, plan_text: str) -> dict[str, object]:
                     },
                 }
             )
+    if mission3_handoff:
+        transitions.append(
+            {
+                "event": "mission3-completion-handoff",
+                "source": "mission3-completed",
+                "target": "mission4-block",
+                "context": {
+                    "readiness": {"matching_maneuver_lifecycle_terminal": True},
+                    "desired_outcome": "the validated schedule advances to the Mission 4 block",
+                },
+            }
+        )
     return {
         "entry_state": "scheduling",
         "terminal_states": ["joint34-complete"],
-        "states": ["scheduling", *blocks, "joint34-complete"],
+        "states": states,
         "state_context": contexts,
         "transitions": transitions,
     }

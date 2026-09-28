@@ -65,18 +65,16 @@ _PHYSICAL_ACTIONS_EXPECTED: Final = "one of " + ", ".join(
     f'"{value}"' for value in _PHYSICAL_ACTIONS
 )
 _NON_PHYSICAL_CHOICES_EXPECTED: Final = (
-    "one of "
-    + ", ".join(f'"{value}"' for value in _NON_PHYSICAL_CHOICES)
-    + ", or null"
+    "one of " + ", ".join(f'"{value}"' for value in _NON_PHYSICAL_CHOICES) + ", or null"
 )
 _MANEUVER_MODEL_TOOL_NAMES: Final = frozenset(
-    {tool.name for tool in MANEUVER_OPERATIONAL_TOOLS}
-    | {"ManeuverHeartbeatResponse"}
+    {tool.name for tool in MANEUVER_OPERATIONAL_TOOLS} | {"ManeuverHeartbeatResponse"}
 )
 
 
 class ManeuverHeartbeatOrderingError(RuntimeError):
     """The heartbeat ended without satisfying its FSM ordering obligations."""
+
 
 MANEUVER_CONTROL_DECISION_SCHEMA: dict[str, Any] = {
     "title": "ManeuverControlDecision",
@@ -346,6 +344,8 @@ def _derived_pursuit_facts(
         "target_visible": any(str(item) == str(target) for item in visible_ids),
         "pursuit_phase": lifecycle.get("phase"),
     }
+    if lifecycle.get("action") == "navigate":
+        facts["acquisition_navigation_status"] = lifecycle.get("lifecycle")
     now = seconds(environment.get("mission_time_seconds"))
     attempt = seconds(lifecycle.get("start_time")) if matching_pursuit else None
     if now is not None:
@@ -406,10 +406,7 @@ def _routine_future_tracking_summary(
     if invocation.fsm_context.transition_intent is None or invocation.hyper_outcomes:
         return None
     if (
-        any(
-            item.observation_kind == "event"
-            for item in invocation.pending_perceptions
-        )
+        any(item.observation_kind == "event" for item in invocation.pending_perceptions)
         and not event_batch_resolved
     ):
         return None
@@ -431,8 +428,7 @@ def _routine_future_tracking_summary(
             or pursuit.get("target_visible") is True
             or (
                 pursuit.get("pursuit_phase") == "search"
-                and type(pursuit.get("seconds_since_acquisition_bound"))
-                in (int, float)
+                and type(pursuit.get("seconds_since_acquisition_bound")) in (int, float)
                 and pursuit["seconds_since_acquisition_bound"] < 0
             )
         )
@@ -444,8 +440,7 @@ def _routine_future_tracking_summary(
         " The pending Event batch was recorded before assessment."
         if event_batch_resolved
         and any(
-            item.observation_kind == "event"
-            for item in invocation.pending_perceptions
+            item.observation_kind == "event" for item in invocation.pending_perceptions
         )
         else ""
     )
@@ -501,17 +496,13 @@ def _model_visible_invocation(invocation: ManeuverInvocation) -> dict[str, objec
         for index, item in entity_rows:
             entity_id = item["entity_id"]
             previous = latest.get(entity_id)
-            if previous is None or (
-                float(cast(Any, item["observed_time"])), index
-            ) > (
+            if previous is None or (float(cast(Any, item["observed_time"])), index) > (
                 float(cast(Any, previous[1]["observed_time"])),
                 previous[0],
             ):
                 latest[entity_id] = (index, item)
         payload["pending_perceptions"] = [
-            item
-            for item in perceptions
-            if item.get("observation_kind") != "entity"
+            item for item in perceptions if item.get("observation_kind") != "entity"
         ]
         payload["pending_entity_perceptions"] = {
             "observation_count": len(entity_rows),
@@ -519,9 +510,7 @@ def _model_visible_invocation(invocation: ManeuverInvocation) -> dict[str, objec
                 item
                 for _, item in sorted(
                     latest.values(),
-                    key=lambda pair: json.dumps(
-                        pair[1]["entity_id"], sort_keys=True
-                    ),
+                    key=lambda pair: json.dumps(pair[1]["entity_id"], sort_keys=True),
                 )
             ],
         }
@@ -622,8 +611,7 @@ def _project_model_world_history(payload: dict[str, object]) -> None:
         selected_fixes = [
             row
             for row in fixes
-            if isinstance(row, Mapping)
-            and str(row.get("entity_id")) in entity_ids
+            if isinstance(row, Mapping) and str(row.get("entity_id")) in entity_ids
         ]
         info["public_position_fixes"] = selected_fixes
         record("public_position_fixes", len(fixes), len(selected_fixes))
@@ -670,7 +658,9 @@ class DeepAgentsHeartbeatProvider:
         if not isinstance(tool_context, ManeuverToolContext):
             raise TypeError("Maneuver heartbeat provider requires ManeuverToolContext")
         if tool_context.invocation != invocation:
-            raise ValueError("Maneuver heartbeat tool context invocation does not match")
+            raise ValueError(
+                "Maneuver heartbeat tool context invocation does not match"
+            )
         invoke = cast(Any, self.agent).invoke
         callback = getattr(self.agent, "_onr_debug_callback", None)
         config = {"callbacks": [callback]} if callback is not None else None
@@ -742,7 +732,9 @@ class DeepAgentsHeartbeatProvider:
         if pre_ingestion is not None:
             payload["pending_perceptions"] = [
                 item
-                for item in cast(list[dict[str, object]], payload["pending_perceptions"])
+                for item in cast(
+                    list[dict[str, object]], payload["pending_perceptions"]
+                )
                 if item.get("observation_kind") != "event"
             ]
             payload["pending_event_perception_count"] = 0
@@ -849,7 +841,10 @@ class DeepAgentsHeartbeatProvider:
         tool_context: ManeuverToolContext,
     ) -> str | None:
         focused = invocation.fsm_context
-        if focused.transition_intent is not None or len(focused.transition_candidates) != 1:
+        if (
+            focused.transition_intent is not None
+            or len(focused.transition_candidates) != 1
+        ):
             return None
         candidate = focused.transition_candidates[0]
         readiness = candidate.condition.get("readiness")
@@ -893,7 +888,9 @@ class DeepAgentsHeartbeatProvider:
         live = _current_focused_fsm_context(tool_context)
         if live.transition_candidates:
             if len(live.transition_candidates) != 1:
-                raise RuntimeError("Mission 1 generated state has ambiguous next targets")
+                raise RuntimeError(
+                    "Mission 1 generated state has ambiguous next targets"
+                )
             next_target = live.transition_candidates[0].target_state
             next_selection = json.loads(
                 cast(Any, set_transition_target).func(
@@ -922,7 +919,9 @@ class DeepAgentsHeartbeatProvider:
         if mode == "fixed_view":
             location = outcome.get("location")
             deadline = outcome.get("arrival_deadline")
-            deadline = deadline.get("seconds") if isinstance(deadline, Mapping) else None
+            deadline = (
+                deadline.get("seconds") if isinstance(deadline, Mapping) else None
+            )
             planner_item = state.get("planner_item")
             parameters = (
                 planner_item.get("parameters")
@@ -958,7 +957,9 @@ class DeepAgentsHeartbeatProvider:
             rendezvous = rendezvous if isinstance(rendezvous, Mapping) else {}
             location = rendezvous.get("location")
             deadline = rendezvous.get("arrival_deadline")
-            deadline = deadline.get("seconds") if isinstance(deadline, Mapping) else None
+            deadline = (
+                deadline.get("seconds") if isinstance(deadline, Mapping) else None
+            )
             arrived = False
             if isinstance(location, Mapping):
                 coordinates = (
@@ -991,7 +992,9 @@ class DeepAgentsHeartbeatProvider:
                 )
                 action = "pursuit-acquisition navigation"
         elif live.transition_candidates:
-            raise RuntimeError("Mission 1 assignment has no supported surveillance mode")
+            raise RuntimeError(
+                "Mission 1 assignment has no supported surveillance mode"
+            )
 
         return (
             f"Applied the sole time-ready entry transition to {candidate.target_state}"
@@ -1104,13 +1107,56 @@ class DeepAgentsHeartbeatProvider:
         ):
             return None
         facts = _derived_pursuit_facts(invocation)
+        if facts is not None and facts.get("acquisition_navigation_status") == "failed":
+            target = facts["target_entity_id"]
+            key = (
+                invocation.mission_id,
+                invocation.plan_revision,
+                invocation.fsm_context.state_entry_revision,
+                target,
+                "failed-acquisition-navigation",
+            )
+            if invocation.hyper_outcomes:
+                self._notified_missed_acquisitions.add(key)
+            if key in self._notified_missed_acquisitions:
+                return (
+                    f"Retained target {target}'s assignment after its failed "
+                    "acquisition navigation was already evaluated by Hyper."
+                )
+            lifecycle = invocation.environment_data.get("maneuver_lifecycle")
+            lifecycle = lifecycle if isinstance(lifecycle, Mapping) else {}
+            progress = lifecycle.get("progress")
+            progress = progress if isinstance(progress, Mapping) else {}
+            reason = progress.get("planner_message", "navigation failed")
+            reflection = (
+                f"Target {target}'s acquisition navigation failed; requesting "
+                "a reachable replacement from Hyper."
+            )
+            cast(Any, communicate).func(
+                recipient="hyper-agent",
+                kind="replan",
+                replan_kind="reachability_required",
+                message=(
+                    f"Acquisition navigation for target {target} failed: {reason}. "
+                    "No replacement physical command was issued; requesting Hyper "
+                    "evaluation."
+                ),
+                reflection=reflection,
+                runtime=_direct_tool_runtime(
+                    tool_context, "routine-failed-acquisition-navigation"
+                ),
+            )
+            self._notified_missed_acquisitions.add(key)
+            return (
+                f"Reported target {target}'s failed acquisition navigation to "
+                "Hyper and retained the active assignment."
+            )
         if (
             facts is None
             or facts.get("matching_active_pursuit") is not True
             or facts.get("pursuit_phase") != "search"
             or facts.get("target_visible") is not False
-            or type(facts.get("seconds_since_acquisition_bound"))
-            not in (int, float)
+            or type(facts.get("seconds_since_acquisition_bound")) not in (int, float)
             or facts["seconds_since_acquisition_bound"] < 0
         ):
             return None
@@ -1125,64 +1171,48 @@ class DeepAgentsHeartbeatProvider:
         )
         newest_fix = facts.get("newest_target_fix")
         sampled_at = (
-            newest_fix.get("sampled_at_s")
-            if isinstance(newest_fix, Mapping)
-            else None
+            newest_fix.get("sampled_at_s") if isinstance(newest_fix, Mapping) else None
         )
         if facts.get("newest_fix_after_attempt") is True:
-            position = newest_fix.get("position") if isinstance(newest_fix, Mapping) else None
-            vehicle = invocation.environment_data.get("controlled_vehicle")
-            vehicle_position = (
-                vehicle.get("position") if isinstance(vehicle, Mapping) else None
+            position = (
+                newest_fix.get("position") if isinstance(newest_fix, Mapping) else None
             )
             if (
                 not isinstance(position, Mapping)
                 or type(position.get("x")) not in (int, float)
                 or type(position.get("y")) not in (int, float)
-                or not isinstance(vehicle_position, Mapping)
-                or type(vehicle_position.get("z")) not in (int, float)
             ):
                 return None
             recovery_key = (*key, sampled_at)
             if recovery_key in self._submitted_recovery_fixes:
                 return (
-                    f"Retained recovery for target {target} using the already "
-                    f"submitted GPS fix sampled at {sampled_at}."
+                    f"Retained target {target}'s assignment while Hyper evaluates "
+                    f"the GPS fix sampled at {sampled_at}."
                 )
             reflection = (
                 f"Target {target} remained unseen after its acquisition bound; "
-                f"recovering to the newer GPS fix sampled at {sampled_at}."
+                f"requesting a reachable recovery plan for the newer GPS fix "
+                f"sampled at {sampled_at}."
             )
-            runtime = _direct_tool_runtime(tool_context, "routine-pursuit-recovery")
-            navigate_result = json.loads(
-                cast(Any, navigate).func(
-                    maneuver_id=f"pursuit-recovery:{target}:gps-{sampled_at}",
-                    x=position["x"],
-                    y=position["y"],
-                    z=vehicle_position["z"],
-                    reflection=reflection,
-                    runtime=runtime,
-                )
-            )
-            if navigate_result.get("status") not in {"queued", "already_queued"}:
-                return None
             cast(Any, communicate).func(
                 recipient="hyper-agent",
-                kind="report",
+                kind="replan",
+                replan_kind="reachability_required",
                 message=(
                     f"Target {target} remained unseen after the acquisition bound. "
-                    f"Submitted recovery navigation to the public GPS fix sampled "
-                    f"at {sampled_at}; the active assignment and target are unchanged."
+                    f"A newer public GPS fix sampled at {sampled_at} reports position "
+                    f"({position['x']}, {position['y']}). Select a reachable recovery "
+                    "rendezvous; no replacement physical command was issued."
                 ),
                 reflection=reflection,
                 runtime=_direct_tool_runtime(
-                    tool_context, "routine-pursuit-recovery-report"
+                    tool_context, "routine-pursuit-recovery-replan"
                 ),
             )
             self._submitted_recovery_fixes.add(recovery_key)
             return (
-                f"Submitted recovery navigation for target {target} to the GPS "
-                f"fix sampled at {sampled_at} and reported it to Hyper."
+                f"Requested a reachable Hyper recovery plan for target {target} "
+                f"using the GPS fix sampled at {sampled_at}."
             )
 
         if facts.get("newest_fix_after_attempt") is not False:
@@ -1416,9 +1446,7 @@ def _failure(*issues: StructuralIssue) -> StructuredOutputFailure:
 
 def _malformed() -> StructuredOutputFailure:
     return _failure(
-        StructuralIssue(
-            "malformed_structured_output", "$", "valid structured output"
-        )
+        StructuralIssue("malformed_structured_output", "$", "valid structured output")
     )
 
 
@@ -1523,10 +1551,12 @@ def _check_string(
 def _check_nullable_string(
     value: Mapping[object, object], field: str, issues: list[StructuralIssue]
 ) -> None:
-    if field in value and value[field] is not None and not isinstance(value[field], str):
-        issues.append(
-            StructuralIssue("invalid_type", f"$.{field}", "string or null")
-        )
+    if (
+        field in value
+        and value[field] is not None
+        and not isinstance(value[field], str)
+    ):
+        issues.append(StructuralIssue("invalid_type", f"$.{field}", "string or null"))
 
 
 def _check_choice(
@@ -1539,9 +1569,7 @@ def _check_choice(
         issues.append(StructuralIssue("invalid_type", "$.choice", "string or null"))
     elif choice not in _NON_PHYSICAL_CHOICES:
         issues.append(
-            StructuralIssue(
-                "invalid_value", "$.choice", _NON_PHYSICAL_CHOICES_EXPECTED
-            )
+            StructuralIssue("invalid_value", "$.choice", _NON_PHYSICAL_CHOICES_EXPECTED)
         )
 
 
@@ -1567,9 +1595,7 @@ def _check_physical_intent(
         )
     if keys - _PHYSICAL_INTENT_FIELDS:
         issues.append(
-            StructuralIssue(
-                "unexpected_field", "$.physical_intent", "exact field set"
-            )
+            StructuralIssue("unexpected_field", "$.physical_intent", "exact field set")
         )
     action = physical.get("action")
     if "action" in physical:
@@ -1590,9 +1616,7 @@ def _check_physical_intent(
         return
     if not isinstance(parameters, Mapping):
         issues.append(
-            StructuralIssue(
-                "invalid_type", "$.physical_intent.parameters", "object"
-            )
+            StructuralIssue("invalid_type", "$.physical_intent.parameters", "object")
         )
         return
     if any(not isinstance(key, str) for key in parameters):
@@ -1644,6 +1668,8 @@ def _is_json_value(value: object) -> bool:
     if isinstance(value, Mapping):
         return _is_json_object(value)
     return False
+
+
 __all__ = [
     "MANEUVER_CONTROL_DECISION_SCHEMA",
     "DeepAgentsDecisionProvider",

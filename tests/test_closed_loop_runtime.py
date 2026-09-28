@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -16,6 +17,7 @@ from onr.adapters.file_transport import FileTransport
 from onr.agents.maneuver_tools import ManeuverToolContext, ingest_perceptions
 from onr.application.bayesian_belief import BayesianBeliefManager, BayesianBeliefService
 from onr.application.communication import TransportCommunicationPort
+from onr.application import context_coordination as context_coordination_module
 from onr.application.context_coordination import (
     ActivePlanRevision,
     ContextCoordination,
@@ -359,6 +361,112 @@ def test_timed_wakeup_preserves_short_window_and_pauses_world(
         w.evidence_time_seconds == w.completion_time_seconds
         for w in result.inference_windows
     )
+
+
+@pytest.mark.parametrize(
+    ("gate_name", "trigger", "action"),
+    [
+        ("mission3", "mission3-gate:inspection-ready", "investigate"),
+        ("mission4", "mission4-gate:search-view-ready", "search_area"),
+    ],
+)
+def test_joint34_gate_trigger_wakes_maneuver_without_hyper_replan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gate_name: str,
+    trigger: str,
+    action: str,
+) -> None:
+    def hyper(invocation: HyperHeartbeatInvocation) -> HyperHeartbeatDecision:
+        return HyperHeartbeatDecision(
+            invocation.mission_id,
+            invocation.plan_revision,
+            "no_change",
+            "The active schedule remains valid.",
+            invocation.trigger_identities,
+            (),
+        )
+
+    environment, coordinator, _belief, _fsm, _supervisor, maneuver, _provider = (
+        _runtime_parts(tmp_path, hyper)
+    )
+    coordination = coordinator(
+        lambda *_: None, simulation_limit_seconds=3, maneuver_seconds=100
+    )
+    original_resolve = coordination._resolve_environment
+
+    def joint34_environment(snapshot: MissionSnapshot) -> dict[str, object]:
+        current = dict(original_resolve(snapshot))
+        world = dict(current.get("world_model_info", {}))
+        world["mission_mode"] = "joint34"
+        current["world_model_info"] = world
+        return current
+
+    monkeypatch.setattr(coordination, "_resolve_environment", joint34_environment)
+
+    class Gate:
+        def __init__(self, enabled: bool) -> None:
+            self.enabled = enabled
+            self.emitted = False
+            self.last_decision = None
+
+        def assess(self, _environment: object) -> str | None:
+            if not self.enabled or self.emitted:
+                return None
+            self.emitted = True
+            self.last_decision = SimpleNamespace(action=action, report=None)
+            return trigger
+
+    monkeypatch.setattr(
+        context_coordination_module,
+        "Mission3ReplanGate",
+        lambda: Gate(gate_name == "mission3"),
+    )
+    monkeypatch.setattr(
+        context_coordination_module,
+        "Mission4ReplanGate",
+        lambda: Gate(gate_name == "mission4"),
+    )
+
+    base = _revision(1)
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id=base.planner_plan.mission_snapshot_id,
+        planning_profile="temporal",
+        entry_state="observing",
+        states=("observing", "complete"),
+        transitions=(StatechartTransition("finish", "observing", "complete", {}),),
+        terminal_states=("complete",),
+        state_context={"observing": {}, "complete": {}},
+    )
+    revision = ActivePlanRevision(
+        base.planner_plan,
+        base.planner_plan_reference,
+        chart,
+        "joint34-gate-statechart.json",
+    )
+    invocations: list[Any] = []
+
+    class Provider:
+        def heartbeat(self, invocation, context):  # type: ignore[no-untyped-def]
+            invocations.append(invocation)
+            if trigger in invocation.trigger_identities:
+                _ManeuverProvider._transition(invocation, context, "finish")
+            return ManeuverHeartbeatCompletion(
+                invocation.mission_id, invocation.request_id, "Assessed"
+            )
+
+    maneuver.decision_provider = Provider()
+    result = coordination.run(revision)
+
+    assert result.terminal
+    assert [
+        invocation.environment_data["scene_graph"]["mission_time_seconds"]
+        for invocation in invocations
+    ] == [0, environment.tick_seconds]
+    assert invocations[1].trigger_identities == (trigger,)
+    assert invocations[1].hyper_outcomes[0].disposition == "no_change"
 
 
 def test_fallback_waits_a_full_interval_after_feedback_assessment(

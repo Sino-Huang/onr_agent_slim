@@ -675,7 +675,7 @@ def compose_frame(
         outline="#425971",
         width=2,
     )
-    _label_chip(draw, world_x - 2, world_y - 32, "WORLD MODEL  /  MAP OVERVIEW")
+    _label_chip(draw, world_x - 2, world_y - 32, "WORLD MODEL / 2 KM OVERVIEW")
 
     # Right pane: public decision summary plus the accepted command.
     draw.rounded_rectangle(TEXT_PANE, radius=18, fill=panel)

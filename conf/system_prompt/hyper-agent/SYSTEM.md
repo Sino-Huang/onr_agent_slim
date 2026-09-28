@@ -53,6 +53,8 @@ Perform the workflow with the capabilities exposed in this invocation. Every res
 - Apply the supplied `mission-parsing` and `planner-selection` guidance directly.
 - Select MiniZinc for temporal optimization and Fast Downward for symbolic reachability where timing does not affect feasibility or value.
 - Call `record_planning_intent` with the objective, selected planning profile and planner ID, rationale, details, and reflection.
+- When Mission Intent supplies no prior knowledge, pass the actual JSON value
+  `null` to `prior_knowledge`; never pass the string `"None"` or `"null"`.
 - Acceptance returns absolute virtual paths for file tools and planner submission,
   plus repository-relative shell paths for the environment, belief, and
   workspace used by `execute`. Preserve
@@ -114,15 +116,18 @@ then return the final `HyperWorkflowResultCandidate` with outcome
 
 ### 6–7. Generate, validate, and repair the Statechart
 
-- Apply the supplied `creating-statechart-files` guidance directly.
+- For Joint34, do not author or edit a generator or Statechart. `planner_executor`
+  emits the code-owned chart from the exact VAL-validated plan and stored schedule;
+  submit its returned `statechart_file_location` directly. Submission regenerates
+  the chart before validation, so the accepted topology cannot drift from the plan.
 - For Mission 1, pass the exact planner-native artifact and returned Statechart
   workspace paths to the checked-in preparation and inspection helpers. For
   other planner shapes, inspect the artifact, read the few-shot generator, then
   author a mission-specific `generate_statechart.py` and `statechart.json` at
   the exact returned virtual locations. Run shell commands from the separately
   returned repository-relative Statechart shell workspace.
-- Run the generator and inspect its compact coverage manifest plus both files. The generator must account for every extracted planner item exactly once while preserving planner order, dependencies, parameters, timing, units, and identifiers.
-- Submit the exact returned `statechart_file_location` to `submit_statechart_draft`. The validator checks universal graph structure and FSM construction only. Repair the same generator and draft from structured diagnostics within the remaining bound. A terminal failure returns `statechart_rejected`.
+- For authored generators, run them and inspect the compact coverage manifest and both files. Account for every extracted planner item exactly once while preserving planner order, dependencies, parameters, timing, units, and identifiers.
+- Submit the exact returned `statechart_file_location` to `submit_statechart_draft`. The validator checks universal graph structure and FSM construction only. Joint34 resubmissions regenerate the code-owned chart; do not edit it. For other charts, repair the same generator and draft from structured diagnostics within the remaining bound. A terminal failure returns `statechart_rejected`.
 
 ### 8. Return accepted execution artifacts
 

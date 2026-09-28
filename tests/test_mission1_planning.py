@@ -71,40 +71,85 @@ def test_travel_budget_uses_cardinal_distance_and_ninety_percent_speed() -> None
 
 def test_public_gps_adds_early_pursuit_without_replacing_report_windows():
     belief = _belief((1,))
-    environment = _environment([_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)])
+    environment = _environment(
+        [_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)]
+    )
     original = build_candidate_dag(environment, belief)
     environment["world_model_info"]["public_position_fixes"] = [
-        {"entity_id": 1, "sampled_at_s": 0, "source": "gps", "position": {"x": 18, "y": 0, "z": 0}}]
+        {
+            "entity_id": 1,
+            "sampled_at_s": 0,
+            "source": "gps",
+            "position": {"x": 18, "y": 0, "z": 0},
+        }
+    ]
     graph = build_candidate_dag(environment, belief)
-    assert set(c.candidate_id for c in original.candidates) <= set(c.candidate_id for c in graph.candidates)
+    assert set(c.candidate_id for c in original.candidates) <= set(
+        c.candidate_id for c in graph.candidates
+    )
     early = [c for c in graph.candidates if c.mode == "pursue_ship" and c.start_s < 20]
     assert len(early) == 1
     candidate = early[0]
-    assert (candidate.start_s, candidate.end_s, candidate.x, candidate.y) == (2, 30.5, 18, 0)
+    assert (candidate.start_s, candidate.end_s, candidate.x, candidate.y) == (
+        2,
+        30.5,
+        18,
+        0,
+    )
     assert candidate.report_ids == ("a", "b")
-    assert candidate.omission_yield == pytest.approx(belief.ships[0].expected_omission_probability * .1 * 28)
-    context = {"candidate_id": candidate.candidate_id, "surveillance_mode": candidate.mode,
-               "target_entity_id": 1, "target_report_ids": list(candidate.report_ids),
-               "observation_window": {"start": {"seconds": candidate.start_s},
-                                      "duration": {"seconds": candidate.duration_s}}}
-    chart = Statechart(mission_id="mission-1", plan_revision=1,
-        mission_snapshot_id="test", planning_profile="temporal", entry_state="active",
-        states=("active",), transitions=(), terminal_states=("active",),
-        state_context={"active": context})
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-                       active_state="active", active_state_context=context)
+    assert candidate.omission_yield == pytest.approx(
+        belief.ships[0].expected_omission_probability * 0.1 * 28
+    )
+    context = {
+        "candidate_id": candidate.candidate_id,
+        "surveillance_mode": candidate.mode,
+        "target_entity_id": 1,
+        "target_report_ids": list(candidate.report_ids),
+        "observation_window": {
+            "start": {"seconds": candidate.start_s},
+            "duration": {"seconds": candidate.duration_s},
+        },
+    }
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="test",
+        planning_profile="temporal",
+        entry_state="active",
+        states=("active",),
+        transitions=(),
+        terminal_states=("active",),
+        state_context={"active": context},
+    )
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="active",
+        active_state_context=context,
+    )
     decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
     assert decision.current_score == advisory.score
     assert not decision.trigger
 
 
-@pytest.mark.parametrize("fix_time,x", [(1,18), (0,1000), (0,-90)])
+@pytest.mark.parametrize("fix_time,x", [(1, 18), (0, 1000), (0, -90)])
 def test_future_or_unreachable_gps_does_not_add_early_pursuit(fix_time, x):
-    environment = _environment([_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)])
+    environment = _environment(
+        [_report("a", 1, 20, 90, 0), _report("b", 1, 30, 100, 0)]
+    )
     environment["world_model_info"]["public_position_fixes"] = [
-        {"entity_id": 1, "sampled_at_s": fix_time, "source": "gps", "position": {"x": x, "y": 0, "z": 0}}]
-    assert not any(c.mode == "pursue_ship" and c.start_s < 20
-                   for c in build_candidate_dag(environment, _belief((1,))).candidates)
+        {
+            "entity_id": 1,
+            "sampled_at_s": fix_time,
+            "source": "gps",
+            "position": {"x": x, "y": 0, "z": 0},
+        }
+    ]
+    assert not any(
+        c.mode == "pursue_ship" and c.start_s < 20
+        for c in build_candidate_dag(environment, _belief((1,))).candidates
+    )
 
 
 def test_sensor_aware_pursuit_projects_gps_outside_public_view_envelope() -> None:
@@ -135,15 +180,48 @@ def test_sensor_aware_pursuit_projects_gps_outside_public_view_envelope() -> Non
     assert (early[0].x, early[0].y) == (80, 0)
 
 
+def test_sensor_aware_pursuit_projects_report_rendezvous_to_public_view() -> None:
+    environment = _environment(
+        [_report("a", 1, 20, 120, 0), _report("b", 1, 30, 125, 0)],
+        fov=50.0,
+    )
+    environment["controlled_vehicle"]["quarter_turn_seconds"] = 0.5
+    environment["surveillance_views"] = [
+        {"x": 80, "y": 0, "arrival_direction": 0, "report_ids": ["a", "b"]}
+    ]
+
+    pursuits = [
+        candidate
+        for candidate in build_candidate_dag(environment, _belief((1,))).candidates
+        if candidate.mode == "pursue_ship"
+    ]
+
+    assert pursuits
+    assert {(candidate.x, candidate.y) for candidate in pursuits} == {(80, 0)}
+
+
 def test_early_gps_pursuit_cannot_recredit_reports_across_delayed_views():
-    environment = _environment([_report("a", 1, 20, 0, 0), _report("b", 1, 30, 0, 0),
-                                _report("bridge", 2, 15, 0, 0)])
-    environment["controlled_vehicle"]["quarter_turn_seconds"] = .5
+    environment = _environment(
+        [
+            _report("a", 1, 20, 0, 0),
+            _report("b", 1, 30, 0, 0),
+            _report("bridge", 2, 15, 0, 0),
+        ]
+    )
+    environment["controlled_vehicle"]["quarter_turn_seconds"] = 0.5
     environment["observation_window_seconds"] = 20
-    environment["surveillance_views"] = [{"x": 0, "y": 0, "arrival_direction": 0,
-        "observation_delay_s": 20, "report_ids": ["bridge", "a"]}]
+    environment["surveillance_views"] = [
+        {
+            "x": 0,
+            "y": 0,
+            "arrival_direction": 0,
+            "observation_delay_s": 20,
+            "report_ids": ["bridge", "a"],
+        }
+    ]
     environment["world_model_info"]["public_position_fixes"] = [
-        {"entity_id": 1, "sampled_at_s": 0, "position": {"x": 0, "y": 0, "z": 0}}]
+        {"entity_id": 1, "sampled_at_s": 0, "position": {"x": 0, "y": 0, "z": 0}}
+    ]
     route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2))))
     assert len(route.covered_report_ids) == len(set(route.covered_report_ids))
 
@@ -155,17 +233,32 @@ def test_fixed_omission_owns_disjoint_epochs_and_not_duplicate_reports():
     )
 
     belief = _belief((1,))
-    environment = _environment([_report(name, 1, time, 0, 0)
-                                for name, time in (("a", 10), ("b", 12), ("duplicate", 12), ("c", 14))])
+    environment = _environment(
+        [
+            _report(name, 1, time, 0, 0)
+            for name, time in (("a", 10), ("b", 12), ("duplicate", 12), ("c", 14))
+        ]
+    )
     environment["event_check_window_seconds"] = 4
     items = _opportunities(environment, belief)
-    rate = belief.ships[0].expected_omission_probability * public_report_rates(environment, belief)[1]
-    assert score_fixed_view_opportunities(items).omission_yield == pytest.approx(8 * rate, abs=2e-6)
-    assert score_fixed_view_opportunities(items[:1], observation_delay_s=2).omission_yield == pytest.approx(2 * rate, abs=1e-6)
-    assert score_fixed_view_opportunities(items, observation_delay_s=4).omission_yield == 0
+    rate = (
+        belief.ships[0].expected_omission_probability
+        * public_report_rates(environment, belief)[1]
+    )
+    assert score_fixed_view_opportunities(items).omission_yield == pytest.approx(
+        8 * rate, abs=2e-6
+    )
+    assert score_fixed_view_opportunities(
+        items[:1], observation_delay_s=2
+    ).omission_yield == pytest.approx(2 * rate, abs=1e-6)
+    assert (
+        score_fixed_view_opportunities(items, observation_delay_s=4).omission_yield == 0
+    )
     # Expiring the first report must not extend the second report's owned cell.
     environment["mission_time_seconds"] = 11
-    assert score_fixed_view_opportunities(_opportunities(environment, belief)).omission_yield == pytest.approx(4 * rate, abs=2e-6)
+    assert score_fixed_view_opportunities(
+        _opportunities(environment, belief)
+    ).omission_yield == pytest.approx(4 * rate, abs=2e-6)
 
 
 def test_fixed_omission_subtracts_union_of_observed_search_intervals():
@@ -178,13 +271,17 @@ def test_fixed_omission_subtracts_union_of_observed_search_intervals():
     environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 1, 12, 0, 0)])
     environment.update(event_check_window_seconds=4, mission_time_seconds=9)
     environment["world_model_info"]["event_report_checks"] = [
-        {"entity_id": 1, "checked_at_s": 8}, {"entity_id": 1, "checked_at_s": 9},
-        {"entity_id": 2, "checked_at_s": 9}, {"entity_id": 1, "checked_at_s": 100},
+        {"entity_id": 1, "checked_at_s": 8},
+        {"entity_id": 1, "checked_at_s": 9},
+        {"entity_id": 2, "checked_at_s": 9},
+        {"entity_id": 1, "checked_at_s": 100},
     ]
     items = _opportunities(environment, belief)
     assert items[0].omission_intervals == ((0.0, 4), (9, 10.0))
     rate = items[0].omission_rate
-    assert score_fixed_view_opportunities(items).omission_yield == pytest.approx(3 * rate, abs=2e-6)
+    assert score_fixed_view_opportunities(items).omission_yield == pytest.approx(
+        3 * rate, abs=2e-6
+    )
     environment["world_model_info"]["event_report_checks"].append({"report_id": "a"})
     assert [i.report_id for i in _opportunities(environment, belief)] == ["b"]
 
@@ -201,9 +298,11 @@ def test_fixed_omission_and_adjacent_pursuit_do_not_reclaim_same_interval():
     environment["event_check_window_seconds"] = 4
     items = _opportunities(environment, belief)
     fixed = score_fixed_view_opportunities((items[0], items[3])).omission_yield
-    pursuit = score_candidate_opportunities(items[1:3],
+    pursuit = score_candidate_opportunities(
+        items[1:3],
         expected_omission_probability=belief.ships[0].expected_omission_probability,
-        public_report_rate=public_report_rates(environment, belief)[1]).omission_yield
+        public_report_rate=public_report_rates(environment, belief)[1],
+    ).omission_yield
     assert fixed + pursuit == pytest.approx(items[0].omission_rate * 8, abs=2e-6)
 
 
@@ -218,24 +317,55 @@ def test_fixed_omission_value_responds_to_observed_corruption_evidence():
     values = {}
     for outcome in ("clean", "altered", "omitted"):
         manager = ReportingReliabilityManager("mission-1", (1,))
-        manager.update_checks([{
-            "check_id": "evidence", "report_id": "past", "entity_id": 1,
-            "event_time_s": 0, "checked_at_s": 0, "outcome": outcome,
-        }], input_event_id="evidence", input_revision=1, created_at=NOW)
-        belief = manager.snapshot(input_event_id="evidence", input_revision=1, created_at=NOW)
-        values[outcome] = score_fixed_view_opportunities(_opportunities(environment, belief)).omission_yield
-    prior_value = score_fixed_view_opportunities(_opportunities(environment, _belief((1,)))).omission_yield
+        manager.update_checks(
+            [
+                {
+                    "check_id": "evidence",
+                    "report_id": "past",
+                    "entity_id": 1,
+                    "event_time_s": 0,
+                    "checked_at_s": 0,
+                    "outcome": outcome,
+                }
+            ],
+            input_event_id="evidence",
+            input_revision=1,
+            created_at=NOW,
+        )
+        belief = manager.snapshot(
+            input_event_id="evidence", input_revision=1, created_at=NOW
+        )
+        values[outcome] = score_fixed_view_opportunities(
+            _opportunities(environment, belief)
+        ).omission_yield
+    prior_value = score_fixed_view_opportunities(
+        _opportunities(environment, _belief((1,)))
+    ).omission_yield
     assert values["clean"] < prior_value < values["altered"] < values["omitted"]
 
 
 @pytest.mark.parametrize("delay", [0, 2, 4])
 def test_fixed_omission_native_solver_and_gate_share_delayed_score(tmp_path, delay):
-    environment = _environment([_report("past", 1, 0, 5000, 0), _report("a", 1, 20, 0, 0),
-                                _report("past2", 2, 0, 5000, 0), _report("b", 2, 30, 0, 0)])
+    environment = _environment(
+        [
+            _report("past", 1, 0, 5000, 0),
+            _report("a", 1, 20, 0, 0),
+            _report("past2", 2, 0, 5000, 0),
+            _report("b", 2, 30, 0, 0),
+        ]
+    )
     environment.update(event_check_window_seconds=4, observation_window_seconds=4)
-    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["controlled_vehicle"].update(
+        heading_degrees=90, quarter_turn_seconds=0.5
+    )
     environment["surveillance_views"] = [
-        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a", "b"], "observation_delay_s": delay},
+        {
+            "x": 0,
+            "y": 0,
+            "arrival_direction": 0,
+            "report_ids": ["a", "b"],
+            "observation_delay_s": delay,
+        },
     ]
     belief = _belief((1, 2))
     graph = build_candidate_dag(environment, belief)
@@ -243,33 +373,69 @@ def test_fixed_omission_native_solver_and_gate_share_delayed_score(tmp_path, del
     assert len(route.candidates) == 1
     candidate = route.candidates[0]
     assert (candidate.omission_yield > 0) == (delay < 4)
-    context = {"candidate_id": candidate.candidate_id, "surveillance_mode": "fixed_view",
-               "target_entity_id": None, "target_report_ids": list(candidate.report_ids),
-               "observation_window": {"start": {"seconds": candidate.start_s},
-                                      "duration": {"seconds": candidate.duration_s}},
-               "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": 0}}}
-    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
-                      planning_profile="temporal", entry_state="view", states=("view",),
-                      transitions=(), terminal_states=("view",), state_context={"view": context})
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-                       active_state="view", active_state_context=context)
+    context = {
+        "candidate_id": candidate.candidate_id,
+        "surveillance_mode": "fixed_view",
+        "target_entity_id": None,
+        "target_report_ids": list(candidate.report_ids),
+        "observation_window": {
+            "start": {"seconds": candidate.start_s},
+            "duration": {"seconds": candidate.duration_s},
+        },
+        "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": 0}},
+    }
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="snapshot-1",
+        planning_profile="temporal",
+        entry_state="view",
+        states=("view",),
+        transitions=(),
+        terminal_states=("view",),
+        state_context={"view": context},
+    )
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="view",
+        active_state_context=context,
+    )
     decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
     assert decision.current_score == advisory.score == route.score
     assert not decision.trigger
     data = tmp_path / "omission.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     solution = json.loads(result.stdout.splitlines()[0])
     assert solution["combined_score"] == round(route.score * SCORE_SCALE)
     assignment = solution["assignments"][0]
-    assert assignment["parameters"]["utility"]["omission_yield"] == round(candidate.omission_yield * SCORE_SCALE)
+    assert assignment["parameters"]["utility"]["omission_yield"] == round(
+        candidate.omission_yield * SCORE_SCALE
+    )
     assert assignment["candidate_id"] == candidate.candidate_id
-    inspected = subprocess.run([
-        "python", str(EXAMPLE_ROOT / "inspect_problem.py"), str(data),
-    ], capture_output=True, text=True, check=True)
+    inspected = subprocess.run(
+        [
+            "python",
+            str(EXAMPLE_ROOT / "inspect_problem.py"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert json.loads(inspected.stdout)["valid"]
 
 
@@ -280,53 +446,96 @@ def test_same_time_information_has_diminishing_returns_within_variance_budget():
     )
 
     belief = _belief((1,))
-    batches = [_opportunities(_environment([
-        _report(f"r{i}", 1, 20, 0, 0) for i in range(n)
-    ]), belief) for n in range(1, 11)]
-    values = [0.0] + [score_candidate_opportunities(batch).estimation for batch in batches]
-    assert values[1] == pytest.approx(.5)
+    batches = [
+        _opportunities(
+            _environment([_report(f"r{i}", 1, 20, 0, 0) for i in range(n)]), belief
+        )
+        for n in range(1, 11)
+    ]
+    values = [0.0] + [
+        score_candidate_opportunities(batch).estimation for batch in batches
+    ]
+    assert values[1] == pytest.approx(0.5)
     marginal = [b - a for a, b in pairwise(values)]
     assert all(a > b > 0 for a, b in pairwise(marginal))
     # Undo the existing normalization to compare raw variance reduction.
-    assert values[-1] * 2 * belief.ships[0].expected_variance_reduction < belief.ships[0].variance
-    assert score_candidate_opportunities(batches[-1]).recall == pytest.approx(5 * belief.ships[0].mean)
+    assert (
+        values[-1] * 2 * belief.ships[0].expected_variance_reduction
+        < belief.ships[0].variance
+    )
+    assert score_candidate_opportunities(batches[-1]).recall == pytest.approx(
+        5 * belief.ships[0].mean
+    )
 
 
 def test_information_prefers_distinct_vessels_over_repeated_cotimed_checks(tmp_path):
-    environment = _environment([
-        *[_report(f"repeat-{i}", 1, 20, 0, 0) for i in range(5)],
-        *[_report(f"distinct-{i}", i, 20, 100, 0) for i in range(2, 6)],
-    ], fov=1)
+    environment = _environment(
+        [
+            *[_report(f"repeat-{i}", 1, 20, 0, 0) for i in range(5)],
+            *[_report(f"distinct-{i}", i, 20, 100, 0) for i in range(2, 6)],
+        ],
+        fov=1,
+    )
     graph = build_candidate_dag(environment, _belief((1, 2, 3, 4, 5)))
     oracle = longest_path_oracle(graph)
     assert set(oracle.covered_report_ids) == {f"distinct-{i}" for i in range(2, 6)}
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     solution = json.loads(result.stdout.splitlines()[0])
-    assert [a["candidate_id"] for a in solution["assignments"]] == [c.candidate_id for c in oracle.candidates]
+    assert [a["candidate_id"] for a in solution["assignments"]] == [
+        c.candidate_id for c in oracle.candidates
+    ]
     assert solution["combined_score"] == round(oracle.score * SCORE_SCALE)
 
 
 def test_batch_information_is_shared_with_replan_rescoring():
-    environment = _environment([
-        *[_report(f"a{i}", 1, 20, 0, 0) for i in range(4)], _report("b", 2, 20, 0, 0),
-    ])
+    environment = _environment(
+        [
+            *[_report(f"a{i}", 1, 20, 0, 0) for i in range(4)],
+            _report("b", 2, 20, 0, 0),
+        ]
+    )
     belief = _belief((1, 2))
     route = longest_path_oracle(build_candidate_dag(environment, belief))
     candidate = route.candidates[0]
-    context = {"candidate_id": candidate.candidate_id, "surveillance_mode": "fixed_view",
-               "target_entity_id": None, "target_report_ids": list(candidate.report_ids),
-               "observation_window": {"start": {"seconds": 20}, "duration": {"seconds": .5}},
-               "planner_item": {"parameters": {"x": candidate.x, "y": candidate.y}}}
-    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
-                      planning_profile="temporal", entry_state="view", states=("view",),
-                      transitions=(), terminal_states=("view",), state_context={"view": context})
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-                       active_state="view", active_state_context=context)
+    context = {
+        "candidate_id": candidate.candidate_id,
+        "surveillance_mode": "fixed_view",
+        "target_entity_id": None,
+        "target_report_ids": list(candidate.report_ids),
+        "observation_window": {"start": {"seconds": 20}, "duration": {"seconds": 0.5}},
+        "planner_item": {"parameters": {"x": candidate.x, "y": candidate.y}},
+    }
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="snapshot-1",
+        planning_profile="temporal",
+        entry_state="view",
+        states=("view",),
+        transitions=(),
+        terminal_states=("view",),
+        state_context={"view": context},
+    )
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="view",
+        active_state_context=context,
+    )
     decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
     assert decision.current_score == advisory.score == route.score
     assert not decision.trigger
@@ -338,9 +547,15 @@ def test_information_allocation_does_not_discount_unobserved_earlier_epochs():
         score_candidate_opportunities,
     )
 
-    opportunities = _opportunities(_environment([
-        _report("early", 1, 20, 0, 0), _report("late", 1, 200, 0, 0),
-    ]), _belief((1,)))
+    opportunities = _opportunities(
+        _environment(
+            [
+                _report("early", 1, 20, 0, 0),
+                _report("late", 1, 200, 0, 0),
+            ]
+        ),
+        _belief((1,)),
+    )
     early, late = sorted(opportunities, key=lambda item: item.time_s)
     assert score_candidate_opportunities([early]).estimation == pytest.approx(
         score_candidate_opportunities([late]).estimation,
@@ -353,17 +568,28 @@ def test_information_budget_is_shared_across_times_but_vessels_are_separate():
         score_candidate_opportunities,
     )
 
-    opportunities = _opportunities(_environment([
-        _report("a", 1, 20, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 1, 21, 0, 0),
-    ]), _belief((1, 2)))
+    opportunities = _opportunities(
+        _environment(
+            [
+                _report("a", 1, 20, 0, 0),
+                _report("b", 2, 20, 0, 0),
+                _report("c", 1, 21, 0, 0),
+            ]
+        ),
+        _belief((1, 2)),
+    )
     by_id = {o.report_id: o for o in opportunities}
-    assert by_id["a"].information_schedule_count == by_id["c"].information_schedule_count == 2
+    assert (
+        by_id["a"].information_schedule_count
+        == by_id["c"].information_schedule_count
+        == 2
+    )
     assert by_id["b"].information_schedule_count == 1
     assert score_candidate_opportunities([by_id["a"]]).estimation == pytest.approx(
         score_candidate_opportunities([by_id["c"]]).estimation,
     )
-    assert score_candidate_opportunities([by_id["b"]]).estimation == pytest.approx(.5)
-    assert 0 < score_candidate_opportunities([by_id["c"]]).estimation < .5
+    assert score_candidate_opportunities([by_id["b"]]).estimation == pytest.approx(0.5)
+    assert 0 < score_candidate_opportunities([by_id["c"]]).estimation < 0.5
 
 
 def test_uniform_information_caps_selected_route_even_with_unobserved_batches():
@@ -373,21 +599,32 @@ def test_uniform_information_caps_selected_route_even_with_unobserved_batches():
     )
 
     belief = _belief((1,))
-    opportunities = _opportunities(_environment([
-        _report(f"r{i}", 1, 20 + i // 2, 0, 0) for i in range(20)
-    ]), belief)
+    opportunities = _opportunities(
+        _environment([_report(f"r{i}", 1, 20 + i // 2, 0, 0) for i in range(20)]),
+        belief,
+    )
     assert {o.information_schedule_count for o in opportunities} == {20}
     # Subsets share the same full-schedule budget, without favoring earlier epochs.
-    values = [score_candidate_opportunities(opportunities[i:i + 2]).estimation
-              for i in range(0, 20, 2)]
+    values = [
+        score_candidate_opportunities(opportunities[i : i + 2]).estimation
+        for i in range(0, 20, 2)
+    ]
     assert all(value > 0 and value == pytest.approx(values[0]) for value in values)
     ship = belief.ships[0]
     raw = sum(values) * 2 * ship.expected_variance_reduction
-    assert raw == pytest.approx(ship.variance * 20 * ship.expected_variance_reduction /
-                               (ship.variance + 19 * ship.expected_variance_reduction))
+    assert raw == pytest.approx(
+        ship.variance
+        * 20
+        * ship.expected_variance_reduction
+        / (ship.variance + 19 * ship.expected_variance_reduction)
+    )
     assert raw < ship.variance
-    assert score_candidate_opportunities(opportunities[10:]).estimation == pytest.approx(sum(values[5:]))
-    assert sum(score_candidate_opportunities([o]).estimation for o in opportunities) == pytest.approx(sum(values))
+    assert score_candidate_opportunities(
+        opportunities[10:]
+    ).estimation == pytest.approx(sum(values[5:]))
+    assert sum(
+        score_candidate_opportunities([o]).estimation for o in opportunities
+    ) == pytest.approx(sum(values))
 
 
 def test_information_budget_ignores_checked_expired_duplicates_and_input_order():
@@ -396,34 +633,55 @@ def test_information_budget_ignores_checked_expired_duplicates_and_input_order()
         score_candidate_opportunities,
     )
 
-    reports = [_report("late", 1, 30, 0, 0), _report("early", 1, 20, 0, 0),
-               _report("checked", 1, 15, 0, 0), _report("expired", 1, 0, 0, 0)]
+    reports = [
+        _report("late", 1, 30, 0, 0),
+        _report("early", 1, 20, 0, 0),
+        _report("checked", 1, 15, 0, 0),
+        _report("expired", 1, 0, 0, 0),
+    ]
     environment = _environment([*reports, reports[1]])
     environment["mission_time_seconds"] = 10
-    environment["world_model_info"] = {"event_report_checks": [{"report_id": "checked"}]}
+    environment["world_model_info"] = {
+        "event_report_checks": [{"report_id": "checked"}]
+    }
     opportunities = _opportunities(environment, _belief((1,)))
-    assert {o.report_id: o.information_schedule_count for o in opportunities} == {"early": 2, "late": 2}
+    assert {o.report_id: o.information_schedule_count for o in opportunities} == {
+        "early": 2,
+        "late": 2,
+    }
     environment["static_info"].reverse()
-    assert {o.report_id: o for o in _opportunities(environment, _belief((1,)))} == {o.report_id: o for o in opportunities}
+    assert {o.report_id: o for o in _opportunities(environment, _belief((1,)))} == {
+        o.report_id: o for o in opportunities
+    }
     environment["mission_time_seconds"] = 25
     remaining = _opportunities(environment, _belief((1,)))
     assert len(remaining) == 1 and remaining[0].information_schedule_count == 1
-    assert score_candidate_opportunities(remaining).estimation == pytest.approx(.5)
+    assert score_candidate_opportunities(remaining).estimation == pytest.approx(0.5)
 
 
 def test_observation_window_recovers_late_reachable_view_and_expires():
     environment = _environment([_report("a", 1, 9.5, 0, 90)])
-    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["controlled_vehicle"].update(
+        heading_degrees=90, quarter_turn_seconds=0.5
+    )
     environment["observation_window_seconds"] = 4
     environment["surveillance_views"] = [
-        {"x": 0, "y": 90, "arrival_direction": 0, "report_ids": ["a"], "observation_delay_s": delay}
+        {
+            "x": 0,
+            "y": 90,
+            "arrival_direction": 0,
+            "report_ids": ["a"],
+            "observation_delay_s": delay,
+        }
         for delay in (0, 1, 4)
     ]
     graph = build_candidate_dag(environment, _belief((1,)))
     assert sorted(c.start_s for c in graph.candidates) == [10.5, 13.5]
     environment["mission_time_seconds"] = 12
     environment["controlled_vehicle"]["position"]["y"] = 90
-    assert [c.start_s for c in build_candidate_dag(environment, _belief((1,))).candidates] == [13.5]
+    assert [
+        c.start_s for c in build_candidate_dag(environment, _belief((1,))).candidates
+    ] == [13.5]
     environment["world_model_info"]["event_report_checks"] = [{"report_id": "a"}]
     assert not build_candidate_dag(environment, _belief((1,))).candidates
     environment["world_model_info"]["event_report_checks"] = []
@@ -433,10 +691,18 @@ def test_observation_window_recovers_late_reachable_view_and_expires():
 
 def test_window_alternatives_never_repeat_nonadjacent_reports():
     environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 2, 11, 0, 0)])
-    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["controlled_vehicle"].update(
+        heading_degrees=90, quarter_turn_seconds=0.5
+    )
     environment["observation_window_seconds"] = 4
     environment["surveillance_views"] = [
-        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a", "b"], "observation_delay_s": delay}
+        {
+            "x": 0,
+            "y": 0,
+            "arrival_direction": 0,
+            "report_ids": ["a", "b"],
+            "observation_delay_s": delay,
+        }
         for delay in (0, 2, 4)
     ]
     graph = build_candidate_dag(environment, _belief((1, 2)))
@@ -455,18 +721,35 @@ def test_window_alternatives_never_repeat_nonadjacent_reports():
 def test_terminal_dominance_preserves_exact_route_and_holding_cost(extra_score):
     from onr.application.mission1_planning import _prune_terminal_alternatives
 
-    environment = _environment([
-        _report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0), _report("c", 3, 20, 5, 0),
-    ], fov=.01)
+    environment = _environment(
+        [
+            _report("a", 1, 10, 0, 0),
+            _report("b", 2, 20, 0, 0),
+            _report("c", 3, 20, 5, 0),
+        ],
+        fov=0.01,
+    )
     graph = build_candidate_dag(environment, _belief((1, 2, 3)))
-    candidates = tuple(replace(c, recall_utility=c.recall_utility + extra_score,
-                               combined_score=c.combined_score + extra_score)
-                       if c.x == 5 else c for c in graph.candidates)
+    candidates = tuple(
+        replace(
+            c,
+            recall_utility=c.recall_utility + extra_score,
+            combined_score=c.combined_score + extra_score,
+        )
+        if c.x == 5
+        else c
+        for c in graph.candidates
+    )
     first = next(i for i, c in enumerate(candidates, 1) if c.start_s == 10)
     leaves = {i for i, c in enumerate(candidates, 1) if c.start_s == 20}
-    arcs = tuple(sorted({(0, graph.sink)} | {(0, i) for i in range(1, graph.sink)}
-                        | {(i, graph.sink) for i in range(1, graph.sink)}
-                        | {(first, i) for i in leaves}))
+    arcs = tuple(
+        sorted(
+            {(0, graph.sink)}
+            | {(0, i) for i in range(1, graph.sink)}
+            | {(i, graph.sink) for i in range(1, graph.sink)}
+            | {(first, i) for i in leaves}
+        )
+    )
     dense = replace(graph, candidates=candidates, arcs=arcs)
     reduced = replace(dense, arcs=_prune_terminal_alternatives(candidates, arcs))
     assert longest_path_oracle(reduced) == longest_path_oracle(dense)
@@ -477,12 +760,22 @@ def test_terminal_dominance_preserves_exact_route_and_holding_cost(extra_score):
     assert longest_path_oracle(reduced).candidates[-1].x == (5 if extra_score else 0)
 
 
-def test_window_solver_keeps_public_report_span_separate_from_observation_span(tmp_path):
+def test_window_solver_keeps_public_report_span_separate_from_observation_span(
+    tmp_path,
+):
     environment = _environment([_report("a", 1, 10, 0, 0), _report("b", 2, 15, 0, 0)])
-    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["controlled_vehicle"].update(
+        heading_degrees=90, quarter_turn_seconds=0.5
+    )
     environment["observation_window_seconds"] = 4
     environment["surveillance_views"] = [
-        {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": [report], "observation_delay_s": delay}
+        {
+            "x": 0,
+            "y": 0,
+            "arrival_direction": 0,
+            "report_ids": [report],
+            "observation_delay_s": delay,
+        }
         for report, delay in (("a", 4), ("b", 0))
     ]
     graph = build_candidate_dag(environment, _belief((1, 2)))
@@ -491,16 +784,28 @@ def test_window_solver_keeps_public_report_span_separate_from_observation_span(t
     assert oracle.candidates[0].report_span_s == 5
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     solution = json.loads(result.stdout.splitlines()[0])
     selected = solution["assignments"][0]
     assert selected["candidate_id"] == oracle.candidates[0].candidate_id
     assert selected["start"] == 28 and selected["duration"] == 3
     assert selected["parameters"]["report_span"] == 10
-    assert selected["parameters"]["observation_delay"] == {"minimum": 0, "maximum": 8, "time_scale": 2}
+    assert selected["parameters"]["observation_delay"] == {
+        "minimum": 0,
+        "maximum": 8,
+        "time_scale": 2,
+    }
     assert solution["combined_score"] == round(oracle.score * SCORE_SCALE)
 
 
@@ -508,28 +813,52 @@ def test_window_solver_keeps_public_report_span_separate_from_observation_span(t
 def test_replan_uses_forecast_for_selected_observation_window(delayed_visible):
     environment = _environment([_report("a", 1, 10, 0, 0)])
     environment["mission_time_seconds"] = 12
-    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment["controlled_vehicle"].update(
+        heading_degrees=90, quarter_turn_seconds=0.5
+    )
     environment["observation_window_seconds"] = 4
     environment["surveillance_views"] = [
         {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["a"]},
-        {"x": 0, "y": 0, "arrival_direction": 0,
-         "report_ids": ["a"] if delayed_visible else [], "observation_delay_s": 4},
+        {
+            "x": 0,
+            "y": 0,
+            "arrival_direction": 0,
+            "report_ids": ["a"] if delayed_visible else [],
+            "observation_delay_s": 4,
+        },
     ]
-    context = {"candidate_id": "delayed", "surveillance_mode": "fixed_view",
-               "target_entity_id": None, "target_report_ids": ["a"],
-               "observation_window": {"start": {"seconds": 14}, "duration": {"seconds": .5}},
-               "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": 0}}}
-    chart = Statechart(mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
-                      planning_profile="temporal", entry_state="view", states=("view",),
-                      transitions=(), terminal_states=("view",), state_context={"view": context})
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-                       active_state="view", active_state_context=context)
+    context = {
+        "candidate_id": "delayed",
+        "surveillance_mode": "fixed_view",
+        "target_entity_id": None,
+        "target_report_ids": ["a"],
+        "observation_window": {"start": {"seconds": 14}, "duration": {"seconds": 0.5}},
+        "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": 0}},
+    }
+    chart = Statechart(
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="snapshot-1",
+        planning_profile="temporal",
+        entry_state="view",
+        states=("view",),
+        transitions=(),
+        terminal_states=("view",),
+        state_context={"view": context},
+    )
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="view",
+        active_state_context=context,
+    )
     decision, _ = Mission1ReplanGate().assess(environment, _belief((1,)), chart, status)
     assert (decision.reason == "next_assignment_infeasible") != delayed_visible
     assert (decision.current_score > 0) == delayed_visible
 
 
-@pytest.mark.parametrize("delay", [-1, .1, 5])
+@pytest.mark.parametrize("delay", [-1, 0.1, 5])
 def test_window_rejects_unrepresentable_or_ineligible_delays(delay):
     environment = _directional_environment()
     environment["observation_window_seconds"] = 4
@@ -538,23 +867,27 @@ def test_window_rejects_unrepresentable_or_ineligible_delays(delay):
         build_candidate_dag(environment, _belief((1, 2, 3)))
 
 
-@pytest.mark.parametrize("direction, seconds", [(0, 0), (1, .5), (2, 1), (3, .5)])
+@pytest.mark.parametrize("direction, seconds", [(0, 0), (1, 0.5), (2, 1), (3, 0.5)])
 def test_multigrid_turn_time_uses_discrete_ticks(direction, seconds):
     from onr.application.mission1_planning import _navigation_time
 
-    assert _navigation_time(0, 0, 0, 0, 10, 0, direction, .5) == seconds
+    assert _navigation_time(0, 0, 0, 0, 10, 0, direction, 0.5) == seconds
     # Both axis orders require at most three turns for this start/end heading.
-    assert _navigation_time(0, 0, 9, 9, 10, 0, 0, .5) == 3.0
-    assert _navigation_time(0, 0, 0, 0, 10, None, direction, .5) == 1.0
+    assert _navigation_time(0, 0, 9, 9, 10, 0, 0, 0.5) == 3.0
+    assert _navigation_time(0, 0, 0, 0, 10, None, direction, 0.5) == 1.0
 
 
 def _directional_environment():
-    environment = _environment([
-        _report("east", 1, 2, 0, 1),
-        _report("west", 2, 4, 0, -1),
-        _report("occluded", 3, 4, 0, 2),
-    ])
-    environment["controlled_vehicle"].update(heading_degrees=90, quarter_turn_seconds=.5)
+    environment = _environment(
+        [
+            _report("east", 1, 2, 0, 1),
+            _report("west", 2, 4, 0, -1),
+            _report("occluded", 3, 4, 0, 2),
+        ]
+    )
+    environment["controlled_vehicle"].update(
+        heading_degrees=90, quarter_turn_seconds=0.5
+    )
     environment["surveillance_views"] = [
         {"x": 0, "y": 0, "arrival_direction": 0, "report_ids": ["east"]},
         {"x": 0, "y": 0, "arrival_direction": 2, "report_ids": ["west"]},
@@ -589,13 +922,26 @@ def test_directional_route_matches_real_minizinc(tmp_path):
     oracle = longest_path_oracle(graph)
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     solved = json.loads(result.stdout.splitlines()[0])
-    assert [a["candidate_id"] for a in solved["assignments"]] == [c.candidate_id for c in oracle.candidates]
-    assert [a["parameters"]["arrival_direction"] for a in solved["assignments"]] == [0, 2]
+    assert [a["candidate_id"] for a in solved["assignments"]] == [
+        c.candidate_id for c in oracle.candidates
+    ]
+    assert [a["parameters"]["arrival_direction"] for a in solved["assignments"]] == [
+        0,
+        2,
+    ]
     assert solved["maneuver_count"] == 2
     assert solved["combined_score"] == round(oracle.score * SCORE_SCALE)
 
@@ -614,25 +960,46 @@ def test_native_views_require_turn_timing():
         build_candidate_dag(environment, _belief((1, 2, 3)))
 
 
-@pytest.mark.parametrize("direction, now, feasible", [(2, 0, True), (0, 0, False), (2, 3.5, False)])
-def test_replan_uses_selected_native_heading_and_turn_deadline(direction, now, feasible):
+@pytest.mark.parametrize(
+    "direction, now, feasible", [(2, 0, True), (0, 0, False), (2, 3.5, False)]
+)
+def test_replan_uses_selected_native_heading_and_turn_deadline(
+    direction, now, feasible
+):
     environment = _directional_environment()
     environment["mission_time_seconds"] = now
     environment["world_model_info"]["event_report_checks"] = [{"report_id": "east"}]
     context = {
-        "candidate_id": "selected-view", "surveillance_mode": "fixed_view",
-        "target_entity_id": None, "target_report_ids": ["west"],
-        "observation_window": {"start": {"seconds": 4}, "duration": {"seconds": .5}},
-        "planner_item": {"parameters": {"x": 0, "y": 0, "arrival_direction": direction}},
+        "candidate_id": "selected-view",
+        "surveillance_mode": "fixed_view",
+        "target_entity_id": None,
+        "target_report_ids": ["west"],
+        "observation_window": {"start": {"seconds": 4}, "duration": {"seconds": 0.5}},
+        "planner_item": {
+            "parameters": {"x": 0, "y": 0, "arrival_direction": direction}
+        },
     }
     chart = Statechart(
-        mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
-        planning_profile="temporal", entry_state="active", states=("active",),
-        transitions=(), terminal_states=("active",), state_context={"active": context},
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="snapshot-1",
+        planning_profile="temporal",
+        entry_state="active",
+        states=("active",),
+        transitions=(),
+        terminal_states=("active",),
+        state_context={"active": context},
     )
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-                      active_state="active", active_state_context=context)
-    decision, _ = Mission1ReplanGate().assess(environment, _belief((1, 2, 3)), chart, status)
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="active",
+        active_state_context=context,
+    )
+    decision, _ = Mission1ReplanGate().assess(
+        environment, _belief((1, 2, 3)), chart, status
+    )
     assert (decision.reason != "next_assignment_infeasible") == feasible
     if direction == 0:
         assert decision.current_score == 0  # It cannot see the selected west report.
@@ -647,20 +1014,37 @@ def test_turn_aware_reduced_graph_matches_dense_route():
     for u, left in enumerate(graph.candidates, 1):
         arcs.update({(0, u), (u, graph.sink)})
         for v, right in enumerate(graph.candidates, 1):
-            if u < v and left.end_s + _navigation_time(
-                left.end_x, left.end_y, right.x, right.y, 10,
-                left.arrival_direction, right.arrival_direction, .5,
-            ) <= right.start_s and set(left.report_ids).isdisjoint(right.report_ids):
+            if (
+                u < v
+                and left.end_s
+                + _navigation_time(
+                    left.end_x,
+                    left.end_y,
+                    right.x,
+                    right.y,
+                    10,
+                    left.arrival_direction,
+                    right.arrival_direction,
+                    0.5,
+                )
+                <= right.start_s
+                and set(left.report_ids).isdisjoint(right.report_ids)
+            ):
                 arcs.add((u, v))
-    assert longest_path_oracle(graph) == longest_path_oracle(replace(graph, arcs=tuple(sorted(arcs))))
+    assert longest_path_oracle(graph) == longest_path_oracle(
+        replace(graph, arcs=tuple(sorted(arcs)))
+    )
 
 
 @pytest.mark.parametrize("radius, covered_count", [(100.0, 1), (300.0, 2)])
 def test_fixed_view_uses_advertised_sensor_range(radius, covered_count):
-    environment = _environment([
-        _report("near", 1, 60.0, 0.0, 0.0),
-        _report("further", 2, 60.0, 350.0, 0.0),
-    ], fov=radius)
+    environment = _environment(
+        [
+            _report("near", 1, 60.0, 0.0, 0.0),
+            _report("further", 2, 60.0, 350.0, 0.0),
+        ],
+        fov=radius,
+    )
     graph = build_candidate_dag(environment, _belief((1, 2)))
     route = longest_path_oracle(graph)
     assert len(route.candidates) == 1
@@ -670,10 +1054,13 @@ def test_fixed_view_uses_advertised_sensor_range(radius, covered_count):
 
 @pytest.mark.parametrize("event_time", [12.0, 30.0])
 def test_midpoint_view_covers_reports_without_reaching_each_ship(event_time):
-    environment = _environment([
-        _report("a", 1, event_time, 0.0, 0.0),
-        _report("b", 2, event_time, 150.0, 0.0),
-    ], fov=100.0)
+    environment = _environment(
+        [
+            _report("a", 1, event_time, 0.0, 0.0),
+            _report("b", 2, event_time, 150.0, 0.0),
+        ],
+        fov=100.0,
+    )
     route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2))))
     assert set(route.covered_report_ids) == {"a", "b"}
     assert len(route.candidates) == 1
@@ -684,18 +1071,25 @@ def test_distinct_fixed_viewpoints_keep_distinct_stable_identity():
     reports = [_report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0)]
     belief = _belief((1, 2))
     graph = build_candidate_dag(_environment(reports, fov=100), belief)
-    views = [c for c in graph.candidates if c.mode == "fixed_view" and len(c.report_ids) == 2]
+    views = [
+        c for c in graph.candidates if c.mode == "fixed_view" and len(c.report_ids) == 2
+    ]
     assert {(c.x, c.y) for c in views} >= {(0, 0), (50, 0), (100, 0)}
     assert len({c.candidate_id for c in views}) == len(views)
-    reordered = build_candidate_dag(_environment(list(reversed(reports)), fov=100), belief)
+    reordered = build_candidate_dag(
+        _environment(list(reversed(reports)), fov=100), belief
+    )
     assert graph == reordered
 
 
 def test_fixed_viewpoint_can_be_reused_at_a_different_report_time():
-    environment = _environment([
-        _report("earlier", 1, 10, 100, 0),
-        _report("later", 2, 11, 200, 0),
-    ], fov=150)
+    environment = _environment(
+        [
+            _report("earlier", 1, 10, 100, 0),
+            _report("later", 2, 11, 200, 0),
+        ],
+        fov=150,
+    )
     environment["controlled_vehicle"]["max_velocity"] = 20.0
     # The later ship's own position is unreachable by t=11 and the current
     # position cannot see it. The earlier report's viewpoint sees both times.
@@ -717,8 +1111,13 @@ def test_fixed_view_coverage_is_checked_after_integer_coordinate_rounding():
     positions = {r["report_id"]: r["position"][:2] for r in reports}
     for candidate in graph.candidates:
         if candidate.mode == "fixed_view":
-            assert candidate.x == round(candidate.x) and candidate.y == round(candidate.y)
-            assert all(math.dist((candidate.x, candidate.y), positions[r]) <= 100 for r in candidate.report_ids)
+            assert candidate.x == round(candidate.x) and candidate.y == round(
+                candidate.y
+            )
+            assert all(
+                math.dist((candidate.x, candidate.y), positions[r]) <= 100
+                for r in candidate.report_ids
+            )
 
 
 def test_current_view_is_feasible_without_flying_to_a_report():
@@ -729,21 +1128,27 @@ def test_current_view_is_feasible_without_flying_to_a_report():
 
 
 def test_unreachable_earlier_report_does_not_hide_reachable_later_report():
-    environment = _environment([
-        _report("earlier", 1, 0.5, 9, 0),
-        _report("later", 2, 1.0, 9, 0),
-    ], fov=0.1)
+    environment = _environment(
+        [
+            _report("earlier", 1, 0.5, 9, 0),
+            _report("later", 2, 1.0, 9, 0),
+        ],
+        fov=0.1,
+    )
     route = longest_path_oracle(build_candidate_dag(environment, _belief((1, 2))))
     assert route.covered_report_ids == ("later",)
     assert route.candidates[0].start_s == 1.0
 
 
 def test_consecutive_fixed_views_are_one_native_surveillance_run(tmp_path):
-    environment = _environment([
-        _report("a", 1, 10, 0, 0),
-        _report("b", 2, 10.5, 0, 0),
-        _report("c", 3, 20, 0, 0),
-    ], fov=0.1)
+    environment = _environment(
+        [
+            _report("a", 1, 10, 0, 0),
+            _report("b", 2, 10.5, 0, 0),
+            _report("c", 3, 20, 0, 0),
+        ],
+        fov=0.1,
+    )
     graph = build_candidate_dag(environment, _belief((1, 2, 3)))
     oracle = longest_path_oracle(graph)
     assert len(oracle.candidates) == 1
@@ -751,10 +1156,18 @@ def test_consecutive_fixed_views_are_one_native_surveillance_run(tmp_path):
     assert oracle.duration_s == 10.5
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     native = json.loads(result.stdout.splitlines()[0])
     assert native["maneuver_count"] == 1
     assert native["surveillance_duration"] == 21
@@ -765,7 +1178,9 @@ def test_consecutive_fixed_views_are_one_native_surveillance_run(tmp_path):
     assert assignment["parameters"]["report_ids"] == ["a", "b", "c"]
     inspected = subprocess.run(
         ["python", str(EXAMPLE_ROOT / "inspect_problem.py"), str(data)],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     summary = json.loads(inspected.stdout)
     assert summary["valid"] and summary["component_score_consistent"]
@@ -778,36 +1193,75 @@ def test_consecutive_fixed_views_are_one_native_surveillance_run(tmp_path):
 def test_empty_or_zero_utility_route_has_no_native_runs(tmp_path, has_candidates):
     from onr.application.mission1_planning import CandidateDAG
 
-    graph = build_candidate_dag(_environment([
-        _report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0),
-    ] if has_candidates else []), _belief((1, 2)))
-    graph = CandidateDAG(tuple(replace(c, recall_utility=0, estimation_utility=0,
-                                      omission_yield=0, combined_score=0) for c in graph.candidates),
-                         tuple(sorted(set(graph.arcs) | {(graph.source, graph.sink)})),
-                         graph.source, graph.sink)
+    graph = build_candidate_dag(
+        _environment(
+            [
+                _report("a", 1, 10, 0, 0),
+                _report("b", 2, 20, 0, 0),
+            ]
+            if has_candidates
+            else []
+        ),
+        _belief((1, 2)),
+    )
+    graph = CandidateDAG(
+        tuple(
+            replace(
+                c,
+                recall_utility=0,
+                estimation_utility=0,
+                omission_yield=0,
+                combined_score=0,
+            )
+            for c in graph.candidates
+        ),
+        tuple(sorted(set(graph.arcs) | {(graph.source, graph.sink)})),
+        graph.source,
+        graph.sink,
+    )
     oracle = longest_path_oracle(graph)
     assert not oracle.candidates
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     native = json.loads(result.stdout.splitlines()[0])
     assert native["assignments"] == []
-    assert native["combined_score"] == native["maneuver_count"] == native["surveillance_duration"] == 0
+    assert (
+        native["combined_score"]
+        == native["maneuver_count"]
+        == native["surveillance_duration"]
+        == 0
+    )
 
 
 def test_sustained_fixed_view_rescoring_retains_rounding_and_unique_reports():
-    environment = _environment([
-        _report("a", 1, 10, 0, 0), _report("b", 2, 20, 0, 0),
-        _report("c", 3, 30, 0, 0),
-    ], fov=0.1)
+    environment = _environment(
+        [
+            _report("a", 1, 10, 0, 0),
+            _report("b", 2, 20, 0, 0),
+            _report("c", 3, 30, 0, 0),
+        ],
+        fov=0.1,
+    )
     prior = _belief((1, 2, 3))
     belief = ReportingReliabilitySnapshot.create(
-        mission_id=prior.mission_id, belief_revision=prior.belief_revision,
-        input_event_id=prior.input_event_id, input_revision=prior.input_revision,
-        created_at=prior.created_at, omission=prior.omission,
+        mission_id=prior.mission_id,
+        belief_revision=prior.belief_revision,
+        input_event_id=prior.input_event_id,
+        input_revision=prior.input_revision,
+        created_at=prior.created_at,
+        omission=prior.omission,
         ships=tuple(replace(ship, mean=0.1234568) for ship in prior.ships),
     )
     route = longest_path_oracle(build_candidate_dag(environment, belief))
@@ -815,20 +1269,33 @@ def test_sustained_fixed_view_rescoring_retains_rounding_and_unique_reports():
     # Per-time rounding differs from rounding all three raw recalls together.
     assert round(candidate.recall_utility * SCORE_SCALE) == 3 * 61728
     context = {
-        "candidate_id": candidate.candidate_id, "surveillance_mode": "fixed_view",
-        "target_entity_id": None, "target_report_ids": list(candidate.report_ids),
+        "candidate_id": candidate.candidate_id,
+        "surveillance_mode": "fixed_view",
+        "target_entity_id": None,
+        "target_report_ids": list(candidate.report_ids),
         "observation_window": {"start": {"seconds": 10}, "duration": {"seconds": 20.5}},
         "planner_item": {"parameters": {"x": 0, "y": 0}},
     }
     chart = Statechart(
-        mission_id="mission-1", plan_revision=1, mission_snapshot_id="mission-1:snapshot:1",
-        planning_profile="temporal", entry_state="active", states=("active", "copy"),
-        transitions=(StatechartTransition(event="finish", source="active", target="copy"),),
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="mission-1:snapshot:1",
+        planning_profile="temporal",
+        entry_state="active",
+        states=("active", "copy"),
+        transitions=(
+            StatechartTransition(event="finish", source="active", target="copy"),
+        ),
         terminal_states=("copy",),
         state_context={"active": context, "copy": context},
     )
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-                       active_state="active", active_state_context=context)
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="active",
+        active_state_context=context,
+    )
     decision, advisory = Mission1ReplanGate().assess(environment, belief, chart, status)
     assert decision.current_score == advisory.score == route.score
     assert not decision.trigger
@@ -843,11 +1310,23 @@ def test_sustained_fixed_view_rescoring_retains_rounding_and_unique_reports():
 def test_fixed_runs_do_not_merge_across_other_viewpoints_or_pursuits():
     from onr.application.mission1_planning import _fixed_view_runs
 
-    seed = build_candidate_dag(_environment([_report("a", 1, 10, 0, 0)]), _belief((1,))).candidates[0]
-    for middle in (replace(seed, x=1, end_x=1), replace(seed, mode="pursue_ship", entity_id=1)):
-        selections = tuple(replace(c, candidate_id=f"c{i}", report_ids=(f"r{i}",),
-                                   start_s=10 * i, end_s=10 * i + 0.5)
-                           for i, c in enumerate((seed, middle, seed), start=1))
+    seed = build_candidate_dag(
+        _environment([_report("a", 1, 10, 0, 0)]), _belief((1,))
+    ).candidates[0]
+    for middle in (
+        replace(seed, x=1, end_x=1),
+        replace(seed, mode="pursue_ship", entity_id=1),
+    ):
+        selections = tuple(
+            replace(
+                c,
+                candidate_id=f"c{i}",
+                report_ids=(f"r{i}",),
+                start_s=10 * i,
+                end_s=10 * i + 0.5,
+            )
+            for i, c in enumerate((seed, middle, seed), start=1)
+        )
         assert _fixed_view_runs(selections) == selections
 
 
@@ -855,61 +1334,113 @@ def test_fixed_runs_do_not_merge_across_other_viewpoints_or_pursuits():
     "selected_x, now, checked, expected_infeasible",
     [(0, 29, False, False), (100, 29, False, True), (50, 24, True, False)],
 )
-def test_replan_checks_selected_viewpoint_not_an_alternative(selected_x, now, checked, expected_infeasible):
-    environment = _environment([
-        _report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0),
-    ], fov=100)
+def test_replan_checks_selected_viewpoint_not_an_alternative(
+    selected_x, now, checked, expected_infeasible
+):
+    environment = _environment(
+        [
+            _report("a", 1, 30, 0, 0),
+            _report("b", 2, 30, 100, 0),
+        ],
+        fov=100,
+    )
     belief = _belief((1, 2))
     context = {
-        "candidate_id": "selected-viewpoint", "surveillance_mode": "fixed_view",
-        "target_entity_id": None, "target_report_ids": ["a", "b"],
-        "observation_window": {"start": {"seconds": 30}, "duration": {"seconds": .5}},
+        "candidate_id": "selected-viewpoint",
+        "surveillance_mode": "fixed_view",
+        "target_entity_id": None,
+        "target_report_ids": ["a", "b"],
+        "observation_window": {"start": {"seconds": 30}, "duration": {"seconds": 0.5}},
         "planner_item": {"parameters": {"x": selected_x, "y": 0}},
     }
     chart = Statechart(
-        mission_id="mission-1", plan_revision=1, mission_snapshot_id="snapshot-1",
-        planning_profile="temporal", entry_state="active", states=("active",),
-        transitions=(), terminal_states=("active",), state_context={"active": context},
+        mission_id="mission-1",
+        plan_revision=1,
+        mission_snapshot_id="snapshot-1",
+        planning_profile="temporal",
+        entry_state="active",
+        states=("active",),
+        transitions=(),
+        terminal_states=("active",),
+        state_context={"active": context},
     )
-    status = FSMStatus(mission_id="mission-1", plan_revision=1, statechart_revision=1,
-        active_state="active", active_state_context=context)
+    status = FSMStatus(
+        mission_id="mission-1",
+        plan_revision=1,
+        statechart_revision=1,
+        active_state="active",
+        active_state_context=context,
+    )
     environment["mission_time_seconds"] = now
     if checked:
-        environment["world_model_info"]["event_report_checks"] = [{"check_id": "already-checked", "report_id": "a", "outcome": "clean"}]
+        environment["world_model_info"]["event_report_checks"] = [
+            {"check_id": "already-checked", "report_id": "a", "outcome": "clean"}
+        ]
     decision, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
     assert (decision.reason == "next_assignment_infeasible") == expected_infeasible
     assert decision.trigger == expected_infeasible
 
 
 def test_midpoint_route_matches_real_minizinc(tmp_path):
-    environment = _environment([
-        _report("a", 1, 12, 0, 0), _report("b", 2, 12, 150, 0),
-    ], fov=100)
+    environment = _environment(
+        [
+            _report("a", 1, 12, 0, 0),
+            _report("b", 2, 12, 150, 0),
+        ],
+        fov=100,
+    )
     graph = build_candidate_dag(environment, _belief((1, 2)))
     oracle = longest_path_oracle(graph)
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     solved = json.loads(result.stdout.splitlines()[0])
-    assert [a["candidate_id"] for a in solved["assignments"]] == [c.candidate_id for c in oracle.candidates]
+    assert [a["candidate_id"] for a in solved["assignments"]] == [
+        c.candidate_id for c in oracle.candidates
+    ]
     assert solved["combined_score"] == round(oracle.score * SCORE_SCALE)
     assert solved["assignments"][0]["parameters"]["x"] == 75
     assert set(solved["assignments"][0]["parameters"]["report_ids"]) == {"a", "b"}
 
 
 def test_objective_potentials_shift_every_route_by_the_same_constant():
-    graph = build_candidate_dag(_environment([
-        _report("a", 1, 10, 0, 0), _report("b", 2, 10, 8, 0),
-        _report("c", 3, 20, 15, 0),
-    ], fov=5), _belief((1, 2, 3)))
-    data = {name: json.loads(value[:-1]) for name, value in (
-        line.split(" = ", 1) for line in serialize_minizinc_data(graph).splitlines()
-    )}
+    graph = build_candidate_dag(
+        _environment(
+            [
+                _report("a", 1, 10, 0, 0),
+                _report("b", 2, 10, 8, 0),
+                _report("c", 3, 20, 15, 0),
+            ],
+            fov=5,
+        ),
+        _belief((1, 2, 3)),
+    )
+    data = {
+        name: json.loads(value[:-1])
+        for name, value in (
+            line.split(" = ", 1) for line in serialize_minizinc_data(graph).splitlines()
+        )
+    }
     potentials = data["node_objective_potential"]
-    scores = [a + b + c for a, b, c in zip(data["candidate_recall"], data["candidate_estimation"], data["candidate_omission"])]
+    scores = [
+        a + b + c
+        for a, b, c in zip(
+            data["candidate_recall"],
+            data["candidate_estimation"],
+            data["candidate_omission"],
+        )
+    ]
     weights = {}
     for u, v in graph.arcs:
         if v == graph.sink:
@@ -917,12 +1448,20 @@ def test_objective_potentials_shift_every_route_by_the_same_constant():
             continue
         right = graph.candidates[v - 1]
         left = graph.candidates[u - 1] if u else None
-        hold = left is not None and left.mode == right.mode == "fixed_view" and (left.x, left.y) == (right.x, right.y)
+        hold = (
+            left is not None
+            and left.mode == right.mode == "fixed_view"
+            and (left.x, left.y) == (right.x, right.y)
+        )
         duration = round((right.end_s - left.end_s if hold else right.duration_s) * 2)
         weights[u, v] = (
-            scores[v - 1] * data["maneuver_bound"] * data["duration_bound"] * data["tie_break_bound"]
+            scores[v - 1]
+            * data["maneuver_bound"]
+            * data["duration_bound"]
+            * data["tie_break_bound"]
             - int(not hold) * data["duration_bound"] * data["tie_break_bound"]
-            - duration * data["tie_break_bound"] - v
+            - duration * data["tie_break_bound"]
+            - v
         )
     outgoing = [[] for _ in potentials]
     for u, v in graph.arcs:
@@ -932,12 +1471,20 @@ def test_objective_potentials_shift_every_route_by_the_same_constant():
 
     def check_paths(node, original, reduced, loss=0):
         if node == graph.sink:
-            assert reduced == original + potentials[graph.source] - potentials[graph.sink]
+            assert (
+                reduced == original + potentials[graph.source] - potentials[graph.sink]
+            )
             priorities.append((original, loss))
             return 1
-        return sum(check_paths(v, original + weights[node, v],
-            reduced + weights[node, v] + potentials[node] - potentials[v],
-            loss + int(weights[node, v] + potentials[node] - potentials[v] < 0)) for v in outgoing[node])
+        return sum(
+            check_paths(
+                v,
+                original + weights[node, v],
+                reduced + weights[node, v] + potentials[node] - potentials[v],
+                loss + int(weights[node, v] + potentials[node] - potentials[v] < 0),
+            )
+            for v in outgoing[node]
+        )
 
     assert check_paths(graph.source, 0, 0) > 1
     best = max(original for original, _ in priorities)
@@ -952,25 +1499,47 @@ def test_large_lexicographic_weights_keep_solver_tie_parity(tmp_path, monkeypatc
     # Minimize the observed ~10^15-objective failure to three tied viewpoints.
     # Scaling units changes neither the public evidence nor the utility ratio.
     monkeypatch.setattr(planning, "SCORE_SCALE", 1_000_000_000_000_000)
-    graph = planning.build_candidate_dag(_environment([
-        _report("a", 1, 30, 0, 0), _report("b", 2, 30, 100, 0),
-    ], fov=100), _belief((1, 2)))
+    graph = planning.build_candidate_dag(
+        _environment(
+            [
+                _report("a", 1, 30, 0, 0),
+                _report("b", 2, 30, 100, 0),
+            ],
+            fov=100,
+        ),
+        _belief((1, 2)),
+    )
     oracle = planning.longest_path_oracle(graph)
     data = planning.serialize_minizinc_data(graph)
-    values = {name: json.loads(value[:-1]) for name, value in (
-        line.split(" = ", 1) for line in data.splitlines()
-    )}
+    values = {
+        name: json.loads(value[:-1])
+        for name, value in (line.split(" = ", 1) for line in data.splitlines())
+    }
     assert max(values["node_objective_potential"]) > 2**53
     executor = MiniZincExecutor(
-        Path("modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc").resolve(), tmp_path / "solver",
+        Path("modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc").resolve(),
+        tmp_path / "solver",
     )
-    assets = {"model.mzn": (EXAMPLE_ROOT / "model.mzn").read_bytes(), "data.dzn": data.encode()}
+    assets = {
+        "model.mzn": (EXAMPLE_ROOT / "model.mzn").read_bytes(),
+        "data.dzn": data.encode(),
+    }
     result = executor.execute(assets, "coin-bc")
     stream = [json.loads(line) for line in result.stdout.splitlines()]
     assert any(row.get("status") == "OPTIMAL_SOLUTION" for row in stream)
-    native = json.loads(next(row["output"]["default"] for row in reversed(stream) if row.get("type") == "solution"))
-    assert [a["candidate_id"] for a in native["assignments"]] == [c.candidate_id for c in oracle.candidates]
-    corrupted = data.replace("node_objective_potential = [0,", "node_objective_potential = [1,", 1)
+    native = json.loads(
+        next(
+            row["output"]["default"]
+            for row in reversed(stream)
+            if row.get("type") == "solution"
+        )
+    )
+    assert [a["candidate_id"] for a in native["assignments"]] == [
+        c.candidate_id for c in oracle.candidates
+    ]
+    corrupted = data.replace(
+        "node_objective_potential = [0,", "node_objective_potential = [1,", 1
+    )
     # Instance checking validates types; the assert is evaluated on flattening.
     rejected = executor.execute({**assets, "data.dzn": corrupted.encode()}, "coin-bc")
     assert rejected.outcome is PlanningOutcome.ERROR
@@ -986,25 +1555,41 @@ def test_equal_candidate_order_sums_have_one_canonical_solver_route(tmp_path):
     from onr.application.mission1_planning import CandidateDAG
 
     seed = build_candidate_dag(
-        _environment([_report("seed", 1, 10, 0, 0)]), _belief((1,)),
+        _environment([_report("seed", 1, 10, 0, 0)]),
+        _belief((1,)),
     ).candidates[0]
     candidates = tuple(
-        replace(seed, candidate_id=f"c{i}", report_ids=(f"r{i}",),
-                start_s=10 if i <= 2 else 20, end_s=10.5 if i <= 2 else 20.5)
+        replace(
+            seed,
+            candidate_id=f"c{i}",
+            report_ids=(f"r{i}",),
+            start_s=10 if i <= 2 else 20,
+            end_s=10.5 if i <= 2 else 20.5,
+        )
         for i in range(1, 5)
     )
     # [1,4] and [2,3] have identical utility, count, duration AND index sum.
     # Resolve the residual tie by smallest optimal predecessor, back from sink.
-    graph = CandidateDAG(candidates, ((0, 1), (0, 2), (1, 4), (2, 3), (3, 5), (4, 5)), 0, 5)
+    graph = CandidateDAG(
+        candidates, ((0, 1), (0, 2), (1, 4), (2, 3), (3, 5), (4, 5)), 0, 5
+    )
     oracle = longest_path_oracle(graph)
     expected = ["c2--c3"]
     assert [c.candidate_id for c in oracle.candidates] == expected
     data = tmp_path / "data.dzn"
     data.write_text(serialize_minizinc_data(graph))
-    result = subprocess.run([
-        "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc", "--solver", "coin-bc",
-        str(EXAMPLE_ROOT / "model.mzn"), str(data),
-    ], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [
+            "modules/MiniZincIDE-2.10.1-appimage/usr/bin/minizinc",
+            "--solver",
+            "coin-bc",
+            str(EXAMPLE_ROOT / "model.mzn"),
+            str(data),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     native = json.loads(result.stdout.splitlines()[0])
     assert [c["candidate_id"] for c in native["assignments"]] == expected
     assert native["combined_score"] == round(oracle.score * SCORE_SCALE)
@@ -1023,14 +1608,15 @@ def test_dag_skips_backward_time_pairs_before_travel_calculation(monkeypatch) ->
 
     monkeypatch.setattr(planning, "_travel_time", measured_travel)
     graph = build_candidate_dag(
-        _environment([
-            _report(f"r{i}", i, 10 + 2 * i, i, 0)
-            for i in range(1, count + 1)
-        ]),
+        _environment(
+            [_report(f"r{i}", i, 10 + 2 * i, i, 0) for i in range(1, count + 1)]
+        ),
         _belief(tuple(range(1, count + 1))),
     )
     candidate_count = len(graph.candidates)
-    assert {r for c in graph.candidates for r in c.report_ids} == {f"r{i}" for i in range(1, count + 1)}
+    assert {r for c in graph.candidates for r in c.report_ids} == {
+        f"r{i}" for i in range(1, count + 1)
+    }
     # One viewpoint admission check per candidate; only forward temporal
     # pairs can require a route travel calculation, including alternate views.
     assert calls <= candidate_count + candidate_count * (candidate_count - 1) // 2
@@ -1068,9 +1654,12 @@ def test_dense_temporal_chain_skips_transitively_redundant_travel_checks(monkeyp
 
     monkeypatch.setattr(planning, "_travel_time", measured_travel)
     count = 20
-    graph = build_candidate_dag(_environment([
-        _report(f"r{i}", i, i * 2, 0, 0) for i in range(1, count + 1)
-    ], fov=0.1), _belief(tuple(range(1, count + 1))))
+    graph = build_candidate_dag(
+        _environment(
+            [_report(f"r{i}", i, i * 2, 0, 0) for i in range(1, count + 1)], fov=0.1
+        ),
+        _belief(tuple(range(1, count + 1))),
+    )
     assert len(graph.candidates) == count
     assert graph.arcs == tuple((i, i + 1) for i in range(count + 1))
     # Admission plus adjacent transitions, not every pair in the dense closure.
@@ -1081,27 +1670,50 @@ def test_dense_temporal_chain_skips_transitively_redundant_travel_checks(monkeyp
 def test_reduced_arcs_match_dense_reference_with_mixed_and_zero_utilities(zero_stride):
     from onr.application.mission1_planning import _candidate_arcs, _prune_dominated_arcs
 
-    graph = build_candidate_dag(_environment([
-        _report(f"r{ship}-{i}", ship, 10 + 5 * i, 3 * i + ship, ship * 4)
-        for i in range(4) for ship in (1, 2, 3)
-    ], fov=5), _belief((1, 2, 3)))
+    graph = build_candidate_dag(
+        _environment(
+            [
+                _report(f"r{ship}-{i}", ship, 10 + 5 * i, 3 * i + ship, ship * 4)
+                for i in range(4)
+                for ship in (1, 2, 3)
+            ],
+            fov=5,
+        ),
+        _belief((1, 2, 3)),
+    )
     candidates = tuple(
-        replace(c, recall_utility=0, estimation_utility=0, omission_yield=0, combined_score=0)
-        if zero_stride and i % zero_stride == 0 else c
+        replace(
+            c,
+            recall_utility=0,
+            estimation_utility=0,
+            omission_yield=0,
+            combined_score=0,
+        )
+        if zero_stride and i % zero_stride == 0
+        else c
         for i, c in enumerate(graph.candidates)
     )
     sink = len(candidates) + 1
-    dense = {(0, sink)} | {(0, i) for i in range(1, sink)} | {(i, sink) for i in range(1, sink)}
+    dense = (
+        {(0, sink)}
+        | {(0, i) for i in range(1, sink)}
+        | {(i, sink) for i in range(1, sink)}
+    )
     for u, left in enumerate(candidates, 1):
         for v, right in enumerate(candidates, 1):
-            if (
-                set(left.report_ids).isdisjoint(right.report_ids)
-                and right.start_s + 1e-9 >= left.end_s + _travel_time(
-                    left.end_x, left.end_y, right.x, right.y, 10,
-                )
+            if set(left.report_ids).isdisjoint(
+                right.report_ids
+            ) and right.start_s + 1e-9 >= left.end_s + _travel_time(
+                left.end_x,
+                left.end_y,
+                right.x,
+                right.y,
+                10,
             ):
                 dense.add((u, v))
-    assert _candidate_arcs(candidates, 10) == _prune_dominated_arcs(dense, candidates, sink)
+    assert _candidate_arcs(candidates, 10) == _prune_dominated_arcs(
+        dense, candidates, sink
+    )
 
 
 def test_pursuit_rejects_motion_requiring_the_unreserved_maximum_speed() -> None:
@@ -1270,9 +1882,19 @@ def test_clean_evidence_can_change_pursuit_preference_to_fixed_view() -> None:
     )
     manager = ReportingReliabilityManager("mission-1", (7, 8))
     manager.update_checks(
-        [{"check_id": "altered-7", "report_id": "earlier-7", "entity_id": 7,
-          "event_time_s": -2.0, "checked_at_s": 0.0, "outcome": "altered"}],
-        input_event_id="altered", input_revision=1, created_at=NOW,
+        [
+            {
+                "check_id": "altered-7",
+                "report_id": "earlier-7",
+                "entity_id": 7,
+                "event_time_s": -2.0,
+                "checked_at_s": 0.0,
+                "outcome": "altered",
+            }
+        ],
+        input_event_id="altered",
+        input_revision=1,
+        created_at=NOW,
     )
     prior = manager.snapshot(input_event_id="altered", input_revision=1, created_at=NOW)
     assert (
@@ -1393,8 +2015,12 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
     environment["mission_time_seconds"] = 9.0
     environment["controlled_vehicle"]["fov_radius"] = 20.0
     environment["maneuver_lifecycle"] = {
-        "action": "pursue", "lifecycle": "active", "phase": "pursuit",
-        "plan_revision": 1, "parameters": {"entity_id": 7}, "start_time": 8,
+        "action": "pursue",
+        "lifecycle": "active",
+        "phase": "pursuit",
+        "plan_revision": 1,
+        "parameters": {"entity_id": 7},
+        "start_time": 8,
     }
     environment["world_model_info"]["visible_ship_ids"] = [7]
     early, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
@@ -1403,14 +2029,17 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
     # assigned observation window starts.
     assert early.current_score == decision.current_score
     for change in (
-        {"lifecycle": "accepted"}, {"action": "navigate"},
+        {"lifecycle": "accepted"},
+        {"action": "navigate"},
         {"parameters": {"entity_id": 8}},
     ):
         inactive_environment = {
             **environment,
             "maneuver_lifecycle": {**environment["maneuver_lifecycle"], **change},
         }
-        not_acquired, _ = Mission1ReplanGate().assess(inactive_environment, belief, chart, status)
+        not_acquired, _ = Mission1ReplanGate().assess(
+            inactive_environment, belief, chart, status
+        )
         assert not_acquired.reason == "next_assignment_infeasible"
     environment["world_model_info"]["visible_ship_ids"] = []
     flicker, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
@@ -1423,7 +2052,9 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
     assert not acquired_now.trigger  # Camera reacquired before phase publication.
     environment["maneuver_lifecycle"]["phase"] = "pursuit"
     retained, _ = Mission1ReplanGate().assess(
-        environment, belief, replace(chart, plan_revision=2),
+        environment,
+        belief,
+        replace(chart, plan_revision=2),
         replace(status, plan_revision=2, statechart_revision=2),
     )
     assert not retained.trigger  # An accepted replan need not replace the same pursuit.
@@ -1449,9 +2080,7 @@ def test_replan_gate_rescores_active_pursuit_with_shared_components() -> None:
     )
     assert not_active.reason == "next_assignment_infeasible"
 
-    environment["world_model_info"]["event_report_checks"] = [
-        {"report_id": "report-b"}
-    ]
+    environment["world_model_info"]["event_report_checks"] = [{"report_id": "report-b"}]
     checked, _ = Mission1ReplanGate().assess(environment, belief, chart, status)
     assert checked.current_score == 0.0
     assert not checked.trigger

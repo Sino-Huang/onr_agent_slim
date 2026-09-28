@@ -130,7 +130,7 @@ def run_tree(root: Path, mode: str) -> None:
         )
 
 
-@pytest.mark.parametrize("mode", ["mission2", "mission3", "mission4", "joint34"])
+@pytest.mark.parametrize("mode", ["mission2", "mission3", "mission4"])
 def test_live_demo_audit_accepts_terminal_mission_receipts(tmp_path: Path, mode: str) -> None:
     run_tree(tmp_path, mode)
     result = audit_live_demo(tmp_path, mode)
@@ -410,9 +410,236 @@ _DOCK_PACKAGE = {
     "found_threshold": 0.1,
 }
 
+def _joint34_evidence(root: Path) -> None:
+    run_tree(root, "joint34")
+    screening = {
+        "evidence_id": "evidence-screen-4",
+        "ship_id": 4,
+        "acquired_at_s": 1.0,
+        "source": "simulated",
+        "stage": "screening",
+        "availability": "usable",
+        "sufficient": True,
+        "verdict": "normal",
+        "viewpoint": {"request_id": "view-screen-4"},
+    }
+    investigation = {
+        "evidence_id": "evidence-investigate-5",
+        "ship_id": 5,
+        "acquired_at_s": 2.0,
+        "source": "simulated",
+        "stage": "investigation",
+        "availability": "usable",
+        "sufficient": True,
+        "verdict": "abnormal",
+        "viewpoint": {"request_id": "view-investigate-5"},
+    }
+    mission3 = {
+        "perception_source": "simulated_fixture",
+        "selected_ship_ids": [4, 5],
+        "target_observations": [
+            {"ship_id": 4, "sampled_at_s": 1.0},
+            {"ship_id": 5, "sampled_at_s": 1.0},
+        ],
+        "evidence": [screening, investigation],
+        "ships": [
+            {
+                "ship_id": 4,
+                "resolution": {"status": "resolved"},
+                "verdict": {
+                    "value": "normal",
+                    "sufficient": True,
+                    "supporting_evidence_ids": [screening["evidence_id"]],
+                },
+            },
+            {
+                "ship_id": 5,
+                "resolution": {"status": "resolved"},
+                "verdict": {
+                    "value": "abnormal",
+                    "sufficient": True,
+                    "supporting_evidence_ids": [investigation["evidence_id"]],
+                },
+            },
+        ],
+    }
+    target_ids = ["worker:1", "worker:3"]
+    mission4 = {
+        "status": "completed",
+        "reason": "all_found",
+        "requests": [{"target_id": target_id} for target_id in target_ids],
+        "objectives": {target_id: {} for target_id in target_ids},
+        "observations": [{"target_id": target_id} for target_id in target_ids],
+        "source": "simulated",
+    }
+    stream = root / "transport/topics/environment-data/missions/mission%3Ademo"
+    for path in stream.glob("*.json"):
+        event = json.loads(path.read_text(encoding="utf-8"))
+        world = event["payload"]["world_model_info"]
+        world["mission3"] = mission3
+        world["mission4"] = mission4
+        write(path, event)
+
+    write(
+        root / "transport/topics/mission3-agent-reports/missions/mission%3Ademo/1.json",
+        {
+            "event_kind": "mission3-agent-report",
+            "payload": {
+                "report": {
+                    "inspection_complete": True,
+                    "ships": [
+                        {
+                            "ship_id": 4,
+                            "resolution": "resolved",
+                            "verdict": "normal",
+                            "supporting_evidence_ids": [screening["evidence_id"]],
+                        },
+                        {
+                            "ship_id": 5,
+                            "resolution": "resolved",
+                            "verdict": "abnormal",
+                            "supporting_evidence_ids": [investigation["evidence_id"]],
+                        },
+                    ],
+                }
+            },
+        },
+    )
+    write(
+        root / "transport/topics/mission4-agent-reports/missions/mission%3Ademo/1.json",
+        {
+            "event_kind": "mission4-agent-report",
+            "payload": {
+                "report": {
+                    "reason": "all_found",
+                    "targets": [
+                        {
+                            "target_id": target_id,
+                            "status": "found",
+                            "match": {"found": True},
+                        }
+                        for target_id in target_ids
+                    ],
+                }
+            },
+        },
+    )
+    write(
+        root / "mission4-worker-session.json",
+        {
+            "history": [
+                {
+                    "kind": "accepted",
+                    "receipt": {
+                        "request": {
+                            "operation": "add",
+                            "objective": {"target_id": target_id},
+                        }
+                    },
+                }
+                for target_id in target_ids
+            ]
+        },
+    )
+    command_id = "cmd-investigate-5"
+    write(
+        root / "physical-state/commands/cmd-investigate-5.json",
+        {
+            "command_id": command_id,
+            "intent": {"action": "investigate", "parameters": {"entity_id": 5}},
+        },
+    )
+    for index, (state, captured_at, position) in enumerate(
+        (
+            ("accepted", 4.0, [1.0, 2.0, 3.0]),
+            ("active", 5.0, [2.0, 2.0, 3.0]),
+        ),
+        start=1,
+    ):
+        write(
+            root / f"physical-state/feedback/{index:08d}-camera.json",
+            {
+                "command_id": command_id,
+                "feedback_kind": "lifecycle",
+                "lifecycle_state": state,
+                "mission_time_s": captured_at,
+                "telemetry": {
+                    "synchronization": {
+                        "camera_status": {
+                            "owner": "runtime",
+                            "phase": "tracking",
+                            "active_intent": {
+                                "command_id": command_id,
+                                "operation": "track_entity",
+                                "entity_id": 5,
+                                "camera_sequence": 7,
+                            },
+                            "accepted_sequence": 7,
+                            "applied_sequence": 7,
+                            "last_tracking": {
+                                "command_id": command_id,
+                                "entity_id": 5,
+                                "captured_at_s": captured_at,
+                                "body_position_ned": position,
+                                "target_position_ned": [5.0, 6.0, 7.0],
+                            },
+                        }
+                    }
+                },
+            },
+        )
+    write(
+        root / "physical-state/feedback/00000003-camera-reset.json",
+        {
+            "command_id": command_id,
+            "feedback_kind": "lifecycle",
+            "lifecycle_state": "completed",
+            "progress": {"camera_reset_sequence": 8},
+            "telemetry": {
+                "synchronization": {
+                    "camera_status": {
+                        "owner": "runtime",
+                        "phase": "default",
+                        "active_intent": None,
+                        "accepted_sequence": 8,
+                        "applied_sequence": 8,
+                        "reset_verified": True,
+                    }
+                }
+            },
+        },
+    )
+
+
+def test_joint34_audit_accepts_resolved_inspection_and_found_targets(tmp_path: Path) -> None:
+    _joint34_evidence(tmp_path)
+    package = tmp_path / "package.json"
+    write(package, _DOCK_PACKAGE)
+    _search_command(
+        tmp_path,
+        [
+            {"x": -20.0, "y": -20.0},
+            {"x": 20.0, "y": -20.0},
+            {"x": 20.0, "y": 20.0},
+            {"x": -20.0, "y": 20.0},
+        ],
+    )
+    positions = [(40.0, 0.0, -25.0), (19.5, 0.0, -25.0)] + [
+        (north, 0.0, -25.0) for north in (17.5, 13.5, 9.5, 5.5, 1.5, -2.5)
+    ]
+    _search_feedback(tmp_path, positions, cleared=[115, 115, 300, 400, 500, 600, 650, 700])
+    result = audit_live_demo(tmp_path, "joint34", mission4_package=package)
+    assert result["status"] == "PASS", result["failures"]
+    assert result["mission3_evidence"]["inspection"]["selected_ship_ids"] == [4, 5]
+    assert result["camera_control"]["status"] == "PASS"
+    assert len(result["camera_control"]["receipts"][0]["tracking_samples"]) == 2
+    assert result["mission4_evidence"]["active_target_ids"] == ["worker:1", "worker:3"]
+    assert len(result["mission4_evidence"]["worker_request_receipts"]) == 2
+    assert len(result["mission4_evidence"]["target_reports"]) == 2
+    assert (tmp_path / "mission3-camera-control-receipts.json").is_file()
 
 def test_joint34_audit_requires_dock_interior_traversal(tmp_path: Path) -> None:
-    run_tree(tmp_path, "joint34")
+    _joint34_evidence(tmp_path)
     package = tmp_path / "package.json"
     write(package, _DOCK_PACKAGE)
     _search_command(
@@ -431,7 +658,7 @@ def test_joint34_audit_requires_dock_interior_traversal(tmp_path: Path) -> None:
 
 
 def test_joint34_audit_rejects_outside_only_coverage(tmp_path: Path) -> None:
-    run_tree(tmp_path, "joint34")
+    _joint34_evidence(tmp_path)
     package = tmp_path / "package.json"
     write(package, _DOCK_PACKAGE)
     _search_command(

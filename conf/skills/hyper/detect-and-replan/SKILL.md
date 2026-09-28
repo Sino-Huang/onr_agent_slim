@@ -70,11 +70,12 @@ remaining observation window. Choose `replan` only when fresh evidence can
 change the target, route, mode, or feasibility. Record either disposition as the
 correlated evaluation of the Maneuver request.
 
-A newer target fix may support Maneuver's bounded recovery navigation without a
-replacement plan. When that recovery is already active or submitted for the
-same target and the current assignment, mode, and remaining window stay
-feasible, choose `no_change`. Replan only when the new evidence requires
-planning authority to alter the assignment or its feasibility.
+A newer target fix is evidence, not proof that its raw coordinate is reachable.
+When Maneuver issues a `reachability_required` request without a replacement
+physical command, choose `replan`; the replacement planner must select a
+reachable recovery rendezvous. Use `no_change` only when a reachable recovery
+is already active or submitted for the same target and the current assignment,
+mode, and remaining window stay feasible.
 
 An accepted replacement starts its new Statechart and may preempt the current
 assignment through Maneuver Control. Describe that tradeoff explicitly when

@@ -612,3 +612,37 @@ def test_hint_view_respects_deadline_feasibility_guard():
     decision=planner.decide(environment(state,895))
     assert decision.action=="search_area"
     assert planner.data["hinted_views"]==[]
+
+
+def joint_environment(state, now=0, lifecycle=None, selected=(15, 6)):
+    env=environment(state,now,lifecycle)
+    env["world_model_info"]["mission_mode"]="joint34"
+    env["world_model_info"]["mission3"]={"selected_ship_ids":list(selected)}
+    return env
+
+
+def test_joint_run_yields_to_in_flight_vessel_investigation():
+    state=static_section()
+    accept(state,interpret_worker_text(DEMO_RESCUE_1,state,"worker:1")["request"])
+    investigate={"command_id":"m3:1","lifecycle":"accepted","action":"investigate",
+                 "parameters":{"entity_id":15}}
+    planner=Mission4AdaptivePlanner("m4")
+    assert planner.decide(joint_environment(state,1,investigate)) is None
+    active=dict(investigate,lifecycle="active")
+    assert Mission4AdaptivePlanner("m4").decide(joint_environment(state,1,active)) is None
+
+
+def test_joint_run_decides_once_investigation_leaves_the_lifecycle():
+    state=static_section()
+    accept(state,interpret_worker_text(DEMO_RESCUE_1,state,"worker:1")["request"])
+    # A terminal or unrelated sibling maneuver never yields: the viewpoint
+    # decision lands the moment the investigation window closes, and an
+    # in-flight maneuver targeting no selected vessel is not an inspection.
+    completed={"command_id":"m3:1","lifecycle":"completed","action":"investigate",
+               "parameters":{"entity_id":15}}
+    decision=Mission4AdaptivePlanner("m4").decide(joint_environment(state,1,completed))
+    assert decision is not None and decision.action=="navigate"
+    other={"command_id":"m3:2","lifecycle":"active","action":"navigate",
+           "parameters":{"entity_id":18}}
+    decision=Mission4AdaptivePlanner("m4").decide(joint_environment(state,1,other))
+    assert decision is not None and decision.action=="navigate"

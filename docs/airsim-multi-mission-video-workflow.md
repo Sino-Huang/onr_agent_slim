@@ -10,7 +10,7 @@ Use this workflow to turn one accepted Mission Run into an AirSim-augmented repl
 
 `src/onr/demo/airsim_reconstruction/render.py` and `validate.py` consume the derived bundle and a `MissionProfile`. Keep their input contract stable. `scripts/derive_joint34_video_bundle.py` is specifically Joint34: it requires `joint34-complete`, a Mission 3 selection, and Mission 4 package/fixture inputs. Do not use it unchanged for M1+M3 or M1+M4. First verify that the runtime can execute and audit that pairing; then reuse the capture/render/validation stages and provide the pairing-specific bundle and profile. The current built-in profiles cover Mission 1 and Joint34.
 
-For live-run launch and audit conventions, see [`live-demo-missions-2-4.md`](live-demo-missions-2-4.md). The Joint34 example and its limitations are recorded in [issue #71](https://github.com/Sino-Huang/onr_agent_slim/issues/71).
+For live-run launch and audit conventions, see [live-demo-missions-2-4.md](live-demo-missions-2-4.md). Issue #71 records the accepted Joint34 baseline and its limits; issue #72 covers the resolved Mission 3 inspection follow-up.
 
 ## 1. Select one accepted run
 
@@ -58,6 +58,15 @@ python scripts/derive_joint34_video_bundle.py \
 Add `--surface-alignment "$ALIGNMENT"` when the paired pose/surface audit JSON exists. The derived profile must load through `load_profile_from_file`; a similarly named but incompatible JSON is not sufficient.
 
 Populate overlays only from evidence available at or before each frame. Gate active search polygon/path/progress to the active `search_area` maneuver. Keep static AOI separate from the active search boundary, planned path, and actual track. Do not render private fixture truth or future evidence as agent knowledge.
+
+Joint34 frame derivation reads the run's state observations (0.5 s through the
+terminal tick), world-model publications (0 s through the preceding tick),
+accepted maneuver commands, and per-tick maneuver feedback. The first recorded
+state supplies the tick-0 pose; routes are recomputed from each recorded pose.
+Search feedback does not publish its transient frontier target, so the search
+route is an approximation toward the recorded polygon's centroid. Search phase
+and coverage progress, however, are taken directly from feedback; see the
+bundle's `reconstruction-receipt.json` for the derivation boundary.
 
 ## 4. Choose the world-pane scale intentionally
 

@@ -203,9 +203,7 @@ def _intent_journal(context: ManeuverToolContext) -> Any:
         "focused_context",
     ):
         if not callable(getattr(journal, method, None)):
-            raise TypeError(
-                f"Maneuver Transition Intent journal must expose {method}"
-            )
+            raise TypeError(f"Maneuver Transition Intent journal must expose {method}")
     return journal
 
 
@@ -231,9 +229,7 @@ def _update_live_fsm_context(
 
 
 def _live_fsm_context(context: ManeuverToolContext) -> ManeuverFSMContext:
-    current = getattr(
-        context.command_dispatcher, "current_maneuver_fsm_context", None
-    )
+    current = getattr(context.command_dispatcher, "current_maneuver_fsm_context", None)
     if callable(current):
         focused = current()
         if isinstance(focused, ManeuverFSMContext):
@@ -314,9 +310,7 @@ def _set_transition_target(
         rationale,
         selected_at=float(selected_at),
     )
-    _update_live_fsm_context(
-        context, journal.focused_context(status, intent)
-    )
+    _update_live_fsm_context(context, journal.focused_context(status, intent))
     result = {
         "status": (
             "retained"
@@ -326,9 +320,7 @@ def _set_transition_target(
         "transition_intent": intent.to_dict(),
         **_candidate_result(status),
     }
-    context.execution_record.append(
-        "set_transition_target", result, successful=True
-    )
+    context.execution_record.append("set_transition_target", result, successful=True)
     return _canonical_json(result)
 
 
@@ -346,7 +338,10 @@ def transition_fsm(
     A selected intent is required first. For a heartbeat that began without
     one, call set_transition_target, inspect its result, then assess and use
     this tool in the same heartbeat when ready. A rejected attempt changes no
-    FSM state and does not consume the bootstrap exception.
+    FSM state and does not consume the bootstrap exception. All readiness gates
+    are checked against current public runtime evidence. When
+    `mission4_terminal_all_found` is required, `world_model_info.mission4` must
+    be completed with reason `all_found`.
 
     Args:
         current_state: Exact current state returned by the live FSM context.
@@ -435,10 +430,7 @@ def _transition_fsm(
         context.execution_record.append("transition_fsm", result, successful=False)
         return _canonical_json(result)
     initial_intent_id = context.execution_record.initial_intent_id
-    if (
-        initial_intent_id is not None
-        and intent.intent_id != initial_intent_id
-    ):
+    if initial_intent_id is not None and intent.intent_id != initial_intent_id:
         result = {
             "status": "rejected",
             "reason": (
@@ -476,10 +468,7 @@ def _transition_fsm(
     ):
         not_before = mission_clock.get("minimum")
     now = environment_mission_time(context.invocation.environment_data)
-    if (
-        type(not_before) in (int, float)
-        and now + 1e-9 < float(cast(Any, not_before))
-    ):
+    if type(not_before) in (int, float) and now + 1e-9 < float(cast(Any, not_before)):
         result = {
             "status": "rejected",
             "reason": "the selected Transition Intent time bound is still future",
@@ -494,8 +483,7 @@ def _transition_fsm(
     unconfirmed: list[str] = []
     if (
         isinstance(sensed, Mapping)
-        and sensed.get("report_check_ledger")
-        == "world_model_info.event_report_checks"
+        and sensed.get("report_check_ledger") == "world_model_info.event_report_checks"
         and isinstance(world, Mapping)
     ):
         required = sensed.get("report_ids")
@@ -518,11 +506,11 @@ def _transition_fsm(
                 "unconfirmed_report_ids": unconfirmed,
                 **_candidate_result(status),
             }
-            context.execution_record.append(
-                "transition_fsm", result, successful=False
-            )
+            context.execution_record.append("transition_fsm", result, successful=False)
             return _canonical_json(result)
-        omitted = [report_id for report_id in unconfirmed if report_id not in uncertainty]
+        omitted = [
+            report_id for report_id in unconfirmed if report_id not in uncertainty
+        ]
         if omitted:
             result = {
                 "status": "rejected",
@@ -552,6 +540,24 @@ def _transition_fsm(
             }
             context.execution_record.append("transition_fsm", result, successful=False)
             return _canonical_json(result)
+    if readiness.get("mission4_terminal_all_found"):
+        world = context.invocation.environment_data.get("world_model_info")
+        mission4 = world.get("mission4") if isinstance(world, Mapping) else None
+        if (
+            not isinstance(mission4, Mapping)
+            or mission4.get("status") != "completed"
+            or mission4.get("reason") != "all_found"
+        ):
+            result = {
+                "status": "rejected",
+                "reason": "Mission 4 has not terminated with reason all_found",
+                **_candidate_result(status),
+            }
+            context.execution_record.append(
+                "transition_fsm", result, successful=False
+            )
+            return _canonical_json(result)
+
     sequence = len(context.execution_record.executions) + 1
     decision_id = f"maneuver-transition:{context.invocation.request_id}:{sequence}"
     authorization = ManeuverDecision(
@@ -707,9 +713,7 @@ def _physical_once(
         context.execution_record.append(tool_name, result, successful=False)
         return _canonical_json(result)
     if status.transition_candidates:
-        intent = _intent_journal(context).current(
-            status, invalidate_stale=True
-        )
+        intent = _intent_journal(context).current(status, invalidate_stale=True)
         if not isinstance(intent, TransitionIntent):
             result = {
                 "status": "rejected",
@@ -762,6 +766,8 @@ def navigate(
     speed: float | None = None,
     deadline_time: float | None = None,
     arrival_direction: Annotated[int, Field(strict=True, ge=0, le=3)] | None = None,
+    entity_id: EntityId | None = None,
+    target_ids: list[str] | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
 ) -> str:
     """Submit deadline-aware navigation.
@@ -775,12 +781,16 @@ def navigate(
         speed: Optional speed override in metres per second. Omit for deadline-driven transit to use the environment's configured speed; arriving early is allowed. Set a lower override only when current mission evidence requires slower travel and the deadline remains feasible.
         deadline_time: Absolute non-negative Mission time by which to reach the target and finish the requested arrival turn.
         arrival_direction: Optional discrete camera-facing direction on arrival: 0=east, 1=south, 2=west, 3=north. Copy planner_item.parameters.arrival_direction; omit when the verified plan supplies none. Continuous angles are not supported.
+        entity_id: Optional selected Mission 3 vessel being screened.
+        target_ids: Optional served-target IDs for this navigation; copy the planner list unchanged.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
     context = _context(runtime)
     try:
         required: dict[str, JsonScalar] = {"x": x, "y": y}
+        if entity_id is not None:
+            required["entity_id"] = entity_id
         if z is not None:
             required["z"] = z
         if speed is not None:
@@ -789,11 +799,15 @@ def navigate(
             required["deadline_time"] = _deadline(deadline_time)
         if arrival_direction is not None:
             required["arrival_direction"] = arrival_direction
+        if target_ids is not None:
+            required["target_ids"] = target_ids
         parameters = _parameters(required, extra_parameters)
         if "arrival_direction" in parameters:
             direction = parameters["arrival_direction"]
             if type(direction) is not int or direction not in range(4):
-                raise ValueError("arrival_direction must be an integer: 0=east, 1=south, 2=west, 3=north")
+                raise ValueError(
+                    "arrival_direction must be an integer: 0=east, 1=south, 2=west, 3=north"
+                )
     except ValueError as exc:
         result = {"status": "rejected", "reason": str(exc)}
         context.execution_record.append("navigate", result, successful=False)
@@ -881,6 +895,7 @@ def search_area(
     speed: float | None = None,
     deadline_time: float | None = None,
     extra_parameters: dict[str, JsonScalar] | None = None,
+    target_ids: list[str] | None = None,
 ) -> str:
     """Submit a perimeter search over an ordered planar polygon.
 
@@ -891,6 +906,7 @@ def search_area(
         altitude: Optional search altitude.
         speed: Optional requested speed.
         deadline_time: Absolute non-negative Mission time by which to finish the route.
+        target_ids: Optional target IDs for this search; copy the planner list unchanged.
         extra_parameters: Additional JSON-scalar adapter-neutral parameters.
     """
 
@@ -901,6 +917,8 @@ def search_area(
         required["speed"] = speed
     if deadline_time is not None:
         required["deadline_time"] = _deadline(deadline_time)
+    if target_ids is not None:
+        required["target_ids"] = target_ids
     context = _context(runtime)
     return _physical(
         context,
@@ -1124,10 +1142,9 @@ def communicate(
     kind: Literal["invoke", "query", "report", "replan"],
     message: str,
     reflection: str,
+    replan_kind: Literal["advisory", "reachability_required"] = "advisory",
     evaluation_id: str | None = None,
-    delivery_policy: Literal[
-        "unrestricted", "once_per_state_entry"
-    ] = "unrestricted",
+    delivery_policy: Literal["unrestricted", "once_per_state_entry"] = "unrestricted",
     *,
     runtime: ToolRuntime[ManeuverToolContext],
 ) -> str:
@@ -1138,6 +1155,7 @@ def communicate(
         kind: Correlated request kind.
         message: Concise factual request or report.
         reflection: Concise public evidence summary for this communication.
+        replan_kind: Whether a replan is advisory or required for reachability.
         evaluation_id: Stable current-state evaluation identity, when declared.
         delivery_policy: Unrestricted delivery or one evaluation per state entry.
 
@@ -1173,9 +1191,7 @@ def communicate(
                 "current_state": focused.current_state,
                 "state_entry_revision": state_entry_revision,
             }
-            context.execution_record.append(
-                "communicate", result, successful=False
-            )
+            context.execution_record.append("communicate", result, successful=False)
             return _canonical_json(result)
         message = cast(str, evaluation["reason"])
         message_id = (
@@ -1200,6 +1216,7 @@ def communicate(
             requester="maneuver-control",
             observed_plan_revision=invocation.plan_revision,
             source_revisions=source_revisions,
+            request_kind=replan_kind,
         )
         payload = {"message": message, "replan_request": replan.to_dict()}
         choice = NonPhysicalChoice.REPLAN

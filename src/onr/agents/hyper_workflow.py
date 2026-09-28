@@ -34,7 +34,10 @@ from onr.agents.hyper_agent import (
 from onr.application.hyper_agent import HyperAgent
 from onr.application.mission4_planning import write_minizinc_problem
 from onr.application.joint24_planning import materialize_joint24_pddl
-from onr.application.joint34_planning import materialize_joint34_pddl
+from onr.application.joint34_planning import (
+    emit_joint34_statechart,
+    materialize_joint34_pddl,
+)
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.environment import environment_mission_time
@@ -335,6 +338,9 @@ class HyperWorkflowContext:
     mission4_gate_decision: Any = None
     joint24_trigger_identities: tuple[str, ...] | None = None
     joint34_trigger_identities: tuple[str, ...] | None = None
+    joint34_schedule_metadata: Mapping[str, object] | None = field(
+        default=None, init=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_input, MissionInput):
@@ -531,6 +537,10 @@ def _allowed_workflow_tools(context: HyperWorkflowContext) -> frozenset[str]:
             return frozenset({"handoff_execution"})
         return frozenset({"HyperWorkflowResultCandidate"})
     if context.statechart is not None:
+        return frozenset({"HyperWorkflowResultCandidate"})
+    if context.joint34_trigger_identities is not None:
+        if context.current_statechart_attempt < context.max_statechart_attempts:
+            return frozenset({"submit_statechart_draft"})
         return frozenset({"HyperWorkflowResultCandidate"})
     if context.current_statechart_attempt < context.max_statechart_attempts:
         return frozenset({"write_file", "edit_file", "submit_statechart_draft"})
@@ -906,7 +916,7 @@ def record_planning_intent(
     if context.joint34_trigger_identities is not None:
         host_workspace = context.artifact_root / "workspace" / "001"
         host_workspace.mkdir(parents=True, exist_ok=True)
-        materialize_joint34_pddl(
+        _, _, context.joint34_schedule_metadata = materialize_joint34_pddl(
             context.environment_event.payload,
             None,
             context.mission4_gate_decision,
@@ -921,13 +931,9 @@ def record_planning_intent(
             f"Schedule metadata for execute: {shell_workspace}/joint34-schedule.json\n"
             "Submit the pre-materialized domain.pddl and problem.pddl exactly as "
             "written; never hand-invent numeric constants. After planner_executor "
-            "returns the validated plan, write the returned plan text to "
-            f"{shell_workspace}/sas_plan, then run `python -m "
-            "onr.application.joint34_planning --emit-statechart --plan "
-            f"{shell_workspace}/sas_plan --schedule "
-            f"{shell_workspace}/joint34-schedule.json --output <the exact "
-            "statechart_file_location shell path>` from the repository root, and "
-            "submit the emitted statechart.json unchanged.\n"
+            "returns, the runtime emits the Statechart from its VAL-validated plan "
+            "and code-owned schedule. Submit the returned statechart_file_location "
+            "unchanged; do not author or edit a generator or Statechart.\n"
         )
     if context.belief_file_location is None:
         belief_lines = "Belief file: none (no belief snapshot was supplied)."
@@ -1687,7 +1693,8 @@ def planner_executor(
         context.statechart_generator_location = statechart_locations[
             "generate_statechart.py"
         ]
-        context.statechart_file_location = statechart_locations["statechart.json"]
+        statechart_location = statechart_locations["statechart.json"]
+        context.statechart_file_location = statechart_location
         context.planner_plan = PlannerPlan(
             mission_id=context.mission_input.mission_id,
             source_authority=context.mission_input.source_authority,
@@ -1700,6 +1707,24 @@ def planner_executor(
             outcome=PlanningOutcome.SOLVED,
             planner_native_plan_artifact_reference=reference,
         )
+        if context.joint34_trigger_identities is not None:
+            if context.joint34_schedule_metadata is None:
+                raise RuntimeError("Joint34 schedule metadata was not materialized")
+            emit_joint34_statechart(
+                context.joint34_schedule_metadata,
+                plan_path,
+                _host_path(context, statechart_location),
+            )
+            instruction = (
+                "The code-owned Statechart was emitted from the VAL-validated plan "
+                "and schedule. Submit the returned statechart_file_location unchanged."
+            )
+        else:
+            instruction = (
+                "Inspect the planner artifact, author the generator at the exact "
+                "virtual location, run and inspect it from the returned shell "
+                "workspace, then submit the exact statechart_file_location."
+            )
         return (
             "status: success\n"
             f"plan:\n{plan_text}\n"
@@ -1710,9 +1735,7 @@ def planner_executor(
             f"{context.statechart_file_location}\n"
             "statechart_shell_workspace: "
             f"{context.planner_shell_workspace_location}/001\n"
-            "instruction: Inspect the planner artifact, author the generator at the "
-            "exact virtual location, run and inspect it from the returned shell "
-            "workspace, then submit the exact statechart_file_location."
+            f"instruction: {instruction}"
         )
     context.planner_plan = None
     return _tool_result(
@@ -1763,9 +1786,16 @@ def _statechart_rejection(
             "graph_counts": _statechart_graph_counts(draft),
             "remaining_attempts": retries_remaining,
             "required_next_action": (
-                "Edit generate_statechart.py and statechart.json at the same returned "
-                "workspace paths, rerun and inspect them, then resubmit the same "
-                "statechart_file_location."
+                "Use the exact statechart_file_location returned by planner_executor. "
+                "Joint34 chart content is regenerated from the validated plan; do "
+                "not edit generated files or resubmit an unchanged chart. If the "
+                "exact path was used, surface this diagnostic to the caller."
+                if context.joint34_trigger_identities is not None
+                else (
+                    "Edit generate_statechart.py and statechart.json at the same returned "
+                    "workspace paths, rerun and inspect them, then resubmit the same "
+                    "statechart_file_location."
+                )
             ),
         }
     )
@@ -1777,10 +1807,11 @@ def submit_statechart_draft(
     reflection: str,
     runtime: ToolRuntime[HyperWorkflowContext],
 ) -> str:
-    """Snapshot and validate the exact authored Statechart file.
+    """Snapshot and validate the exact Statechart file.
 
-    The tool binds the authored topology to authoritative Mission identity, builds a
-    live python-statemachine instance, and returns structured repair feedback.
+    Joint34 submissions are regenerated from the VAL-validated native plan and
+    code-owned schedule metadata before the snapshot is taken. Other planner
+    shapes submit their authored Statechart.
 
     Args:
         statechart_file_location: Exact statechart.json workspace location returned
@@ -1821,6 +1852,15 @@ def submit_statechart_draft(
             draft_path=statechart_file_location,
         )
     workspace_path = _host_path(context, statechart_file_location)
+    if context.joint34_trigger_identities is not None:
+        if context.joint34_schedule_metadata is None:
+            raise RuntimeError("Joint34 schedule metadata was not materialized")
+        planner_plan_path = _host_path(
+            context, plan.planner_native_plan_artifact_reference
+        )
+        emit_joint34_statechart(
+            context.joint34_schedule_metadata, planner_plan_path, workspace_path
+        )
     if not workspace_path.is_file():
         return _statechart_rejection(
             context,

@@ -1,0 +1,6 @@
+[
+  {"at_s": 0.0, "text": "find a red container in dock"},
+  {"at_s": 0.0, "text": "set deadline to 90 seconds"},
+  {"at_s": 30.0, "text": "find a blue container in dock"},
+  {"at_s": 60.0, "text": "extend deadline to 280 seconds"}
+]

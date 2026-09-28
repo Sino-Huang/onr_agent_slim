@@ -100,6 +100,45 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
         assert "Worker command:" not in result.stdout
 
 
+
+def test_joint34_launcher_exposes_runtime_camera_ownership() -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_live_demo.sh"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("ONR_DEMO_")
+    }
+    environment.update(
+        ONR_DEMO_MISSION_MODE="joint34",
+        ONR_DEMO_DRY_RUN="1",
+        ONR_DEMO_VIEWER_PORT="5098",
+        ONR_DEMO_AIRSIM_RPC_URL="http://127.0.0.1:8767",
+        ONR_DEMO_CAMERA_OWNER="runtime",
+        ONR_DEMO_MISSION3_FIXTURE=(
+            "/data/ccu/sukaih/ONR/onr_physical_runtime/"
+            "config/joint34_demo/mission3_private_fixture.json"
+        ),
+    )
+    result = subprocess.run(
+        ["bash", str(script), "05_onr"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    physical_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("Physical command:")
+    )
+    command = shlex.split(shlex.split(physical_line.split(": ", 1)[1])[2].rsplit("exec ", 1)[1])
+    assert command[command.index("--airsim-rpc-url") + 1] == "http://127.0.0.1:8767"
+    assert command[command.index("--camera-owner") + 1] == "runtime"
+    assert command[command.index("--mission3-fixture") + 1].endswith(
+        "config/joint34_demo/mission3_private_fixture.json"
+    )
+
 def test_mission1_live_demo_keeps_legacy_run_directory() -> None:
     repository = Path(__file__).parents[1]
     script = repository / "scripts/live_demo_with_wm/herdr_start_live_demo.sh"

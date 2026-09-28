@@ -205,6 +205,34 @@ def test_fixed_roster_and_nearest_public_position_prevent_scope_expansion() -> N
     assert decision.reason.endswith("public_position_approach")
 
 
+def test_screening_navigate_leads_moving_ship_to_intercept_point() -> None:
+    planner = Mission3AdaptivePlanner()
+    environment = _environment(
+        [_ship(2)],
+        observations=[
+            {
+                "ship_id": 2,
+                "sampled_at_s": 1.0,
+                "age_s": 0.0,
+                "source": "gps",
+                "estimated_position": {"x": 100.0, "y": 0.0, "z": -2.5},
+                "estimated_speed_mps": 10.0,
+                "estimated_heading_degrees": 90.0,
+            },
+        ],
+    )
+    decision = planner.decide(environment)
+    assert decision is not None
+    assert decision.entity_id == 2
+    assert decision.action == "navigate"
+    # Two fixed-point iterations from distance 100 at drone speed 20 with a
+    # 25 m standoff (fov/2): travel 5 s -> ship at (100, 50); travel 5.59 s
+    # -> ship at (100, 55.9). The approach stops 25 m short of (100, 55.9).
+    assert decision.parameters["x"] == pytest.approx(78.185, rel=1e-3)
+    assert decision.parameters["y"] == pytest.approx(43.707, rel=1e-3)
+    assert decision.parameters["arrival_direction"] == 3
+
+
 def test_live_and_simulated_sources_drive_the_same_screening_action() -> None:
     ship = _ship(1)
     simulated = Mission3AdaptivePlanner().decide(
@@ -251,11 +279,29 @@ def test_both_early_verdicts_replace_active_investigation(
         ],
         lifecycle=_lifecycle("orbit-1", "investigate", 1, "active"),
     )
+    # The verdict landed mid-investigation: the planner holds the next leg so
+    # the runtime can terminate the orbit through its normal completion path
+    # (camera reset and tracking receipts). Superseding it would cancel that
+    # completion.
     decision = planner.decide(environment)
-    assert decision is not None
-    assert decision.entity_id == 2
-    assert decision.action in {"navigate", "pursue"}
-    assert decision.reason.startswith("early_verdict")
+    assert decision is None
+    completed = _environment(
+        [
+            _ship(
+                1,
+                screening="inconclusive",
+                investigation="resolved",
+                verdict=verdict,
+                evidence=(f"verdict:{verdict}",),
+            ),
+            _ship(2),
+        ],
+        lifecycle=_lifecycle("orbit-1", "investigate", 1, "completed"),
+    )
+    followup = Mission3AdaptivePlanner().decide(completed)
+    assert followup is not None
+    assert followup.entity_id == 2
+    assert followup.action in {"navigate", "pursue"}
 
     all_resolved = _environment(
         [
@@ -269,10 +315,21 @@ def test_both_early_verdicts_replace_active_investigation(
         lifecycle=_lifecycle("orbit-only", "investigate", 1, "active"),
         now=2.0,
     )
-    cancellation = Mission3AdaptivePlanner().decide(all_resolved)
-    assert cancellation is not None
-    assert cancellation.action == "navigate"
-    assert cancellation.reason == "early_verdict_cancel"
+    assert Mission3AdaptivePlanner().decide(all_resolved) is None
+    reported = _environment(
+        [
+            _ship(
+                1,
+                screening="resolved",
+                verdict=verdict,
+                evidence=(f"verdict:{verdict}",),
+            )
+        ],
+        lifecycle=_lifecycle("orbit-only", "investigate", 1, "completed"),
+        now=2.0,
+    )
+    report = Mission3AdaptivePlanner().decide(reported)
+    assert report is not None and report.action == "report"
 
 
 def test_completed_inconclusive_orbit_interleaves_screening_then_bounded_revisit() -> (

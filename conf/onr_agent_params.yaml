@@ -39,3 +39,9 @@ agents:
   maneuver_control:
     output_structure_retry:
       max_retries: 1
+beliefs:
+  reporting_reliability:
+    prior_policy:
+      policy_id: reporting-reliability-v1
+      matched_entity_mass: 0.9
+      window_weighting: report_count

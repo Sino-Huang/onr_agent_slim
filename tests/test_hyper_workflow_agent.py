@@ -91,11 +91,13 @@ class _FastDownward:
         outcome: PlanningOutcome = PlanningOutcome.SOLVED,
         stdout: str = "fd stdout\n",
         stderr: str = "",
+        plan_text: str = "(survey drone-1 site-a)\n; cost = 1 (unit cost)\n",
     ) -> None:
         self.root = root
         self.outcome = outcome
         self.stdout = stdout
         self.stderr = stderr
+        self.plan_text = plan_text
         self.executed: list[dict[str, bytes]] = []
 
     def execute(self, assets: Mapping[str, bytes]) -> SymbolicPlannerExecutionResult:
@@ -105,10 +107,7 @@ class _FastDownward:
         for name, contents in assets.items():
             (directory / name).write_bytes(contents)
         if self.outcome is PlanningOutcome.SOLVED:
-            (directory / "sas_plan").write_text(
-                "(survey drone-1 site-a)\n; cost = 1 (unit cost)\n",
-                encoding="utf-8",
-            )
+            (directory / "sas_plan").write_text(self.plan_text, encoding="utf-8")
         (directory / "solver.stdout").write_text(self.stdout, encoding="utf-8")
         (directory / "solver.stderr").write_text(self.stderr, encoding="utf-8")
         evidence = PlannerExecutionEvidence(
@@ -1632,6 +1631,83 @@ def test_fast_downward_success_requires_val_and_returns_exact_sas_plan(
         "problem.pddl",
         "sas_plan",
     }
+
+
+def test_joint34_statechart_is_bound_to_validated_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_text = (
+        "0: (serve-m4-from-drone) [80000]\n"
+        "1: (serve-m3-from-m4-site) [106875]\n"
+        "; cost = 186875 (general cost)\n"
+    )
+    context = _context(tmp_path)
+    context.fast_downward_planner = _FastDownward(
+        context.artifact_root / "fd", plan_text=plan_text
+    )
+    _record(context, "fast-downward")
+    context.joint34_trigger_identities = ()
+    context.joint34_schedule_metadata = {
+        "mission_time_seconds": 0.0,
+        "mission_end_time_s": 120.0,
+        "mission4_request_revision": 1,
+        "revision_class": "preemptive",
+        "costs": {"defer-cost m3": 1000000},
+        "mission3_decision": {"action": "investigate"},
+        "mission4_decision": {"action": "navigate"},
+        "trigger_identities": [],
+    }
+    paths = _write(context, "fast-downward")
+    _submit(context, "fast-downward", paths)
+    _execute(context, "fast-downward", paths)
+
+    assert _allowed_workflow_tools(context) == {"submit_statechart_draft"}
+    location = cast(str, context.statechart_file_location)
+    chart_path = cast(Path, context.backend_root) / location.removeprefix("/")
+    assert json.loads(chart_path.read_text(encoding="utf-8"))["states"] == [
+        "scheduling",
+        "mission4-block",
+        "mission3-block",
+        "joint34-complete",
+    ]
+
+    _write_statechart(context, _statechart())
+    submitted = cast(Any, submit_statechart_draft).func(
+        statechart_file_location=location,
+        reflection="Submitting the code-owned Joint34 chart.",
+        runtime=_runtime(context),
+    )
+    assert json.loads(submitted)["status"] == "accepted"
+    accepted_chart = json.loads(
+        (context.artifact_root / "statechart-attempts/001/statechart.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert accepted_chart["states"] == [
+        "scheduling",
+        "mission4-block",
+        "mission3-block",
+        "joint34-complete",
+    ]
+    def invalid_emitter(
+        _metadata: object, _plan_path: Path, statechart_path: Path
+    ) -> None:
+        statechart_path.write_text('{"invalid": true}', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "onr.agents.hyper_workflow.emit_joint34_statechart", invalid_emitter
+    )
+    rejected = json.loads(
+        cast(Any, submit_statechart_draft).func(
+            statechart_file_location=location,
+            reflection="The code-owned emitter output is invalid.",
+            runtime=_runtime(context),
+        )
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["stage"] == "schema"
+    assert "validated plan" in rejected["required_next_action"]
+    assert "do not edit" in rejected["required_next_action"].lower()
 
 
 @pytest.mark.parametrize(

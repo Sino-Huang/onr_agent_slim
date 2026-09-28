@@ -30,6 +30,8 @@ MISSION4_FIXTURE="${ONR_DEMO_MISSION4_FIXTURE:-$PHYSICAL_ROOT/docs/mission_desc/
 MISSION4_ANSWERS="${ONR_DEMO_MISSION4_ANSWERS:-$PHYSICAL_ROOT/docs/mission_desc/mission4_offshore_non_collision_0/answers.json}"
 MISSION4_REQUESTS="${ONR_DEMO_MISSION4_REQUESTS:-$AGENT_ROOT/examples/mission4_requests.json}"
 readonly MISSION4_WORKER_TIMEOUT_SECONDS="${ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS:-3600}"
+readonly AIRSIM_RPC_URL="${ONR_DEMO_AIRSIM_RPC_URL:-}"
+readonly CAMERA_OWNER="${ONR_DEMO_CAMERA_OWNER:-external}"
 readonly VIEWER_PORT="${ONR_DEMO_VIEWER_PORT:-5066}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
 if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then
@@ -110,6 +112,12 @@ fi
 if [ -n "$MISSION1_PLANNING_INPUT" ] && { { [ "$MISSION_MODE" != "mission1" ] && [ "$MISSION_MODE" != "joint" ]; } || [ ! -r "$MISSION1_PLANNING_INPUT" ]; }; then
     echo "A readable Mission 1 planning input requires Mission 1 mode (alone or joint)." >&2
     exit 1
+fi
+if [ "$CAMERA_OWNER" != "external" ] && [ "$CAMERA_OWNER" != "runtime" ]; then
+    echo "ONR_DEMO_CAMERA_OWNER must be external or runtime." >&2; exit 2
+fi
+if [ "$CAMERA_OWNER" = "runtime" ] && [ -z "$AIRSIM_RPC_URL" ]; then
+    echo "Runtime camera ownership requires ONR_DEMO_AIRSIM_RPC_URL." >&2; exit 2
 fi
 mission_args=()
 if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then
@@ -282,6 +290,9 @@ fi
 physical_args=(python -u -m onr_physical_runtime.agent.service --scenario-config "$SCENARIO_CONFIG"
     --transport-root "$transport_root" --state-root "$physical_state_root" --mission-id "$MISSION_ID"
     --vehicle-id "$VEHICLE_ID" "${mission_args[@]}" --viewer-host 127.0.0.1 --viewer-port "$VIEWER_PORT")
+if [ -n "$AIRSIM_RPC_URL" ]; then
+    physical_args+=(--airsim-rpc-url "$AIRSIM_RPC_URL" --camera-owner "$CAMERA_OWNER")
+fi
 printf -v physical_python '%q ' "${physical_args[@]}"
 physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec $physical_python"
 printf -v physical_command 'bash -lc %q' "$physical_inner"

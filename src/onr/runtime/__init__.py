@@ -8,6 +8,7 @@ from onr.runtime.composition import (
     create_runtime,
 )
 from onr.runtime.config import (
+    BeliefsConfig,
     EnvironmentProfile,
     EnvironmentProtocolVersions,
     EnvironmentTopicsConfig,
@@ -30,6 +31,7 @@ from onr.runtime.config import (
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
 
 __all__ = [
+    "BeliefsConfig",
     "EnvironmentProfile",
     "EnvironmentProtocolVersions",
     "EnvironmentTopicsConfig",

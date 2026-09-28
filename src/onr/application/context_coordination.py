@@ -676,6 +676,7 @@ class ContextCoordination:
                             if gate_trigger is None
                             else gate_trigger + ";" + inspection_trigger
                         )
+                        self._queue_maneuver_trigger(inspection_trigger)
                         inspection_decision = mission3_gate.last_decision
                         if inspection_decision is not None and inspection_decision.action == "report":
                             self._publish_mission3_report(
@@ -686,6 +687,7 @@ class ContextCoordination:
                     )
                     if search_trigger is not None:
                         gate_trigger = search_trigger if gate_trigger is None else gate_trigger + ";" + search_trigger
+                        self._queue_maneuver_trigger(search_trigger)
                         search_decision = mission4_gate.last_decision
                         if search_decision is not None and search_decision.action == "report":
                             self._publish_mission4_report(

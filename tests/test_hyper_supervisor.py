@@ -123,6 +123,31 @@ def test_requests_and_periodic_trigger_coalesce_into_one_durable_decision() -> N
     assert event.payload["disposition"] == "no_change"
 
 
+def test_reachability_required_request_forces_replan_without_provider() -> None:
+    def provider(_: HyperHeartbeatInvocation) -> HyperHeartbeatDecision:
+        raise AssertionError("reachability-required requests are code-owned")
+
+    supervisor = HyperSupervisor(provider)
+    supervisor.queue_replan(
+        ReplanRequest(
+            "request-recovery",
+            "mission-1",
+            "Select a reachable recovery rendezvous.",
+            "maneuver-control",
+            1,
+            {"environment_data": 4},
+            request_kind="reachability_required",
+        )
+    )
+
+    decision = supervisor.heartbeat(_invocation("request-recovery"))
+
+    assert decision.disposition == "replan"
+    assert decision.request_identities == ("request-recovery",)
+    assert "reachable recovery rendezvous" in decision.evidence_summary
+    assert not supervisor.has_pending("mission-1")
+
+
 def test_communication_is_queued_and_failed_evaluation_retains_request() -> None:
     class Failure:
         def decide(self, invocation: HyperHeartbeatInvocation) -> object:

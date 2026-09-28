@@ -157,7 +157,9 @@ def test_deep_agents_receive_all_shipped_role_skill_paths(monkeypatch) -> None:
     for kwargs, selected_skills in zip(created, (hyper_skills, maneuver_skills)):
         permissions = kwargs["permissions"]
         assert isinstance(permissions, list)
-        assert [permission.paths[0] for permission in permissions[:-1]] == selected_skills
+        assert [
+            permission.paths[0] for permission in permissions[:-1]
+        ] == selected_skills
         assert all(permission.mode == "deny" for permission in permissions)
 
 
@@ -238,9 +240,13 @@ def test_only_hyper_agent_receives_todo_list_middleware(
     assert isinstance(hyper_middleware, list)
     assert isinstance(maneuver_middleware, list)
     assert [type(middleware) for middleware in hyper_middleware] == [TodoListMiddleware]
-    assert all(not isinstance(middleware, TodoListMiddleware) for middleware in maneuver_middleware)
+    assert all(
+        not isinstance(middleware, TodoListMiddleware)
+        for middleware in maneuver_middleware
+    )
     filesystem = [
-        middleware for middleware in maneuver_middleware
+        middleware
+        for middleware in maneuver_middleware
         if type(middleware).__name__ == "FilesystemMiddleware"
     ]
     assert len(filesystem) == 1

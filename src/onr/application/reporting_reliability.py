@@ -16,6 +16,8 @@ from onr.contracts.bayesian_belief import canonical_json, canonical_sha256
 from onr.contracts.environment import EnvironmentTickResult
 from onr.contracts.prior_knowledge import PriorKnowledge
 from onr.contracts.reporting_reliability import (
+    DEFAULT_REPORTING_PRIOR_POLICY,
+    ReportingPriorPolicy,
     ReportingReliabilitySnapshot,
     SharedOmissionReliability,
     ShipReportingReliability,
@@ -28,7 +30,6 @@ HONEST_PRIOR_MASS = 0.75
 P_ALPHA = 2.1918
 P_BETA = 1.9307
 OUTCOMES = ("clean", "altered", "omitted")
-PRIOR_MATCHED_ENTITY_MASS = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -621,6 +622,7 @@ class ReportingReliabilityService:
         observation_topic: str = "belief-observations",
         context_topic: str = "normalized-plans",
         clock: Callable[[], str],
+        prior_policy: ReportingPriorPolicy = DEFAULT_REPORTING_PRIOR_POLICY,
     ) -> None:
         self.manager = manager
         self.store = store
@@ -628,6 +630,7 @@ class ReportingReliabilityService:
         self.observation_topic = observation_topic
         self.context_topic = context_topic
         self._clock = clock
+        self.prior_policy = prior_policy
         self._snapshot = snapshot
         if pending is not None:
             self._publish_pending(dict(pending))
@@ -644,6 +647,7 @@ class ReportingReliabilityService:
         observation_topic: str = "belief-observations",
         context_topic: str = "normalized-plans",
         clock: Callable[[], str],
+        prior_policy: ReportingPriorPolicy = DEFAULT_REPORTING_PRIOR_POLICY,
     ) -> ReportingReliabilityService:
         loaded = store.load(mission_id)
         if loaded is not None:
@@ -660,6 +664,7 @@ class ReportingReliabilityService:
                 observation_topic=observation_topic,
                 context_topic=context_topic,
                 clock=clock,
+                prior_policy=prior_policy,
             )
         manager = ReportingReliabilityManager(mission_id, entity_ids)
         snapshot = manager.snapshot(
@@ -675,6 +680,7 @@ class ReportingReliabilityService:
             observation_topic=observation_topic,
             context_topic=context_topic,
             clock=clock,
+            prior_policy=prior_policy,
         )
         service._commit_and_publish(snapshot)
         return service
@@ -796,6 +802,7 @@ class ReportingReliabilityService:
         record = {
             "source": "mission_intent",
             "knowledge": prior.to_dict(),
+            "policy": self.prior_policy.to_dict(),
             "matched_entity_ids": list(matched),
             "suspect_probabilities": {
                 str(entity_id): probability
@@ -845,7 +852,7 @@ class ReportingReliabilityService:
             raise ValueError("priority knowledge must match at least two entities")
         total = math.fsum(relevance.values())
         unmatched = set(self.manager.ship_weights) - set(relevance)
-        matched_mass = 1.0 if not unmatched else PRIOR_MATCHED_ENTITY_MASS
+        matched_mass = 1.0 if not unmatched else self.prior_policy.matched_entity_mass
         unmatched_probability = (
             0.0 if not unmatched else (1.0 - matched_mass) / len(unmatched)
         )
@@ -915,7 +922,10 @@ class ReportingReliabilityService:
                 and north_min <= float(position[0]) <= north_max
                 and east_min <= float(position[1]) <= east_max
             ):
-                relevance[int(entity_id)] = relevance.get(int(entity_id), 0.0) + 1.0
+                if self.prior_policy.window_weighting == "uniform":
+                    relevance[int(entity_id)] = 1.0
+                else:
+                    relevance[int(entity_id)] = relevance.get(int(entity_id), 0.0) + 1.0
         return relevance
 
     def _hypothesis_relevance(

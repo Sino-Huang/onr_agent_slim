@@ -34,8 +34,9 @@ vLLM deployments; override it with `ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS`.
 Mission 2–4 replanning is driven by their collision, inspection and search
 gates. They do not run the generic ten-second Hyper timer; unchanged evidence
 therefore does not spend another model episode. Their fallback Maneuver cadence
-is 300 seconds (override with `ONR_DEMO_MANEUVER_SECONDS`); physical lifecycle
-and evidence gates still wake the agents immediately.
+is 300 seconds (override with `ONR_DEMO_MANEUVER_SECONDS`). Physical feedback
+wakes Maneuver, and new Mission 3 inspection or Mission 4 search gate decisions
+also wake it even when Hyper retains the current plan.
 
 All three modes derive current candidates or adaptive decisions from the public
 environment file with checked-in Python and emit checked-in MiniZinc/Statechart
@@ -51,6 +52,50 @@ default viewer port, set `ONR_DEMO_VIEWER_PORT`, for example:
 ONR_DEMO_VIEWER_PORT=5067 \
   bash scripts/live_demo_with_wm/herdr_start_mission2_live_demo.sh <session>
 ```
+
+## Joint34 resolved inspection profile
+
+Issue #72 uses versioned inputs: an Agent Slim selection and worker request
+script, a physical-runtime scenario, and a runtime-only Mission 3 fixture.
+From the Agent Slim repository root, set `AIRSIM_RPC_URL` to the active
+simulator endpoint before running:
+
+```bash
+AIRSIM_RPC_URL=http://127.0.0.1:8767
+PHYSICAL_ROOT=/path/to/onr_physical_runtime
+ONR_DEMO_MISSION_MODE=joint34 \
+ONR_DEMO_SCENARIO_CONFIG="$PHYSICAL_ROOT/config/joint34_demo/joint34_resolved_72.yaml" \
+ONR_DEMO_MISSION3_DESCRIPTION="$PWD/examples/mission3and4_issue72_ships_selection.json" \
+ONR_DEMO_MISSION3_FIXTURE="$PHYSICAL_ROOT/config/joint34_demo/mission3_ships_15_7_fixture.json" \
+ONR_DEMO_MISSION4_PACKAGE="$PHYSICAL_ROOT/docs/mission_desc/mission4_package.json" \
+ONR_DEMO_MISSION4_FIXTURE="$PHYSICAL_ROOT/docs/mission_desc/mission4_fixture.json" \
+ONR_DEMO_MISSION4_ANSWERS="$PHYSICAL_ROOT/docs/mission_desc/mission4_answers.json" \
+ONR_DEMO_MISSION4_REQUESTS="$PWD/examples/mission3and4_issue72_requests.json" \
+ONR_DEMO_CAMERA_OWNER=runtime \
+ONR_DEMO_AIRSIM_RPC_URL="$AIRSIM_RPC_URL" \
+ONR_DEMO_VIEWER_PORT=5069 \
+ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS=21600 \
+  bash scripts/live_demo_with_wm/herdr_start_live_demo.sh <session>
+```
+
+The profile selects Mission 3 ships 15 and 6 with a 360 s mission-time budget
+(the harbor recording ends at 299.5 s). It queues a red target and sets a
+90 s ledger deadline at mission time zero, then adds the blue target at
+mission time 30 s and extends the ledger deadline to 280 s at mission time
+60 s. The urgent first deadline schedules the dock sweep first (the sweep
+covers the boundary-hugging cells too — the terminal ingress gate absorbs
+half a grid cell of boundary-alignment overshoot); the 60 s extension keeps
+the ledger alive past the accepted sweep deadline so the sweep finishes its
+remaining coverage and terminates `all_found`. The Mission 3 legs then
+screen ship 6 (near-dock pass t≈242-299) and investigate ship 15
+(near-dock pass t≈60-150, abnormal attached object — its screening view
+lands inside the sweep envelope via the 150 m ship-detection range). The
+drone starts at
+[40, 0, -25] m, outside the dock AOI. The search maneuver keeps the deadline
+it accepted; a later worker deadline update would not extend an in-flight
+search.
+The deterministic `simulated_fixture` is consumed by the physical runtime only;
+it is not passed to the Agent and does not certify native or pixel-based perception.
 
 After the Agent pane reaches its terminal JSON result, run the exact audit
 command printed by the launcher. The audit writes `live-acceptance.json` and

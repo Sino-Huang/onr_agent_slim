@@ -121,7 +121,10 @@ class ReplanGateDecision:
 
 
 def _candidate_id(
-    mode: str, report_ids: Sequence[str], *, viewpoint: tuple[int, int] | None = None,
+    mode: str,
+    report_ids: Sequence[str],
+    *,
+    viewpoint: tuple[int, int] | None = None,
     arrival_direction: int | None = None,
     observation_delay_s: float = 0.0,
     observation_dwell_s: float = OBSERVATION_DWELL_SECONDS,
@@ -153,8 +156,13 @@ def _travel_time(ax: float, ay: float, bx: float, by: float, speed: float) -> fl
 
 
 def _navigation_time(
-    ax: float, ay: float, bx: float, by: float, speed: float,
-    start_direction: int | None, arrival_direction: int | None,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    speed: float,
+    start_direction: int | None,
+    arrival_direction: int | None,
     quarter_turn_seconds: float,
 ) -> float:
     """Reserve cardinal travel and turns for either obstacle-free axis order.
@@ -168,13 +176,19 @@ def _navigation_time(
         return travel
     north = None if bx == ax else (3 if bx > ax else 1)
     east = None if by == ay else (0 if by > ay else 2)
-    return travel + _navigation_turns(north, east, start_direction, arrival_direction) * quarter_turn_seconds
+    return (
+        travel
+        + _navigation_turns(north, east, start_direction, arrival_direction)
+        * quarter_turn_seconds
+    )
 
 
 @cache
 def _navigation_turns(
-    north: int | None, east: int | None,
-    start_direction: int | None, arrival_direction: int | None,
+    north: int | None,
+    east: int | None,
+    start_direction: int | None,
+    arrival_direction: int | None,
 ) -> int:
     # Only 3 * 3 * 5 * 5 discrete combinations, reused across the candidate DAG.
     legs = [direction for direction in (north, east) if direction is not None]
@@ -199,36 +213,54 @@ def _vehicle_direction(vehicle: Mapping[str, Any]) -> int | None:
 
 
 def _fixed_view_report_ids(
-    environment: Mapping[str, Any], parameters: Mapping[str, Any],
+    environment: Mapping[str, Any],
+    parameters: Mapping[str, Any],
     opportunities: Sequence[ObservationOpportunity],
-    *, start_s: float | None = None, end_s: float | None = None,
+    *,
+    start_s: float | None = None,
+    end_s: float | None = None,
 ) -> set[str]:
-    return set(_fixed_view_observation_times(
-        environment, parameters, opportunities, start_s=start_s, end_s=end_s,
-    ))
+    return set(
+        _fixed_view_observation_times(
+            environment,
+            parameters,
+            opportunities,
+            start_s=start_s,
+            end_s=end_s,
+        )
+    )
 
 
 def _fixed_view_observation_times(
-    environment: Mapping[str, Any], parameters: Mapping[str, Any],
+    environment: Mapping[str, Any],
+    parameters: Mapping[str, Any],
     opportunities: Sequence[ObservationOpportunity],
-    *, start_s: float | None = None, end_s: float | None = None,
+    *,
+    start_s: float | None = None,
+    end_s: float | None = None,
 ) -> dict[str, float]:
     views = environment.get("surveillance_views")
     if views is not None:
         by_id = {item.report_id: item for item in opportunities}
         times: dict[str, float] = {}
         for view in views:
-            if not all(view[key] == parameters.get(key) for key in ("x", "y", "arrival_direction")):
+            if not all(
+                view[key] == parameters.get(key)
+                for key in ("x", "y", "arrival_direction")
+            ):
                 continue
             for report_id in view["report_ids"]:
                 if report_id not in by_id:
                     continue
                 time_s = by_id[report_id].time_s + view.get("observation_delay_s", 0)
-                if (start_s is None or time_s >= start_s) and (end_s is None or time_s < end_s):
+                if (start_s is None or time_s >= start_s) and (
+                    end_s is None or time_s < end_s
+                ):
                     times[report_id] = min(times.get(report_id, time_s), time_s)
         return times
     return {
-        item.report_id: item.time_s for item in opportunities
+        item.report_id: item.time_s
+        for item in opportunities
         if math.hypot(item.x - parameters["x"], item.y - parameters["y"])
         <= environment["controlled_vehicle"]["fov_radius"]
     }
@@ -314,7 +346,8 @@ def public_report_rates(
 
 
 def _opportunities(
-    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
+    environment: Mapping[str, object],
+    belief: ReportingReliabilitySnapshot,
 ) -> tuple[ObservationOpportunity, ...]:
     world = environment.get("world_model_info")
     checks = world.get("event_report_checks", ()) if isinstance(world, Mapping) else ()
@@ -334,10 +367,7 @@ def _opportunities(
     intervals = _unsearched_report_intervals(reports, checks, now, lookback)
     raw: list[tuple[str, int, float, float, float, float, float]] = []
     for report in reports:
-        if (
-            report.report_id in checked
-            or report.time_s + window < now
-        ):
+        if report.report_id in checked or report.time_s + window < now:
             continue
         ship = by_ship[report.entity_id]
         raw.append(
@@ -366,7 +396,8 @@ def _opportunities(
             estimation=estimation,
             variance=by_ship[entity_id].variance,
             information_schedule_count=counts[entity_id],
-            omission_rate=by_ship[entity_id].expected_omission_probability * rates[entity_id],
+            omission_rate=by_ship[entity_id].expected_omission_probability
+            * rates[entity_id],
             omission_lookback_s=lookback,
             omission_intervals=intervals[(entity_id, time_s)],
             utility=0.5 * recall
@@ -377,7 +408,10 @@ def _opportunities(
 
 
 def _unsearched_report_intervals(
-    reports: Sequence[_PublicReport], checks: Sequence[Any], now: float, lookback: float,
+    reports: Sequence[_PublicReport],
+    checks: Sequence[Any],
+    now: float,
+    lookback: float,
 ) -> dict[tuple[int, float], tuple[tuple[float, float], ...]]:
     """Disjoint public-epoch cells, minus detector lookbacks already evidenced.
 
@@ -391,23 +425,37 @@ def _unsearched_report_intervals(
         if not isinstance(check, Mapping):
             continue
         time_s, entity_id = check.get("checked_at_s"), check.get("entity_id")
-        if isinstance(time_s, (int, float)) and time_s <= now and isinstance(entity_id, int):
-            searched.setdefault(entity_id, []).append((max(0.0, time_s - lookback), time_s))
+        if (
+            isinstance(time_s, (int, float))
+            and time_s <= now
+            and isinstance(entity_id, int)
+        ):
+            searched.setdefault(entity_id, []).append(
+                (max(0.0, time_s - lookback), time_s)
+            )
     previous: dict[int, float] = {}
     result: dict[tuple[int, float], tuple[tuple[float, float], ...]] = {}
     for entity_id, time_s in sorted({(r.entity_id, r.time_s) for r in reports}):
         pieces = [(previous.get(entity_id, 0.0), time_s)]
         previous[entity_id] = time_s
         for start, end in searched.get(entity_id, ()):
-            pieces = [(a, b) for left, right in pieces
-                      for a, b in ((left, min(right, start)), (max(left, end), right)) if a < b]
+            pieces = [
+                (a, b)
+                for left, right in pieces
+                for a, b in ((left, min(right, start)), (max(left, end), right))
+                if a < b
+            ]
         result[(entity_id, time_s)] = tuple(pieces)
     return result
 
 
 def _fixed_omission_yield(item: ObservationOpportunity, observation_s: float) -> float:
     duration = math.fsum(
-        max(0.0, min(end, observation_s) - max(start, observation_s - item.omission_lookback_s))
+        max(
+            0.0,
+            min(end, observation_s)
+            - max(start, observation_s - item.omission_lookback_s),
+        )
         for start, end in item.omission_intervals
     )
     return item.omission_rate * duration
@@ -428,8 +476,12 @@ def merge_time_intervals(intervals):
 def _subtract_intervals(intervals, excluded):
     pieces = list(intervals)
     for start, end in excluded:
-        pieces = [(a, b) for left, right in pieces
-                  for a, b in ((left, min(right, start)), (max(left, end), right)) if a < b]
+        pieces = [
+            (a, b)
+            for left, right in pieces
+            for a, b in ((left, min(right, start)), (max(left, end), right))
+            if a < b
+        ]
     return tuple(pieces)
 
 
@@ -446,9 +498,16 @@ def holding_exposures(environment, belief):
     reserved = {}
     activity_span = {}
     for report in _public_reports(environment, belief):
-        reserved.setdefault(report.entity_id, []).append((max(0, report.time_s - lookback), report.time_s))
-        first, last = activity_span.get(report.entity_id, (report.time_s, report.time_s))
-        activity_span[report.entity_id] = min(first, report.time_s), max(last, report.time_s)
+        reserved.setdefault(report.entity_id, []).append(
+            (max(0, report.time_s - lookback), report.time_s)
+        )
+        first, last = activity_span.get(
+            report.entity_id, (report.time_s, report.time_s)
+        )
+        activity_span[report.entity_id] = (
+            min(first, report.time_s),
+            max(last, report.time_s),
+        )
     for ship, sampled, _x, _y in public_position_fix_anchors(environment, belief):
         if ship in activity_span:
             first, last = activity_span[ship]
@@ -460,14 +519,18 @@ def holding_exposures(environment, belief):
         for interval in view.get("holding_intervals", ()):
             ship = interval["entity_id"]
             if ship in by_ship:
-                raw.setdefault((pose, ship), []).append((interval["start_s"], interval["end_s"]))
+                raw.setdefault((pose, ship), []).append(
+                    (interval["start_s"], interval["end_s"])
+                )
     result = {}
     for (pose, ship), intervals in raw.items():
         rate = by_ship[ship].expected_omission_probability * rates[ship]
         if rate == 0:
             continue
         first, last = activity_span[ship]
-        for start, end in _subtract_intervals(merge_time_intervals(intervals), reserved.get(ship, ())):
+        for start, end in _subtract_intervals(
+            merge_time_intervals(intervals), reserved.get(ship, ())
+        ):
             start, end = max(first, start), min(last, end)
             if start < end:
                 result.setdefault(pose, []).append((ship, start, end, rate))
@@ -508,7 +571,9 @@ def score_candidate_opportunities(
     batches: dict[tuple[int, float], list[ObservationOpportunity]] = {}
     for item in ordered:
         batches.setdefault((item.entity_id, item.time_s), []).append(item)
-    estimation = math.fsum(_batch_information_value(items) for items in batches.values())
+    estimation = math.fsum(
+        _batch_information_value(items) for items in batches.values()
+    )
     report_span = ordered[-1].time_s - ordered[0].time_s if len(ordered) >= 2 else 0.0
     if ordered and observation_start_s is not None:
         report_span = max(0.0, ordered[-1].time_s - observation_start_s)
@@ -521,7 +586,9 @@ def score_candidate_opportunities(
     )
 
 
-def information_curve(variance: float, gain: float, normalizer: float, count: int) -> list[float]:
+def information_curve(
+    variance: float, gain: float, normalizer: float, count: int
+) -> list[float]:
     """Selected-count additive-precision gain G(k), with existing 50% weight.
 
     This bounds repeated measurements of the same vessel. It is not exact
@@ -535,32 +602,52 @@ def information_curve(variance: float, gain: float, normalizer: float, count: in
     ]
 
 
-def route_information_tables(opportunities: Sequence[ObservationOpportunity]) -> dict[int, tuple[int, ...]]:
+def route_information_tables(
+    opportunities: Sequence[ObservationOpportunity],
+) -> dict[int, tuple[int, ...]]:
     """Integer information budgets indexed by actual selected report counts."""
     by_ship: dict[int, list[ObservationOpportunity]] = {}
     for item in opportunities:
         by_ship.setdefault(item.entity_id, []).append(item)
     normalizer = max((item.estimation for item in opportunities), default=0.0)
     return {
-        entity: tuple(round(value * SCORE_SCALE) for value in information_curve(
-            items[0].variance, items[0].estimation, normalizer, len(items),
-        ))
+        entity: tuple(
+            round(value * SCORE_SCALE)
+            for value in information_curve(
+                items[0].variance,
+                items[0].estimation,
+                normalizer,
+                len(items),
+            )
+        )
         for entity, items in by_ship.items()
     }
 
 
-def _information_capture_eligible(observation_s: float, deadline_s: float | None) -> bool:
-    return deadline_s is None or observation_s + OBSERVATION_DWELL_SECONDS <= deadline_s + 1e-9
+def _information_capture_eligible(
+    observation_s: float, deadline_s: float | None
+) -> bool:
+    return (
+        deadline_s is None
+        or observation_s + OBSERVATION_DWELL_SECONDS <= deadline_s + 1e-9
+    )
 
 
 def _information_reports(candidate, by_id, deadline_s):
-    return tuple(r for r in candidate.report_ids if _information_capture_eligible(
-        by_id[r].time_s + candidate.observation_delay_s, deadline_s))
+    return tuple(
+        r
+        for r in candidate.report_ids
+        if _information_capture_eligible(
+            by_id[r].time_s + candidate.observation_delay_s, deadline_s
+        )
+    )
 
 
 def allocate_route_information(
-    selected: Sequence[SurveillanceCandidate], opportunities: Sequence[ObservationOpportunity],
-    *, information_deadline_s: float | None = None,
+    selected: Sequence[SurveillanceCandidate],
+    opportunities: Sequence[ObservationOpportunity],
+    *,
+    information_deadline_s: float | None = None,
 ) -> tuple[SurveillanceCandidate, ...]:
     """Assign each route item its marginal information, with no duplicate credit.
 
@@ -582,7 +669,8 @@ def allocate_route_information(
                 raise ValueError("selected route references unavailable public reports")
             seen.add(report_id)
             if not _information_capture_eligible(
-                by_id[report_id].time_s + candidate.observation_delay_s, information_deadline_s,
+                by_id[report_id].time_s + candidate.observation_delay_s,
+                information_deadline_s,
             ):
                 continue
             entity = by_id[report_id].entity_id
@@ -590,8 +678,15 @@ def allocate_route_information(
             counts[entity] += 1
             credit += tables[entity][before + 1] - tables[entity][before]
         estimation = credit / SCORE_SCALE
-        result.append(replace(candidate, estimation_utility=estimation,
-                              combined_score=candidate.recall_utility + estimation + candidate.omission_yield))
+        result.append(
+            replace(
+                candidate,
+                estimation_utility=estimation,
+                combined_score=candidate.recall_utility
+                + estimation
+                + candidate.omission_yield,
+            )
+        )
     return tuple(result)
 
 
@@ -615,8 +710,8 @@ def _batch_information_value(items: Sequence[ObservationOpportunity]) -> float:
         return one
     if first.variance <= 0 or first.estimation <= 0:
         return 0.0
-    return count * one * first.variance / (
-        first.variance + (total - 1) * first.estimation
+    return (
+        count * one * first.variance / (first.variance + (total - 1) * first.estimation)
     )
 
 
@@ -629,7 +724,8 @@ def _score_units(utility: CandidateUtility) -> int:
 
 def score_fixed_view_opportunities(
     covered: Sequence[ObservationOpportunity],
-    *, observation_delay_s: float = 0.0,
+    *,
+    observation_delay_s: float = 0.0,
     observation_times: Mapping[str, float] | None = None,
 ) -> CandidateUtility:
     """Round each report-time block once, also when rescoring a sustained view."""
@@ -642,10 +738,15 @@ def score_fixed_view_opportunities(
         # Multiple public reports at one entity/epoch expose the same interval.
         by_entity: dict[int, float] = {}
         for item in items:
-            observed = (observation_times[item.report_id] if observation_times is not None
-                        else item.time_s + observation_delay_s)
-            by_entity[item.entity_id] = max(by_entity.get(item.entity_id, 0.0),
-                                            _fixed_omission_yield(item, observed))
+            observed = (
+                observation_times[item.report_id]
+                if observation_times is not None
+                else item.time_s + observation_delay_s
+            )
+            by_entity[item.entity_id] = max(
+                by_entity.get(item.entity_id, 0.0),
+                _fixed_omission_yield(item, observed),
+            )
         omission_units += round(math.fsum(by_entity.values()) * SCORE_SCALE)
     return CandidateUtility(
         sum(round(item.recall * SCORE_SCALE) for item in utilities) / SCORE_SCALE,
@@ -708,19 +809,23 @@ def _candidate(
     report_ids = tuple(item.report_id for item in ordered)
     utility = (
         score_fixed_view_opportunities(ordered, observation_delay_s=observation_delay_s)
-        if mode == "fixed_view" else score_candidate_opportunities(
+        if mode == "fixed_view"
+        else score_candidate_opportunities(
             ordered,
             expected_omission_probability=expected_omission_probability,
             public_report_rate=public_report_rate,
         )
     )
     report_span = ordered[-1].time_s - ordered[0].time_s
-    utility = replace(utility, omission_yield=utility.omission_yield + holding_omission_yield)
+    utility = replace(
+        utility, omission_yield=utility.omission_yield + holding_omission_yield
+    )
     start_s = ordered[0].time_s + observation_delay_s
     end_s = ordered[-1].time_s + observation_delay_s + observation_dwell_s
     return SurveillanceCandidate(
         candidate_id=_candidate_id(
-            mode, report_ids,
+            mode,
+            report_ids,
             viewpoint=(round(x), round(y)) if mode == "fixed_view" else None,
             arrival_direction=arrival_direction,
             observation_delay_s=observation_delay_s,
@@ -745,7 +850,9 @@ def _candidate(
         combined_score=utility.combined,
         arrival_direction=arrival_direction,
         observation_delay_s=observation_delay_s,
-        scored_observation_windows=((start_s, end_s),) if observation_dwell_s > OBSERVATION_DWELL_SECONDS else (),
+        scored_observation_windows=((start_s, end_s),)
+        if observation_dwell_s > OBSERVATION_DWELL_SECONDS
+        else (),
     )
 
 
@@ -847,15 +954,11 @@ def _candidate_arcs(
         if left.mode == "pursue_ship":
             # Surveillance may hold after acquisition instead of ending at the
             # ship's final report position, so neither endpoint may be assumed.
-            from_start = (
-                np.abs(xs - left.x) + np.abs(ys - left.y)
-            ) / (0.9 * speed)
+            from_start = (np.abs(xs - left.x) + np.abs(ys - left.y)) / (0.9 * speed)
             if quarter_turn_seconds:
                 north = np.sign(xs - left.x).astype(int) + 1
                 east = np.sign(ys - left.y).astype(int) + 1
-                from_start += (
-                    turns[north, east, 4, arrival] * quarter_turn_seconds
-                )
+                from_start += turns[north, east, 4, arrival] * quarter_turn_seconds
             travel = np.maximum(travel, from_start)
         feasible = start_times + 1e-9 >= left.end_s + travel
         if chronological_reports:
@@ -926,7 +1029,8 @@ def _candidate_arcs(
 
 
 def _prune_terminal_alternatives(
-    candidates: Sequence[SurveillanceCandidate], arcs: Sequence[tuple[int, int]],
+    candidates: Sequence[SurveillanceCandidate],
+    arcs: Sequence[tuple[int, int]],
 ) -> tuple[tuple[int, int], ...]:
     """Remove locally dominated choices with no possible later observation.
 
@@ -947,24 +1051,29 @@ def _prune_terminal_alternatives(
             priority = score, -count, -duration, -order
             if source not in best or priority > best[source][0]:
                 best[source] = priority, target
-    kept = {(source, target) for source, target in arcs
-            if target not in terminal or best[source][1] == target}
+    kept = {
+        (source, target)
+        for source, target in arcs
+        if target not in terminal or best[source][1] == target
+    }
     incoming = {target for _, target in kept}
     kept.update((0, target) for target in terminal - incoming)
     return tuple(sorted(kept))
 
 
 def sample_fixed_viewpoints(
-    opportunities: Sequence[ObservationOpportunity], radius: float,
+    opportunities: Sequence[ObservationOpportunity],
+    radius: float,
     current_position: tuple[float, float],
 ) -> tuple[tuple[int, int], ...]:
     """Public-schedule sampling shared with offline native-camera evaluation."""
-    viewpoints = {
-        (round(report.x), round(report.y)) for report in opportunities
-    } | {(round(current_position[0]), round(current_position[1]))}
+    viewpoints = {(round(report.x), round(report.y)) for report in opportunities} | {
+        (round(current_position[0]), round(current_position[1]))
+    }
     for anchor in opportunities:
         simultaneous = tuple(
-            report for report in opportunities
+            report
+            for report in opportunities
             if abs(report.time_s - anchor.time_s) <= OBSERVATION_DWELL_SECONDS
         )
         viewpoints.update(
@@ -985,7 +1094,12 @@ def _public_rendezvous(
     if surveillance_views is None:
         return point
     view_points = tuple(
-        sorted({(round(float(view["x"])), round(float(view["y"]))) for view in surveillance_views})
+        sorted(
+            {
+                (round(float(view["x"])), round(float(view["y"])))
+                for view in surveillance_views
+            }
+        )
     )
     if not view_points:
         return None
@@ -1028,10 +1142,14 @@ def _fixed_view_candidates(
         for view in surveillance_views:
             direction = view["arrival_direction"]
             if type(direction) is not int or direction not in range(4):
-                raise ValueError("surveillance view arrival_direction must be an integer in 0..3")
+                raise ValueError(
+                    "surveillance view arrival_direction must be an integer in 0..3"
+                )
             x, y = view["x"], view["y"]
             if x != round(x) or y != round(y):
-                raise ValueError("surveillance viewpoints must use integer output coordinates")
+                raise ValueError(
+                    "surveillance viewpoints must use integer output coordinates"
+                )
             visible_ids = set(view["report_ids"])
             by_time: dict[float, list[ObservationOpportunity]] = {}
             for report in opportunities:
@@ -1041,47 +1159,85 @@ def _fixed_view_candidates(
                 delay = float(view.get("observation_delay_s", 0.0))
                 start_s = covered[0].time_s + delay
                 for dwell in dwell_options:
-                    extra = 0.0 if dwell == OBSERVATION_DWELL_SECONDS else score_holding_exposure(
-                        (exposures or {}).get((x, y, direction), ()), ((start_s, start_s + dwell),),
+                    extra = (
+                        0.0
+                        if dwell == OBSERVATION_DWELL_SECONDS
+                        else score_holding_exposure(
+                            (exposures or {}).get((x, y, direction), ()),
+                            ((start_s, start_s + dwell),),
+                        )
                     )
                     # Longer occupancy with no extra value cannot beat its short
                     # counterpart and only removes feasible continuations.
                     if dwell > OBSERVATION_DWELL_SECONDS and extra == 0:
                         continue
                     candidate = _candidate(
-                        "fixed_view", covered, x=x, y=y, end_x=x, end_y=y,
-                        entity_id=None, arrival_direction=direction,
-                        observation_delay_s=delay, observation_dwell_s=dwell,
+                        "fixed_view",
+                        covered,
+                        x=x,
+                        y=y,
+                        end_x=x,
+                        end_y=y,
+                        entity_id=None,
+                        arrival_direction=direction,
+                        observation_delay_s=delay,
+                        observation_dwell_s=dwell,
                         holding_omission_yield=extra,
                     )
                     candidates[candidate.candidate_id] = candidate
             for window in view.get("gap_observation_windows", ()):
                 start, end = float(window["start_s"]), float(window["end_s"])
-                if (not all(math.isfinite(t) and t * TIME_SCALE == round(t * TIME_SCALE)
-                            for t in (start, end)) or end - start < 2 * OBSERVATION_DWELL_SECONDS):
-                    raise ValueError("gap windows must use half-second times and at least one second of dwell")
+                if (
+                    not all(
+                        math.isfinite(t) and t * TIME_SCALE == round(t * TIME_SCALE)
+                        for t in (start, end)
+                    )
+                    or end - start < 2 * OBSERVATION_DWELL_SECONDS
+                ):
+                    raise ValueError(
+                        "gap windows must use half-second times and at least one second of dwell"
+                    )
                 extra = score_holding_exposure(
-                    (exposures or {}).get((x, y, direction), ()), ((start, end),),
+                    (exposures or {}).get((x, y, direction), ()),
+                    ((start, end),),
                 )
                 if extra <= 0:
                     continue
                 identity = _candidate_id(
-                    "fixed_view", (), viewpoint=(round(x), round(y)), arrival_direction=direction,
-                    observation_start_s=start, observation_dwell_s=end - start,
+                    "fixed_view",
+                    (),
+                    viewpoint=(round(x), round(y)),
+                    arrival_direction=direction,
+                    observation_start_s=start,
+                    observation_dwell_s=end - start,
                 )
                 candidates[identity] = SurveillanceCandidate(
-                    candidate_id=identity, mode="fixed_view", entity_id=None,
-                    start_s=start, end_s=end, x=x, y=y, end_x=x, end_y=y,
-                    report_ids=(), target_posterior_risk=0.0,
-                    expected_omission_probability=0.0, public_report_rate=0.0,
-                    report_span_s=0.0, recall_utility=0.0, estimation_utility=0.0,
-                    omission_yield=extra, combined_score=extra,
-                    arrival_direction=direction, scored_observation_windows=((start, end),),
+                    candidate_id=identity,
+                    mode="fixed_view",
+                    entity_id=None,
+                    start_s=start,
+                    end_s=end,
+                    x=x,
+                    y=y,
+                    end_x=x,
+                    end_y=y,
+                    report_ids=(),
+                    target_posterior_risk=0.0,
+                    expected_omission_probability=0.0,
+                    public_report_rate=0.0,
+                    report_span_s=0.0,
+                    recall_utility=0.0,
+                    estimation_utility=0.0,
+                    omission_yield=extra,
+                    combined_score=extra,
+                    arrival_direction=direction,
+                    scored_observation_windows=((start, end),),
                 )
         return tuple(candidates.values())
     for x, y in sample_fixed_viewpoints(opportunities, radius, current_position):
         visible = tuple(
-            report for report in opportunities
+            report
+            for report in opportunities
             if math.hypot(report.x - x, report.y - y) <= radius
         )
         by_time: dict[float, list[ObservationOpportunity]] = {}
@@ -1089,15 +1245,23 @@ def _fixed_view_candidates(
             by_time.setdefault(report.time_s, []).append(report)
         for covered in by_time.values():
             candidate = _candidate(
-                "fixed_view", covered, x=x, y=y, end_x=x, end_y=y, entity_id=None,
+                "fixed_view",
+                covered,
+                x=x,
+                y=y,
+                end_x=x,
+                end_y=y,
+                entity_id=None,
             )
             candidates[candidate.candidate_id] = candidate
     return tuple(candidates.values())
 
 
 def build_candidate_dag(
-    environment: Mapping[str, object], belief: ReportingReliabilitySnapshot,
-    *, information_horizon_seconds: float | None = None,
+    environment: Mapping[str, object],
+    belief: ReportingReliabilitySnapshot,
+    *,
+    information_horizon_seconds: float | None = None,
     route_horizon_seconds: float | None = None,
     positive_only: bool = False,
 ) -> CandidateDAG:
@@ -1120,21 +1284,41 @@ def build_candidate_dag(
     position = vehicle["position"]
     speed = float(vehicle["max_velocity"])
     turn_seconds = float(vehicle.get("quarter_turn_seconds", 0.0))
-    observation_window = float(cast(Any, environment.get("observation_window_seconds", 0.0)))
+    observation_window = float(
+        cast(Any, environment.get("observation_window_seconds", 0.0))
+    )
     views = environment.get("surveillance_views")
     gap_views = [v for v in cast(Any, views or ()) if v.get("gap_observation_windows")]
     if any("holding_intervals" not in v for v in gap_views):
         raise ValueError("gap windows require public holding interval forecasts")
-    dwell_options = sorted(set(cast(Any, environment.get("fixed_view_dwell_options_s", (.5,)))))
-    if not dwell_options or dwell_options[0] != OBSERVATION_DWELL_SECONDS or any(
-        not math.isfinite(d) or d < OBSERVATION_DWELL_SECONDS or d * TIME_SCALE != round(d * TIME_SCALE)
-        for d in dwell_options
+    dwell_options = sorted(
+        set(cast(Any, environment.get("fixed_view_dwell_options_s", (0.5,))))
+    )
+    if (
+        not dwell_options
+        or dwell_options[0] != OBSERVATION_DWELL_SECONDS
+        or any(
+            not math.isfinite(d)
+            or d < OBSERVATION_DWELL_SECONDS
+            or d * TIME_SCALE != round(d * TIME_SCALE)
+            for d in dwell_options
+        )
     ):
-        raise ValueError("fixed-view dwell options must include 0.5 and use positive half-second steps")
-    if len(dwell_options) > 1 and (views is None or any("holding_intervals" not in v for v in cast(Any, views))):
-        raise ValueError("long fixed-view dwells require public holding interval forecasts")
-    if (len(dwell_options) > 1 or gap_views) and float(cast(Any, environment.get("event_check_window_seconds", 0))) < OBSERVATION_DWELL_SECONDS:
-        raise ValueError("holding requires at least one observation tick of detector lookback")
+        raise ValueError(
+            "fixed-view dwell options must include 0.5 and use positive half-second steps"
+        )
+    if len(dwell_options) > 1 and (
+        views is None or any("holding_intervals" not in v for v in cast(Any, views))
+    ):
+        raise ValueError(
+            "long fixed-view dwells require public holding interval forecasts"
+        )
+    if (len(dwell_options) > 1 or gap_views) and float(
+        cast(Any, environment.get("event_check_window_seconds", 0))
+    ) < OBSERVATION_DWELL_SECONDS:
+        raise ValueError(
+            "holding requires at least one observation tick of detector lookback"
+        )
     if observation_window < 0 or not math.isfinite(observation_window):
         raise ValueError("observation window must be finite and nonnegative")
     if observation_window > 0 and views is None:
@@ -1146,19 +1330,29 @@ def build_candidate_dag(
         for view in cast(Any, views)
     ):
         raise ValueError("view observation delay is outside the declared window")
-    if "surveillance_views" in environment and (not math.isfinite(turn_seconds) or turn_seconds <= 0):
+    if "surveillance_views" in environment and (
+        not math.isfinite(turn_seconds) or turn_seconds <= 0
+    ):
         raise ValueError("sensor-aware planning requires positive quarter_turn_seconds")
     direction = _vehicle_direction(vehicle)
     fov = float(vehicle["fov_radius"])
     now = float(cast(Any, environment["mission_time_seconds"]))
     if route_horizon_seconds is not None and (
-        information_horizon_seconds is None or not math.isfinite(route_horizon_seconds)
+        information_horizon_seconds is None
+        or not math.isfinite(route_horizon_seconds)
         or route_horizon_seconds < information_horizon_seconds
     ):
-        raise ValueError("route horizon requires a finite horizon at least as long as the information horizon")
-    planning_horizon = route_horizon_seconds if route_horizon_seconds is not None else information_horizon_seconds
+        raise ValueError(
+            "route horizon requires a finite horizon at least as long as the information horizon"
+        )
+    planning_horizon = (
+        route_horizon_seconds
+        if route_horizon_seconds is not None
+        else information_horizon_seconds
+    )
     if information_horizon_seconds is not None and (
-        not math.isfinite(information_horizon_seconds) or information_horizon_seconds <= 0
+        not math.isfinite(information_horizon_seconds)
+        or information_horizon_seconds <= 0
     ):
         raise ValueError("information planning horizon must be finite and positive")
     start_x, start_y = float(position["x"]), float(position["y"])
@@ -1167,13 +1361,27 @@ def build_candidate_dag(
     candidates: dict[str, SurveillanceCandidate] = {}
 
     for item in _fixed_view_candidates(
-        opportunities, fov, (start_x, start_y),
+        opportunities,
+        fov,
+        (start_x, start_y),
         cast(Any, environment.get("surveillance_views")),
-        dwell_options, holding_exposures(environment, belief) if len(dwell_options) > 1 or gap_views else {},
+        dwell_options,
+        holding_exposures(environment, belief)
+        if len(dwell_options) > 1 or gap_views
+        else {},
     ):
         if (
-            now + _navigation_time(start_x, start_y, item.x, item.y, speed,
-                                   direction, item.arrival_direction, turn_seconds)
+            now
+            + _navigation_time(
+                start_x,
+                start_y,
+                item.x,
+                item.y,
+                speed,
+                direction,
+                item.arrival_direction,
+                turn_seconds,
+            )
             <= item.start_s + 1e-9
         ):
             candidates[item.candidate_id] = item
@@ -1186,22 +1394,52 @@ def build_candidate_dag(
                 key=lambda item: (item.time_s, item.report_id),
             )
         )
+        rendezvous_points = tuple(
+            _public_rendezvous(
+                report.x,
+                report.y,
+                fov,
+                cast(Sequence[Mapping[str, Any]] | None, views),
+            )
+            for report in ordered
+        )
         ship = by_ship[entity_id]
         for start_index in range(len(ordered) - 1):
             first = ordered[start_index]
+            first_rendezvous = rendezvous_points[start_index]
+            if first_rendezvous is None:
+                continue
+            first_x, first_y = first_rendezvous
             if (
-                now + _navigation_time(start_x, start_y, first.x, first.y, speed,
-                                       direction, None, turn_seconds)
+                now
+                + _navigation_time(
+                    start_x,
+                    start_y,
+                    first_x,
+                    first_y,
+                    speed,
+                    direction,
+                    None,
+                    turn_seconds,
+                )
                 > first.time_s + 1e-9
             ):
                 continue
             for end_index in range(start_index + 1, len(ordered)):
                 previous = ordered[end_index - 1]
                 following = ordered[end_index]
+                previous_rendezvous = rendezvous_points[end_index - 1]
+                following_rendezvous = rendezvous_points[end_index]
+                if previous_rendezvous is None or following_rendezvous is None:
+                    break
                 if (
                     _navigation_time(
-                        previous.x, previous.y, following.x, following.y, speed,
-                        None, None, turn_seconds,
+                        *previous_rendezvous,
+                        *following_rendezvous,
+                        speed,
+                        None,
+                        None,
+                        turn_seconds,
                     )
                     > following.time_s - previous.time_s + 1e-9
                 ):
@@ -1210,10 +1448,10 @@ def build_candidate_dag(
                 item = _candidate(
                     "pursue_ship",
                     window,
-                    x=first.x,
-                    y=first.y,
-                    end_x=following.x,
-                    end_y=following.y,
+                    x=first_x,
+                    y=first_y,
+                    end_x=following_rendezvous[0],
+                    end_y=following_rendezvous[1],
                     entity_id=entity_id,
                     target_posterior_risk=ship.mean,
                     expected_omission_probability=(ship.expected_omission_probability),
@@ -1242,12 +1480,40 @@ def build_candidate_dag(
         if item.mode != "pursue_ship" or item.entity_id not in latest_fixes:
             continue
         _sampled, x, y = latest_fixes[item.entity_id]
-        arrival = math.ceil((now + _navigation_time(
-            start_x, start_y, x, y, speed, direction, None, turn_seconds,
-        )) * TIME_SCALE) / TIME_SCALE
-        if arrival >= item.start_s or arrival + _navigation_time(
-            x, y, item.x, item.y, speed, None, None, turn_seconds,
-        ) > item.start_s + 1e-9:
+        arrival = (
+            math.ceil(
+                (
+                    now
+                    + _navigation_time(
+                        start_x,
+                        start_y,
+                        x,
+                        y,
+                        speed,
+                        direction,
+                        None,
+                        turn_seconds,
+                    )
+                )
+                * TIME_SCALE
+            )
+            / TIME_SCALE
+        )
+        if (
+            arrival >= item.start_s
+            or arrival
+            + _navigation_time(
+                x,
+                y,
+                item.x,
+                item.y,
+                speed,
+                None,
+                None,
+                turn_seconds,
+            )
+            > item.start_s + 1e-9
+        ):
             continue
         utility = score_candidate_opportunities(
             tuple(opportunities_by_id[report] for report in item.report_ids),
@@ -1255,20 +1521,37 @@ def build_candidate_dag(
             public_report_rate=item.public_report_rate,
             observation_start_s=arrival,
         )
-        identity = _candidate_id("pursue_ship", item.report_ids,
-                                 viewpoint=(x, y), observation_start_s=arrival)
-        candidates[identity] = replace(item, candidate_id=identity, start_s=arrival,
-            x=x, y=y, recall_utility=utility.recall, estimation_utility=utility.estimation,
-            omission_yield=utility.omission_yield, combined_score=utility.combined)
+        identity = _candidate_id(
+            "pursue_ship",
+            item.report_ids,
+            viewpoint=(x, y),
+            observation_start_s=arrival,
+        )
+        candidates[identity] = replace(
+            item,
+            candidate_id=identity,
+            start_s=arrival,
+            x=x,
+            y=y,
+            recall_utility=utility.recall,
+            estimation_utility=utility.estimation,
+            omission_yield=utility.omission_yield,
+            combined_score=utility.combined,
+        )
 
     ordered_candidates = tuple(
         sorted(
-            (candidate for candidate in candidates.values()
-             if (planning_horizon is None or candidate.end_s <= now + planning_horizon)
-             and (
-                 not positive_only
-                 or _score_units(_candidate_utility(candidate)) > 0
-             )),
+            (
+                candidate
+                for candidate in candidates.values()
+                if (
+                    planning_horizon is None
+                    or candidate.end_s <= now + planning_horizon
+                )
+                and (
+                    not positive_only or _score_units(_candidate_utility(candidate)) > 0
+                )
+            ),
             key=lambda item: (item.start_s, item.end_s, item.mode, item.candidate_id),
         )
     )
@@ -1276,18 +1559,29 @@ def build_candidate_dag(
     sink = len(ordered_candidates) + 1
     graph = CandidateDAG(
         ordered_candidates,
-        _candidate_arcs(ordered_candidates, speed, turn_seconds,
-                        observation_window > 0 and information_horizon_seconds is None,
-                        information_aware=information_horizon_seconds is not None,
-                        report_history_aware=information_horizon_seconds is not None),
+        _candidate_arcs(
+            ordered_candidates,
+            speed,
+            turn_seconds,
+            observation_window > 0 and information_horizon_seconds is None,
+            information_aware=information_horizon_seconds is not None,
+            report_history_aware=information_horizon_seconds is not None,
+        ),
         source,
         sink,
     )
-    return expand_information_states(
-        graph, opportunities,
-        information_deadline_s=now + information_horizon_seconds,
-    ) if route_horizon_seconds is not None else (
-        expand_information_states(graph, opportunities) if information_horizon_seconds is not None else graph
+    return (
+        expand_information_states(
+            graph,
+            opportunities,
+            information_deadline_s=now + information_horizon_seconds,
+        )
+        if route_horizon_seconds is not None
+        else (
+            expand_information_states(graph, opportunities)
+            if information_horizon_seconds is not None
+            else graph
+        )
     )
 
 
@@ -1306,25 +1600,35 @@ class _RouteNode:
 
 def _route_nodes(candidates: Sequence[SurveillanceCandidate]) -> tuple[_RouteNode, ...]:
     return tuple(
-        _RouteNode(_score_units(_candidate_utility(c)), round(c.start_s * TIME_SCALE),
-                   round(c.duration_s * TIME_SCALE), c.mode, round(c.x), round(c.y),
-                   c.arrival_direction)
+        _RouteNode(
+            _score_units(_candidate_utility(c)),
+            round(c.start_s * TIME_SCALE),
+            round(c.duration_s * TIME_SCALE),
+            c.mode,
+            round(c.x),
+            round(c.y),
+            c.arrival_direction,
+        )
         for c in candidates
     )
 
 
 def _same_fixed_view(
-    left: _RouteNode | SurveillanceCandidate, right: _RouteNode | SurveillanceCandidate,
+    left: _RouteNode | SurveillanceCandidate,
+    right: _RouteNode | SurveillanceCandidate,
 ) -> bool:
     return (
         left.mode == right.mode == "fixed_view"
-        and left.x == right.x and left.y == right.y
+        and left.x == right.x
+        and left.y == right.y
         and left.arrival_direction == right.arrival_direction
     )
 
 
 def _route_cost(
-    nodes: Sequence[_RouteNode], source: int, target: int,
+    nodes: Sequence[_RouteNode],
+    source: int,
+    target: int,
 ) -> tuple[int, int, int, int]:
     if target == len(nodes) + 1:
         return (0, 0, 0, 0)
@@ -1445,27 +1749,53 @@ def _fixed_view_runs(
             result.append(first)
             continue
         recall = sum(round(c.recall_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
-        estimation = sum(round(c.estimation_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
-        omission = sum(round(c.omission_yield * SCORE_SCALE) for c in group) / SCORE_SCALE
+        estimation = (
+            sum(round(c.estimation_utility * SCORE_SCALE) for c in group) / SCORE_SCALE
+        )
+        omission = (
+            sum(round(c.omission_yield * SCORE_SCALE) for c in group) / SCORE_SCALE
+        )
         reported = [c for c in group if c.report_ids]
-        result.append(replace(
-            first, candidate_id=first.candidate_id + "--" + last.candidate_id,
-            end_s=last.end_s,
-            report_ids=tuple(r for c in group for r in c.report_ids),
-            report_span_s=(max(c.start_s - c.observation_delay_s + c.report_span_s for c in reported)
-                           - min(c.start_s - c.observation_delay_s for c in reported)) if reported else 0.0,
-            recall_utility=recall, estimation_utility=estimation,
-            omission_yield=omission, combined_score=recall + estimation + omission,
-            scored_observation_windows=(tuple(w for c in group for w in
-                (c.scored_observation_windows or ((c.start_s, c.end_s),)))
-                if any(c.scored_observation_windows for c in group) else ()),
-        ))
+        result.append(
+            replace(
+                first,
+                candidate_id=first.candidate_id + "--" + last.candidate_id,
+                end_s=last.end_s,
+                report_ids=tuple(r for c in group for r in c.report_ids),
+                report_span_s=(
+                    max(
+                        c.start_s - c.observation_delay_s + c.report_span_s
+                        for c in reported
+                    )
+                    - min(c.start_s - c.observation_delay_s for c in reported)
+                )
+                if reported
+                else 0.0,
+                recall_utility=recall,
+                estimation_utility=estimation,
+                omission_yield=omission,
+                combined_score=recall + estimation + omission,
+                scored_observation_windows=(
+                    tuple(
+                        w
+                        for c in group
+                        for w in (
+                            c.scored_observation_windows or ((c.start_s, c.end_s),)
+                        )
+                    )
+                    if any(c.scored_observation_windows for c in group)
+                    else ()
+                ),
+            )
+        )
     return tuple(result)
 
 
 def expand_information_states(
-    graph: CandidateDAG, opportunities: Sequence[ObservationOpportunity],
-    *, information_deadline_s: float | None = None,
+    graph: CandidateDAG,
+    opportunities: Sequence[ObservationOpportunity],
+    *,
+    information_deadline_s: float | None = None,
 ) -> CandidateDAG:
     """Lift a bounded graph by selected counts for the existing additive model.
 
@@ -1479,27 +1809,32 @@ def expand_information_states(
     entities = sorted(tables)
     position = {entity: i for i, entity in enumerate(entities)}
     by_id = {item.report_id: item for item in opportunities}
-    credited = [_information_reports(c, by_id, information_deadline_s) for c in graph.candidates]
+    credited = [
+        _information_reports(c, by_id, information_deadline_s) for c in graph.candidates
+    ]
     relevant: list[set[int]] = [set() for _ in graph.candidates]
     # Reports of one vessel at one epoch share a sensing/omission cell. Keep
     # their batch identity until its final alternative to prevent nonadjacent
     # report or interval reuse, without excluding other vessels at that epoch.
     batches = sorted({(item.entity_id, item.time_s) for item in opportunities})
     batch_bits = {batch: 1 << index for index, batch in enumerate(batches)}
-    masks = [sum({batch_bits[(by_id[r].entity_id, by_id[r].time_s)] for r in c.report_ids})
-             for c in graph.candidates]
+    masks = [
+        sum({batch_bits[(by_id[r].entity_id, by_id[r].time_s)] for r in c.report_ids})
+        for c in graph.candidates
+    ]
     future_masks = [0] * (len(graph.candidates) + 1)
     observation_starts = [c.start_s + 1e-9 for c in graph.candidates]
     future: set[int] = set()
     for index in range(len(graph.candidates) - 1, -1, -1):
-        future = future | {position[by_id[r].entity_id]
-                           for r in credited[index]}
+        future = future | {position[by_id[r].entity_id] for r in credited[index]}
         relevant[index] = future
         future_masks[index] = future_masks[index + 1] | masks[index]
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
     for source, target in graph.arcs:
         incoming[target].append(source)
-    states: list[dict[tuple[tuple[int, ...], int], int]] = [{} for _ in range(graph.sink + 1)]
+    states: list[dict[tuple[tuple[int, ...], int], int]] = [
+        {} for _ in range(graph.sink + 1)
+    ]
     states[graph.source][((0,) * len(entities), 0)] = 0
     candidates = []
     arcs = []
@@ -1515,33 +1850,47 @@ def expand_information_states(
             for (counts, seen), lifted in states[previous].items():
                 if seen & masks[node - 1]:
                     continue
-                after = tuple(a + b if i in relevant[node - 1] else 0
-                              for i, (a, b) in enumerate(zip(counts, increment)))
+                after = tuple(
+                    a + b if i in relevant[node - 1] else 0
+                    for i, (a, b) in enumerate(zip(counts, increment))
+                )
                 remaining = (seen | masks[node - 1]) & future_mask
                 connections.setdefault((after, remaining), set()).add(lifted)
         for (after, remaining), previous_nodes in sorted(connections.items()):
-            credit = sum(tables[entity][after[i]] - tables[entity][after[i] - increment[i]]
-                         for i, entity in enumerate(entities))
+            credit = sum(
+                tables[entity][after[i]] - tables[entity][after[i] - increment[i]]
+                for i, entity in enumerate(entities)
+            )
             estimation = credit / SCORE_SCALE
             label = ",".join(map(str, after))
             if remaining:
                 label += f":seen:{remaining:x}"
-            candidates.append(replace(candidate, candidate_id=f"{candidate.candidate_id}:counts:{label}",
-                                      estimation_utility=estimation,
-                                      combined_score=candidate.recall_utility + estimation + candidate.omission_yield))
+            candidates.append(
+                replace(
+                    candidate,
+                    candidate_id=f"{candidate.candidate_id}:counts:{label}",
+                    estimation_utility=estimation,
+                    combined_score=candidate.recall_utility
+                    + estimation
+                    + candidate.omission_yield,
+                )
+            )
             lifted = len(candidates)
             states[node][after, remaining] = lifted
             arcs.extend((previous, lifted) for previous in sorted(previous_nodes))
     sink = len(candidates) + 1
     for previous in incoming[graph.sink]:
         arcs.extend((lifted, sink) for lifted in states[previous].values())
-    return CandidateDAG(tuple(candidates),
-                        _prune_dominated_arcs(set(arcs), candidates, sink), 0, sink)
+    return CandidateDAG(
+        tuple(candidates), _prune_dominated_arcs(set(arcs), candidates, sink), 0, sink
+    )
 
 
 def route_information_oracle(
-    graph: CandidateDAG, opportunities: Sequence[ObservationOpportunity],
-    *, information_deadline_s: float | None = None,
+    graph: CandidateDAG,
+    opportunities: Sequence[ObservationOpportunity],
+    *,
+    information_deadline_s: float | None = None,
 ) -> AdvisoryRoute:
     """Exact count-labelled path reference for a bounded candidate graph.
 
@@ -1562,20 +1911,35 @@ def route_information_oracle(
         for report in _information_reports(candidate, by_id, information_deadline_s):
             counts[positions[by_id[report].entity_id]] += 1
         increments.append(tuple(counts))
-        batches = frozenset((by_id[r].entity_id, by_id[r].time_s) for r in candidate.report_ids)
+        batches = frozenset(
+            (by_id[r].entity_id, by_id[r].time_s) for r in candidate.report_ids
+        )
         node_batches.append(batches)
         for batch in batches:
             last_batch_node[batch] = len(increments)
-    nodes = tuple(replace(node, score=round(candidate.recall_utility * SCORE_SCALE)
-                          + round(candidate.omission_yield * SCORE_SCALE))
-                  for node, candidate in zip(_route_nodes(graph.candidates), graph.candidates))
+    nodes = tuple(
+        replace(
+            node,
+            score=round(candidate.recall_utility * SCORE_SCALE)
+            + round(candidate.omission_yield * SCORE_SCALE),
+        )
+        for node, candidate in zip(_route_nodes(graph.candidates), graph.candidates)
+    )
     incoming: list[list[int]] = [[] for _ in range(graph.sink + 1)]
     for source, target in graph.arcs:
         incoming[target].append(source)
     frontiers: list[dict] = [{} for _ in range(graph.sink + 1)]
     frontiers[graph.source][((0,) * len(entities), frozenset())] = (0, 0, 0, 0, ())
+
     def priority(record):
-        return record[0], -record[1], -record[2], -record[3], tuple(-i for i in reversed(record[4]))
+        return (
+            record[0],
+            -record[1],
+            -record[2],
+            -record[3],
+            tuple(-i for i in reversed(record[4])),
+        )
+
     for node in range(graph.source + 1, graph.sink + 1):
         for previous in incoming[node]:
             for (counts, seen), prior in frontiers[previous].items():
@@ -1585,14 +1949,28 @@ def route_information_oracle(
                 if node != graph.sink:
                     if seen & node_batches[node - 1]:
                         continue
-                    next_seen = frozenset(batch for batch in seen | node_batches[node - 1]
-                                          if last_batch_node[batch] > node)
-                    next_counts = tuple(a + b for a, b in zip(counts, increments[node - 1]))
-                    score, maneuvers, duration, order = _route_cost(nodes, previous, node)
-                    score += sum(tables[entity][next_counts[i]] - tables[entity][counts[i]]
-                                 for i, entity in enumerate(entities))
-                    record = (prior[0] + score, prior[1] + maneuvers, prior[2] + duration,
-                              prior[3] + order, prior[4] + (node - 1,))
+                    next_seen = frozenset(
+                        batch
+                        for batch in seen | node_batches[node - 1]
+                        if last_batch_node[batch] > node
+                    )
+                    next_counts = tuple(
+                        a + b for a, b in zip(counts, increments[node - 1])
+                    )
+                    score, maneuvers, duration, order = _route_cost(
+                        nodes, previous, node
+                    )
+                    score += sum(
+                        tables[entity][next_counts[i]] - tables[entity][counts[i]]
+                        for i, entity in enumerate(entities)
+                    )
+                    record = (
+                        prior[0] + score,
+                        prior[1] + maneuvers,
+                        prior[2] + duration,
+                        prior[3] + order,
+                        prior[4] + (node - 1,),
+                    )
                 key = next_counts, next_seen
                 incumbent = frontiers[node].get(key)
                 if incumbent is None or priority(record) > priority(incumbent):
@@ -1600,12 +1978,19 @@ def route_information_oracle(
     if not frontiers[graph.sink]:
         raise ValueError("Mission 1 candidate graph has no route")
     best = max(frontiers[graph.sink].values(), key=priority)
-    selected = _fixed_view_runs(allocate_route_information(
-        tuple(graph.candidates[i] for i in best[4]), opportunities,
-        information_deadline_s=information_deadline_s,
-    ))
-    return AdvisoryRoute(selected, best[0] / SCORE_SCALE, best[2] / TIME_SCALE,
-                         tuple(report for candidate in selected for report in candidate.report_ids))
+    selected = _fixed_view_runs(
+        allocate_route_information(
+            tuple(graph.candidates[i] for i in best[4]),
+            opportunities,
+            information_deadline_s=information_deadline_s,
+        )
+    )
+    return AdvisoryRoute(
+        selected,
+        best[0] / SCORE_SCALE,
+        best[2] / TIME_SCALE,
+        tuple(report for candidate in selected for report in candidate.report_ids),
+    )
 
 
 def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
@@ -1625,9 +2010,13 @@ def longest_path_oracle(graph: CandidateDAG) -> AdvisoryRoute:
 class Mission1ReplanGate:
     """Cheap advisory comparison; it never creates planning authority."""
 
-    def __init__(self, relative_improvement_threshold: float = 0.10, *,
-                 information_horizon_seconds: float | None = None,
-                 route_horizon_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        relative_improvement_threshold: float = 0.10,
+        *,
+        information_horizon_seconds: float | None = None,
+        route_horizon_seconds: float | None = None,
+    ) -> None:
         self.relative_improvement_threshold = float(relative_improvement_threshold)
         self.information_horizon_seconds = information_horizon_seconds
         self.route_horizon_seconds = route_horizon_seconds
@@ -1762,16 +2151,26 @@ class Mission1ReplanGate:
             covered = tuple(opportunities[report_id] for report_id in newly_scored)
             planner_item = context.get("planner_item")
             parameters = (
-                planner_item.get("parameters") if isinstance(planner_item, Mapping) else None
+                planner_item.get("parameters")
+                if isinstance(planner_item, Mapping)
+                else None
             )
             observation_times = None
             if mode == "fixed_view" and "surveillance_views" in environment:
                 observation_times = (
-                    _fixed_view_observation_times(environment, parameters, covered,
-                                           start_s=max(now, start_s), end_s=end_s)
-                    if isinstance(parameters, Mapping) else {}
+                    _fixed_view_observation_times(
+                        environment,
+                        parameters,
+                        covered,
+                        start_s=max(now, start_s),
+                        end_s=end_s,
+                    )
+                    if isinstance(parameters, Mapping)
+                    else {}
                 )
-                covered = tuple(item for item in covered if item.report_id in observation_times)
+                covered = tuple(
+                    item for item in covered if item.report_id in observation_times
+                )
             continuing_pursuit = (
                 mode == "pursue_ship"
                 and identity == active_candidate_id
@@ -1780,13 +2179,18 @@ class Mission1ReplanGate:
             )
             ship = by_ship.get(entity_id) if isinstance(entity_id, int) else None
             utility = (
-                score_fixed_view_opportunities(covered, observation_times=observation_times)
-                if mode == "fixed_view" else score_candidate_opportunities(
+                score_fixed_view_opportunities(
+                    covered, observation_times=observation_times
+                )
+                if mode == "fixed_view"
+                else score_candidate_opportunities(
                     covered,
                     expected_omission_probability=(
                         ship.expected_omission_probability if ship is not None else 0.0
                     ),
-                    public_report_rate=(report_rates[ship.entity_id] if ship is not None else 0.0),
+                    public_report_rate=(
+                        report_rates[ship.entity_id] if ship is not None else 0.0
+                    ),
                     # Future GPS windows already own their earlier planned
                     # interval, even before acquisition or observation starts.
                     observation_start_s=max(now, start_s),
@@ -1794,22 +2198,52 @@ class Mission1ReplanGate:
             )
             if mode == "fixed_view" and isinstance(parameters, Mapping):
                 windows = tuple(
-                    (w["start"] / w["time_scale"], (w["start"] + w["duration"]) / w["time_scale"])
+                    (
+                        w["start"] / w["time_scale"],
+                        (w["start"] + w["duration"]) / w["time_scale"],
+                    )
                     for w in parameters.get("scored_observation_windows", ())
                 )
                 extra = score_holding_exposure(
-                    exposures.get((parameters.get("x"), parameters.get("y"), parameters.get("arrival_direction")), ()),
-                    windows, now=now, claimed=scored_holding,
+                    exposures.get(
+                        (
+                            parameters.get("x"),
+                            parameters.get("y"),
+                            parameters.get("arrival_direction"),
+                        ),
+                        (),
+                    ),
+                    windows,
+                    now=now,
+                    claimed=scored_holding,
                 )
-                utility = replace(utility, omission_yield=utility.omission_yield + extra)
-            current_score += _score_units(replace(utility, estimation=0.0)
-                                          if self.information_horizon_seconds is not None else utility) / SCORE_SCALE
+                utility = replace(
+                    utility, omission_yield=utility.omission_yield + extra
+                )
+            current_score += (
+                _score_units(
+                    replace(utility, estimation=0.0)
+                    if self.information_horizon_seconds is not None
+                    else utility
+                )
+                / SCORE_SCALE
+            )
             scored_reports.update(item.report_id for item in covered)
-            deadline = (now + self.information_horizon_seconds
-                        if self.route_horizon_seconds is not None else None)
-            scored_information_reports.update(item.report_id for item in covered if _information_capture_eligible(
-                observation_times[item.report_id] if observation_times is not None
-                else max(now, start_s, item.time_s), deadline))
+            deadline = (
+                now + self.information_horizon_seconds
+                if self.route_horizon_seconds is not None
+                else None
+            )
+            scored_information_reports.update(
+                item.report_id
+                for item in covered
+                if _information_capture_eligible(
+                    observation_times[item.report_id]
+                    if observation_times is not None
+                    else max(now, start_s, item.time_s),
+                    deadline,
+                )
+            )
             key = (
                 str(mode),
                 entity_id if isinstance(entity_id, int) else None,
@@ -1819,12 +2253,14 @@ class Mission1ReplanGate:
             # not the unchecked tail of the currently executing assignment.
             # Maneuver Control owns tracking loss and acquisition recovery.
             continuing_fixed_view = (
-                mode == "fixed_view" and identity == active_candidate_id
+                mode == "fixed_view"
+                and identity == active_candidate_id
                 and start_s <= now < end_s
             )
             if (
                 (report_ids or (mode == "fixed_view" and utility.omission_yield > 0))
-                and not continuing_pursuit and not continuing_fixed_view
+                and not continuing_pursuit
+                and not continuing_fixed_view
                 and start_s < next_start
             ):
                 next_start = start_s
@@ -1839,15 +2275,25 @@ class Mission1ReplanGate:
                         isinstance(parameters, Mapping)
                         and isinstance(parameters.get("x"), (int, float))
                         and isinstance(parameters.get("y"), (int, float))
-                        and now + _navigation_time(
-                            position["x"], position["y"], parameters["x"], parameters["y"],
+                        and now
+                        + _navigation_time(
+                            position["x"],
+                            position["y"],
+                            parameters["x"],
+                            parameters["y"],
                             vehicle["max_velocity"],
-                            _vehicle_direction(vehicle), parameters.get("arrival_direction"),
+                            _vehicle_direction(vehicle),
+                            parameters.get("arrival_direction"),
                             float(vehicle.get("quarter_turn_seconds", 0.0)),
-                        ) <= start_s + 1e-9
-                        and set(report_ids) <= _fixed_view_report_ids(
-                            environment, parameters, tuple(opportunities.values()),
-                            start_s=max(now, start_s), end_s=end_s,
+                        )
+                        <= start_s + 1e-9
+                        and set(report_ids)
+                        <= _fixed_view_report_ids(
+                            environment,
+                            parameters,
+                            tuple(opportunities.values()),
+                            start_s=max(now, start_s),
+                            end_s=end_s,
                         )
                     )
                 else:
@@ -1857,7 +2303,10 @@ class Mission1ReplanGate:
             counts = dict.fromkeys(tables, 0)
             for report in scored_information_reports:
                 counts[opportunities[report].entity_id] += 1
-            current_score += sum(tables[entity][count] for entity, count in counts.items()) / SCORE_SCALE
+            current_score += (
+                sum(tables[entity][count] for entity, count in counts.items())
+                / SCORE_SCALE
+            )
         return (
             self.evaluate(
                 current_score,
@@ -1939,11 +2388,17 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
     potentials = [0] * node_count
     for node in range(graph.source + 1, graph.sink + 1):
         potentials[node] = max(
-            (potentials[previous]
-             + costs[previous, node][0] * maneuver_bound * duration_bound * tie_break_bound
-             - costs[previous, node][1] * duration_bound * tie_break_bound
-             - costs[previous, node][2] * tie_break_bound - costs[previous, node][3]
-             for previous in incoming_nodes[node]),
+            (
+                potentials[previous]
+                + costs[previous, node][0]
+                * maneuver_bound
+                * duration_bound
+                * tie_break_bound
+                - costs[previous, node][1] * duration_bound * tie_break_bound
+                - costs[previous, node][2] * tie_break_bound
+                - costs[previous, node][3]
+                for previous in incoming_nodes[node]
+            ),
             default=0,
         )
     assignments: dict[str, int] = {
@@ -1977,7 +2432,9 @@ def serialize_minizinc_data(graph: CandidateDAG) -> str:
         "candidate_duration": durations,
         "candidate_x": [round(item.x) for item in graph.candidates],
         "candidate_y": [round(item.y) for item in graph.candidates],
-        "candidate_observation_delay": [round(item.observation_delay_s * TIME_SCALE) for item in graph.candidates],
+        "candidate_observation_delay": [
+            round(item.observation_delay_s * TIME_SCALE) for item in graph.candidates
+        ],
         "candidate_arrival_direction": [
             -1 if item.arrival_direction is None else item.arrival_direction
             for item in graph.candidates

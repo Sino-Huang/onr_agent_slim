@@ -195,8 +195,12 @@ class Mission3AdaptivePlanner:
         ]
         if not unresolved:
             # Only an in-flight Mission 3 maneuver is cancelled on the early
-            # verdict; a joint34 run's other half keeps its maneuver.
+            # verdict; a joint34 run's other half keeps its maneuver. An
+            # in-flight investigation completes through the runtime's normal
+            # terminal path (camera reset and receipts) instead.
             if self._lifecycle_active(lifecycle) and active_target is not None:
+                if lifecycle.get("action") == "investigate":
+                    return None
                 return self._record(
                     self._cancel_with_hold(environment, "early_verdict_cancel")
                 )
@@ -222,6 +226,13 @@ class Mission3AdaptivePlanner:
             if active_ship is None:
                 raise ValueError("active Mission 3 maneuver targets an unselected ship")
             if active_ship["resolution"]["status"] == "resolved":
+                if lifecycle.get("action") == "investigate":
+                    # The verdict landed mid-investigation: the runtime
+                    # terminates the maneuver through its normal completion
+                    # path (camera reset and tracking receipts) on the next
+                    # tick. Superseding it now would cancel that completion,
+                    # so the next leg waits for the terminal lifecycle.
+                    return None
                 return self._record(
                     self._next_action(
                         environment,
@@ -376,7 +387,13 @@ class Mission3AdaptivePlanner:
             and state in {"completed", "failed", "cancelled"}
         ):
             self._handled_terminal_commands.add(command_id)
-            if lifecycle.get("action") == "investigate":
+            # A superseded (cancelled) investigation did not fail its orbit —
+            # charging it would exhaust the bounded attempt budget on replan
+            # races instead of genuine investigation outcomes.
+            if lifecycle.get("action") == "investigate" and state in {
+                "completed",
+                "failed",
+            }:
                 self._investigation_attempts[cast(EntityId, target)] = (
                     self._investigation_attempts.get(cast(EntityId, target), 0) + 1
                 )
@@ -434,18 +451,41 @@ class Mission3AdaptivePlanner:
     ) -> EntityId | None:
         vehicle = cast(Mapping[str, object], environment["controlled_vehicle"])
         position = cast(Mapping[str, object], vehicle["position"])
+        drone_speed = max(
+            float(vehicle.get("max_velocity", 0.0) or 0.0), 1e-6
+        )
         ranked = []
+        unreachable = []
         for ship_id in candidates:
             observation = observations.get(ship_id)
             if observation is None:
                 continue
             target = cast(Mapping[str, object], observation["estimated_position"])
-            distance = math.hypot(
-                float(target["x"]) - float(position["x"]),
-                float(target["y"]) - float(position["y"]),
-            )
+            dx = float(target["x"]) - float(position["x"])
+            dy = float(target["y"]) - float(position["y"])
+            distance = math.hypot(dx, dy)
+            if distance > 0:
+                # Range rate along the bearing to the ship: positive means the
+                # ship is receding. A ship receding faster than the drone can
+                # fly never enters the detection envelope, so it must not
+                # starve the tour of reachable targets.
+                speed = abs(
+                    float(observation.get("estimated_speed_mps", 0.0) or 0.0)
+                )
+                heading = float(
+                    observation.get("estimated_heading_degrees", 0.0) or 0.0
+                )
+                range_rate = (
+                    speed * math.sin(math.radians(heading)) * dx
+                    + speed * math.cos(math.radians(heading)) * dy
+                ) / distance
+                if speed > 0 and range_rate >= drone_speed:
+                    unreachable.append((distance, str(ship_id), ship_id))
+                    continue
             ranked.append((distance, str(ship_id), ship_id))
-        return None if not ranked else min(ranked)[2]
+        if not ranked:
+            return None if not unreachable else min(unreachable)[2]
+        return min(ranked)[2]
 
     def _screen_action(
         self,
@@ -458,6 +498,10 @@ class Mission3AdaptivePlanner:
         vehicle = cast(Mapping[str, object], environment["controlled_vehicle"])
         position = cast(Mapping[str, object], vehicle["position"])
         target = cast(Mapping[str, object], observation["estimated_position"])
+        speed = abs(
+            float(observation.get("estimated_speed_mps", 0.0) or 0.0)
+        )
+        heading = float(observation.get("estimated_heading_degrees", 0.0) or 0.0)
         dx = float(target["x"]) - float(position["x"])
         dy = float(target["y"]) - float(position["y"])
         distance = math.hypot(dx, dy)
@@ -473,15 +517,40 @@ class Mission3AdaptivePlanner:
                 {"entity_id": ship_id, "standoff_distance": standoff},
                 reason + ":current_camera_sighting",
             )
+        # Ships cruise at fleet speed, so aiming at the current fix guarantees
+        # a stale arrival. Lead the target along its reported course over the
+        # drone's flight time to the intercept point (two fixed-point
+        # iterations of the intercept equation). The horizon is capped: fleet
+        # tracks curve, so a short re-leadable horizon beats a far linear
+        # extrapolation.
+        drone_speed = max(float(vehicle.get("max_velocity", 0.0) or 0.0), 1e-6)
+        travel_time = min(distance / drone_speed, 45.0)
+        for _ in range(2):
+            future_north = float(target["x"]) + speed * math.cos(
+                math.radians(heading)
+            ) * travel_time
+            future_east = float(target["y"]) + speed * math.sin(
+                math.radians(heading)
+            ) * travel_time
+            dx = future_north - float(position["x"])
+            dy = future_east - float(position["y"])
+            distance = math.hypot(dx, dy)
+            travel_time = min(distance / drone_speed, 45.0)
         fraction = max(0.0, distance - standoff) / distance if distance else 0.0
         x = float(position["x"]) + dx * fraction
         y = float(position["y"]) + dy * fraction
+        if math.hypot(x - float(position["x"]), y - float(position["y"])) <= standoff:
+            # The drone already sits on the standoff ring around the ship's
+            # intercept point: hold here and let the hull pass through the
+            # visibility envelope instead of chasing a faster ship.
+            x, y = float(position["x"]), float(position["y"])
         bearing = math.degrees(math.atan2(dy, dx)) % 360.0
         arrival_direction = (3, 0, 1, 2)[int((bearing + 45.0) // 90.0) % 4]
         return Mission3Decision(
             "navigate",
             ship_id,
             {
+                "entity_id": ship_id,
                 "x": x,
                 "y": y,
                 "z": float(position["z"]),
@@ -607,7 +676,24 @@ class Mission3ReplanGate:
             return None
         self.last_decision = decision
         target = "none" if decision.entity_id is None else str(decision.entity_id)
-        trigger = f"mission3-gate:{decision.reason}:{decision.action}:{target}"
+        # A serving maneuver that failed or was cancelled belongs in the
+        # trigger identity: the desired decision may be unchanged, but the
+        # failed leg must be re-scheduled rather than suppressed as a
+        # duplicate.  A merely superseded (overridden) leg does not re-fire.
+        # The flag is a dedup key only (same vocabulary as the Mission 4
+        # gate's digest); it never instructs the consumer whether to plan.
+        lifecycle = environment.get("maneuver_lifecycle")
+        if isinstance(lifecycle, Mapping):
+            serving_failed = (
+                lifecycle.get("lifecycle") in {"failed", "cancelled"}
+                and bool(lifecycle.get("command_id"))
+            )
+        else:
+            serving_failed = False
+        trigger = (
+            f"mission3-gate:{decision.reason}:{decision.action}:{target}"
+            f":serving_failed={serving_failed}"
+        )
         if trigger == self._last_trigger:
             return None
         self._last_trigger = trigger

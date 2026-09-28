@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from onr.application.reporting_reliability import (
 )
 from onr.contracts.environment import EnvironmentTickResult
 from onr.contracts.prior_knowledge import PriorKnowledge, PriorKnowledgeClaim
+from onr.contracts.reporting_reliability import ReportingPriorPolicy
 from onr.ports.transport import Subscription
 
 NOW = "2026-09-03T00:00:00+10:00"
@@ -211,6 +213,14 @@ def test_service_initializes_once_from_public_spatiotemporal_prior(
     )
     assert initialized.ships[2].mean > 0.0
     assert initialized.omission.mean == pytest.approx(0.5)
+    prior_record = service.manager.configuration["prior_knowledge"]
+    assert isinstance(prior_record, Mapping)
+    assert prior_record["policy"] == {
+        "schema_version": 1,
+        "policy_id": "reporting-reliability-v1",
+        "matched_entity_mass": 0.9,
+        "window_weighting": "report_count",
+    }
 
     repeated = service.initialize_from_prior(prior, public_environment)
     assert repeated.status == "already_applied"
@@ -227,6 +237,83 @@ def test_service_initializes_once_from_public_spatiotemporal_prior(
     recovered = restarted.initialize_from_prior(prior, public_environment)
     assert recovered.status == "already_applied"
     assert restarted.load_current_snapshot() == initialized
+
+
+def test_reporting_prior_policy_controls_mass_and_window_weighting(
+    tmp_path: Path,
+) -> None:
+    policy = ReportingPriorPolicy(
+        matched_entity_mass=0.8,
+        window_weighting="uniform",
+    )
+    service = ReportingReliabilityService.create(
+        "mission-1",
+        (1, 2, 3),
+        FileReportingReliabilityStore(tmp_path),
+        InProcessTransport(
+            (Subscription("context-coordination", "mission-1", "planning-evidence"),)
+        ),
+        context_topic="planning-evidence",
+        clock=lambda: NOW,
+        prior_policy=policy,
+    )
+    prior = PriorKnowledge(
+        belief_kind="reporting_reliability",
+        claims=(
+            PriorKnowledgeClaim(
+                "hypothesis_cardinality",
+                {"hypothesis": "anomalous_entity", "count": 1},
+            ),
+            PriorKnowledgeClaim(
+                "spatiotemporal_priority",
+                {
+                    "start_time_s": 10,
+                    "end_time_s": 20,
+                    "north_min_m": 0,
+                    "north_max_m": 100,
+                    "east_min_m": 0,
+                    "east_max_m": 100,
+                },
+            ),
+        ),
+    )
+    environment = {
+        "static_info": [
+            {"entity_id": 1, "time": 12, "position": [10, 10, -25]},
+            {"entity_id": 1, "time": 14, "position": [20, 20, -25]},
+            {"entity_id": 2, "time": 16, "position": [30, 30, -25]},
+        ]
+    }
+
+    result = service.initialize_from_prior(prior, environment)
+
+    assert result.status == "applied"
+    ships = service.load_current_snapshot().ships
+    assert ships[0].honest_probability == pytest.approx(0.6)
+    assert ships[1].honest_probability == pytest.approx(0.6)
+    assert ships[2].honest_probability == pytest.approx(0.8)
+    prior_record = service.manager.configuration["prior_knowledge"]
+    assert isinstance(prior_record, Mapping)
+    assert prior_record["policy"] == {
+        "schema_version": 1,
+        "policy_id": "reporting-reliability-v1",
+        "matched_entity_mass": 0.8,
+        "window_weighting": "uniform",
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"policy_id": "reporting-reliability-v2"},
+        {"matched_entity_mass": 0},
+        {"matched_entity_mass": 1.1},
+        {"window_weighting": "distance"},
+    ],
+)
+def test_reporting_prior_policy_rejects_unsupported_configuration(kwargs) -> None:
+    with pytest.raises(ValueError):
+        ReportingPriorPolicy(**kwargs)
 
 
 def test_prior_does_not_identify_one_entity_or_reset_observed_evidence(
@@ -265,9 +352,7 @@ def test_prior_does_not_identify_one_entity_or_reset_observed_evidence(
         ),
     )
     unique_environment = {
-        "static_info": [
-            {"entity_id": 1, "time": 12.0, "position": [10.0, 10.0, -25.0]}
-        ]
+        "static_info": [{"entity_id": 1, "time": 12.0, "position": [10.0, 10.0, -25.0]}]
     }
 
     rejected = service.initialize_from_prior(prior, unique_environment)
