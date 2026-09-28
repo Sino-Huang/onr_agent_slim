@@ -160,6 +160,7 @@ def _joint34_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "request_label": str(row.get("worker_request_label", "none")),
         "deadline_label": "none" if deadline is None else f"{float(deadline):g}s",
         "m3_unresolved": int(row["m3_unresolved"]),
+        "m3_count": len(row.get("m3_selected_ship_ids") or []),
         "m3_ids": "/".join(str(v) for v in row.get("m3_selected_ship_ids") or []),
         "m4_track_count": len(tracks),
         "m4_track_list": " ".join(tracks) if tracks else "none",
@@ -243,7 +244,7 @@ _JOINT34_STRIP_LINES = (
         CYAN,
     ),
     StripLine(
-        "M3 unresolved {m3_unresolved}/3 · M4 tracks {m4_track_list}",
+        "M3 unresolved {m3_unresolved}/{m3_count} · M4 tracks {m4_track_list}",
         (1430, 932),
         15,
         MUTED,
@@ -252,7 +253,7 @@ _JOINT34_STRIP_LINES = (
 
 _JOINT34_STATUS_LINES = (
     StatusLine("Active block: {mission_block}", 742, 19),
-    StatusLine("M3 ships {m3_ids}: {m3_unresolved}/3 unresolved", 778, 19),
+    StatusLine("M3 ships {m3_ids}: {m3_unresolved}/{m3_count} unresolved", 778, 19),
     StatusLine("M4 evidence tracks: {m4_track_list}", 814, 19),
     StatusLine("Dock coverage: {dock_coverage}", 850, 17),
 )

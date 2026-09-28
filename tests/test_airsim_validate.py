@@ -187,3 +187,36 @@ def test_crop_frame_rejects_out_of_bounds_or_non_image_arrays() -> None:
         crop_frame(frame, slice(0, 11), slice(0, 20))
     with pytest.raises(ValueError):
         crop_frame(frame[..., 0], slice(0, 10), slice(0, 20))
+
+
+def test_metric_timing_merged_states_judge_frames_against_their_own_centroid() -> None:
+    # Two availability states whose strips differ by a small legitimate text
+    # change merge into one distinct group; members must then be judged for
+    # codec stability against their own state's centroid, not the merged
+    # group's reference, or a marginally-merged state's frames always fail.
+    from onr.demo.airsim_reconstruction.validate import (
+        METRIC_SIGNATURE_MISMATCH_TOLERANCE,
+    )
+
+    width = 2000
+    base = _signature((1, 0, 1, 0, 0, 1, 0, 0), width)
+    close = base.copy()
+    # A legitimate small text change (a revision digit) within merge tolerance.
+    changed = int(width * METRIC_SIGNATURE_MISMATCH_TOLERANCE) - 4
+    close[0, :changed] ^= True
+    rng = np.random.default_rng(11)
+    second_state = np.repeat(close[None, :, :], 5, axis=0).copy()
+    # Codec noise spreads members around their own centroid; the own-state
+    # distance stays inside the tolerance while the distance to the first
+    # state's centroid can exceed it.
+    for frame in second_state:
+        frame[0, rng.choice(width, 2, replace=False)] ^= True
+    signatures = np.concatenate(
+        [
+            np.repeat(base[None, :, :], 5, axis=0),
+            second_state,
+        ]
+    )
+    availability = [0.0] * 5 + [10.0] * 5
+    report = validate_metric_timing(signatures, availability)
+    assert report["status"] == "passed"

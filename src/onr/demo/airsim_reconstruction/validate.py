@@ -450,7 +450,13 @@ def _validate_metric_timing(
     )
     predicted = distances.argmin(axis=1)
     expected_groups = groups[state_ids]
-    own_distances = distances[np.arange(len(signatures)), expected_groups]
+    # Codec stability is measured against the frame's OWN state centroid:
+    # merged groups only classify wrong-state content, and a state whose
+    # centroid merged within the tolerance can still leave its members just
+    # past it when referenced to a different state's canonical content.
+    own_distances = np.mean(
+        signatures != centroids[state_ids], axis=(1, 2)
+    )
     wrong = np.flatnonzero(predicted != expected_groups)
     wrong_details = [
         {
