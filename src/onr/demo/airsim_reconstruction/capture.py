@@ -63,6 +63,17 @@ BYTES_PER_IMAGE_ESTIMATE = 4 * 1024 * 1024
 STAGING_MIN_FREE_BYTES = 200 * 1024 * 1024
 IMAGE_LABELS = ("front-rgb", "front-seg", "third-rgb")
 FLUSH_SECONDS = 0.1
+# Recorded headings are the world model's cardinal grid heading, so a quarter
+# turn lands between two 0.5 s state ticks and replaying it verbatim snaps the
+# aircraft 90 degrees in one video frame. The live AirSync engine
+# (onr_physical_runtime SyncEngineConfig.pre_yaw_time_s / yaw_rate_degrees_s)
+# instead rate-limits yaw and begins turning pre_yaw_time_s before a corner.
+# Capture reproduces that profile at half the engine's 90 deg/s: the video only
+# samples once per tick, so this keeps each captured step at 22.5 degrees and
+# centres a quarter turn on the recorded corner.
+VISUAL_YAW_RATE_DEGREES_S = 45.0
+PRE_YAW_TIME_S = 1.0
+TICK_SECONDS = 0.5
 # Configured mount coordinates from the engine settings file — NOT measured
 # AirSim response camera poses (per-frame response poses were not retained;
 # certification measured front ≈ [0,−0.4,−0.54], third ≈ [0,8.0,−6.34]).
@@ -113,6 +124,42 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()  # noqa: UP017
 
 
+def smooth_yaw_profile(
+    headings: Sequence[float],
+    *,
+    tick_s: float = TICK_SECONDS,
+    yaw_rate_degrees_s: float = VISUAL_YAW_RATE_DEGREES_S,
+    pre_yaw_time_s: float = PRE_YAW_TIME_S,
+) -> list[float]:
+    """Return a rate-limited, anticipatory yaw for a tick-sampled heading series.
+
+    Each tick steers toward the heading recorded ``pre_yaw_time_s`` ahead and
+    turns by at most ``yaw_rate_degrees_s * tick_s`` along the shortest arc, so
+    turns start before the recorded corner and finish after it. The first tick
+    is kept exact. Results are normalised to [0, 360).
+    """
+
+    if tick_s <= 0.0 or yaw_rate_degrees_s <= 0.0 or pre_yaw_time_s < 0.0:
+        raise ValueError(
+            "tick_s and yaw_rate_degrees_s must be positive; "
+            "pre_yaw_time_s must be non-negative"
+        )
+    if not headings:
+        return []
+    unwrapped = [float(headings[0])]
+    for heading in headings[1:]:
+        delta = (float(heading) - unwrapped[-1] + 180.0) % 360.0 - 180.0
+        unwrapped.append(unwrapped[-1] + delta)
+    step = yaw_rate_degrees_s * tick_s
+    lead = round(pre_yaw_time_s / tick_s)
+    last = len(unwrapped) - 1
+    yaw = [unwrapped[0]]
+    for tick in range(1, len(unwrapped)):
+        error = unwrapped[min(tick + lead, last)] - yaw[-1]
+        yaw.append(yaw[-1] + max(-step, min(step, error)))
+    return [value % 360.0 for value in yaw]
+
+
 def load_drone_trajectory(
     frame_metadata_path: str | Path, observations_dir: str | Path
 ) -> list[DronePose]:
@@ -124,18 +171,19 @@ def load_drone_trajectory(
         observation = json.loads(path.read_text())
         if observation.get("observation_kind") != "state":
             continue
-        tick = round(float(observation["mission_time_s"]) / 0.5)
+        tick = round(float(observation["mission_time_s"]) / TICK_SECONDS)
         if tick in headings:
             raise ValueError(f"duplicate state observation for tick {tick}")
         headings[tick] = float(
             observation["controlled_vehicle"]["heading_degrees"]
         )
-    poses = []
+    positions = []
+    recorded_yaw = []
     for expected_tick, row in enumerate(rows):
         tick = int(row["tick"])
         mission_time_s = float(row["mission_time"])
         if tick != expected_tick or not math.isclose(
-            mission_time_s, tick * 0.5, abs_tol=1e-9
+            mission_time_s, tick * TICK_SECONDS, abs_tol=1e-9
         ):
             raise ValueError("frame metadata ticks must be contiguous at 0.5 s")
         ned = tuple(float(value) for value in row["position_ned"])
@@ -144,14 +192,20 @@ def load_drone_trajectory(
         if tick == 0:
             # Tick zero has no state observation; the reconstructed metadata
             # row carries the canonical post-snap initial pose.
-            ned, yaw = ned, 0.0
+            yaw = 0.0
         else:
             try:
                 yaw = headings[tick]
             except KeyError as exc:
                 raise ValueError(f"missing state observation for tick {tick}") from exc
-        poses.append(DronePose(tick, mission_time_s, ned, yaw % 360.0))
-    return poses
+        positions.append((tick, mission_time_s, ned))
+        recorded_yaw.append(yaw)
+    return [
+        DronePose(tick, mission_time_s, ned, yaw)
+        for (tick, mission_time_s, ned), yaw in zip(
+            positions, smooth_yaw_profile(recorded_yaw), strict=True
+        )
+    ]
 
 
 def disk_preflight(

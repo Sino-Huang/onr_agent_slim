@@ -94,6 +94,8 @@ python -m onr.demo.airsim_reconstruction.capture \
 
 `--stop-tick` is exclusive. The command above requests `LAST_TICK + 1` ticks and requires `front-rgb`, `front-seg`, and `third-rgb` for each tick. A resumed capture is complete only when its manifest contains the full contiguous range and all streams; use the closeout rather than trusting a partial command summary.
 
+Capture does not replay the recorded heading verbatim. State observations carry the world model's cardinal grid heading, so a quarter turn would snap the aircraft 90° between two ticks. `smooth_yaw_profile` in `capture.py` applies the live AirSync engine's turning scheme instead (rate-limited yaw that starts `PRE_YAW_TIME_S` before the recorded corner, as in `onr_physical_runtime`'s `SyncEngineConfig`) at 45°/s, so each captured tick rotates at most 22.5°. Positions are unchanged. Capture from before this change must be redone to pick it up; do not `--resume` into an old capture directory.
+
 ```bash
 python scripts/author_capture_closeout.py \
   --capture-dir "$ROOT/capture" \

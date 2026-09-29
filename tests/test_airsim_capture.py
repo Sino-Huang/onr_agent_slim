@@ -34,6 +34,7 @@ from onr.demo.airsim_reconstruction.capture import (
     pending_capture_ticks,
     resume_tick_complete,
     run_capture,
+    smooth_yaw_profile,
     sync_to_nfs,
     write_manifest_atomic,
 )
@@ -67,7 +68,32 @@ def test_load_drone_trajectory_tick_zero_uses_canonical_metadata_pose(
 
     assert poses[0].ned_m == (9.0, 9.0, 9.0)
     assert poses[0].yaw_degrees == 0.0
-    assert poses[1].yaw_degrees == 90.0
+
+
+def test_smooth_yaw_profile_turns_at_bounded_rate_around_the_corner() -> None:
+    # Quarter turn recorded between ticks 3 and 4, crossing the 0/360 wrap.
+    recorded = [350.0, 350.0, 350.0, 350.0, 80.0, 80.0, 80.0, 80.0]
+
+    yaw = smooth_yaw_profile(
+        recorded, tick_s=0.5, yaw_rate_degrees_s=45.0, pre_yaw_time_s=1.0
+    )
+
+    assert yaw[0] == 350.0
+    steps = [(b - a + 180.0) % 360.0 - 180.0 for a, b in zip(yaw, yaw[1:])]
+    assert all(0.0 <= step <= 22.5 + 1e-9 for step in steps)  # shortest arc
+    assert steps[1] > 0.0  # starts turning pre_yaw_time_s before the corner
+    assert 0.0 < (yaw[3] - 350.0) % 360.0 < 90.0  # mid-turn at the corner
+    assert yaw[-1] == pytest.approx(80.0)
+
+
+def test_smooth_yaw_profile_follows_back_to_back_quarter_turns() -> None:
+    yaw = smooth_yaw_profile([0.0, 90.0, 180.0] + [180.0] * 10)
+
+    assert yaw[-1] == pytest.approx(180.0)
+    assert all(
+        abs((b - a + 180.0) % 360.0 - 180.0) <= 22.5 + 1e-9
+        for a, b in zip(yaw, yaw[1:])
+    )
 
 
 def test_disk_preflight_threshold(tmp_path: Path) -> None:
