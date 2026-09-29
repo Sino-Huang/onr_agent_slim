@@ -32,6 +32,9 @@ WIDTH = 1920
 HEIGHT = 1080
 FPS = 16
 PLAYBACK_SPEED = 4.0
+# Dense harbor frames need this to stay within the validator's hold-frame MAE
+# gate; 3000 kbps encoding noise exceeded it.
+DEFAULT_BITRATE_KBPS = 12000
 DEFAULT_FFMPEG = Path(
     "/home/sukaih/.cache/ms-playwright/ffmpeg-1011/ffmpeg-linux"
 )
@@ -766,7 +769,7 @@ def encode_video(
     *,
     ffmpeg_path: str | Path = DEFAULT_FFMPEG,
     fps: int = FPS,
-    bitrate_kbps: int = 3000,
+    bitrate_kbps: int = DEFAULT_BITRATE_KBPS,
     cpu_used: int = 4,
     popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
 ) -> int:
@@ -843,7 +846,7 @@ def render_video(
     world_frames: str | Path = DEFAULT_WORLD_FRAMES,
     run_dir: str | Path = DEFAULT_RUN_DIR,
     ffmpeg_path: str | Path = DEFAULT_FFMPEG,
-    bitrate_kbps: int = 3000,
+    bitrate_kbps: int = DEFAULT_BITRATE_KBPS,
     cpu_used: int = 4,
     min_pixels: int = 100,
     profile: MissionProfile = MISSION1,
@@ -959,7 +962,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--world-frames", type=Path, default=DEFAULT_WORLD_FRAMES)
     parser.add_argument("--run", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--ffmpeg", type=Path, default=DEFAULT_FFMPEG)
-    parser.add_argument("--bitrate-kbps", type=int, default=3000)
+    parser.add_argument("--bitrate-kbps", type=int, default=DEFAULT_BITRATE_KBPS)
     parser.add_argument("--cpu-used", type=int, default=4)
     parser.add_argument("--ticks", type=parse_tick_range, default=(0, 599))
     parser.add_argument("--min-pixels", type=int, default=100)

@@ -2,6 +2,12 @@
 
 Use this workflow to turn one accepted Mission Run into an AirSim-augmented replay. The video is an offline reconstruction of that run, not a second execution or a perception evaluation. Run the Python commands after activating the repository’s `onr` environment.
 
+> **Current visualization defaults — keep them for every new video.**
+>
+> - **Smooth turning (capture, always on).** Capture never replays the recorded cardinal heading verbatim; `smooth_yaw_profile` rate-limits yaw at 45°/s with 1 s pre-yaw, mirroring the live AirSync engine. See §5. A capture directory made before this change snaps the aircraft 90° per turn — recapture, never `--resume` into it.
+> - **256 m windowed world pane (derive default).** `derive_joint34_video_bundle.py` defaults to `--pane windowed`: a drone-following 256 m window at 2 m cells. The 2 km `overview` was too coarse to read targets and the 128 m `local` window too tight. See §4.
+> - **12 000 kbps VP8 render (render default).** Lower bitrates fail the validator's hold-frame gate on dense harbor content. See §6.
+
 ## Reuse boundary
 
 | Reusable media stage | Mission-combination-specific stage |
@@ -46,7 +52,7 @@ M3_SELECTION=/path/to/mission3-selection.json
 M4_PACKAGE=/path/to/mission4-package.json
 M4_FIXTURE=/path/to/mission4-fixture.json
 python scripts/derive_joint34_video_bundle.py \
-  --pane overview \
+  --pane windowed \
   --run "$RUN" \
   --scenario-config "$SCENARIO_CONFIG" \
   --mission3-selection "$M3_SELECTION" \
@@ -70,9 +76,15 @@ bundle's `reconstruction-receipt.json` for the derivation boundary.
 
 ## 4. Choose the world-pane scale intentionally
 
-The current Joint34 scenario uses a 2 m runtime grid, 64-cell partition (128 m per side), and a 15 m visibility cap. The video’s default `overview` projection instead spans 2 km using 256 cells at 7.8125 m per cell, rendered with two pixels per cell and then resized to 440×440 pixels. The configured range is unchanged, but a 15 m footprint is only about 3 pixels in radius in that overview and its edge is coarser. This is normal for the overview, not evidence that runtime visibility changed.
+The current Joint34 scenario uses a 2 m runtime grid, 64-cell partition (128 m per side), and a 15 m visibility cap. The derive script offers three projections of it:
 
-Use `--pane overview` for harbor context; use `--pane windowed` for a 256 m drone-following window at 2 m cells (crisp targets plus harbor context — the default choice for inspection runs); use `--pane local` when the viewer needs to compare the visibility footprint with the runtime's partition-local display. Distinguish sensor visibility/fog from Mission 4 dock-search coverage: they are different quantities.
+| `--pane` | Coverage | Cell / tile | Use |
+| --- | --- | --- | --- |
+| `windowed` (**default**) | 256 m, follows the drone | 2 m / 4 px | Every new video: targets, AOI, and search coverage stay readable with surrounding harbor context |
+| `overview` | 2 km, fixed north-up | 7.8125 m / 2 px | Whole-harbor context only; a 15 m footprint is about 3 px in radius, which is a rendering limit, not a runtime visibility change |
+| `local` | 128 m runtime partition | 2 m / 8 px | Comparing the visibility footprint against the runtime's partition-local display; too tight for general viewing |
+
+Distinguish sensor visibility/fog from Mission 4 dock-search coverage: they are different quantities.
 
 ## 5. Capture every tick and close it out
 
@@ -131,7 +143,7 @@ python -m onr.demo.airsim_reconstruction.validate \
   --profile-file "$ROOT/bundle/video-profile.json"
 ```
 
-The validator’s seven gates cover full decode, browser playback/seek, editorial pause/freeze, metric timing, disclosure strings, accepted-command presence, and artifact retention. Pass the matching receipt explicitly when rendering to a non-default path.
+The validator’s seven gates cover full decode, browser playback/seek, editorial pause/freeze, metric timing, disclosure strings, accepted-command presence, and artifact retention. Pass the matching receipt explicitly when rendering to a non-default path. Render encodes at `DEFAULT_BITRATE_KBPS` (12 000); do not lower `--bitrate-kbps`, since the hold-frame gate fails on harbor content at 3000.
 
 ## 7. Review and record the deliverable
 

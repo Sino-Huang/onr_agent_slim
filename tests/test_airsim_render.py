@@ -313,7 +313,7 @@ def test_encode_video_invokes_ffmpeg_mjpeg_pipe(tmp_path: Path) -> None:
         "-c:v",
         "libvpx",
         "-b:v",
-        "3000k",
+        "12000k",
         "-deadline",
         "good",
         "-cpu-used",

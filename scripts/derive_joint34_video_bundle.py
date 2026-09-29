@@ -932,10 +932,10 @@ def _seed_recorded_pose(env, converter, actual, direction, tick, previous_direct
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pane", choices=("overview", "windowed", "local"), default="overview", help=(
-        "world-pane projection: fixed 2 km north-up overview, a 256 m "
-        "drone-following window at 2 m cells, or the partition-local window "
-        "that follows the drone"
+    parser.add_argument("--pane", choices=("overview", "windowed", "local"), default="windowed", help=(
+        "world-pane projection: a 256 m drone-following window at 2 m cells "
+        "(default), the fixed 2 km north-up overview, or the partition-local "
+        "128 m window"
     ))
     parser.add_argument("--surface-alignment", type=Path, help=(
         "paired pose/surface alignment audit JSON to embed in the receipts"
