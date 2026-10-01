@@ -24,7 +24,7 @@ set -euo pipefail
 # This scopes vLLM only; see README.md for other services.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-export CUDA_VISIBLE_DEVICES="${VLLM_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0,1}}"
+export CUDA_VISIBLE_DEVICES="${VLLM_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-2,3}}"
 IFS=',' read -r -a VLLM_DEVICES <<< "$CUDA_VISIBLE_DEVICES"
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-${#VLLM_DEVICES[@]}}"
 VLLM_TMPDIR="${VLLM_TMPDIR:-$REPO_ROOT/var/vllm/tmp}"
