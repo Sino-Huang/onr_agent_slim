@@ -49,7 +49,7 @@ def main() -> int:
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument(
         "--mission-mode",
-        choices=("mission2", "mission3", "mission4", "joint24", "joint34"),
+        choices=("mission1", "mission2", "mission3", "mission4", "joint24", "joint34"),
         required=True,
     )
     parser.add_argument(
@@ -70,9 +70,16 @@ def main() -> int:
             "dock-ingress gate over the recorded search_area maneuver"
         ),
     )
+    parser.add_argument(
+        "--perception",
+        choices=("yolo", "ideal"),
+        help="Mission 1 only: require evidence from this external camera producer mode",
+    )
     args = parser.parse_args()
     if args.mission4_answers is not None and args.mission_mode not in {"mission4", "joint24", "joint34"}:
         parser.error("--mission4-answers is only valid with --mission-mode mission4, joint24 or joint34")
+    if args.perception is not None and args.mission_mode != "mission1":
+        parser.error("--perception is only valid with --mission-mode mission1")
     mission_metrics = None
     if args.mission_mode in {"mission2", "joint24"}:
         if args.mission2_scenario_dir is None:
@@ -92,6 +99,7 @@ def main() -> int:
         args.mission_mode,
         mission_metrics=mission_metrics,
         mission4_package=args.mission4_package,
+        perception=args.perception,
     )
     if args.mission4_answers is not None and audit["status"] == "PASS":
         audit = audit_live_demo(

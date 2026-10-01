@@ -1,4 +1,8 @@
-"""Materialize time-zero public Mission 1 inputs from a live transport."""
+"""Materialize the initial public Mission 1 inputs from a live transport.
+
+The initial environment is usually at mission time zero; a real-engine run
+starts at the measured scene phase provisioned by the scene clock instead.
+"""
 
 from __future__ import annotations
 
@@ -35,10 +39,10 @@ def main() -> None:
         parser.error("initial environment data is missing or mismatched")
     environment = event.to_dict()["payload"]
     assert isinstance(environment, dict)
-    if environment.get("mission_id") != args.mission_id or environment.get(
-        "mission_time_seconds"
-    ) != 0.0:
-        parser.error("Mission 1 public input must be the time-zero environment")
+    if environment.get("mission_id") != args.mission_id or not isinstance(
+        environment.get("mission_time_seconds"), (int, float)
+    ):
+        parser.error("initial environment is missing its mission time or identity")
     reports = environment.get("static_info")
     if not isinstance(reports, (list, tuple)):
         parser.error("initial environment has no public report schedule")

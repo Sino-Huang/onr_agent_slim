@@ -1,0 +1,5 @@
+{
+  "mission_id": "mission:demo",
+  "mission_text": "Please patrol the environment and confirm that all the events mentioned in the event report are accounted for. Prior intelligence indicates that exactly one vessel is unreliable. Suspicious reporting activity is more likely between Mission times 60 and 130 seconds in the planning-view NED region from north -1150 to -550 metres and east -950 to -450 metres. Treat this as non-authoritative prior knowledge and update the reliability estimate from observed evidence.",
+  "source_authority": "demo-operator"
+}

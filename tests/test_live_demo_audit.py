@@ -34,7 +34,17 @@ def run_tree(root: Path, mode: str) -> None:
             ],
         },
     )
-    if mode == "mission2":
+    if mode == "mission1":
+        section = {
+            "visible_ships": [{"ship_id": 2, "source": "yolo_camera_perception"}],
+            "event_report_checks": [{"check_id": "check:2:1", "outcome": "altered"}],
+            "mission1_comparison": {"visibility_source": "external_camera"},
+        }
+        write(
+            root / "perception/runs/perception-1/manifest.json",
+            {"configuration": {"perception": "yolo"}},
+        )
+    elif mode == "mission2":
         section = {
             "mission_end_time_s": 10.0,
             "perception_predictions": {"status": "ready", "sequence": 2},
@@ -128,6 +138,39 @@ def run_tree(root: Path, mode: str) -> None:
             / "transport/topics/mission3-agent-reports/missions/mission%3Ademo/1.json",
             {"event_kind": "mission3-agent-report", "payload": {"reason": "mission_budget"}},
         )
+
+
+def test_mission1_audit_accepts_yolo_camera_evidence(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission1")
+    audit = audit_live_demo(tmp_path, "mission1", perception="yolo")
+    assert audit["status"] == "PASS", audit["failures"]
+    assert audit["perception_evidence"]["external_camera_report_checks"] == 1
+
+
+def test_mission1_audit_rejects_evidence_from_another_perception_source(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission1")
+    audit = audit_live_demo(tmp_path, "mission1", perception="ideal")
+    assert set(audit["failures"]) >= {
+        "perception_source_not_observed",
+        "perception_source_mixed",
+        "perception_producer_mode_mismatch",
+    }
+
+
+def test_mission1_audit_requires_external_camera_report_checks(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission1")
+    stream = tmp_path / "transport/topics/environment-data/missions/mission%3Ademo"
+    for path in stream.glob("*.json"):
+        event = json.loads(path.read_text())
+        info = event["payload"]["world_model_info"]
+        info["event_report_checks"] = []
+        del info["mission1_comparison"]
+        write(path, event)
+    audit = audit_live_demo(tmp_path, "mission1", perception="yolo")
+    assert set(audit["failures"]) >= {
+        "mission1_external_camera_checks_missing",
+        "mission1_report_checks_missing",
+    }
 
 
 @pytest.mark.parametrize("mode", ["mission2", "mission3", "mission4"])

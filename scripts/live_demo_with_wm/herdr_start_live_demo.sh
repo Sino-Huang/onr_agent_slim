@@ -8,6 +8,9 @@
 # explicit ONR_DEMO_MISSION1_PLANNING_INPUT.
 # ONR_DEMO_DIAGNOSTIC_PRIOR optionally installs an explicit oracle/flattening
 # control bundle through the existing initial-belief store and outbox.
+# ONR_DEMO_PERCEPTION=yolo|ideal replaces simulated ship evidence with the real
+# Harbor engine (ONR_DEMO_ENGINE_SCENARIO, run under the freeze shim) and the
+# onr_solution Sukai producer; two extra panes own the engine and producer.
 
 set -euo pipefail
 
@@ -33,6 +36,17 @@ readonly MISSION4_WORKER_TIMEOUT_SECONDS="${ONR_DEMO_MISSION4_WORKER_TIMEOUT_SEC
 readonly AIRSIM_RPC_URL="${ONR_DEMO_AIRSIM_RPC_URL:-}"
 readonly CAMERA_OWNER="${ONR_DEMO_CAMERA_OWNER:-external}"
 readonly VIEWER_PORT="${ONR_DEMO_VIEWER_PORT:-5066}"
+readonly PERCEPTION="${ONR_DEMO_PERCEPTION:-}"
+readonly SOLUTION_ROOT="/data/ccu/sukaih/ONR/onr_solution"
+readonly ENGINE_SCENARIO="${ONR_DEMO_ENGINE_SCENARIO:-}"
+readonly ENGINE_EXECUTABLE="${ONR_DEMO_ENGINE_EXECUTABLE:-/data/ccu/sukaih/ONR/onr_env/Linux/Harbor5_6.sh}"
+readonly AIRSIM_SETTINGS="${ONR_DEMO_AIRSIM_SETTINGS:-$PHYSICAL_ROOT/conf/env/settings_airsim.json}"
+readonly PERCEPTION_CALIBRATION="${ONR_DEMO_PERCEPTION_CALIBRATION:-$SOLUTION_ROOT/config/calibration_v12.json}"
+readonly YOLO_DEVICE="${ONR_DEMO_YOLO_DEVICE:-cuda:1}"
+readonly PERCEPTION_PORT=8766
+readonly AIRSIM_VEHICLE="SimpleFlight"
+readonly AIRSIM_CAMERA="front_center_custom"
+readonly SIMULATION_LIMIT_SECONDS="${ONR_DEMO_SIMULATION_LIMIT_SECONDS:-}"
 readonly WORKSPACE_LABEL="$MISSION_MODE-live-demo"
 if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then
     default_maneuver_seconds=30
@@ -118,6 +132,17 @@ if [ "$CAMERA_OWNER" != "external" ] && [ "$CAMERA_OWNER" != "runtime" ]; then
 fi
 if [ "$CAMERA_OWNER" = "runtime" ] && [ -z "$AIRSIM_RPC_URL" ]; then
     echo "Runtime camera ownership requires ONR_DEMO_AIRSIM_RPC_URL." >&2; exit 2
+fi
+if [ -n "$PERCEPTION" ]; then
+    if [ "$PERCEPTION" != "yolo" ] && [ "$PERCEPTION" != "ideal" ]; then
+        echo "ONR_DEMO_PERCEPTION must be yolo or ideal." >&2; exit 2
+    fi
+    if [ -n "$AIRSIM_RPC_URL" ]; then
+        echo "ONR_DEMO_PERCEPTION owns the engine clock; do not also set ONR_DEMO_AIRSIM_RPC_URL." >&2; exit 2
+    fi
+    if [ ! -d "$ENGINE_SCENARIO/ships" ] || [ ! -x "$ENGINE_EXECUTABLE" ] || [ ! -r "$AIRSIM_SETTINGS" ] || [ ! -r "$PERCEPTION_CALIBRATION" ]; then
+        echo "ONR_DEMO_PERCEPTION needs ONR_DEMO_ENGINE_SCENARIO (with ships/), the engine executable, AirSim settings and calibration." >&2; exit 1
+    fi
 fi
 mission_args=()
 if [ "$MISSION_MODE" = "mission1" ] || [ "$MISSION_MODE" = "joint" ]; then
@@ -213,21 +238,27 @@ for existing_workspace_id in $existing_workspace_ids; do
     HERDR_SESSION="$sessname" herdr workspace close "$existing_workspace_id"
 done
 
-if ! python - "$VIEWER_PORT" <<'PY'
+probe_ports=("$VIEWER_PORT")
+if [ -n "$PERCEPTION" ]; then probe_ports+=(41451 "$PERCEPTION_PORT"); fi
+for probe_port in "${probe_ports[@]}"; do
+if ! python - "$probe_port" <<'PY'
 import socket
 import sys
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    # A just-stopped engine leaves TIME_WAIT sockets; only a listener blocks.
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind(("127.0.0.1", int(sys.argv[1])))
     except OSError:
         raise SystemExit(1) from None
 PY
 then
-    echo "Viewer address 127.0.0.1:$VIEWER_PORT is already in use." >&2
-    echo "Close the owning workspace or process, or set ONR_DEMO_VIEWER_PORT to a free port." >&2
+    echo "Address 127.0.0.1:$probe_port is already in use." >&2
+    echo "Close the owning workspace or process (a running engine or producer), or set ONR_DEMO_VIEWER_PORT to a free viewer port." >&2
     exit 1
 fi
+done
 fi
 
 # Keep each live demo isolated while retaining all generated state under the
@@ -258,10 +289,11 @@ fi
 
 mkdir -p \
     "$transport_root" \
-    "$physical_state_root" \
     "$agent_storage_root" \
     "$planner_artifacts_root" \
     "$environment_artifacts_root"
+# The engine scene clock provisions its epoch only into a fresh runtime state.
+if [ -z "$PERCEPTION" ]; then mkdir -p "$physical_state_root"; fi
 
 sed \
     -e "s|^environment_profile: .*|environment_profile: $environment_config|" \
@@ -293,12 +325,43 @@ physical_args=(python -u -m onr_physical_runtime.agent.service --scenario-config
 if [ -n "$AIRSIM_RPC_URL" ]; then
     physical_args+=(--airsim-rpc-url "$AIRSIM_RPC_URL" --camera-owner "$CAMERA_OWNER")
 fi
+physical_wait=""
+engine_command=""
+perception_command=""
+if [ -n "$PERCEPTION" ]; then
+    engine_root="$run_root/engine"
+    engine_ready="$engine_root/ready.json"
+    perception_run_id="perception-$(basename "$run_root")"
+    physical_args+=(--perception-url "http://127.0.0.1:$PERCEPTION_PORT" --perception-run-id "$perception_run_id"
+        --experimental-scene-clock-state "$engine_root/shim/clock.bin"
+        --experimental-scene-times "$engine_root/status/$(basename "$ENGINE_SCENARIO")/scenario_times.json"
+        --airsim-vehicle-name "$AIRSIM_VEHICLE")
+    engine_args=(python -u -m onr_physical_runtime.sim.experimental_freeze.live_engine
+        --engine-executable "$ENGINE_EXECUTABLE" --settings "$AIRSIM_SETTINGS"
+        --scenario "$ENGINE_SCENARIO" --output "$engine_root")
+    printf -v engine_python '%q ' "${engine_args[@]}"
+    engine_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec $engine_python"
+    printf -v engine_command 'bash -lc %q' "$engine_inner"
+    perception_args=(python -u -m sukai_interface.run --host 127.0.0.1 --port "$PERCEPTION_PORT"
+        --run-id "$perception_run_id" --output-dir "$run_root/perception"
+        --runtime-entity-map "$engine_root/actor-entities.json" --ship-config-dir "$ENGINE_SCENARIO/ships"
+        --calibration "$PERCEPTION_CALIBRATION" --vehicle-name "$AIRSIM_VEHICLE" --camera-name "$AIRSIM_CAMERA"
+        --perception "$PERCEPTION")
+    if [ "$PERCEPTION" = "yolo" ]; then perception_args+=(--yolo-device "$YOLO_DEVICE"); fi
+    printf -v perception_python '%q ' "${perception_args[@]}"
+    perception_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$SOLUTION_ROOT'; echo 'Waiting for the frozen engine...'; for attempt in {1..600}; do [ -f '$engine_ready' ] && break; sleep 1; done; if [ ! -f '$engine_ready' ]; then echo 'engine was not ready within 600 seconds.' >&2; exit 1; fi; exec $perception_python"
+    printf -v perception_command 'bash -lc %q' "$perception_inner"
+    physical_wait="echo 'Waiting for the perception producer...'; for attempt in {1..900}; do curl -fsS --max-time 2 http://127.0.0.1:$PERCEPTION_PORT/api/v1/health >/dev/null 2>&1 && break; sleep 1; done; if ! curl -fsS --max-time 2 http://127.0.0.1:$PERCEPTION_PORT/api/v1/health >/dev/null 2>&1; then echo 'perception producer was not healthy within 900 seconds.' >&2; exit 1; fi; "
+fi
 printf -v physical_python '%q ' "${physical_args[@]}"
-physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; exec $physical_python"
+physical_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$PHYSICAL_ROOT'; ${physical_wait}exec $physical_python"
 printf -v physical_command 'bash -lc %q' "$physical_inner"
 
 agent_args=(python -u -m onr.runtime.cli --mission-file "$MISSION_FILE" --repo-root "$AGENT_ROOT"
     --config-path "$agent_config" --skip-runtime-artifact-rollover --result-path "$closed_loop_result")
+if [ -n "$SIMULATION_LIMIT_SECONDS" ]; then
+    agent_args+=(--simulation-limit-seconds "$SIMULATION_LIMIT_SECONDS")
+fi
 printf -v agent_python '%q ' "${agent_args[@]}"
 planning_preparation=""
 if [ "$prepare_mission1_planning_input" = "1" ]; then
@@ -320,7 +383,9 @@ if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ] || [ "$MI
     agent_ready_file="$mission4_worker_ready"
     agent_ready_description="initial Mission 4 worker request receipt"
 fi
-agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the $agent_ready_description...'; for attempt in {1..120}; do [ -f '$agent_ready_file' ] && break; sleep 1; done; if [ ! -f '$agent_ready_file' ]; then echo '$agent_ready_description was not available within 120 seconds.' >&2; exit 1; fi; echo 'Waiting for the configured vLLM endpoint...'; for attempt in {1..120}; do curl -fsS --max-time 2 http://127.0.0.1:11411/v1/models >/dev/null 2>&1 && break; sleep 1; done; if ! curl -fsS --max-time 2 http://127.0.0.1:11411/v1/models >/dev/null 2>&1; then echo 'configured vLLM endpoint was not available within 120 seconds.' >&2; exit 1; fi; ${planning_preparation}exec $agent_python"
+agent_ready_wait_s=120
+if [ -n "$PERCEPTION" ]; then agent_ready_wait_s=1200; fi
+agent_inner="set -e; source '$CONDA_INIT'; conda activate onr; cd '$AGENT_ROOT'; echo 'Waiting for the $agent_ready_description...'; for attempt in {1..$agent_ready_wait_s}; do [ -f '$agent_ready_file' ] && break; sleep 1; done; if [ ! -f '$agent_ready_file' ]; then echo '$agent_ready_description was not available within $agent_ready_wait_s seconds.' >&2; exit 1; fi; echo 'Waiting for the configured vLLM endpoint...'; for attempt in {1..120}; do curl -fsS --max-time 2 http://127.0.0.1:11411/v1/models >/dev/null 2>&1 && break; sleep 1; done; if ! curl -fsS --max-time 2 http://127.0.0.1:11411/v1/models >/dev/null 2>&1; then echo 'configured vLLM endpoint was not available within 120 seconds.' >&2; exit 1; fi; ${planning_preparation}exec $agent_python"
 printf -v agent_command 'bash -lc %q' "$agent_inner"
 
 worker_command=""
@@ -344,12 +409,16 @@ fi
 if [ "$MISSION_MODE" = "joint34" ]; then
     audit_args+=(--mission4-package "$MISSION4_PACKAGE")
 fi
+if [ -n "$PERCEPTION" ]; then
+    audit_args+=(--perception "$PERCEPTION")
+fi
 printf -v audit_command '%q ' "${audit_args[@]}"
 
 if [ "$DRY_RUN" = "1" ]; then
     printf 'DRY RUN: mode=%s; no services started\nRun configuration: %s\nPhysical command: %s\nAgent command: %s\nTerminal audit: %s\n' \
         "$MISSION_MODE" "$run_root" "$physical_command" "$agent_command" "$audit_command"
     if [ -n "$worker_command" ]; then printf 'Worker command: %s\n' "$worker_command"; fi
+    if [ -n "$engine_command" ]; then printf 'Engine command: %s\nPerception command: %s\n' "$engine_command" "$perception_command"; fi
     exit 0
 fi
 
@@ -370,6 +439,15 @@ if [ -n "$worker_command" ]; then
     HERDR_SESSION="$sessname" herdr pane run "$worker_pane" "$worker_command"
 fi
 
+if [ -n "$engine_command" ]; then
+    engine_pane="$(HERDR_SESSION="$sessname" herdr pane split "$physical_pane" --direction down --no-focus | jq -r '.result.pane.pane_id')"
+    HERDR_SESSION="$sessname" herdr pane rename "$engine_pane" "airsim-engine"
+    HERDR_SESSION="$sessname" herdr pane run "$engine_pane" "$engine_command"
+    perception_pane="$(HERDR_SESSION="$sessname" herdr pane split "$agent_pane" --direction down --no-focus | jq -r '.result.pane.pane_id')"
+    HERDR_SESSION="$sessname" herdr pane rename "$perception_pane" "perception"
+    HERDR_SESSION="$sessname" herdr pane run "$perception_pane" "$perception_command"
+fi
+
 echo "Created workspace '$WORKSPACE_LABEL' ($workspace_id) in herdr session '$sessname'."
 echo "Run data: $run_root"
 echo "Scenario: $SCENARIO_CONFIG"
@@ -379,6 +457,7 @@ if [ "$MISSION_MODE" = "mission2" ] || [ "$MISSION_MODE" = "joint" ] || [ "$MISS
 if [ "$MISSION_MODE" = "mission3" ]; then echo "Mission 3 description: $MISSION3_DESCRIPTION; fixture: ${MISSION3_FIXTURE:-live}"; fi
 if [ "$MISSION_MODE" = "mission4" ] || [ "$MISSION_MODE" = "joint24" ] || [ "$MISSION_MODE" = "joint34" ]; then echo "Mission 4 package: $MISSION4_PACKAGE; fixture: $MISSION4_FIXTURE; requests: $MISSION4_REQUESTS"; fi
 if [ "$MISSION_MODE" = "mission3" ] || [ "$MISSION_MODE" = "joint34" ]; then echo "Mission 3 selection: $MISSION3_DESCRIPTION; fixture: ${MISSION3_FIXTURE:-live}"; fi
+if [ -n "$PERCEPTION" ]; then echo "Perception: $PERCEPTION; engine scenario: $ENGINE_SCENARIO; producer run: $perception_run_id"; fi
 echo "Terminal audit: $audit_command"
 echo "World-model frame stream: http://127.0.0.1:$VIEWER_PORT"
 echo "Attach with: herdr --session $sessname"

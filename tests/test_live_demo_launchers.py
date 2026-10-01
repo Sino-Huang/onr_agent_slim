@@ -100,6 +100,69 @@ def test_mission_live_demo_adapter_selects_shared_launcher(mode: str) -> None:
         assert "Worker command:" not in result.stdout
 
 
+def _dry_run(script: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("ONR_DEMO_")
+    }
+    environment.update(ONR_DEMO_DRY_RUN="1", ONR_DEMO_VIEWER_PORT="5099", **overrides)
+    return subprocess.run(
+        ["bash", str(script), "05_onr"], env=environment, text=True,
+        capture_output=True, timeout=10, check=False,
+    )
+
+
+def test_mission1_airsim_launcher_wires_engine_producer_and_runtime() -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_mission1_airsim_live_demo.sh"
+    result = _dry_run(script)
+    assert result.returncode == 0, result.stderr
+    lines = dict(line.split(": ", 1) for line in result.stdout.splitlines() if ": " in line)
+    run_root = Path(lines["Run configuration"])
+    try:
+        commands = {
+            key: shlex.split(shlex.split(lines[key])[2].rsplit("exec ", 1)[1])
+            for key in ("Physical command", "Agent command", "Engine command", "Perception command")
+        }
+        physical, producer, engine = (
+            commands["Physical command"], commands["Perception command"], commands["Engine command"]
+        )
+        engine_root = Path(engine[engine.index("--output") + 1])
+        assert engine_root == run_root / "engine"
+        scene = engine[engine.index("--scenario") + 1]
+        # Runtime, producer and engine agree on the run, scene and clock.
+        assert physical[physical.index("--perception-run-id") + 1] == producer[producer.index("--run-id") + 1]
+        assert physical[physical.index("--perception-url") + 1].endswith(producer[producer.index("--port") + 1])
+        assert physical[physical.index("--experimental-scene-clock-state") + 1] == str(engine_root / "shim/clock.bin")
+        assert physical[physical.index("--experimental-scene-times") + 1] == str(
+            engine_root / "status" / Path(scene).name / "scenario_times.json"
+        )
+        assert producer[producer.index("--runtime-entity-map") + 1] == str(engine_root / "actor-entities.json")
+        assert producer[producer.index("--ship-config-dir") + 1] == f"{scene}/ships"
+        assert producer[producer.index("--perception") + 1] == "yolo"
+        assert physical[physical.index("--mission1-instance-dir") + 1].endswith(
+            "data/offshore_dock_1/mission1_instances/airsim-live-001"
+        )
+        assert "--airsim-rpc-url" not in physical
+        # The scene clock provisions its epoch only into fresh runtime state.
+        assert not (run_root / "physical-state").exists()
+        agent = commands["Agent command"]
+        assert agent[agent.index("--simulation-limit-seconds") + 1] == "290"
+        audit = shlex.split(lines["Terminal audit"])
+        assert audit[audit.index("--perception") + 1] == "yolo"
+    finally:
+        shutil.rmtree(run_root)
+
+
+def test_perception_launcher_rejects_a_second_airsim_owner() -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_mission1_airsim_live_demo.sh"
+    result = _dry_run(script, ONR_DEMO_AIRSIM_RPC_URL="http://127.0.0.1:8767")
+    assert result.returncode == 2
+    assert "ONR_DEMO_AIRSIM_RPC_URL" in result.stderr
+
+
 
 def test_joint34_launcher_exposes_runtime_camera_ownership() -> None:
     repository = Path(__file__).parents[1]

@@ -556,6 +556,39 @@ def _first_search_polygon(run_root: Path, command_ids: list[str]) -> list[object
     raise ValueError("accepted search_area feedback has no recorded command")
 
 
+def _mission1_perception_audit(
+    run_root: Path, environments: list[Mapping[str, Any]], perception: str
+) -> tuple[list[str], dict[str, object]]:
+    """Prove the Mission 1 evidence came from the external camera producer."""
+    failures: list[str] = []
+    expected = f"{perception}_camera_perception"
+    sources: dict[str, int] = {}
+    external_checks = 0
+    for item in environments:
+        world = item.get("world_model_info", {})
+        for ship in world.get("visible_ships", ()):
+            source = str(ship.get("source"))
+            sources[source] = sources.get(source, 0) + 1
+        if world.get("mission1_comparison", {}).get("visibility_source") == "external_camera":
+            external_checks = max(external_checks, len(world.get("event_report_checks", ())))
+    if sources.get(expected, 0) < 1:
+        failures.append("perception_source_not_observed")
+    if set(sources) - {expected}:
+        failures.append("perception_source_mixed")
+    if external_checks < 1:
+        failures.append("mission1_external_camera_checks_missing")
+    manifests = sorted((run_root / "perception/runs").glob("*/manifest.json"))
+    manifest = _read(manifests[-1]) if manifests else {}
+    if manifest.get("configuration", {}).get("perception", "ideal") != perception:
+        failures.append("perception_producer_mode_mismatch")
+    return failures, {
+        "expected_source": expected,
+        "visible_ship_sources": sources,
+        "external_camera_report_checks": external_checks,
+        "producer_manifest": str(manifests[-1].resolve()) if manifests else None,
+    }
+
+
 def audit_live_demo(
     run_root: Path,
     mission_mode: str,
@@ -563,13 +596,16 @@ def audit_live_demo(
     mission_metrics: Mapping[str, object] | None = None,
     mission4_answer_metrics: Mapping[str, object] | None = None,
     mission4_package: Path | None = None,
+    perception: str | None = None,
 ) -> dict[str, object]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
-    if mission_mode not in {"mission2", "mission3", "mission4", "joint24", "joint34"}:
+    if mission_mode not in {"mission1", "mission2", "mission3", "mission4", "joint24", "joint34"}:
         raise ValueError(
-            "live demo audit supports mission2, mission3, mission4, joint24 or joint34"
+            "live demo audit supports mission1, mission2, mission3, mission4, joint24 or joint34"
         )
+    if perception not in {None, "yolo", "ideal"} or (perception and mission_mode != "mission1"):
+        raise ValueError("perception audit is Mission 1 only and must be yolo or ideal")
     result_path = root / "closed-loop-result.json"
     result = _read(result_path) if result_path.is_file() else None
     environments = _environment_events(root)
@@ -620,9 +656,18 @@ def audit_live_demo(
 
     latest = environments[-1] if environments else {}
     world = latest.get("world_model_info", {}) if isinstance(latest, Mapping) else {}
-    if world.get("mission_mode") != mission_mode:
+    if world.get("mission_mode", "mission1") != mission_mode:
         failures.append("mission_mode_mismatch")
-    if mission_mode in {"mission2", "joint24"}:
+    perception_evidence: dict[str, object] | None = None
+    if perception is not None:
+        perception_failures, perception_evidence = _mission1_perception_audit(
+            root, environments, perception
+        )
+        failures.extend(perception_failures)
+    if mission_mode == "mission1":
+        if not world.get("event_report_checks"):
+            failures.append("mission1_report_checks_missing")
+    elif mission_mode in {"mission2", "joint24"}:
         snapshots = [
             item.get("world_model_info", {}).get("perception_predictions", {})
             for item in environments
@@ -733,6 +778,8 @@ def audit_live_demo(
         audit["mission4_evidence"] = mission4_evidence
         if ingress is not None:
             audit["aoi_trajectory"] = ingress
+    if perception_evidence is not None:
+        audit["perception_evidence"] = perception_evidence
     if mission_metrics is not None:
         audit["mission_metrics"] = dict(mission_metrics)
     if mission4_answer_metrics is not None:

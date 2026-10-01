@@ -3,7 +3,9 @@
 These launchers run the configured vLLM Hyper and Maneuver agents, MiniZinc,
 FileTransport and `onr_physical_runtime` together. Mission 3 and Mission 4 use
 their standalone visibility-dependent perception fixtures; these commands do
-not certify the pending colleague-owned perception or native AirSim gates.
+not certify the pending colleague-owned perception or native AirSim gates. For
+Mission 1 with the real engine and YOLO perception, see
+[mission1-airsim-yolo-live-demo.md](mission1-airsim-yolo-live-demo.md).
 
 Start one mission at a time in an existing Herdr session:
 
