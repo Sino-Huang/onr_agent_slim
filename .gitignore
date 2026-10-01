@@ -1,6 +1,7 @@
 modules/
 data/
 .onr/runtime/
+docs/slides/
 
 __pycache__/
 *.py[cod]

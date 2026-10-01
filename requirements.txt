@@ -7,3 +7,7 @@ py-spy==0.4.2
 
 # Build tool for vendored native modules (VAL plan validator)
 cmake<4
+
+# Slide deck and demo-clip builders (docs/slides/src)
+python-pptx==1.0.2
+imageio-ffmpeg==0.6.0
