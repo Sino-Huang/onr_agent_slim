@@ -1,0 +1,45 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ───────────────────────────────────────────────────┐┌ Preflight · launch blocked ──────────────────────────────────────────────────────────────────────┐
+│ Preset     ‹ [Mission 1 · AirSim live] ›                 ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.0.0.1:11411)                                       │
+│ AirSim     ‹ off✗ │ [on] ›                               ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs about 2 GiB                                        │
+│▸Perception ‹ off │ ideal │ [yolo] ›                      ││ ✖ AirSim RPC port free (in use) — stop the other Harbor engine                                   │
+│ Updates    ‹ [coordinator_driven] ›                      ││                                                                                                  │
+│ Sim limit  ‹ [290 s] ›                                   ││                                                                                                  │
+│ mission1-airsim · mission1                               ││                                                                                                  │
+│ ⓘ This preset plays the Harbor engine scene: AirSim      ││                                                                                                  │
+│ cannot be turned off.                                    ││                                                                                                  │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Mission Intent ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Patrol the window 60-130 s and verify every reported event.                                                                                                  │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ←/→ change · F2 demo prompts · Alt+Enter review & launch · r preflight · F1 help
+ ✖ Launch disabled: AirSim RPC port free

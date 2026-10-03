@@ -1,714 +1,1114 @@
-//! Slice A: state machine and keyboard behavior tests.
+//! State machine and keyboard behavior: handshake, Launch screen, activation,
+//! Run tabs and polling, terminal final refresh, cancellation and managed
+//! exit, ownership, liveness, session persistence, and the Stack tab tail.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+mod common;
+
+use std::fs;
+use std::time::Duration;
+
+use common::*;
+use crossterm::event::{KeyCode, KeyModifiers};
 use operator_console::app::{
-    App, AppState, CancellationState, CleanExitAction, Clock, HostCommand, HostMessage, Liveness,
-    LivenessThresholds, MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, PaneFocus, SessionStateFile,
+    App, AppState, CancellationState, CleanExitAction, LaunchField, Liveness, LivenessThresholds,
+    MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, RunTab, SessionStateFile,
 };
 use operator_console::host::{
-    ActivationAccepted, ActivationOutcome, ActivitiesPage, ArtifactContentPage, ArtifactDescriptor,
-    ArtifactsPage, CancellationAccepted, CancellationOutcome, ConversationEntriesPage,
-    ConversationEntry, CurrentRun, EvidencePage, Health, HostError, MissionIntent,
-    NarrativeResponse, ObservationEnvelope, ObservationsPage, OperatorAgentsPage,
-    OperatorEnvironmentPage, OperatorSection, OperatorViewPage, RunActivity, RunRecord,
+    ApiVersion, CancellationAccepted, CancellationOutcome, ContentPurpose, CurrentRun, Fetched,
+    Health, HostCommand, HostError, HostMessage, MissionIntent, OperatorSection,
 };
-use std::fs;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use serde_json::json;
 
-#[derive(Debug)]
-struct ManualClock {
-    now: Mutex<Instant>,
-}
-
-impl ManualClock {
-    fn new(now: Instant) -> Self {
-        Self {
-            now: Mutex::new(now),
-        }
-    }
-
-    fn advance(&self, duration: Duration) {
-        let mut now = self.now.lock().unwrap();
-        *now += duration;
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Instant {
-        *self.now.lock().unwrap()
-    }
-}
-
-fn health() -> Health {
-    Health {
-        status: "ok".to_string(),
-        api_version: operator_console::host::ApiVersion { major: 1, minor: 0 },
-    }
-}
-
-fn operator_health() -> Health {
-    Health {
-        status: "ok".to_string(),
-        api_version: operator_console::host::ApiVersion { major: 1, minor: 1 },
-    }
-}
-
-fn connected_app() -> App {
-    let mut app = App::new_with_session_file(
-        "http://127.0.0.1:8787".to_string(),
-        temp_state_file("connected"),
-    );
-    assert_eq!(app.state, AppState::Connecting);
-    assert_eq!(app.take_commands(), vec![HostCommand::Connect]);
-    app.handle_host_message(HostMessage::Connected(Ok(health())));
-    assert_eq!(app.state, AppState::Editing);
-    app
-}
-
-fn poll_command(app: &App) -> HostCommand {
-    HostCommand::PollCurrent {
-        credential: app.session.credential.clone(),
-    }
-}
-
-fn poll_commands(app: &App) -> Vec<HostCommand> {
-    let run_id = app.run.as_ref().unwrap().mission_run_id.clone();
-    vec![
-        poll_command(app),
-        HostCommand::FetchActivities {
-            mission_run_id: run_id.clone(),
-        },
-        HostCommand::FetchObservations {
-            mission_run_id: run_id.clone(),
-        },
-        HostCommand::FetchNarrative {
-            mission_run_id: run_id.clone(),
-        },
-        HostCommand::FetchArtifacts {
-            mission_run_id: run_id,
-        },
-    ]
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn alt_enter() -> KeyEvent {
-    KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
-}
-
-fn type_text(app: &mut App, text: &str) {
-    for c in text.chars() {
-        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-    }
-}
-
-fn accepted() -> ActivationAccepted {
-    ActivationAccepted {
-        activation_request_id: "req-1".to_string(),
-        mission_id: "mission-1".to_string(),
-        mission_run_id: "run-1".to_string(),
-        status: "queued".to_string(),
-        created_at: "2026-08-24T12:00:00Z".to_string(),
-    }
-}
-
-fn activities() -> Vec<RunActivity> {
-    serde_json::from_str::<ActivitiesPage>(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-activities.page.response.json"
-    ))
-    .unwrap()
-    .activities
-}
-
-fn observations() -> Vec<ObservationEnvelope> {
-    serde_json::from_str::<ObservationsPage>(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-observations.page.response.json"
-    ))
-    .unwrap()
-    .observations
-}
-
-fn narrative_response() -> NarrativeResponse {
-    serde_json::from_str(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-narrative.available.response.json"
-    ))
-    .unwrap()
-}
-
-fn artifacts() -> Vec<ArtifactDescriptor> {
-    serde_json::from_str::<ArtifactsPage>(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-artifacts.page.response.json"
-    ))
-    .unwrap()
-    .artifacts
-}
-
-fn conversation_entries() -> Vec<ConversationEntry> {
-    serde_json::from_str::<ConversationEntriesPage>(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-artifact-entries.page.response.json"
-    ))
-    .unwrap()
-    .entries
-}
-
-fn content_page(name: &str) -> ArtifactContentPage {
-    let raw = match name {
-        "first" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-page.response.json"
-        ),
-        "final" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-final.response.json"
-        ),
-        "binary" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.binary.response.json"
-        ),
-        _ => panic!("unknown content fixture"),
-    };
-    serde_json::from_str(raw).unwrap()
-}
-
-fn evidence<T>(items: Vec<T>) -> EvidencePage<T> {
-    EvidencePage {
-        items,
-        truncated: false,
-    }
-}
-
-fn active_run_app_with_clock(clock: Arc<ManualClock>) -> App {
-    let mut app = App::new_with_session_file_and_clock(
-        "http://127.0.0.1:8787".to_string(),
-        temp_state_file("liveness"),
-        clock,
-    )
-    .with_liveness_thresholds(LivenessThresholds {
-        stale: Duration::from_secs(5),
-        offline: Duration::from_secs(30),
-    });
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(health())));
-    app.intent = "survey the ridge".to_string();
-    app.cursor = app.intent.len();
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app
-}
-
-fn active_operator_app() -> App {
-    let mut app = App::new_with_session_file(
-        "http://127.0.0.1:8787".to_string(),
-        temp_state_file("operator-view"),
-    );
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(operator_health())));
-    app.intent = "survey the ridge".to_string();
-    app.cursor = app.intent.len();
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app
-}
-
-fn operator_agents_page(cursor: &str, ids: &[(&str, &str)]) -> OperatorViewPage {
-    let agents = ids
-        .iter()
-        .enumerate()
-        .map(|(index, (stable_id, invocation_id))| {
-            serde_json::json!({
-                "stable_id": stable_id,
-                "invocation_id": invocation_id,
-                "parent_id": null,
-                "role": if index % 2 == 0 { "hyper-agent" } else { "maneuver-control" },
-                "phase": if index % 2 == 0 { "planner-execution" } else { "maneuver-handoff" },
-                "kind": "llm",
-                "name": "reason",
-                "status": "ok",
-                "completion_state": "complete",
-                "started_at": format!("2026-08-27T12:00:0{index}Z"),
-                "updated_at": format!("2026-08-27T12:00:0{index}Z"),
-                "finished_at": format!("2026-08-27T12:00:0{index}Z"),
-                "duration_ms": 100,
-                "revision": 2,
-                "outcome": "completed",
-                "content": "response content",
-                "decision": null,
-                "recorded_debug_reasoning": {
-                    "label": "Recorded Debug Reasoning",
-                    "authority": "non-authoritative",
-                    "disposition": "available",
-                    "content": "reasoning"
-                },
-                "tool_calls": [],
-                "debug_payload_disposition": "available"
-            })
-        })
-        .collect::<Vec<_>>();
-    OperatorViewPage::Agents(Box::new(
-        serde_json::from_value::<OperatorAgentsPage>(serde_json::json!({
-            "schema_version": 1,
-            "mission_id": "mission-1",
-            "mission_run_id": "run-1",
-            "run_status": "running",
-            "section": "agents",
-            "debug": {
-                "enabled": true,
-                "reasoning_label": "Recorded Debug Reasoning",
-                "reasoning_authority": "non-authoritative",
-                "disposition": "available"
-            },
-            "next_cursor": cursor,
-            "before_cursor": null,
-            "has_more": false,
-            "agents": agents
-        }))
-        .unwrap(),
-    ))
-}
-
-fn operator_environment_page(raw: bool, cursor: &str) -> OperatorViewPage {
-    OperatorViewPage::Environment(Box::new(
-        serde_json::from_value::<OperatorEnvironmentPage>(serde_json::json!({
-            "schema_version": 1,
-            "mission_id": "mission-1",
-            "mission_run_id": "run-1",
-            "run_status": "running",
-            "section": "environment",
-            "debug": {
-                "enabled": true,
-                "reasoning_label": "Recorded Debug Reasoning",
-                "reasoning_authority": "non-authoritative",
-                "disposition": "available"
-            },
-            "next_cursor": cursor,
-            "before_cursor": null,
-            "has_more": false,
-            "environment": {
-                "authority": "environment",
-                "position": {"x": 1, "y": 2, "z": -3},
-                "velocity": {"x": 0, "y": 1, "z": 0},
-                "mission_time_seconds": 12.5,
-                "fsm_state": "navigate",
-                "fsm_status": "active",
-                "active_maneuver": {"maneuver_id": "m-1"},
-                "maneuver_feedback": null,
-                "perceptions": [],
-                "belief_changes": [],
-                "warnings": [],
-                "raw": raw,
-                "timeline": [{
-                    "stable_id": if raw { "raw-1" } else { "filtered-1" },
-                    "observation_sequence": 1,
-                    "event_id": "event-1",
-                    "occurred_at": "2026-08-27T12:00:00Z",
-                    "component": "environment",
-                    "authority": "environment",
-                    "event_kind": if raw { "hyper-heartbeat" } else { "belief.updated" },
-                    "status": null,
-                    "outcome": "completed",
-                    "correlation_id": null,
-                    "replay_disposition": "normal",
-                    "payload": {},
-                    "warnings": []
-                }]
-            }
-        }))
-        .unwrap(),
-    ))
-}
-
-fn temp_state_file(name: &str) -> SessionStateFile {
-    let path = std::env::temp_dir()
-        .join(format!("operator-console-{name}-{}", uuid::Uuid::new_v4()))
-        .join("operator-console/session.json");
-    SessionStateFile::at(path)
-}
+// ---------------------------------------------------------------------------
+// Handshake
+// ---------------------------------------------------------------------------
 
 #[test]
 fn new_app_connects_first() {
-    let app = App::new("http://127.0.0.1:8787".to_string());
+    let mut app = App::new_with_session_file(HOST.to_string(), state_file("new"));
     assert_eq!(app.state, AppState::Connecting);
-    assert!(!app.session.session_id.is_empty());
-    assert!(app.session.credential.len() >= 32);
+    assert_eq!(app.take_commands(), [HostCommand::Connect]);
 }
 
 #[test]
-fn connect_failure_enters_retryable_error() {
-    let mut app = App::new("http://127.0.0.1:8787".to_string());
-    app.take_commands();
+fn connect_failure_is_retryable_and_r_reconnects() {
+    let (mut app, _) = app_with_clock("connect-failure");
     app.handle_host_message(HostMessage::Connected(Err(HostError::Transport(
         "refused".to_string(),
     ))));
-    assert_eq!(
+    assert!(matches!(
         app.state,
         AppState::Error {
-            message: "Cannot reach Runtime Host at http://127.0.0.1:8787: transport error: refused"
-                .to_string(),
             retry_connect: true,
+            ..
         }
-    );
-}
-
-#[test]
-fn incompatible_host_version_is_rejected_before_mutation() {
-    let mut app = App::new("http://127.0.0.1:8787".to_string());
-    app.take_commands();
-    let mut bad = health();
-    bad.api_version.major = 2;
-    app.handle_host_message(HostMessage::Connected(Ok(bad)));
-    match app.state {
-        AppState::Error { retry_connect, .. } => assert!(retry_connect),
-        other => panic!("expected Error, got {other:?}"),
-    }
-    assert!(app.take_commands().is_empty());
-}
-
-#[test]
-fn error_r_retries_connection() {
-    let mut app = App::new("http://127.0.0.1:8787".to_string());
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Err(HostError::Transport(
-        "refused".to_string(),
-    ))));
+    ));
     app.handle_key(key(KeyCode::Char('r')));
     assert_eq!(app.state, AppState::Connecting);
-    assert_eq!(app.take_commands(), vec![HostCommand::Connect]);
+    assert_eq!(app.take_commands(), [HostCommand::Connect]);
 }
 
 #[test]
-fn bare_enter_inserts_newline_in_editor() {
-    let mut app = connected_app();
-    type_text(&mut app, "line one");
-    app.handle_key(key(KeyCode::Enter));
-    type_text(&mut app, "line two");
-    assert_eq!(app.intent, "line one\nline two");
-    assert_eq!(app.state, AppState::Editing);
+fn hosts_below_v1_2_are_too_old_and_other_majors_incompatible() {
+    for (major, minor, expected) in [
+        (1, 0, "Runtime Host too old"),
+        (1, 1, "Runtime Host too old"),
+        (2, 2, "Incompatible Runtime Host API v2.2"),
+    ] {
+        let (mut app, _) = app_with_clock("too-old");
+        app.handle_host_message(HostMessage::Connected(Ok(Health {
+            status: "ok".to_string(),
+            api_version: ApiVersion { major, minor },
+        })));
+        match &app.state {
+            AppState::Error { message, .. } => assert!(message.contains(expected), "{message}"),
+            other => panic!("expected an error for v{major}.{minor}, got {other:?}"),
+        }
+        assert!(app.take_commands().is_empty(), "no presets for an old Host");
+        assert!(app.health.is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Launch screen
+// ---------------------------------------------------------------------------
+
+#[test]
+fn connecting_loads_presets_prefills_intent_and_runs_preflight_at_once() {
+    let (mut app, _clock) = app_with_clock("launch");
+    app.handle_host_message(HostMessage::Connected(Ok(health())));
+    assert_eq!(app.state, AppState::Launch);
+    assert_eq!(app.take_commands(), [HostCommand::FetchPresets]);
+    app.handle_host_message(HostMessage::Presets(Ok(presets())));
+    assert_eq!(app.launch.preset().unwrap().preset_id, "mission1-harbor");
+    assert_eq!(
+        app.launch.editor.text(),
+        "Please patrol the environment and confirm every reported event."
+    );
+    assert_eq!(app.launch.focus, LaunchField::Intent);
+    app.check_deadlines();
+    let (_, query) = single_preflight(&mut app);
+    assert_eq!(query.preset_id, "mission1-harbor");
+    assert!(!query.toggles.airsim);
+    assert_eq!(query.toggles.perception, "off");
+    assert!(app.launch.preflight_pending());
 }
 
 #[test]
-fn editing_supports_cursor_movement_and_deletion() {
-    let mut app = connected_app();
-    type_text(&mut app, "ab\ncd");
-    assert_eq!(app.cursor_line_col(), (1, 2));
-    app.handle_key(key(KeyCode::Up));
-    assert_eq!(app.cursor_line_col(), (0, 2));
-    app.handle_key(key(KeyCode::Home));
-    assert_eq!(app.cursor_line_col(), (0, 0));
-    app.handle_key(key(KeyCode::Delete));
-    assert_eq!(app.intent, "b\ncd");
-    app.handle_key(key(KeyCode::End));
-    app.handle_key(key(KeyCode::Backspace));
-    assert_eq!(app.intent, "\ncd");
+fn toggles_honor_supports_and_rerun_preflight_after_a_300ms_debounce() {
+    let (mut app, clock) = ready_launch_app("debounce");
+    assert_eq!(app.launch.airsim_options(), [false, true]);
+    assert_eq!(app.launch.perception_options(), ["off"]);
+    focus(&mut app, LaunchField::Airsim);
+    app.handle_key(key(KeyCode::Right));
+    assert!(
+        app.launch.airsim,
+        "mission1-harbor can follow the world model in AirSim"
+    );
+    assert_eq!(app.launch.perception, "off");
+    assert_eq!(app.launch.perception_options(), ["off"]);
+    focus(&mut app, LaunchField::Perception);
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        app.launch.perception, "off",
+        "perception stays off on Harbor"
+    );
+
+    focus(&mut app, LaunchField::Preset);
+    app.handle_key(key(KeyCode::Right));
+    let preset = app.launch.preset().unwrap();
+    assert_eq!(preset.preset_id, "mission1-airsim");
+    assert!(app.launch.airsim);
+    assert_eq!(app.launch.perception, "yolo");
+    assert_eq!(app.launch.simulation_limit_seconds, 290);
+    assert_eq!(app.launch.airsim_options(), [true]);
+    assert_eq!(app.launch.perception_options(), ["off", "ideal", "yolo"]);
+
+    clock.advance(Duration::from_millis(200));
+    focus(&mut app, LaunchField::Perception);
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        app.launch.perception, "off",
+        "AirSim on with perception off is selectable"
+    );
+    clock.advance(Duration::from_millis(299));
+    app.check_deadlines();
+    assert!(
+        app.take_commands().is_empty(),
+        "a change restarts the debounce"
+    );
+    clock.advance(Duration::from_millis(1));
+    app.check_deadlines();
+    let (_, query) = single_preflight(&mut app);
+    assert_eq!(query.preset_id, "mission1-airsim");
+    assert!(query.toggles.airsim);
+    assert_eq!(query.toggles.perception, "off");
+    app.check_deadlines();
+    assert!(app.take_commands().is_empty(), "one preflight per change");
 }
 
 #[test]
-fn alt_enter_opens_review_for_nonempty_intent() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey the ridge");
+fn only_the_latest_preflight_answer_for_the_current_selection_counts() {
+    let (mut app, clock) = ready_launch_app("stale-preflight");
+    focus(&mut app, LaunchField::Preset);
+    app.handle_key(key(KeyCode::Right));
+    clock.advance(Duration::from_millis(300));
+    app.check_deadlines();
+    let (old_id, old_query) = single_preflight(&mut app);
+    app.handle_key(key(KeyCode::Right));
+    clock.advance(Duration::from_millis(300));
+    app.check_deadlines();
+    let (new_id, new_query) = single_preflight(&mut app);
+    assert_eq!(new_query.preset_id, "mission1-harbor");
+    app.handle_host_message(HostMessage::Preflight {
+        request_id: old_id,
+        result: Ok(preflight(&old_query, false)),
+    });
+    // The superseded answer is ignored; launch waits for the current one.
+    assert!(app.launch.current_preflight().unwrap().allows_launch());
+    assert_eq!(
+        app.launch.launch_blocker().as_deref(),
+        Some("Preflight running")
+    );
+    app.handle_host_message(HostMessage::Preflight {
+        request_id: new_id,
+        result: Ok(preflight(&new_query, true)),
+    });
+    assert!(app.launch.current_preflight().unwrap().allows_launch());
+    assert_eq!(app.launch.launch_blocker(), None);
+}
+
+#[test]
+fn launch_is_disabled_while_any_check_fails() {
+    let (mut app, _clock) = app_with_clock("blocked");
+    connect_with_presets(&mut app);
+    app.check_deadlines();
+    let (id, query) = single_preflight(&mut app);
+    app.handle_host_message(HostMessage::Preflight {
+        request_id: id,
+        result: Ok(preflight(&query, false)),
+    });
+    app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::Launch);
+    let hint = app.hint.clone().unwrap();
+    assert!(hint.contains("AirSim RPC port free"), "{hint}");
+    assert!(app.take_commands().is_empty());
+
+    app.handle_key(key(KeyCode::Char('r')));
+    assert_eq!(app.launch.editor.text().chars().last(), Some('r'));
+    focus(&mut app, LaunchField::Preset);
+    app.handle_key(key(KeyCode::Char('r')));
+    app.check_deadlines();
+    let (id, query) = single_preflight(&mut app);
+    app.handle_host_message(HostMessage::Preflight {
+        request_id: id,
+        result: Ok(preflight(&query, true)),
+    });
     app.handle_key(alt_enter());
     assert_eq!(app.state, AppState::ReviewActivation);
 }
 
 #[test]
-fn alt_enter_on_empty_intent_stays_editing_with_hint() {
-    let mut app = connected_app();
-    app.handle_key(alt_enter());
-    assert_eq!(app.state, AppState::Editing);
-    assert!(app.hint.is_some());
+fn preset_changes_replace_an_untouched_intent_but_keep_an_edited_one() {
+    let (mut app, _clock) = ready_launch_app("prefill");
+    focus(&mut app, LaunchField::Preset);
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(
+        app.launch.editor.text(),
+        "Patrol the window 60-130 s and verify every reported event."
+    );
+    focus(&mut app, LaunchField::Intent);
+    type_text(&mut app, " now");
+    focus(&mut app, LaunchField::Preset);
+    app.handle_key(key(KeyCode::Left));
+    assert_eq!(
+        app.launch.editor.text(),
+        "Patrol the window 60-130 s and verify every reported event. now"
+    );
 }
 
 #[test]
-fn escape_in_review_returns_to_editing() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
+fn f2_offers_the_preset_mission_and_the_rejection_battery() {
+    let (mut app, _clock) = ready_launch_app("demo-prompts");
+    app.handle_key(key(KeyCode::F(2)));
+    assert_eq!(app.launch.demo_picker, Some(0));
+    let prompts: Vec<String> = app
+        .launch
+        .demo_prompts()
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(prompts.len(), 4);
+    assert_eq!(prompts[1], "buy me a coffee");
+    assert_eq!(prompts[2], "What is the capital of France?");
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.launch.demo_picker, None);
+    assert_eq!(app.launch.editor.text(), "buy me a coffee");
+    assert_eq!(app.launch.focus, LaunchField::Intent);
+    app.handle_key(key(KeyCode::F(2)));
     app.handle_key(key(KeyCode::Esc));
-    assert_eq!(app.state, AppState::Editing);
-    assert!(app.take_commands().is_empty());
+    assert_eq!(app.launch.demo_picker, None);
+    assert_eq!(app.launch.editor.text(), "buy me a coffee");
 }
 
 #[test]
-fn confirm_submits_activation_exactly_once() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey\nthe ridge");
+fn intent_editor_supports_newlines_cursor_movement_and_deletion() {
+    let (mut app, _clock) = ready_launch_app("editor");
+    app.launch.editor.set_text("");
+    type_text(&mut app, "ab");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "cd");
+    assert_eq!(app.launch.editor.text(), "ab\ncd");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.launch.editor.cursor_line_col(), (0, 2));
+    app.handle_key(key(KeyCode::Home));
+    app.handle_key(key(KeyCode::Delete));
+    assert_eq!(app.launch.editor.text(), "b\ncd");
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::End));
+    app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(app.launch.editor.text(), "b\nc");
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.should_quit(), "q types inside the intent");
+    assert_eq!(app.launch.editor.text(), "b\ncq");
+}
+
+#[test]
+fn empty_intent_cannot_be_reviewed() {
+    let (mut app, _clock) = ready_launch_app("empty");
+    app.launch.editor.set_text("  ");
     app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::Launch);
+    assert!(
+        app.hint
+            .as_deref()
+            .unwrap()
+            .contains("Mission Intent is empty")
+    );
+}
+
+#[test]
+fn review_submits_exactly_once_with_the_selected_stack() {
+    let (mut app, _clock) = ready_launch_app("submit");
+    app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::ReviewActivation);
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.state, AppState::Launch);
+    app.handle_key(alt_enter());
+    let review_id = app.review_request_id().unwrap().to_string();
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.state, AppState::Submitting);
-    // Repeated confirms while submitting must not enqueue more activations.
-    app.handle_key(key(KeyCode::Enter));
-    app.handle_key(alt_enter());
     let commands = app.take_commands();
     assert_eq!(commands.len(), 1);
-    match &commands[0] {
-        HostCommand::Submit {
-            request,
-            credential,
-        } => {
-            assert_eq!(request.mission_intent, "survey\nthe ridge");
-            assert_eq!(request.console_session_id, app.session.session_id);
-            assert_eq!(request.source_authority, "operator_console");
-            assert!(!request.activation_request_id.is_empty());
-            assert_eq!(credential, &app.session.credential);
-        }
-        other => panic!("expected Submit, got {other:?}"),
-    }
+    let HostCommand::Submit {
+        request,
+        credential,
+    } = &commands[0]
+    else {
+        panic!("expected Submit, got {commands:?}");
+    };
+    assert_eq!(credential, &app.session.credential);
+    assert_eq!(request.activation_request_id, review_id);
+    assert_eq!(request.source_authority, "operator_console");
+    let stack = request.stack.as_ref().unwrap();
+    assert_eq!(stack.preset_id, "mission1-harbor");
+    assert_eq!(stack.simulation_limit_seconds, 600);
+    assert_eq!(stack.update_ownership, "coordinator_driven");
 }
 
 #[test]
-fn retry_of_same_intent_reuses_activation_request_id() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey the ridge");
+fn retries_reuse_the_request_id_until_intent_or_stack_change() {
+    let (mut app, _clock) = ready_launch_app("retry-id");
     app.handle_key(alt_enter());
+    let first = app.review_request_id().unwrap().to_string();
     app.handle_key(key(KeyCode::Enter));
-    let first = match app.take_commands().remove(0) {
-        HostCommand::Submit { request, .. } => request.activation_request_id,
-        other => panic!("expected Submit, got {other:?}"),
-    };
+    app.take_commands();
     app.handle_host_message(HostMessage::Activated(Err(HostError::Transport(
-        "lost connection".to_string(),
-    ))));
-    app.handle_key(key(KeyCode::Esc));
-    assert_eq!(app.state, AppState::Editing);
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    let second = match app.take_commands().remove(0) {
-        HostCommand::Submit { request, .. } => request.activation_request_id,
-        other => panic!("expected Submit, got {other:?}"),
-    };
-    assert_eq!(first, second);
-}
-
-#[test]
-fn editing_after_failed_submit_keeps_intent() {
-    let mut app = connected_app();
-    type_text(&mut app, "hold position");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Rejected {
-        code: "mission_run_active".to_string(),
-        message: "a Mission Run is already active".to_string(),
-    })));
-    match &app.state {
-        AppState::Error {
-            message,
-            retry_connect,
-        } => {
-            assert!(message.contains("mission_run_active"));
-            assert!(!retry_connect);
-        }
-        other => panic!("expected Error, got {other:?}"),
-    }
-    app.handle_key(key(KeyCode::Esc));
-    assert_eq!(app.intent, "hold position");
-}
-
-#[test]
-fn accepted_activation_enters_run_and_polls() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    assert_eq!(app.state, AppState::Run);
-    assert_eq!(app.take_commands(), poll_commands(&app));
-    let run = app
-        .run
-        .as_ref()
-        .expect("run snapshot seeded from acceptance");
-    assert_eq!(run.mission_id, "mission-1");
-    assert_eq!(run.mission_run_id, "run-1");
-    assert_eq!(run.status, "queued");
-}
-
-#[test]
-fn poll_updates_run_snapshot_and_notice_on_failure() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    let record = RunRecord {
-        mission_id: "mission-1".to_string(),
-        mission_run_id: "run-1".to_string(),
-        status: "running".to_string(),
-        created_at: Some("2026-08-24T12:00:00Z".to_string()),
-        started_at: Some("2026-08-24T12:00:03Z".to_string()),
-        finished_at: None,
-        terminal_classification: None,
-    };
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(record),
-    })));
-    assert_eq!(app.run.as_ref().unwrap().status, "running");
-    assert!(app.notice.is_none());
-    app.handle_host_message(HostMessage::Current(Err(HostError::Transport(
         "timeout".to_string(),
     ))));
-    assert!(app.notice.is_some());
-    assert_eq!(app.run.as_ref().unwrap().status, "running");
-}
-
-#[test]
-fn stale_narrative_response_is_ignored() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-
-    app.handle_host_message(HostMessage::Narrative {
-        mission_run_id: "run-previous".to_string(),
-        result: Ok(narrative_response()),
+    assert!(matches!(app.state, AppState::Error { .. }));
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.state, AppState::Launch);
+    // Returning to Launch re-runs preflight before another review.
+    app.check_deadlines();
+    let (id, query) = single_preflight(&mut app);
+    app.handle_host_message(HostMessage::Preflight {
+        request_id: id,
+        result: Ok(preflight(&query, true)),
     });
+    app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::ReviewActivation);
+    assert_eq!(app.review_request_id(), Some(first.as_str()));
 
-    assert!(app.narrative.is_none());
+    app.handle_key(key(KeyCode::Esc));
+    focus(&mut app, LaunchField::SimLimit);
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.launch.simulation_limit_seconds, 630);
+    app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::ReviewActivation);
+    assert_ne!(app.review_request_id(), Some(first.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// Run screen
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accepted_activation_persists_ownership_enters_run_and_polls_current_overview_stack() {
+    let file = state_file("accepted");
+    let (mut app, _clock) = ready_launch_app_with_file(file.clone());
+    accept(&mut app);
+    assert_eq!(app.state, AppState::Run);
+    let saved = file.load().unwrap().unwrap();
+    assert_eq!(saved.mission_run_id, RUN_ID);
+    assert_eq!(saved.credential, app.session.credential);
+    let run = app.run.as_ref().unwrap();
+    assert_eq!(run.stack.as_ref().unwrap().preset_id, "mission1-harbor");
+    let commands = app.take_commands();
+    assert!(commands.contains(&HostCommand::PollCurrent {
+        credential: app.session.credential.clone(),
+    }));
+    assert_eq!(
+        sections(&commands),
+        [
+            OperatorSection::Overview,
+            OperatorSection::Stack,
+            OperatorSection::Progress,
+            OperatorSection::Beliefs,
+            OperatorSection::Context,
+            OperatorSection::World,
+            OperatorSection::Agents,
+            OperatorSection::Environment,
+            OperatorSection::Artifacts
+        ]
+    );
+    file.remove().unwrap();
 }
 
 #[test]
-fn narrative_is_cleared_when_current_run_changes() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.handle_host_message(HostMessage::Narrative {
-        mission_run_id: "run-1".to_string(),
-        result: Ok(narrative_response()),
+fn tabs_switch_with_digits_and_tab_and_poll_every_visible_section() {
+    let (mut app, _clock) = run_app("tabs");
+    for (digit, tab) in [
+        ('3', RunTab::Agents),
+        ('2', RunTab::Progress),
+        ('4', RunTab::BeliefContext),
+        ('5', RunTab::World),
+        ('7', RunTab::Artifacts),
+        ('6', RunTab::Stack),
+        ('1', RunTab::Overview),
+    ] {
+        app.handle_key(key(KeyCode::Char(digit)));
+        assert_eq!(app.view.tab, tab);
+        let commands = app.take_commands();
+        assert_eq!(sections(&commands), tab.sections());
+        for section in sections(&commands) {
+            app.handle_host_message(section_reply(
+                section,
+                section_request_id(&commands, section),
+                None,
+                |_| {},
+            ));
+        }
+        app.take_commands();
+    }
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.view.tab, RunTab::Progress);
+    let commands = app.take_commands();
+    app.handle_host_message(section_reply(
+        OperatorSection::Progress,
+        section_request_id(&commands, OperatorSection::Progress),
+        None,
+        |_| {},
+    ));
+    app.handle_key(key(KeyCode::BackTab));
+    let commands = app.take_commands();
+    for section in sections(&commands) {
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |_| {},
+        ));
+    }
+    app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.view.tab, RunTab::Artifacts);
+    let commands = app.take_commands();
+    app.handle_host_message(artifacts_reply(section_request_id(
+        &commands,
+        OperatorSection::Artifacts,
+    )));
+    app.take_commands();
+    app.request_poll();
+    assert_eq!(
+        sections(&app.take_commands()),
+        [
+            OperatorSection::Overview,
+            OperatorSection::Stack,
+            OperatorSection::Artifacts
+        ]
+    );
+}
+
+#[test]
+fn section_replies_carry_cursor_and_etag_and_ignore_stale_or_304_replies() {
+    let (mut app, _clock) = run_app("cursor-etag");
+    app.request_poll();
+    let request_id = section_request_id(&app.take_commands(), OperatorSection::Overview);
+    app.handle_host_message(overview_reply(request_id, Some("\"o-1\"")));
+    assert_eq!(
+        app.view
+            .overview
+            .as_ref()
+            .unwrap()
+            .phase
+            .as_ref()
+            .unwrap()
+            .current,
+        "executing"
+    );
+    app.request_poll();
+    let commands = app.take_commands();
+    let (cursor, etag) = section_cursor_etag(&commands, OperatorSection::Overview);
+    assert_eq!(cursor.as_deref(), Some("overview-cursor-3"));
+    assert_eq!(etag.as_deref(), Some("\"o-1\""));
+    let next = section_request_id(&commands, OperatorSection::Overview);
+    // A reply to the superseded request is ignored.
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: RUN_ID.to_string(),
+        section: OperatorSection::Overview,
+        request_id,
+        result: Err(HostError::Transport("late".to_string())),
     });
-    assert!(app.narrative.is_some());
-
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-2".to_string(),
-            mission_run_id: "run-2".to_string(),
-            status: "running".to_string(),
-            created_at: Some("2026-08-25T12:00:00Z".to_string()),
-            started_at: Some("2026-08-25T12:00:03Z".to_string()),
-            finished_at: None,
-            terminal_classification: None,
-        }),
-    })));
-
-    assert_eq!(app.run.as_ref().unwrap().mission_run_id, "run-2");
-    assert!(app.narrative.is_none());
+    assert_eq!(app.notice, None);
+    app.handle_host_message(HostMessage::OperatorView {
+        mission_run_id: RUN_ID.to_string(),
+        section: OperatorSection::Overview,
+        request_id: next,
+        result: Ok(Fetched::NotModified),
+    });
+    assert!(app.view.overview.is_some(), "304 keeps the last overview");
 }
 
 #[test]
-fn poll_requests_only_fire_in_run_state() {
-    let mut app = connected_app();
+fn terminal_refresh_drains_all_pages_waits_for_final_narrative_then_stops() {
+    let (mut app, clock) = run_app("final-refresh");
+    app.handle_host_message(current(rejected_run()));
+    app.request_poll();
+    let commands = app.take_commands();
+    assert_eq!(sections(&commands), OperatorSection::ALL);
+    assert!(!app.polling_stopped());
+    for section in sections(&commands) {
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |page| {
+                page["run_status"] = json!("failed");
+                if section == OperatorSection::Progress {
+                    page["has_more"] = json!(true);
+                    page["next_cursor"] = json!("terminal-progress-page-2");
+                }
+            },
+        ));
+    }
+    let drain = app.take_commands();
+    assert_eq!(sections(&drain), [OperatorSection::Progress]);
+    assert_eq!(
+        section_cursor_etag(&drain, OperatorSection::Progress)
+            .0
+            .as_deref(),
+        Some("terminal-progress-page-2")
+    );
+    app.handle_host_message(section_reply(
+        OperatorSection::Progress,
+        section_request_id(&drain, OperatorSection::Progress),
+        None,
+        |page| {
+            page["run_status"] = json!("failed");
+        },
+    ));
+    app.take_commands();
+    clock.advance(Duration::from_millis(400));
+    app.request_poll();
+    assert!(
+        app.take_commands().is_empty(),
+        "terminal waiting does not poll at400ms"
+    );
+    clock.advance(Duration::from_millis(1600));
+    app.request_poll();
+    let commands = app.take_commands();
+    assert_eq!(sections(&commands), [OperatorSection::Overview]);
+    app.handle_host_message(section_reply(
+        OperatorSection::Overview,
+        section_request_id(&commands, OperatorSection::Overview),
+        None,
+        |page| {
+            page["run_status"] = json!("failed");
+            page["overview"]["narrative"]["terminal"] = json!(true);
+            page["overview"]["narrative"]["status"] = json!("available");
+            page["overview"]["narrative"]["text"] = json!("Final rejection narrative");
+        },
+    ));
+    assert!(
+        !app.polling_stopped(),
+        "all final sections still need their final wave"
+    );
+    app.request_poll();
+    let commands = app.take_commands();
+    assert_eq!(sections(&commands), OperatorSection::ALL);
+    for section in sections(&commands) {
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |page| {
+                page["run_status"] = json!("failed");
+                if section == OperatorSection::Overview {
+                    page["overview"]["narrative"]["terminal"] = json!(true);
+                    page["overview"]["narrative"]["status"] = json!("available");
+                    page["overview"]["narrative"]["text"] = json!("Final rejection narrative");
+                }
+                if section == OperatorSection::Progress {
+                    page["progress"]["narrative"]["text"] = json!("Final rejection narrative");
+                }
+            },
+        ));
+    }
+    app.take_commands();
+    assert_eq!(
+        app.view
+            .overview
+            .as_ref()
+            .unwrap()
+            .narrative
+            .text
+            .as_deref(),
+        Some("Final rejection narrative")
+    );
+    assert!(app.polling_stopped());
     app.request_poll();
     assert!(app.take_commands().is_empty());
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app.request_poll();
-    assert_eq!(app.take_commands(), poll_commands(&app));
+    clock.advance(Duration::from_secs(60));
+    assert_eq!(app.liveness(), Liveness::Idle);
 }
 
 #[test]
-fn resize_below_minimum_overlays_resize_required_and_recovers() {
-    let mut app = connected_app();
-    app.handle_resize(MIN_WIDTH - 1, MIN_HEIGHT);
-    match &app.state {
-        AppState::ResizeRequired { resume } => assert_eq!(**resume, AppState::Editing),
-        other => panic!("expected ResizeRequired, got {other:?}"),
+fn unavailable_terminal_narrative_and_failed_final_page_complete_without_busy_polling() {
+    let (mut app, clock) = run_app("terminal-unavailable");
+    app.handle_host_message(current(rejected_run()));
+    for wave in 0..2 {
+        app.request_poll();
+        let commands = app.take_commands();
+        for section in sections(&commands) {
+            let request_id = section_request_id(&commands, section);
+            if wave == 1 && section == OperatorSection::Progress {
+                app.handle_host_message(HostMessage::OperatorView {
+                    mission_run_id: RUN_ID.into(),
+                    section,
+                    request_id,
+                    result: Err(HostError::Transport("disconnected".into())),
+                });
+            } else {
+                app.handle_host_message(section_reply(section, request_id, None, |page| {
+                    page["run_status"] = json!("failed");
+                    if section == OperatorSection::Overview {
+                        page["overview"]["narrative"]["terminal"] = json!(true);
+                        page["overview"]["narrative"]["status"] = json!("unavailable");
+                    }
+                }));
+            }
+        }
+        app.take_commands();
     }
-    assert_eq!(app.logical_state_name(), "Editing");
-    // Keys are swallowed while too small.
-    type_text(&mut app, "ignored");
-    assert_eq!(app.intent, "");
-    app.handle_resize(MIN_WIDTH, MIN_HEIGHT);
-    assert_eq!(app.state, AppState::Editing);
+    assert!(!app.polling_stopped(), "a final page has not completed");
+    clock.advance(Duration::from_millis(400));
+    app.request_poll();
+    assert!(app.take_commands().is_empty());
+    clock.advance(Duration::from_millis(1600));
+    app.request_poll();
+    let commands = app.take_commands();
+    assert_eq!(sections(&commands), [OperatorSection::Progress]);
+    app.handle_host_message(section_reply(
+        OperatorSection::Progress,
+        section_request_id(&commands, OperatorSection::Progress),
+        None,
+        |page| page["run_status"] = json!("failed"),
+    ));
+    assert_eq!(
+        app.view.overview.as_ref().unwrap().narrative.status,
+        "unavailable"
+    );
+    assert!(app.polling_stopped());
 }
 
 #[test]
-fn resize_overlay_preserves_submitting_then_run_transition() {
-    let mut app = connected_app();
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
+fn rejection_dismissal_survives_refresh_and_relaunch_keeps_stack_selection() {
+    let (mut app, _) = run_app("rejection-dismiss");
+    let stack = app.launch.selection().unwrap();
+    app.launch.editor.set_text("buy me a coffee");
+    let mut rejecting = rejected_run();
+    rejecting.status = "running".into();
+    rejecting.finished_at = None;
+    app.handle_host_message(current(rejecting));
+    assert!(
+        app.rejection_open(),
+        "reason is visible during final stack cleanup"
+    );
+    app.handle_key(key(KeyCode::Char('e')));
+    assert_eq!(
+        app.state,
+        AppState::Run,
+        "relaunch waits for the real terminal lifecycle"
+    );
+    assert!(app.rejection_open());
     app.handle_key(key(KeyCode::Enter));
+    assert!(!app.rejection_open());
+    app.handle_host_message(current(rejected_run()));
+    assert!(
+        !app.rejection_open(),
+        "refresh must not reopen a dismissed card"
+    );
+    app.handle_key(key(KeyCode::Char('e')));
+    assert_eq!(app.state, AppState::Launch);
+    assert_eq!(app.launch.selection(), Some(stack));
+    assert_eq!(app.launch.editor.text(), "buy me a coffee");
+    assert!(app.run.is_none());
+}
+
+#[test]
+fn progress_search_captures_global_letters_and_tabs_but_not_managed_interrupt() {
+    let (mut app, _) = run_app("progress-search");
+    app.handle_key(key(KeyCode::Char('2')));
+    app.handle_key(key(KeyCode::Char('/')));
+    for code in [
+        KeyCode::Char('q'),
+        KeyCode::Char('c'),
+        KeyCode::Char('3'),
+        KeyCode::Tab,
+    ] {
+        app.handle_key(key(code));
+    }
+    assert_eq!(app.view.tab, RunTab::Progress);
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert!(!app.should_quit());
+    assert!(app.view.progress.search_editing);
+    app.handle_key(ctrl('c'));
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+}
+
+#[test]
+fn stack_section_selects_a_service_and_tails_its_log_from_the_last_window() {
+    let (mut app, _clock) = run_app("stack-tail");
+    app.handle_key(key(KeyCode::Char('6')));
+    let commands = app.take_commands();
+    let id = section_request_id(&commands, OperatorSection::Stack);
+    app.handle_host_message(section_reply(OperatorSection::Stack, id, None, |_| {}));
+    let stack = &app.view.stack;
+    assert_eq!(stack.selected.as_deref(), Some("physical-runtime"));
+    assert_eq!(
+        stack.tail.as_ref().unwrap().artifact_id,
+        "service-log-physical-runtime"
+    );
+    app.request_poll();
+    let (artifact_id, offset) = service_log_request(&app.take_commands()).unwrap();
+    assert_eq!(
+        (artifact_id.as_str(), offset),
+        ("service-log-physical-runtime", 0)
+    );
+    app.handle_host_message(service_log_reply(0, &"x".repeat(4096), 20_480));
+    app.request_poll();
+    assert_eq!(
+        service_log_request(&app.take_commands()).unwrap().1,
+        20_480 - 4096
+    );
+    app.handle_host_message(service_log_reply(16_384, "cut\nviewer ready\n", 16_401));
+    let lines: Vec<&str> = app
+        .view
+        .stack
+        .tail
+        .as_ref()
+        .unwrap()
+        .visible_lines()
+        .collect();
+    assert_eq!(lines, ["viewer ready"]);
+
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.view.stack.selected.as_deref(), Some("closed-loop"));
+    let commands = app.take_commands();
+    assert_eq!(
+        service_log_request(&commands),
+        Some(("worker-log".to_string(), 0))
+    );
+}
+
+#[test]
+fn agents_follow_newest_until_moved_then_count_newer_until_f() {
+    let (mut app, _clock) = run_app("agents");
+    app.handle_key(key(KeyCode::Char('3')));
+    let id = section_request_id(&app.take_commands(), OperatorSection::Agents);
+    app.handle_host_message(agents_reply(id, &["a-1", "a-2"]));
+    assert_eq!(app.view.selected_invocation.as_deref(), Some("a-2"));
+    app.handle_key(key(KeyCode::Up));
+    assert!(!app.view.agent_following);
+    assert_eq!(app.view.selected_invocation.as_deref(), Some("a-1"));
+    app.request_poll();
+    let id = section_request_id(&app.take_commands(), OperatorSection::Agents);
+    app.handle_host_message(agents_reply(id, &["a-3"]));
+    assert_eq!(app.view.newer_invocations, 1);
+    assert_eq!(app.view.selected_invocation.as_deref(), Some("a-1"));
+    app.handle_key(key(KeyCode::Char('f')));
+    assert!(app.view.agent_following);
+    assert_eq!(app.view.selected_invocation.as_deref(), Some("a-3"));
+}
+
+#[test]
+fn artifact_inspector_pages_forward_and_back_and_closes() {
+    let (mut app, _clock) = run_app("inspector");
+    app.handle_key(key(KeyCode::Char('7')));
+    let id = section_request_id(&app.take_commands(), OperatorSection::Artifacts);
+    app.handle_host_message(artifacts_reply(id));
+    // Artifacts sort by id; "planner-…" precedes "report".
+    let artifact = app.view.selected_artifact.clone().unwrap();
+    assert!(artifact.starts_with("planner-"));
+    app.handle_key(key(KeyCode::Enter));
+    let commands = app.take_commands();
+    assert!(matches!(
+        &commands[..],
+        [HostCommand::FetchArtifactContent {
+            purpose: ContentPurpose::Inspector,
+            offset: 0,
+            ..
+        }]
+    ));
+    app.handle_host_message(content_reply(&artifact, 0, "text-page"));
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.view.inspector.as_ref().unwrap().offset, 4096);
     app.take_commands();
-    app.handle_resize(80, 24);
+    app.handle_host_message(content_reply(&artifact, 4096, "text-final"));
+    app.handle_key(key(KeyCode::Right));
+    assert!(app.take_commands().is_empty(), "no page after eof");
+    app.handle_key(key(KeyCode::Left));
+    assert_eq!(app.view.inspector.as_ref().unwrap().offset, 0);
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.view.inspector.is_none());
+}
+
+#[test]
+fn e_after_a_terminal_run_returns_to_launch_with_the_same_stack() {
+    let file = state_file("edit-new-intent");
+    let (mut app, _clock) = ready_launch_app_with_file(file.clone());
+    focus(&mut app, LaunchField::SimLimit);
+    app.handle_key(key(KeyCode::Left));
+    accept(&mut app);
+    app.handle_key(key(KeyCode::Char('e')));
+    assert_eq!(app.state, AppState::Run, "e does nothing while running");
+    app.handle_host_message(current(rejected_run()));
+    app.take_commands();
+    app.handle_key(key(KeyCode::Char('e')));
+    assert_eq!(app.state, AppState::Launch);
+    assert!(app.run.is_none());
+    assert!(!file.path().exists(), "owner session is released");
+    assert_eq!(app.launch.simulation_limit_seconds, 570);
+    assert_eq!(app.launch.preset().unwrap().preset_id, "mission1-harbor");
+    app.check_deadlines();
+    let (_, query) = single_preflight(&mut app);
+    assert_eq!(query.preset_id, "mission1-harbor");
+    assert_eq!(query.toggles.perception, "off");
+}
+
+#[test]
+fn resize_below_minimum_overlays_and_restores_the_state() {
+    let (mut app, _clock) = run_app("resize");
+    app.handle_resize(MIN_WIDTH - 1, MIN_HEIGHT);
     assert_eq!(app.state.name(), "ResizeRequired");
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
     assert_eq!(app.logical_state_name(), "Run");
+    app.request_poll();
+    assert!(!app.take_commands().is_empty(), "polling continues");
     app.handle_resize(MIN_WIDTH, MIN_HEIGHT);
     assert_eq!(app.state, AppState::Run);
 }
 
+// ---------------------------------------------------------------------------
+// Cancellation and managed exit
+// ---------------------------------------------------------------------------
+
 #[test]
-fn ctrl_c_quits_from_any_state() {
-    let mut app = connected_app();
-    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+fn c_requires_confirmation_and_enqueues_one_cancellation() {
+    let (mut app, _clock) = run_app("cancel");
+    app.take_commands();
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    app.handle_key(key(KeyCode::Char('c')));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
+    let cancels: Vec<_> = app
+        .take_commands()
+        .into_iter()
+        .filter(|command| matches!(command, HostCommand::Cancel { .. }))
+        .collect();
+    assert_eq!(cancels.len(), 1);
+    let HostCommand::Cancel { request, .. } = &cancels[0] else {
+        unreachable!()
+    };
+    app.handle_host_message(cancelled(&request.cancellation_request_id));
+    assert!(matches!(
+        app.cancellation,
+        CancellationState::Requested { .. }
+    ));
+    let mut cancelled_run = running_run();
+    cancelled_run.status = "cancelled".to_string();
+    app.handle_host_message(current(cancelled_run));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert_eq!(
+        app.take_clean_exit_action(),
+        None,
+        "c keeps the console open"
+    );
+}
+
+#[test]
+fn mismatched_cancellation_acceptance_is_a_contract_failure() {
+    let (mut app, _clock) = run_app("cancel-mismatch");
+    app.handle_key(key(KeyCode::Char('c')));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_host_message(cancelled("someone-else"));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert!(app.notice.as_deref().unwrap().contains("contract failure"));
+}
+
+#[test]
+fn q_cancels_then_exits_after_cancelled_or_at_the_fifteen_second_limit() {
+    let file = state_file("q-exit");
+    let (mut app, _clock) = run_app_with_file("q-exit", file.clone());
+    app.handle_key(key(KeyCode::Char('q')));
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+    app.handle_key(key(KeyCode::Enter));
+    let request_id = cancel_request_id(&app.take_commands());
+    app.handle_host_message(cancelled(&request_id));
+    let mut cancelled_run = running_run();
+    cancelled_run.status = "cancelled".to_string();
+    app.handle_host_message(current(cancelled_run));
+    assert_eq!(
+        app.take_clean_exit_action(),
+        Some(CleanExitAction::Cancelled)
+    );
+    assert!(!file.path().exists());
+
+    let (mut app, clock) = run_app("q-timeout");
+    app.handle_key(key(KeyCode::Char('q')));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_host_message(HostMessage::Cancelled(Err(HostError::Transport(
+        "down".to_string(),
+    ))));
+    clock.advance(Duration::from_millis(14_999));
+    app.check_deadlines();
+    assert_eq!(app.take_clean_exit_action(), None);
+    clock.advance(Duration::from_millis(1));
+    app.check_deadlines();
+    assert_eq!(
+        app.take_clean_exit_action(),
+        Some(CleanExitAction::CancellationTimedOut)
+    );
+}
+
+#[test]
+fn managed_exit_waits_for_valid_cancellation_beyond_ordinary_poll_timeout() {
+    let (mut app, clock) = run_app("slow-cancellation");
+    app.handle_key(key(KeyCode::Char('q')));
+    app.handle_key(key(KeyCode::Enter));
+    let request_id = cancel_request_id(&app.take_commands());
+    clock.advance(Duration::from_secs(9));
+    app.check_deadlines();
+    assert_eq!(app.take_clean_exit_action(), None);
+    app.handle_host_message(cancelled(&request_id));
+    assert!(matches!(
+        app.cancellation,
+        CancellationState::Requested { .. }
+    ));
+    let mut run = running_run();
+    run.status = "cancelled".into();
+    app.handle_host_message(current(run));
+    assert_eq!(
+        app.take_clean_exit_action(),
+        Some(CleanExitAction::Cancelled)
+    );
+}
+
+#[test]
+fn q_on_a_terminal_run_exits_directly() {
+    let file = state_file("q-terminal");
+    let (mut app, _clock) = run_app_with_file("q-terminal", file.clone());
+    app.handle_host_message(current(rejected_run()));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert_eq!(
+        app.take_clean_exit_action(),
+        Some(CleanExitAction::TerminalRun)
+    );
+    assert!(!file.path().exists());
+}
+
+#[test]
+fn ctrl_c_goes_through_managed_exit_during_an_owned_active_run() {
+    let (mut app, _clock) = run_app("ctrl-c-run");
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit());
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+    app.handle_key(key(KeyCode::Enter));
+    assert!(
+        app.take_commands()
+            .iter()
+            .any(|command| matches!(command, HostCommand::Cancel { .. }))
+    );
+
+    let (mut app, _clock) = run_app("ctrl-c-twice");
+    app.handle_key(ctrl('c'));
+    app.handle_key(ctrl('c'));
+    assert!(
+        !app.should_quit(),
+        "a second Ctrl+C must not silently detach"
+    );
+    assert_eq!(app.cancellation, CancellationState::Confirming);
+    app.handle_key(key(KeyCode::Enter));
+    assert!(
+        app.take_commands()
+            .iter()
+            .any(|command| matches!(command, HostCommand::Cancel { .. }))
+    );
+
+    let (mut app, _clock) = run_app("ctrl-c-terminal");
+    app.handle_host_message(current(rejected_run()));
+    app.handle_key(ctrl('c'));
+    assert_eq!(
+        app.take_clean_exit_action(),
+        Some(CleanExitAction::TerminalRun)
+    );
+
+    let (mut app, _clock) = ready_launch_app("ctrl-c-launch");
+    app.handle_key(ctrl('c'));
     assert!(app.should_quit());
+
+    let file = state_file("ctrl-q");
+    let (mut app, clock) = run_app_with_file("ctrl-q", file.clone());
+    let saved_owner = file.load().unwrap().unwrap();
+    clock.advance(Duration::from_secs(31));
+    app.handle_key(ctrl('q'));
+    assert!(app.should_quit(), "Ctrl+Q detaches immediately");
+    assert_eq!(
+        app.take_clean_exit_action(),
+        Some(CleanExitAction::Detached)
+    );
+    assert_eq!(file.load().unwrap(), Some(saved_owner));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert!(
+        !app.take_commands()
+            .iter()
+            .any(|command| matches!(command, HostCommand::Cancel { .. }))
+    );
+
+    let (mut app, clock) = run_app("ctrl-c-offline-owner");
+    clock.advance(Duration::from_secs(31));
+    app.handle_key(ctrl('c'));
+    assert!(
+        !app.should_quit(),
+        "offline ownership still requires explicit detach"
+    );
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert!(app.notice.as_deref().unwrap().contains("Ctrl+Q"));
+}
+
+// ---------------------------------------------------------------------------
+// Ownership and liveness
+// ---------------------------------------------------------------------------
+
+#[test]
+fn liveness_uses_inclusive_thresholds_and_gates_mutations() {
+    let (app, clock) = run_app("liveness");
+    let mut app = app.with_liveness_thresholds(LivenessThresholds {
+        stale: Duration::from_secs(5),
+        offline: Duration::from_secs(30),
+    });
+    app.handle_host_message(current(running_run()));
+    assert_eq!(app.liveness(), Liveness::Live);
+    assert!(app.mutations_enabled());
+    clock.advance(Duration::from_secs(5));
+    assert_eq!(app.liveness(), Liveness::Stale);
+    assert!(!app.mutations_enabled());
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    assert!(app.notice.is_some());
+    clock.advance(Duration::from_secs(25));
+    assert_eq!(app.liveness(), Liveness::Offline);
+    app.handle_host_message(HostMessage::Current(Err(HostError::Transport(
+        "down".to_string(),
+    ))));
+    assert_eq!(
+        app.liveness(),
+        Liveness::Offline,
+        "transport errors prove nothing"
+    );
+    app.handle_host_message(HostMessage::Current(Err(HostError::UnexpectedStatus(
+        500,
+        "boom".to_string(),
+    ))));
+    assert_eq!(app.liveness(), Liveness::Live);
+}
+
+#[test]
+fn observers_of_a_run_they_do_not_own_cannot_cancel() {
+    let (mut app, _clock) = ready_launch_app("observer");
+    app.state = AppState::Run;
+    app.handle_host_message(current(running_run()));
+    assert!(!app.ownership_available());
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.cancellation, CancellationState::Idle);
+    app.handle_key(ctrl('c'));
+    assert!(app.should_quit(), "nothing to cancel: Ctrl+C detaches");
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence and recovery
+// ---------------------------------------------------------------------------
+
+fn owner(run_id: &str, credential: &str) -> OwnerSessionState {
+    OwnerSessionState {
+        host_authority: HOST.to_string(),
+        host_api_major: 1,
+        mission_run_id: run_id.to_string(),
+        console_session_id: "session-recovered".to_string(),
+        credential: credential.to_string(),
+    }
 }
 
 #[test]
 fn session_state_file_is_atomic_owner_only_and_round_trips_only_authority_fields() {
-    let root = std::env::temp_dir().join(format!(
-        "operator-console-round-trip-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let root = scratch_dir("round-trip");
     let file = SessionStateFile::at(root.join("onr/operator-console/session.json"));
-    let state = OwnerSessionState {
-        host_authority: "http://127.0.0.1:8787".to_string(),
-        host_api_major: 1,
-        mission_run_id: "run-1".to_string(),
-        console_session_id: "session-1".to_string(),
-        credential: "credential-1".to_string(),
-    };
+    let state = owner("run-1", "credential-1");
     file.save(&state).unwrap();
     assert_eq!(file.load().unwrap(), Some(state));
     let value: serde_json::Value = serde_json::from_slice(&fs::read(file.path()).unwrap()).unwrap();
     assert_eq!(value.as_object().unwrap().len(), 5);
-    assert!(!value.as_object().unwrap().contains_key("pid"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            fs::metadata(file.path()).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            fs::metadata(root.join("onr")).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(root.join("onr/operator-console"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
+        let mode =
+            |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(file.path()), 0o600);
+        assert_eq!(mode(&root.join("onr")), 0o700);
+        assert_eq!(mode(&root.join("onr/operator-console")), 0o700);
     }
     file.remove().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn session_save_hardens_existing_final_directory_without_chmodding_ancestor() {
-    let root = std::env::temp_dir().join(format!(
-        "operator-console-existing-state-{}",
-        uuid::Uuid::new_v4()
-    ));
+fn session_save_hardens_the_final_directory_without_chmodding_ancestors() {
+    let root = scratch_dir("existing-state");
     let parent = root.join("operator-console");
     fs::create_dir_all(&parent).unwrap();
     #[cfg(unix)]
@@ -717,1053 +1117,368 @@ fn session_save_hardens_existing_final_directory_without_chmodding_ancestor() {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let file = SessionStateFile::at(parent.join("session.json"));
-    file.save(&OwnerSessionState {
-        host_authority: "http://127.0.0.1:8787".to_string(),
-        host_api_major: 1,
-        mission_run_id: "run-1".to_string(),
-        console_session_id: "session-1".to_string(),
-        credential: "credential-1".to_string(),
-    })
-    .unwrap();
+    SessionStateFile::at(parent.join("session.json"))
+        .save(&owner("run-1", "credential-1"))
+        .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
+        let mode =
+            |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&parent), 0o700);
+        assert_eq!(mode(&root), 0o755);
     }
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn recovered_owner_reads_intent_through_host_authorization() {
-    let file = temp_state_file("recover");
-    file.save(&OwnerSessionState {
-        host_authority: "http://127.0.0.1:8787".to_string(),
-        host_api_major: 1,
-        mission_run_id: "run-1".to_string(),
-        console_session_id: "session-recovered".to_string(),
-        credential: "credential-recovered".to_string(),
-    })
-    .unwrap();
-    let mut app = App::new_with_session_file("http://127.0.0.1:8787".to_string(), file.clone());
+fn recovered_owner_reads_intent_through_host_authorization_and_enters_run() {
+    let file = state_file("recover");
+    file.save(&owner(RUN_ID, "credential-recovered")).unwrap();
+    let mut app = App::new_with_session_file(HOST.to_string(), file.clone());
     assert_eq!(app.session.session_id, "session-recovered");
     app.take_commands();
     app.handle_host_message(HostMessage::Connected(Ok(health())));
     let commands = app.take_commands();
     assert!(commands.contains(&HostCommand::FetchIntent {
-        mission_run_id: "run-1".to_string(),
+        mission_run_id: RUN_ID.to_string(),
         credential: "credential-recovered".to_string(),
     }));
-    assert!(commands.contains(&HostCommand::PollCurrent {
-        credential: "credential-recovered".to_string(),
-    }));
+    assert!(!commands.contains(&HostCommand::FetchPresets));
     app.handle_host_message(HostMessage::Intent(Ok(MissionIntent {
-        mission_run_id: "run-1".to_string(),
+        mission_run_id: RUN_ID.to_string(),
         mission_intent: "hold the ridge".to_string(),
         source_authority: "operator_console".to_string(),
     })));
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-1".to_string(),
-            mission_run_id: "run-1".to_string(),
-            status: "running".to_string(),
-            created_at: None,
-            started_at: None,
-            finished_at: None,
-            terminal_classification: None,
-        }),
-    })));
+    app.handle_host_message(current(running_run()));
     assert_eq!(app.logical_state_name(), "Run");
-    assert_eq!(app.intent, "hold the ridge");
+    assert_eq!(app.launch.editor.text(), "hold the ridge");
     assert!(app.recovered_owner());
+    assert!(app.mutations_enabled());
     file.remove().unwrap();
 }
 
 #[test]
-fn recovered_owner_rejects_mismatched_current_run_and_keeps_session_record() {
-    let file = temp_state_file("recover-mismatch");
-    file.save(&OwnerSessionState {
-        host_authority: "http://127.0.0.1:8787".to_string(),
-        host_api_major: 1,
-        mission_run_id: "run-owned".to_string(),
-        console_session_id: "session-recovered".to_string(),
-        credential: "credential-recovered".to_string(),
-    })
-    .unwrap();
-    let mut app = App::new_with_session_file("http://127.0.0.1:8787".to_string(), file.clone());
-    app.take_commands();
+fn recovered_owner_rejects_a_mismatched_current_run_and_keeps_the_record() {
+    let file = state_file("recover-mismatch");
+    file.save(&owner("run-owned", "credential")).unwrap();
+    let mut app = App::new_with_session_file(HOST.to_string(), file.clone());
     app.handle_host_message(HostMessage::Connected(Ok(health())));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-independent".to_string(),
-            mission_run_id: "run-independent".to_string(),
-            status: "cancelled".to_string(),
-            created_at: None,
-            started_at: None,
-            finished_at: Some("2026-08-24T12:05:01Z".to_string()),
-            terminal_classification: None,
-        }),
-    })));
-    assert_eq!(app.logical_state_name(), "Connecting");
+    app.handle_host_message(current(running_run()));
+    assert_eq!(app.logical_state_name(), "Launch");
     assert!(app.run.is_none());
     assert!(file.path().exists());
-    assert_eq!(app.take_clean_exit_action(), None);
-    assert!(app.notice.as_deref().unwrap().contains("run-independent"));
+    assert!(app.notice.as_deref().unwrap().contains(RUN_ID));
+    assert!(!app.recovered_owner());
+    assert!(!app.ownership_available());
+    app.take_commands();
+    app.handle_host_message(HostMessage::Presets(Ok(presets())));
+    app.check_deadlines();
+    let (request_id, query) = single_preflight(&mut app);
+    app.handle_host_message(HostMessage::Preflight {
+        request_id,
+        result: Ok(preflight(&query, true)),
+    });
+    app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::ReviewActivation);
     file.remove().unwrap();
 }
 
 #[test]
-fn stale_recovery_authorization_keeps_session_record_and_does_not_exit() {
-    let file = temp_state_file("recover-stale-credential");
-    file.save(&OwnerSessionState {
-        host_authority: "http://127.0.0.1:8787".to_string(),
-        host_api_major: 1,
-        mission_run_id: "run-owned".to_string(),
-        console_session_id: "session-recovered".to_string(),
-        credential: "stale-credential".to_string(),
-    })
-    .unwrap();
-    let mut app = App::new_with_session_file("http://127.0.0.1:8787".to_string(), file.clone());
-    app.take_commands();
+fn stale_recovery_authorization_keeps_the_record_and_reports_an_error() {
+    let file = state_file("recover-stale");
+    file.save(&owner("run-owned", "stale")).unwrap();
+    let mut app = App::new_with_session_file(HOST.to_string(), file.clone());
     app.handle_host_message(HostMessage::Connected(Ok(health())));
     app.handle_host_message(HostMessage::Intent(Err(HostError::AuthorizationFailed {
         code: "authorization_failed".to_string(),
         message: "request is not authorized".to_string(),
     })));
     assert!(file.path().exists());
-    assert_eq!(app.take_clean_exit_action(), None);
     assert!(matches!(app.state, AppState::Error { .. }));
     file.remove().unwrap();
 }
 
-#[test]
-fn c_requires_confirmation_and_confirm_enqueues_one_idempotent_cancellation() {
-    let file = temp_state_file("cancel");
-    let mut app = connected_app();
-    app.set_session_state_file(file);
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('c')));
-    assert!(matches!(app.cancellation, CancellationState::Confirming));
-    assert!(app.take_commands().is_empty());
-    app.handle_key(key(KeyCode::Enter));
-    let commands = app.take_commands();
-    assert_eq!(commands.len(), 1);
-    let HostCommand::Cancel {
-        request,
-        mission_run_id,
-        credential,
-    } = &commands[0]
-    else {
-        panic!("expected cancellation command");
-    };
-    assert_eq!(mission_run_id, "run-1");
-    assert_eq!(credential, &app.session.credential);
-    let request_id = request.cancellation_request_id.clone();
-    app.handle_key(key(KeyCode::Enter));
-    assert!(app.take_commands().is_empty());
-    assert_eq!(app.cancellation, CancellationState::Confirming);
-    app.handle_host_message(HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(
-        CancellationAccepted {
-            mission_run_id: "run-1".to_string(),
-            cancellation_request_id: request_id.clone(),
-            disposition: "cancellation_requested".to_string(),
-            status: "running".to_string(),
-            requested_at: "2026-08-24T12:05:00Z".to_string(),
-        },
-    ))));
-    assert!(matches!(
-        app.cancellation,
-        CancellationState::Requested { ref cancellation_request_id } if cancellation_request_id == &request_id
-    ));
+fn cancelled(request_id: &str) -> HostMessage {
+    HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(CancellationAccepted {
+        mission_run_id: RUN_ID.to_string(),
+        cancellation_request_id: request_id.to_string(),
+        disposition: "cancellation_requested".to_string(),
+        status: "running".to_string(),
+        requested_at: "2026-08-24T12:00:05Z".to_string(),
+    })))
 }
 
-#[test]
-fn mismatched_cancellation_acceptance_never_enters_requested() {
-    for (name, mission_run_id, cancellation_request_id, disposition) in [
-        ("run-id", "run-other", "pending", "cancellation_requested"),
-        (
-            "request-id",
-            "run-1",
-            "cancel-other",
-            "cancellation_requested",
-        ),
-        ("disposition", "run-1", "pending", "cancelled"),
-    ] {
-        let mut app = connected_app();
-        type_text(&mut app, "survey the ridge");
-        app.handle_key(alt_enter());
-        app.handle_key(key(KeyCode::Enter));
-        app.take_commands();
-        app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-            accepted(),
-        ))));
-        app.take_commands();
-        app.handle_key(key(KeyCode::Char('c')));
-        app.handle_key(key(KeyCode::Enter));
-        let pending = match app.take_commands().remove(0) {
-            HostCommand::Cancel { request, .. } => request.cancellation_request_id,
-            other => panic!("expected Cancel, got {other:?}"),
-        };
-        let response_request_id = if cancellation_request_id == "pending" {
-            pending
-        } else {
-            cancellation_request_id.to_string()
-        };
-        app.handle_host_message(HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(
-            CancellationAccepted {
-                mission_run_id: mission_run_id.to_string(),
-                cancellation_request_id: response_request_id,
-                disposition: disposition.to_string(),
-                status: "running".to_string(),
-                requested_at: "2026-08-24T12:05:00Z".to_string(),
-            },
-        ))));
-        assert_eq!(app.cancellation, CancellationState::Idle, "case {name}");
-        assert!(
-            app.notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("Cancellation contract failure")),
-            "case {name}: {:?}",
-            app.notice
-        );
-        assert_eq!(app.take_clean_exit_action(), None, "case {name}");
-    }
-}
-
-#[test]
-fn q_reuses_c_cancellation_confirmation_only_in_run_state() {
-    fn active_run_app() -> App {
-        let mut app = connected_app();
-        type_text(&mut app, "survey the ridge");
-        app.handle_key(alt_enter());
-        app.handle_key(key(KeyCode::Enter));
-        app.take_commands();
-        app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-            accepted(),
-        ))));
-        app.take_commands();
-        app
-    }
-
-    let mut c_app = active_run_app();
-    let mut q_app = active_run_app();
-    c_app.handle_key(key(KeyCode::Char('c')));
-    q_app.handle_key(key(KeyCode::Char('q')));
-    assert_eq!(q_app.cancellation, c_app.cancellation);
-    assert_eq!(q_app.cancellation, CancellationState::Confirming);
-    assert!(q_app.take_commands().is_empty());
-
-    c_app.handle_key(key(KeyCode::Enter));
-    q_app.handle_key(key(KeyCode::Enter));
-    let c_command = c_app.take_commands().remove(0);
-    let q_command = q_app.take_commands().remove(0);
-    let (
-        HostCommand::Cancel {
-            mission_run_id: c_run,
-            credential: c_credential,
-            ..
-        },
-        HostCommand::Cancel {
-            mission_run_id: q_run,
-            credential: q_credential,
-            ..
-        },
-    ) = (c_command, q_command)
-    else {
-        panic!("c and q must both enqueue cancellation");
-    };
-    assert_eq!(q_run, c_run);
-    assert_eq!(q_credential, q_app.session.credential);
-    assert_eq!(c_credential, c_app.session.credential);
-    assert_eq!(q_app.cancellation, CancellationState::Confirming);
-
-    let mut editing = connected_app();
-    editing.handle_key(key(KeyCode::Char('q')));
-    assert_eq!(editing.state, AppState::Editing);
-    assert_eq!(editing.intent, "q");
-    assert_eq!(editing.cancellation, CancellationState::Idle);
-}
-
-#[test]
-fn q_cancellation_removes_state_and_exits_only_after_cancelled_poll() {
-    let file = temp_state_file("terminal-cancelled");
-    let mut app = connected_app();
-    app.set_session_state_file(file.clone());
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    assert!(file.path().exists());
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('q')));
-    app.handle_key(key(KeyCode::Enter));
-    let request_id = match app.take_commands().remove(0) {
-        HostCommand::Cancel { request, .. } => request.cancellation_request_id,
-        other => panic!("expected Cancel, got {other:?}"),
-    };
-    app.handle_host_message(HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(
-        CancellationAccepted {
-            mission_run_id: "run-1".to_string(),
-            cancellation_request_id: request_id,
-            disposition: "cancellation_requested".to_string(),
-            status: "running".to_string(),
-            requested_at: "2026-08-24T12:05:00Z".to_string(),
-        },
-    ))));
-    assert!(file.path().exists());
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-1".to_string(),
-            mission_run_id: "run-1".to_string(),
-            status: "cancelled".to_string(),
-            created_at: None,
-            started_at: None,
-            finished_at: Some("2026-08-24T12:05:01Z".to_string()),
-            terminal_classification: None,
-        }),
-    })));
-    assert!(!file.path().exists());
-    assert_eq!(
-        app.take_clean_exit_action(),
-        Some(CleanExitAction::Cancelled)
-    );
-}
-
-#[test]
-fn c_cancellation_stays_open_after_host_reports_terminal_cancellation() {
-    let file = temp_state_file("c-terminal-cancelled");
-    let mut app = connected_app();
-    app.set_session_state_file(file.clone());
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('c')));
-    app.handle_key(key(KeyCode::Enter));
-    let request_id = match app.take_commands().remove(0) {
-        HostCommand::Cancel { request, .. } => request.cancellation_request_id,
-        other => panic!("expected Cancel, got {other:?}"),
-    };
-    app.handle_host_message(HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(
-        CancellationAccepted {
-            mission_run_id: "run-1".to_string(),
-            cancellation_request_id: request_id,
-            disposition: "cancellation_requested".to_string(),
-            status: "running".to_string(),
-            requested_at: "2026-08-24T12:05:00Z".to_string(),
-        },
-    ))));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-1".to_string(),
-            mission_run_id: "run-1".to_string(),
-            status: "cancelled".to_string(),
-            created_at: None,
-            started_at: None,
-            finished_at: Some("2026-08-24T12:05:01Z".to_string()),
-            terminal_classification: None,
-        }),
-    })));
-    assert!(file.path().exists());
-    assert_eq!(app.take_clean_exit_action(), None);
-    assert_eq!(app.logical_state_name(), "Run");
-    assert_eq!(app.cancellation, CancellationState::Idle);
-    file.remove().unwrap();
-}
-
-#[test]
-fn q_on_owned_terminal_run_exits_directly_without_cancellation_request() {
-    let file = temp_state_file("q-terminal-run");
-    let mut app = connected_app();
-    app.set_session_state_file(file.clone());
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-1".to_string(),
-            mission_run_id: "run-1".to_string(),
-            status: "succeeded".to_string(),
-            created_at: None,
-            started_at: None,
-            finished_at: Some("2026-08-24T12:05:01Z".to_string()),
-            terminal_classification: None,
-        }),
-    })));
-    assert!(file.path().exists());
-    app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.take_commands().is_empty());
-    assert!(!file.path().exists());
-    assert_eq!(
-        app.take_clean_exit_action(),
-        Some(CleanExitAction::TerminalRun)
-    );
-}
-
-#[test]
-fn confirmed_cancellation_times_out_at_ten_seconds_with_deterministic_clock() {
-    let file = temp_state_file("cancel-timeout");
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = App::new_with_session_file_and_clock(
-        "http://127.0.0.1:8787".to_string(),
-        file.clone(),
-        clock.clone(),
-    );
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(health())));
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('q')));
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-
-    clock.advance(Duration::from_secs(9));
-    clock.advance(Duration::from_millis(999));
-    app.check_deadlines();
-    assert_eq!(app.take_clean_exit_action(), None);
-    assert!(file.path().exists());
-
-    clock.advance(Duration::from_millis(1));
-    app.check_deadlines();
-    assert_eq!(
-        app.take_clean_exit_action(),
-        Some(CleanExitAction::CancellationTimedOut)
-    );
-    assert!(file.path().exists());
-    assert!(app.take_commands().is_empty());
-    file.remove().unwrap();
-}
-
-#[test]
-fn q_cancellation_submit_failure_keeps_deadline_and_exits_at_ten_seconds() {
-    let file = temp_state_file("q-submit-failure-timeout");
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = App::new_with_session_file_and_clock(
-        "http://127.0.0.1:8787".to_string(),
-        file.clone(),
-        clock.clone(),
-    );
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(health())));
-    type_text(&mut app, "survey the ridge");
-    app.handle_key(alt_enter());
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Accepted(
-        accepted(),
-    ))));
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('q')));
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Cancelled(Err(HostError::Transport(
-        "timeout".to_string(),
-    ))));
-    assert_eq!(app.cancellation, CancellationState::Idle);
-    assert!(
-        app.notice
-            .as_deref()
-            .unwrap()
-            .contains("Cancellation failed")
-    );
-
-    clock.advance(Duration::from_secs(10));
-    app.check_deadlines();
-    assert_eq!(
-        app.take_clean_exit_action(),
-        Some(CleanExitAction::CancellationTimedOut)
-    );
-    assert!(file.path().exists());
-    file.remove().unwrap();
-}
-
-#[test]
-fn liveness_uses_inclusive_response_receipt_boundaries() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let app = active_run_app_with_clock(clock.clone());
-    assert!(app.last_host_response.is_some());
-    assert_eq!(app.liveness(), Liveness::Live);
-    clock.advance(Duration::from_secs(5));
-    assert_eq!(app.liveness(), Liveness::Stale);
-    clock.advance(Duration::from_secs(25));
-    assert_eq!(app.liveness(), Liveness::Offline);
-}
-
-#[test]
-fn evidence_and_mutations_survive_an_error_gap_and_recover() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock.clone());
-    app.handle_host_message(HostMessage::Activities(Ok(evidence(activities()))));
-    app.handle_host_message(HostMessage::Observations(Ok(evidence(observations()))));
-    let response_at = app.last_host_response;
-    app.handle_host_message(HostMessage::Activities(Err(HostError::Transport(
-        "timeout".to_string(),
-    ))));
-    app.handle_host_message(HostMessage::Current(Err(HostError::Transport(
-        "timeout".to_string(),
-    ))));
-    assert_eq!(app.last_host_response, response_at);
-    assert_eq!(app.activities.len(), 2);
-    assert_eq!(app.observations.len(), 3);
-    assert_eq!(app.run.as_ref().unwrap().mission_run_id, "run-1");
-
-    clock.advance(Duration::from_secs(5));
-    app.handle_key(key(KeyCode::Char('c')));
-    assert_eq!(app.cancellation, CancellationState::Idle);
-    assert_eq!(
-        app.notice.as_deref(),
-        Some("Mutation controls disabled while the Host connection is stale or offline")
-    );
-    app.handle_key(key(KeyCode::Char('q')));
-    assert_eq!(app.cancellation, CancellationState::Idle);
-
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: app.run.clone(),
-    })));
-    assert_eq!(app.liveness(), Liveness::Live);
-    assert_eq!(app.activities.len(), 2);
-    assert_eq!(app.observations.len(), 3);
-    app.handle_key(key(KeyCode::Char('c')));
-    assert_eq!(app.cancellation, CancellationState::Confirming);
-}
-
-#[test]
-fn run_poll_fans_out_to_current_activities_and_observations() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.request_poll();
-    assert_eq!(
-        app.take_commands(),
-        vec![
-            poll_command(&app),
-            HostCommand::FetchActivities {
-                mission_run_id: "run-1".to_string(),
-            },
-            HostCommand::FetchObservations {
-                mission_run_id: "run-1".to_string(),
-            },
-            HostCommand::FetchNarrative {
-                mission_run_id: "run-1".to_string(),
-            },
-            HostCommand::FetchArtifacts {
-                mission_run_id: "run-1".to_string(),
-            },
-        ]
-    );
-}
-
-#[test]
-fn pane_focus_cycles_and_artifact_selection_is_stable() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
-    assert_eq!(app.pane_focus, PaneFocus::Activities);
-    app.handle_key(key(KeyCode::Tab));
-    assert_eq!(app.pane_focus, PaneFocus::Artifacts);
-    assert_eq!(app.selected_artifact().unwrap().0, 0);
-    app.handle_key(key(KeyCode::Down));
-    let selected = app.selected_artifact().unwrap().1.artifact_id.clone();
-    assert_eq!(selected, "operator-conversation");
-    assert_eq!(
-        app.take_commands(),
-        vec![HostCommand::FetchConversationEntries {
-            mission_run_id: "run-1".to_string(),
-            artifact_id: "operator-conversation".to_string(),
-        }]
-    );
-    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
-    assert_eq!(app.selected_artifact().unwrap().1.artifact_id, selected);
-    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert_eq!(app.pane_focus, PaneFocus::Activities);
-}
-
-#[test]
-fn artifact_inspector_opens_pages_and_closes_at_defined_bounds() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
-    app.handle_key(key(KeyCode::Tab));
-
-    app.handle_key(key(KeyCode::Enter));
-    assert_eq!(
-        app.inspector.as_ref().unwrap().artifact_id,
-        "detection-frame"
-    );
-    assert_eq!(
-        app.take_commands(),
-        vec![HostCommand::FetchArtifactContent {
-            mission_run_id: "run-1".to_string(),
-            artifact_id: "detection-frame".to_string(),
-            offset: 0
-        }]
-    );
-    app.handle_key(key(KeyCode::Esc));
-    assert!(app.inspector.is_none());
-
-    app.handle_key(key(KeyCode::Down));
-    app.take_commands();
-    app.handle_key(key(KeyCode::Enter));
-    assert!(
-        app.inspector.is_none(),
-        "conversation artifacts are not inspected"
-    );
-    app.handle_key(key(KeyCode::Down));
-    app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.inspector.as_ref().unwrap().artifact_id, "planner-log");
-    app.take_commands();
-    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("first"))));
-    app.handle_key(key(KeyCode::Right));
-    assert_eq!(app.inspector.as_ref().unwrap().offset, 4096);
-    assert_eq!(app.inspector.as_ref().unwrap().previous_offsets, vec![0]);
-    assert_eq!(
-        app.take_commands(),
-        vec![HostCommand::FetchArtifactContent {
-            mission_run_id: "run-1".to_string(),
-            artifact_id: "planner-log".to_string(),
-            offset: 4096
-        }]
-    );
-    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("final"))));
-    app.handle_key(key(KeyCode::Char('n')));
-    assert!(app.take_commands().is_empty());
-    app.handle_key(key(KeyCode::Left));
-    assert_eq!(app.inspector.as_ref().unwrap().offset, 0);
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('p')));
-    assert!(app.take_commands().is_empty());
-}
-
-#[test]
-fn artifact_responses_retain_state_ignore_stale_content_and_poll_open_views() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock.clone());
-    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
-    app.handle_key(key(KeyCode::Tab));
-    app.handle_key(key(KeyCode::Down));
-    app.take_commands();
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-1".to_string(),
-        artifact_id: "operator-conversation".to_string(),
-        result: Ok(evidence(conversation_entries())),
-    });
-    assert_eq!(
-        app.conversation_entries
-            .iter()
-            .map(|entry| entry.sequence)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 4]
-    );
-    clock.advance(Duration::from_secs(5));
-    app.handle_host_message(HostMessage::Artifacts(Err(HostError::Transport(
-        "timeout".to_string(),
-    ))));
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-1".to_string(),
-        artifact_id: "operator-conversation".to_string(),
-        result: Err(HostError::Transport("timeout".to_string())),
-    });
-    assert_eq!(app.artifacts.len(), 3);
-    assert_eq!(app.conversation_entries.len(), 3);
-
-    app.handle_key(key(KeyCode::Down));
-    app.handle_key(key(KeyCode::Enter));
-    app.take_commands();
-    let mut mismatched = content_page("first");
-    mismatched.artifact_id = "other-artifact".to_string();
-    app.handle_host_message(HostMessage::ArtifactContent(Ok(mismatched)));
-    assert!(app.inspector.as_ref().unwrap().page.is_none());
-    app.request_poll();
-    assert!(
-        app.take_commands()
-            .contains(&HostCommand::FetchArtifactContent {
-                mission_run_id: "run-1".to_string(),
-                artifact_id: "planner-log".to_string(),
-                offset: 0,
-            })
-    );
-}
-
-#[test]
-fn conversation_entries_apply_only_to_the_requested_run_and_selected_artifact() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.handle_host_message(HostMessage::Artifacts(Ok(evidence(artifacts()))));
-    app.selected_artifact = Some("operator-conversation".to_string());
-    app.conversation_entries = vec![conversation_entries()[0].clone()];
-    app.notice = Some("existing notice".to_string());
-
-    let replacement = conversation_entries();
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-1".to_string(),
-        artifact_id: "other-conversation".to_string(),
-        result: Ok(evidence(replacement.clone())),
-    });
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-other".to_string(),
-        artifact_id: "operator-conversation".to_string(),
-        result: Ok(evidence(replacement.clone())),
-    });
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-1".to_string(),
-        artifact_id: "other-conversation".to_string(),
-        result: Err(HostError::Transport("stale timeout".to_string())),
-    });
-    assert_eq!(app.conversation_entries.len(), 1);
-    assert_eq!(app.conversation_entries[0].sequence, 1);
-    assert_eq!(app.notice.as_deref(), Some("existing notice"));
-
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-1".to_string(),
-        artifact_id: "operator-conversation".to_string(),
-        result: Ok(evidence(replacement)),
-    });
-    assert_eq!(
-        app.conversation_entries
-            .iter()
-            .map(|entry| entry.sequence)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 4]
-    );
-}
-
-#[test]
-fn activity_selection_is_stable_moves_and_drops_when_empty() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    let list = activities();
-    app.handle_host_message(HostMessage::Activities(Ok(evidence(list.clone()))));
-    assert_eq!(app.selected_activity().unwrap().0, 0);
-    app.handle_key(key(KeyCode::Down));
-    assert_eq!(app.selected_activity().unwrap().0, 1);
-    app.handle_key(key(KeyCode::Down));
-    assert_eq!(app.selected_activity().unwrap().0, 1);
-    app.handle_key(key(KeyCode::Char('k')));
-    assert_eq!(app.selected_activity().unwrap().0, 0);
-    app.handle_key(key(KeyCode::Char('j')));
-    let selected_id = app.selected_activity().unwrap().1.activity_id.clone();
-    app.handle_host_message(HostMessage::Activities(Ok(evidence(list))));
-    assert_eq!(app.selected_activity().unwrap().1.activity_id, selected_id);
-    app.handle_host_message(HostMessage::Activities(Ok(evidence(Vec::new()))));
-    assert!(app.selected_activity().is_none());
-}
-
-#[test]
-fn selected_observations_returns_only_activity_links() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.handle_host_message(HostMessage::Activities(Ok(evidence(activities()))));
-    app.handle_host_message(HostMessage::Observations(Ok(evidence(observations()))));
-    app.handle_key(key(KeyCode::Down));
-    let selected = app.selected_observations();
-    assert_eq!(
-        selected
-            .iter()
-            .map(|item| item.observation_sequence)
-            .collect::<Vec<_>>(),
-        vec![2, 3]
-    );
-}
-
-#[test]
-fn definitive_host_errors_refresh_liveness_but_transport_does_not() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock.clone());
-
-    for message in [
-        HostMessage::Activities(Err(HostError::NotFound {
-            code: "mission_run_not_found".to_string(),
-            message: "missing".to_string(),
-        })),
-        HostMessage::Observations(Err(HostError::InvalidCursor {
-            code: "invalid_cursor".to_string(),
-            message: "invalid".to_string(),
-        })),
-        HostMessage::Cancelled(Err(HostError::AuthorizationFailed {
-            code: "authorization_failed".to_string(),
-            message: "denied".to_string(),
-        })),
-        HostMessage::Current(Err(HostError::UnexpectedStatus(
-            503,
-            "unavailable".to_string(),
-        ))),
-    ] {
-        clock.advance(Duration::from_secs(5));
-        app.handle_host_message(message);
-        assert_eq!(app.liveness(), Liveness::Live);
-    }
-
-    app.handle_host_message(HostMessage::Current(Err(HostError::Transport(
-        "timeout".to_string(),
-    ))));
-    clock.advance(Duration::from_secs(5));
-    assert_eq!(app.liveness(), Liveness::Stale);
-}
-
-#[test]
-fn v1_1_poll_fetches_only_active_operator_tab_and_tabs_have_direct_keys() {
-    let mut app = active_operator_app();
-    let commands = app.take_commands();
-    assert_eq!(commands.len(), 2);
-    assert!(matches!(commands[0], HostCommand::PollCurrent { .. }));
-    assert!(matches!(
-        &commands[1],
-        HostCommand::FetchOperatorView {
-            section: OperatorSection::Overview,
-            cursor: None,
-            raw: false,
-            request_id: 1,
-            ..
-        }
-    ));
-
-    app.handle_key(key(KeyCode::Char('3')));
-    assert_eq!(
-        app.active_tab,
-        operator_console::app::OperatorTab::Environment
-    );
-    assert!(matches!(
-        app.take_commands().as_slice(),
-        [HostCommand::FetchOperatorView {
-            section: OperatorSection::Environment,
-            raw: false,
-            request_id: 2,
-            ..
-        }]
-    ));
-    app.handle_key(key(KeyCode::Tab));
-    assert_eq!(
-        app.active_tab,
-        operator_console::app::OperatorTab::Artifacts
-    );
-    app.take_commands();
-    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert_eq!(
-        app.active_tab,
-        operator_console::app::OperatorTab::Environment
-    );
-}
-
-#[test]
-fn agent_auto_follow_pause_newer_count_stable_update_and_stale_response_handling() {
-    let mut app = active_operator_app();
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('2')));
-    let requested = app.take_commands();
-    let [HostCommand::FetchOperatorView { request_id, .. }] = requested.as_slice() else {
-        panic!("expected agents request");
-    };
-    let first_request = *request_id;
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-1".to_string(),
-        section: OperatorSection::Agents,
-        request_id: first_request,
-        result: Ok(operator_agents_page(
-            "agents-cursor-1",
-            &[("stable-1", "inv-1")],
-        )),
-    });
-    assert_eq!(app.selected_invocation().unwrap().1.invocation_id, "inv-1");
-    assert!(app.agent_following);
-
-    app.handle_key(key(KeyCode::Up));
-    assert!(!app.agent_following);
-    app.request_poll();
-    let commands = app.take_commands();
-    let next_request = commands
+fn cancel_request_id(commands: &[HostCommand]) -> String {
+    commands
         .iter()
         .find_map(|command| match command {
-            HostCommand::FetchOperatorView {
-                request_id,
-                cursor,
-                section: OperatorSection::Agents,
-                ..
-            } => {
-                assert_eq!(cursor.as_deref(), Some("agents-cursor-1"));
-                Some(*request_id)
-            }
+            HostCommand::Cancel { request, .. } => Some(request.cancellation_request_id.clone()),
             _ => None,
         })
-        .unwrap();
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-1".to_string(),
-        section: OperatorSection::Agents,
-        request_id: next_request,
-        result: Ok(operator_agents_page(
-            "agents-cursor-2",
-            &[("stable-2", "inv-2")],
-        )),
-    });
-    assert_eq!(app.newer_invocations, 1);
-    assert_eq!(app.selected_invocation().unwrap().1.invocation_id, "inv-1");
+        .expect("a cancellation was requested")
+}
 
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-1".to_string(),
-        section: OperatorSection::Agents,
-        request_id: first_request,
-        result: Ok(operator_agents_page("stale", &[("stable-3", "inv-stale")])),
+fn current(run: operator_console::host::RunRecord) -> HostMessage {
+    HostMessage::Current(Ok(CurrentRun {
+        mission_run: Some(run),
+    }))
+}
+
+fn ctrl(c: char) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+#[test]
+fn absent_recovered_run_preserves_record_and_can_activate_a_new_mission() {
+    let file = state_file("recover-absent");
+    let saved = owner("run-gone", "credential-recovered");
+    file.save(&saved).unwrap();
+    let mut app = App::new_with_session_file(HOST.to_string(), file.clone());
+    app.take_commands();
+    app.handle_host_message(HostMessage::Connected(Ok(health())));
+    app.take_commands();
+    app.handle_host_message(HostMessage::Current(Ok(CurrentRun { mission_run: None })));
+    assert_eq!(app.logical_state_name(), "Launch");
+    assert!(!app.recovered_owner());
+    assert!(!app.ownership_available());
+    assert_eq!(file.load().unwrap(), Some(saved));
+    app.take_commands();
+    app.handle_host_message(HostMessage::Presets(Ok(presets())));
+    app.check_deadlines();
+    let (request_id, query) = single_preflight(&mut app);
+    app.handle_host_message(HostMessage::Preflight {
+        request_id,
+        result: Ok(preflight(&query, true)),
     });
-    assert_eq!(app.agent_invocations.len(), 2);
+    app.handle_key(alt_enter());
+    assert_eq!(app.state, AppState::ReviewActivation);
+    app.handle_key(key(KeyCode::Enter));
+    let commands = app.take_commands();
     assert!(
-        !app.agent_invocations
+        commands
             .iter()
-            .any(|invocation| invocation.invocation_id == "inv-stale")
+            .any(|command| matches!(command, HostCommand::Submit { .. }))
     );
+    app.handle_host_message(HostMessage::Activated(Ok(
+        operator_console::host::ActivationOutcome::Accepted(
+            operator_console::host::ActivationAccepted {
+                activation_request_id: app.review_request_id().unwrap().to_string(),
+                mission_id: MISSION_ID.to_string(),
+                mission_run_id: RUN_ID.to_string(),
+                status: "queued".to_string(),
+                created_at: "2026-08-24T12:00:00Z".to_string(),
+            },
+        ),
+    )));
+    assert_eq!(app.logical_state_name(), "Run");
+    assert_eq!(file.load().unwrap().unwrap().mission_run_id, RUN_ID);
+    assert!(app.ownership_available());
+    file.remove().unwrap();
+}
 
-    app.handle_key(key(KeyCode::Char('f')));
-    assert!(app.agent_following);
-    assert_eq!(app.newer_invocations, 0);
-    assert_eq!(app.selected_invocation().unwrap().1.invocation_id, "inv-2");
+#[test]
+fn dropped_section_retries_without_host_failure_and_final_wave_completes() {
+    use operator_console::host::workers::Dispatch;
+    let (mut app, clock) = run_app("dropped-final-section");
+    app.handle_host_message(current(rejected_run()));
+    let mut dropped = false;
+    for _ in 0..4 {
+        app.request_poll();
+        let commands = app.take_commands();
+        for command in commands {
+            if let HostCommand::FetchOperatorView {
+                section,
+                request_id,
+                ..
+            } = &command
+            {
+                if *section == OperatorSection::Agents && !dropped {
+                    app.handle_dispatch(Dispatch::Dropped(command));
+                    dropped = true;
+                    assert_eq!(app.notice, None);
+                    assert_eq!(app.liveness(), Liveness::Live);
+                    continue;
+                }
+                app.handle_host_message(section_reply(*section, *request_id, None, |page| {
+                    page["run_status"] = json!("failed");
+                    if *section == OperatorSection::Overview {
+                        page["overview"]["narrative"]["terminal"] = json!(true);
+                        page["overview"]["narrative"]["status"] = json!("available");
+                    }
+                }));
+            }
+        }
+        if app.polling_stopped() {
+            break;
+        }
+        clock.advance(Duration::from_secs(2));
+    }
+    assert!(dropped);
+    assert!(
+        app.polling_stopped(),
+        "local backpressure must not strand a final section"
+    );
+}
 
+#[test]
+fn coalesced_section_accepts_original_response_id_and_can_poll_again() {
+    use operator_console::host::workers::Dispatch;
+    let (mut app, _) = run_app("coalesced-section-owner");
     app.request_poll();
-    let update_request = app
+    let command = app
         .take_commands()
         .into_iter()
-        .find_map(|command| match command {
-            HostCommand::FetchOperatorView { request_id, .. } => Some(request_id),
-            _ => None,
+        .find(|command| {
+            matches!(
+                command,
+                HostCommand::FetchOperatorView {
+                    section: OperatorSection::Progress,
+                    ..
+                }
+            )
         })
         .unwrap();
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-1".to_string(),
-        section: OperatorSection::Agents,
-        request_id: update_request,
-        result: Ok(operator_agents_page(
-            "agents-cursor-3",
-            &[("stable-2", "inv-2")],
-        )),
+    let original = 987;
+    app.handle_dispatch(Dispatch::Coalesced {
+        command,
+        original_request_id: Some(original),
     });
+    app.handle_host_message(section_reply(
+        OperatorSection::Progress,
+        original,
+        None,
+        |page| {
+            page["progress"]["nodes"][0]["title"] = json!("Coalesced response applied");
+        },
+    ));
     assert_eq!(
-        app.agent_invocations.len(),
-        2,
-        "stable identity updates in place"
+        app.view.progress.nodes["summary:7"].title,
+        "Coalesced response applied"
     );
+    app.request_poll();
+    assert!(sections(&app.take_commands()).contains(&OperatorSection::Progress));
 }
 
 #[test]
-fn environment_raw_toggle_resets_only_environment_cursor_and_retains_current_until_reply() {
-    let mut app = active_operator_app();
-    app.take_commands();
-    app.handle_key(key(KeyCode::Char('3')));
-    let request = match app.take_commands().remove(0) {
-        HostCommand::FetchOperatorView { request_id, .. } => request_id,
-        other => panic!("expected environment request, got {other:?}"),
-    };
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-1".to_string(),
-        section: OperatorSection::Environment,
-        request_id: request,
-        result: Ok(operator_environment_page(false, "filtered-cursor")),
-    });
-    assert_eq!(app.environment_timeline[0].event_kind, "belief.updated");
-    assert!(app.operator_environment.is_some());
-
-    app.handle_key(key(KeyCode::Char('r')));
-    assert!(app.environment_raw);
-    assert!(app.environment_timeline.is_empty());
-    assert!(app.operator_environment.is_some());
-    let raw_request = match app.take_commands().remove(0) {
-        HostCommand::FetchOperatorView {
-            request_id,
-            cursor,
-            raw,
-            ..
-        } => {
-            assert!(cursor.is_none());
-            assert!(raw);
-            request_id
+fn initial_agents_and_artifacts_history_drains_before_terminal_completion() {
+    use operator_console::host::OperatorCursor;
+    for section in [OperatorSection::Agents, OperatorSection::Artifacts] {
+        let (mut app, clock) = ready_launch_app("history-lists");
+        accept(&mut app);
+        let commands = app.take_commands();
+        for other in sections(&commands) {
+            if other != section {
+                app.handle_host_message(section_reply(
+                    other,
+                    section_request_id(&commands, other),
+                    None,
+                    |_| {},
+                ));
+            }
         }
-        other => panic!("expected raw environment request, got {other:?}"),
-    };
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-1".to_string(),
-        section: OperatorSection::Environment,
-        request_id: raw_request,
-        result: Ok(operator_environment_page(true, "raw-cursor")),
-    });
-    assert_eq!(app.environment_timeline[0].event_kind, "hyper-heartbeat");
-}
-
-#[test]
-fn mutations_require_matching_console_session_ownership() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.run.as_mut().unwrap().mission_run_id = "run-independent".to_string();
-    assert_eq!(app.liveness(), Liveness::Live);
-    assert!(!app.ownership_available());
-    assert!(!app.mutations_enabled());
-
-    app.handle_key(key(KeyCode::Char('c')));
-    assert_eq!(app.cancellation, CancellationState::Idle);
-    assert_eq!(
-        app.notice.as_deref(),
-        Some("Mutation controls disabled while the Host connection is stale or offline")
-    );
-    app.handle_key(key(KeyCode::Char('q')));
-    assert_eq!(app.cancellation, CancellationState::Idle);
-
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(RunRecord {
-            mission_id: "mission-1".to_string(),
-            mission_run_id: "run-1".to_string(),
-            status: "running".to_string(),
-            created_at: None,
-            started_at: None,
-            finished_at: None,
-            terminal_classification: None,
-        }),
-    })));
-    assert!(app.ownership_available());
-    assert!(app.mutations_enabled());
-    app.handle_key(key(KeyCode::Char('c')));
-    assert_eq!(app.cancellation, CancellationState::Confirming);
-}
-
-#[test]
-fn truncated_evidence_sets_flags_and_visible_notice() {
-    let clock = Arc::new(ManualClock::new(Instant::now()));
-    let mut app = active_run_app_with_clock(clock);
-    app.handle_host_message(HostMessage::Activities(Ok(EvidencePage {
-        items: activities(),
-        truncated: true,
-    })));
-    assert!(app.activities_truncated);
-    assert_eq!(app.activities.len(), 2);
-    assert_eq!(
-        app.notice.as_deref(),
-        Some("Showing the first 2 evidence entries; the Host retains the full timeline")
-    );
+        let field = if section == OperatorSection::Agents {
+            "agents"
+        } else {
+            "artifacts"
+        };
+        let id_field = if section == OperatorSection::Agents {
+            "stable_id"
+        } else {
+            "artifact_id"
+        };
+        let items = |page: &mut serde_json::Value, range: std::ops::Range<u64>| {
+            let template = page[field][0].clone();
+            page[field] = json!(
+                range
+                    .map(|n| {
+                        let mut item = template.clone();
+                        item[id_field] = json!(format!("history-{n:03}"));
+                        if section == OperatorSection::Artifacts {
+                            item["classification"] = json!("service_log");
+                        }
+                        item
+                    })
+                    .collect::<Vec<_>>()
+            );
+        };
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |page| {
+                page["next_cursor"] = json!("history-120");
+                page["before_cursor"] = json!("history-21");
+                page["has_more"] = json!(true);
+                items(page, 21..121);
+            },
+        ));
+        if section == OperatorSection::Agents {
+            app.view.agent_following = false;
+            app.view.selected_invocation = Some("history-100".to_string());
+        } else {
+            app.view.selected_artifact = Some("history-100".to_string());
+        }
+        let commands = app.take_commands();
+        assert!(commands.iter().any(|command| matches!(command, HostCommand::FetchOperatorView { cursor: OperatorCursor::Before(cursor), .. } if cursor == "history-21")));
+        // The run becomes terminal while its initial history is still draining.
+        app.handle_host_message(current(rejected_run()));
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |page| {
+                page["run_status"] = json!("failed");
+                page["next_cursor"] = json!("terminal-150");
+                items(page, 1..21);
+            },
+        ));
+        assert!(!app.polling_stopped());
+        let commands = app.take_commands();
+        assert!(commands.iter().any(|command| matches!(command, HostCommand::FetchOperatorView { cursor: OperatorCursor::After(cursor), .. } if cursor == "history-120")));
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |page| {
+                page["run_status"] = json!("failed");
+                page["next_cursor"] = json!("terminal-150");
+                items(page, 121..151);
+            },
+        ));
+        for _ in 0..3 {
+            app.request_poll();
+            let commands = app.take_commands();
+            for other in sections(&commands) {
+                app.handle_host_message(section_reply(
+                    other,
+                    section_request_id(&commands, other),
+                    None,
+                    |page| {
+                        page["run_status"] = json!("failed");
+                        if other == section {
+                            page[field] = json!([]);
+                        }
+                        if other == OperatorSection::Overview {
+                            page["overview"]["narrative"]["terminal"] = json!(true);
+                            page["overview"]["narrative"]["status"] = json!("available");
+                        }
+                    },
+                ));
+            }
+            if app.polling_stopped() {
+                break;
+            }
+            clock.advance(Duration::from_secs(2));
+        }
+        assert!(app.polling_stopped());
+        if section == OperatorSection::Agents {
+            assert_eq!(app.view.agents.len(), 150);
+            assert_eq!(app.view.selected_invocation.as_deref(), Some("history-100"));
+            assert!(!app.view.agent_following);
+        } else {
+            assert_eq!(app.view.artifacts.len(), 150);
+            assert_eq!(app.view.selected_artifact.as_deref(), Some("history-100"));
+        }
+    }
 }

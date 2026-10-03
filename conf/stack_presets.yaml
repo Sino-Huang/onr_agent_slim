@@ -1,0 +1,162 @@
+# Environment Stack presets for the Runtime Host and the herdr live-demo launcher.
+#
+# Paths use placeholders resolved by onr.runtime_host.stack.presets:
+#   {agent}     the Agent Slim repository root (the caller's --repo-root)
+#   {physical}  roots.physical_runtime
+#   {solution}  roots.solution
+#   {scenarios} roots.scenarios
+# Relative roots resolve against the repository that contains this file.
+#
+# `modes` are the per-Mission-mode composition defaults of
+# scripts/live_demo_with_wm/herdr_start_live_demo.sh; a preset overlays its
+# `inputs` on its mode. ONR_DEMO_* variables override either layer.
+schema_version: 1
+default_preset_id: mission1-harbor
+
+roots:
+  physical_runtime: ../onr_physical_runtime
+  solution: ../onr_solution
+  scenarios: ../onr_scenario
+  conda_init: /home/sukaih/miniconda3/etc/profile.d/conda.sh
+
+engine:
+  executable: ../onr_env/Linux/Harbor5_6.sh
+  airsim_settings: "{physical}/conf/env/settings_airsim.json"
+  airsim_vehicle: SimpleFlight
+  airsim_camera: front_center_custom
+  # Read-only operator-console camera; must exist in airsim_settings.
+  airsim_third_person_camera: third_person_demo
+  rpc_port: 41451
+
+perception:
+  port: 8766
+  calibration: "{solution}/config/calibration_v12.json"
+  yolo_device: cuda:1
+  yolo_weights: "{solution}/yolo_weight/best.pt"
+
+modes:
+  mission1:
+    mission_file: "{agent}/examples/mission.json"
+    scenario_config: "{physical}/config/harbor_world.yaml"
+    mission1_instance: "{physical}/data/harbor_world/mission1_instances/demo-001"
+    maneuver_seconds: 30
+  mission2:
+    mission_file: "{agent}/examples/mission2.json"
+    scenario_config: "{physical}/config/harbor_world.yaml"
+    mission2_scenario: "{scenarios}/offshore_dock_1/collision/0"
+    maneuver_seconds: 300
+  mission3:
+    mission_file: "{agent}/examples/mission3.json"
+    scenario_config: "{physical}/config/harbor_world.yaml"
+    mission3_selection: "{agent}/examples/mission3_description.json"
+    maneuver_seconds: 300
+  mission4:
+    mission_file: "{agent}/examples/mission4.json"
+    scenario_config: "{physical}/config/harbor_world.yaml"
+    mission4_package: "{physical}/docs/mission_desc/mission4_offshore_non_collision_0/package.json"
+    mission4_fixture: "{physical}/docs/mission_desc/mission4_offshore_non_collision_0/fixture.json"
+    mission4_answers: "{physical}/docs/mission_desc/mission4_offshore_non_collision_0/answers.json"
+    mission4_requests: "{agent}/examples/mission4_requests.json"
+    maneuver_seconds: 300
+  joint:
+    mission_file: "{agent}/examples/mission1-and-2.json"
+    scenario_config: "{physical}/config/harbor_world.yaml"
+    # Joint mode needs a Mission 1 report instance generated for the moving
+    # scenario; none is committed, so the caller must supply one.
+    mission1_instance: null
+    mission2_scenario: "{scenarios}/offshore_dock_1/collision/0"
+    maneuver_seconds: 30
+  joint24:
+    mission_file: "{agent}/examples/mission2-and-4.json"
+    scenario_config: "{physical}/config/joint24_demo.yaml"
+    mission2_scenario: "{scenarios}/offshore_dock_1/collision/0"
+    mission4_package: "{physical}/docs/mission_desc/mission4_harbor_collision_0/mission4_offshore_collision_0/package.json"
+    mission4_fixture: "{physical}/docs/mission_desc/mission4_harbor_collision_0/mission4_offshore_collision_0/fixture.json"
+    mission4_answers: "{physical}/docs/mission_desc/mission4_harbor_collision_0/mission4_offshore_collision_0/answers.json"
+    mission4_requests: "{agent}/examples/mission2and4_requests.json"
+    maneuver_seconds: 300
+  joint34:
+    mission_file: "{agent}/examples/mission3-and-4.json"
+    scenario_config: "{physical}/config/joint34_demo.yaml"
+    mission3_selection: "{agent}/examples/mission3and4_selection.json"
+    mission4_package: "{physical}/docs/mission_desc/mission4_package.json"
+    mission4_fixture: "{physical}/docs/mission_desc/mission4_fixture.json"
+    mission4_answers: "{physical}/docs/mission_desc/mission4_answers.json"
+    mission4_requests: "{agent}/examples/mission3and4_requests.json"
+    maneuver_seconds: 300
+
+# AirSim has two synchronization mechanisms (ADR 0016):
+# - perception off: the world model runs on simulated information and the
+#   airsim-visualizer follows it (issue #65 reconstruction approach, live):
+#   Harbor plays a lead-in fixture of the world model's ship trajectories,
+#   the follower steps the frozen scene to lead-in + Mission time, teleports
+#   the drone to the world-model pose and draws ideal segmentation boxes.
+# - perception ideal|yolo: the physical runtime's scene clock owns AirSim
+#   time; the perception producer feeds the world model and the Run Worker
+#   annotates camera frames with that producer's output.
+presets:
+  - preset_id: mission1-harbor
+    title: "Mission 1 · Harbor (simulated)"
+    mission_mode: mission1
+    supports: {airsim: [false, true], perception: ["off"]}
+    unsupported_reason: "Perception needs the recorded Harbor engine scene: choose Mission 1 · AirSim live."
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
+  - preset_id: mission1-airsim
+    title: "Mission 1 · AirSim live"
+    mission_mode: mission1
+    supports: {airsim: [true], perception: ["off", ideal, yolo]}
+    unsupported_reason: "This preset plays the Harbor engine scene: AirSim cannot be turned off."
+    defaults:
+      airsim: true
+      perception: yolo
+      update_ownership: coordinator_driven
+      # The engine scenario ends at 299.5 s; stop the Agent loop before the scene does.
+      simulation_limit_seconds: 290
+    inputs:
+      mission_file: "{agent}/examples/mission1_airsim_live.json"
+      scenario_config: "{physical}/config/mission1_airsim_live.yaml"
+      mission1_instance: "{physical}/data/offshore_dock_1/mission1_instances/airsim-live-001"
+      engine_scenario: "{scenarios}/offshore_dock_1/non_collision/0"
+  - preset_id: mission2
+    title: "Mission 2 · Collision-risk monitoring"
+    mission_mode: mission2
+    supports: {airsim: [false], perception: ["off"]}
+    unsupported_reason: null
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
+    inputs:
+      scenario_config: "{physical}/config/mission2_live_demo.yaml"
+  - preset_id: mission3
+    title: "Mission 3 · Ship inspection (smoke scenario)"
+    mission_mode: mission3
+    supports: {airsim: [false], perception: ["off"]}
+    unsupported_reason: null
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
+    inputs:
+      scenario_config: "{physical}/config/mission3_smoke/scenario.yaml"
+      mission3_fixture: "{physical}/config/mission3_smoke/private_fixture.json"
+  - preset_id: mission4
+    title: "Mission 4 · Worker-requested search"
+    mission_mode: mission4
+    supports: {airsim: [false], perception: ["off"]}
+    unsupported_reason: null
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
+    inputs:
+      scenario_config: "{physical}/config/mission4_offshore_demo.yaml"
+  - preset_id: joint
+    title: "Joint · Missions 1 + 2"
+    mission_mode: joint
+    supports: {airsim: [false], perception: ["off"]}
+    unsupported_reason: null
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
+  - preset_id: joint24
+    title: "Joint · Missions 2 + 4"
+    mission_mode: joint24
+    supports: {airsim: [false], perception: ["off"]}
+    unsupported_reason: null
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
+  - preset_id: joint34
+    title: "Joint · Missions 3 + 4"
+    mission_mode: joint34
+    supports: {airsim: [false], perception: ["off"]}
+    unsupported_reason: null
+    defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}

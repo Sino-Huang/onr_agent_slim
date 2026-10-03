@@ -42,21 +42,23 @@ restores via the hook (message visible), then unwinding drops the guard
 ## Bootstrapped Runtime Host ownership
 
 When the console starts its own Runtime Host, a separate guard owns that child
-process. Dropping the guard stops the child on normal quit, event-loop error,
-or panic unwinding. A healthy Runtime Host that already existed at startup is
-never adopted or stopped by the console.
+process. Dropping the guard stops the child on normal quit, completed managed
+exit, event-loop error, or panic unwinding. A healthy Runtime Host that already
+existed at startup is never adopted or stopped by the console.
 
-The bootstrapped Host's standard streams are detached from the console
-terminal. This prevents a Host that is still shutting down from inheriting a
-deleted pseudo-terminal and later failing while starting a Run Worker.
+Ctrl+Q is the explicit detach: the guard releases the child without killing
+it and the persisted owner credential is kept, so the Host and any active run
+continue and a relaunched console recovers the session.
+
+The bootstrapped Host runs in its own process group with stdin closed and
+stdout/stderr in `var/runtime-host/host.log`. A terminal hangup therefore does
+not signal it, and it cannot inherit a deleted pseudo-terminal and later fail
+while starting a Run Worker. A console killed with SIGKILL leaves the Host
+running.
 
 ## Boundaries and known limits
 
-- The host worker thread is a channel consumer with bounded per-request
-  timeouts (`REQUEST_TIMEOUT`, 5 s); it exits when the command channel closes
-  on shutdown, so it never wedges process exit or touches the terminal.
-- `SIGKILL`/`SIGTERM` are out of scope for this slice: there is no signal
-  handling beyond crossterm's Ctrl+C key event, which maps to a clean quit
-  through the normal loop.
+- Control, evidence and media workers have bounded per-request timeouts and exit when their command channels close; none touches the terminal.
+- Ctrl+C during an active owned run uses the managed exit/cancellation confirmation, just like `q`. SIGKILL cannot restore the terminal, but the persisted Console Session permits recovery after relaunch.
 - The console never writes host-side state on exit; run records remain the
   Runtime Host's durable concern.

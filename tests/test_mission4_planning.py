@@ -2,9 +2,7 @@ import copy
 import json
 import math
 import subprocess
-import time
 from pathlib import Path
-from threading import Thread
 from types import SimpleNamespace
 
 import pytest
@@ -85,7 +83,7 @@ def accept(state,request,now=0):
     state["requests"].append({"request":request,"revision":state["revision"],"accepted_at_s":now})
 
 
-def environment(state, now=0, lifecycle=None):
+def environment(state, now: float = 0.0, lifecycle=None):
     return {"mission_time_seconds":now,"state_version":int(now),
             "controlled_vehicle":{"position":{"x":0,"y":0,"z":-20}},
             "world_model_info":{"mission_mode":"mission4","mission4":state},"maneuver_lifecycle":lifecycle}
@@ -344,63 +342,88 @@ def test_worker_dry_run_has_no_writes(tmp_path,capsys):
 
 
 def test_worker_script_uses_mission_time_receipts_and_resume(tmp_path):
-    state=section()
-    current={"now":0.0}
-    agent_report={"event":None}
+    state = section()
+    current = {"now": 0.0}
+    agent_report: dict[str, SimpleNamespace | None] = {"event": None}
+    requests = tmp_path / "requests"
+    first = requests / "00000001.json"
+    second = requests / "00000002.json"
+    third = requests / "00000003.json"
+    ready = tmp_path / "ready.json"
+    mission_id = "mission-75c5c5ba-15fa-4e4b-8abd-7f9d930c2c51"
 
     class PublicTransport:
-        def latest_event(self,topic,mission_id,event_kind=None):
-            if topic=="mission4-agent-reports":return agent_report["event"]
-            assert (topic,mission_id,event_kind)==("environment-data","m4","environment_data")
-            return SimpleNamespace(payload=environment(state,current["now"]))
+        polls = 0
 
-    script=tmp_path / "script.json"
+        def latest_event(self, topic, requested_mission_id, event_kind=None):
+            assert requested_mission_id == mission_id
+            if topic == "mission4-agent-reports":
+                return agent_report["event"]
+            assert (topic, event_kind) == ("environment-data", "environment_data")
+            self.polls += 1
+            # Advance external receipts only at public-evidence boundaries.
+            # This exercises the real worker loop without scheduling deadlines.
+            if self.polls == 2:
+                accept(state, json.loads(first.read_text())["request"])
+            elif self.polls == 3:
+                assert json.loads(ready.read_text())["accepted_requests"] == 1
+                assert not second.exists(), "the second request is gated by mission time"
+                current["now"] = 5.0
+            elif self.polls == 4:
+                accept(state, json.loads(second.read_text())["request"], 5)
+                agent_report["event"] = SimpleNamespace(
+                    event_id=f"mission4-agent-report:{mission_id}:2:all_found",
+                    payload={
+                        "reason": "all_found",
+                        "report": {
+                            "targets": [
+                                {"target_id": "worker:1", "status": "found"},
+                                {"target_id": "worker:2", "status": "found"},
+                            ],
+                        },
+                    },
+                )
+            elif self.polls == 5:
+                request = json.loads(third.read_text())["request"]
+                assert request["operation"] == "finish"
+                assert request["reason"] == "all_found"
+                assert request["base_revision"] == 2
+                accept(state, request, 5)
+            else:
+                assert self.polls == 1, "worker did not finish after its receipt"
+            return SimpleNamespace(payload=environment(state, current["now"]))
+
+    script = tmp_path / "script.json"
     script.write_text(json.dumps([
-        {"at_s":0,"text":"find red container"},
-        {"at_s":5,"text":"also find a blue truck"},
+        {"at_s": 0, "text": "find red container"},
+        {"at_s": 5, "text": "also find a blue truck"},
     ]))
-    errors=[]
+    play_request_script(
+        mission_id=mission_id,
+        session_path=tmp_path / "session.json",
+        request_directory=requests,
+        transport_root=tmp_path / "transport",
+        script_path=script,
+        ready_path=ready,
+        poll_seconds=0,
+        transport=PublicTransport(),
+    )
+    saved = json.loads((tmp_path / "session.json").read_text())
+    assert saved["next_script_request"] == 2
+    assert sum(item.get("kind") == "accepted" for item in saved["history"]) == 2
 
-    def run():
-        try:
-            play_request_script(mission_id="m4",session_path=tmp_path / "session.json",
-                request_directory=tmp_path / "requests",transport_root=tmp_path / "transport",
-                script_path=script,ready_path=tmp_path / "ready.json",poll_seconds=.001,
-                timeout_seconds=2,transport=PublicTransport())
-        except Exception as exc:  # noqa: BLE001 - propagate worker failure to test thread.
-            errors.append(exc)
-
-    worker=Thread(target=run)
-    worker.start()
-    deadline=time.monotonic()+1
-    first=tmp_path / "requests/00000001.json"
-    while not first.exists() and time.monotonic()<deadline:time.sleep(.001)
-    accept(state,json.loads(first.read_text())["request"])
-    while not (tmp_path / "ready.json").exists() and time.monotonic()<deadline:time.sleep(.001)
-    assert not (tmp_path / "requests/00000002.json").exists()
-    current["now"]=5
-    second=tmp_path / "requests/00000002.json"
-    while not second.exists() and time.monotonic()<deadline:time.sleep(.001)
-    accept(state,json.loads(second.read_text())["request"],5)
-    agent_report["event"]=SimpleNamespace(event_id="mission4-agent-report:m4:2:all_found",
-        payload={"reason":"all_found","report":{"targets":[
-            {"target_id":"worker:1","status":"found"},
-            {"target_id":"worker:2","status":"found"}]}})
-    third=tmp_path / "requests/00000003.json"
-    while not third.exists() and time.monotonic()<deadline:time.sleep(.001)
-    accept(state,json.loads(third.read_text())["request"],5)
-    worker.join(1)
-    assert not worker.is_alive() and not errors
-    saved=json.loads((tmp_path / "session.json").read_text())
-    assert saved["next_script_request"]==2
-    assert sum(item.get("kind")=="accepted" for item in saved["history"])==2
-
-    changed=tmp_path / "changed.json"
-    changed.write_text(json.dumps([{"at_s":0,"text":"find a blue truck"}]))
-    with pytest.raises(ValueError,match="changed across resume"):
-        play_request_script(mission_id="m4",session_path=tmp_path / "session.json",
-            request_directory=tmp_path / "requests",transport_root=tmp_path / "transport",
-            script_path=changed,transport=PublicTransport())
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps([{"at_s": 0, "text": "find a blue truck"}]))
+    with pytest.raises(ValueError):
+        play_request_script(
+            mission_id=mission_id,
+            session_path=tmp_path / "session.json",
+            request_directory=requests,
+            transport_root=tmp_path / "transport",
+            script_path=changed,
+            transport=PublicTransport(),
+        )
+    assert json.loads((tmp_path / "session.json").read_text()) == saved
 
 
 def test_context_coordination_publishes_idempotent_mission4_agent_report():

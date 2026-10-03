@@ -13,7 +13,7 @@ Harbor5_6 engine (freeze shim, offshore_dock_1/non_collision/0)
 
 ## Prerequisites
 
-- conda `onr` activated; a running herdr session (`herdr --session <session>`).
+- conda `onr` activated; use the Operator Console for interactive demos (herdr is optional for scripted capture).
 - vLLM serving on `127.0.0.1:11411` (`bash scripts/vllm/start_vllm.sh`). vLLM
   uses two GPUs; YOLO defaults to `cuda:1` (override `ONR_DEMO_YOLO_DEVICE`).
 - `onr_solution/yolo_weight/best.pt` present; `ultralytics` installed in `onr`.
@@ -23,11 +23,21 @@ Harbor5_6 engine (freeze shim, offshore_dock_1/non_collision/0)
 
 ## Run
 
+Preferred operator path:
+
+```bash
+./scripts/tui/start_operator_console.sh --image-protocol halfblocks
+```
+
+Choose `mission1-airsim`, perception `yolo`, wait for green preflight, review the preset intent and launch. The Host writes `var/runtime-host/runs/<mission_run_id>/`; use that directory for the audit below. The World tab cycles between the world-model frame, the annotated front camera (this frame's YOLO detections from `perception_audit.jsonl`, or "no perception sample for this frame"), and the raw front and third-person cameras. Perception `off` on the same preset instead runs the AirSim Follower: the world model uses its simulated observations and AirSim only visualizes it (ADR [0016](adr/0016-airsim-follower-and-perception-annotations.md)). See [the console demo runbook](operator-console-demo.md).
+
+For scripted capture, the compatibility launcher renders the same Stack Builder plan:
+
 ```bash
 bash scripts/live_demo_with_wm/herdr_start_mission1_airsim_live_demo.sh <session>
 ```
 
-The workspace has four panes:
+The compatibility workspace has four panes:
 
 - `airsim-engine` runs `onr_physical_runtime.sim.experimental_freeze.live_engine`.
   It stages the scene into Harbor's `EnvironmentConfigFiles/environment.json`
@@ -42,7 +52,9 @@ The workspace has four panes:
   environment, then runs the Agent loop. The loop stops at 290 s mission time,
   before the recorded scene ends at 299.5 s.
 
-Defaults, each overridable with its `ONR_DEMO_*` variable:
+Defaults come from the `mission1-airsim` preset in `conf/stack_presets.yaml`
+(the wrapper sets `ONR_DEMO_PRESET=mission1-airsim`), each overridable with its
+`ONR_DEMO_*` variable:
 
 | Variable | Default |
 | --- | --- |

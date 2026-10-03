@@ -1,0 +1,30 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ Preflight · launch blocked ────────────────────┐
+│ Preset     ‹ [Mission 1 · AirSim live] ›       ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at      │
+│ AirSim     ‹ off✗ │ [on] ›                     ││   127.0.0.1:11411)                             │
+│▸Perception ‹ off │ ideal │ [yolo] ›            ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs  │
+│ Updates    ‹ [coordinator_driven] ›            ││   about 2 GiB                                  │
+│ Sim limit  ‹ [290 s] ›                         ││ ✖ AirSim RPC port free (in use) — stop the     │
+│ mission1-airsim · mission1                     ││   other Harbor engine                          │
+│ ⓘ This preset plays the Harbor engine scene:   ││                                                │
+│ AirSim cannot be turned off.                   ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Mission Intent ──────────────────────────────────────────────────────────────────────────────────┐
+│ Patrol the window 60-130 s and verify every reported event.                                      │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ←/→ change · F2 demo prompts · Alt+Enter review & launch · r preflight · F1 help
+ ✖ Launch disabled: AirSim RPC port free

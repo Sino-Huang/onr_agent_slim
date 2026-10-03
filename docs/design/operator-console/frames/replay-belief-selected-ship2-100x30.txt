@@ -1,0 +1,30 @@
+ RUN run-d002469e… ● succeeded 00:02:07 │ FSM assignment-1-in-progress │ stack  │ host ○ idle
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ○ Stack ─ ○ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ✔ Done
+┌ Bayesian Belief ─────────────────────────┐┌ Mission Context ─────────────────────────────────────┐
+│reporting_reliability · revision 5        ││Mission Snapshot · source health / freshness          │
+│2026-08-23T00:00:00+10:00                 ││Version 397 · plan r4                                 │
+│ Entity             Mean   Δ prev  Δ prior││· Maneuver: healthy · fresh · r433                    │
+│▶ship 2             0.6231 +0.0000 +0.4902││· Belief: healthy · fresh · r5                        │
+│ ship 1             0.1329 -0.0000 +0.0000││· Environment: healthy · fresh · r433                 │
+│ ship 3             0.1329 -0.0000 +0.0000││· FSM: healthy · fresh · r54                          │
+│ ship 4             0.1329 -0.0000 +0.0000││· plan: healthy · fresh · r4                          │
+│ ship 5             0.1329 -0.0000 +0.0000││FSM · enabled Transition Candidates                   │
+│ ship 6             0.1329 -0.0000 +0.0000││Active: assignment-1-in-progress · updated            │
+│ ship 7             0.1329 -0.0000 +0.0000││→ assignment-2-in-progress · not before 200.5s        │
+│ ship 8             0.1329 -0.0000 +0.0000││If confirm the completed evidence interval            │
+│ ship 9             0.1329 -0.0000 +0.0000││Active Maneuver                                       │
+│ ship 11            0.1329 -0.0000 +0.0000││navigate · active · navigate                          │
+│ ship 12            0.1329 -0.0000 +0.0000││Deadline 198.5000s · remaining 7.9998s                │
+│ ship 13            0.1329 -0.0000 +0.0000││{"path_steps":21,"planner_message":"Path found: 21    │
+│██████████████ship 2 0.6231               ││Latest Transition Intent                              │
+│1/20 · Δ prev +0.0000 · Δ prior +0.4902   ││selected → assignment-2-in-progress                   │
+│Mean history · revisions 1–5              ││If confirm the completed evidence interval            │
+│▁▁▁▄▄                                     ││Latest Hyper outcome · AI non-authoritative           │
+│Honest 0.0000 · CI [0.2164, 0.9428]       ││replan · plan r3                                      │
+│Outcomes altered=1 · clean=0 · omitted=0  ││Mission 1 gate (trigger                               │
+│Variance 0.0384                           ││mission1-gate:next_assignment_infeasible:belief-157,  │
+└──────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ entity · ? help · e new intent · q exit
+ ✖ critical 0  ▲ warning 0  ● notable 0  · routine 0  ∙ debug 0

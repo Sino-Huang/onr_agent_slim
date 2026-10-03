@@ -1,0 +1,30 @@
+┌ Progress · ≥ debug · FOLLOW ─────────────────────────────────────────────────────────────────────┐
+│  ▾ ◆ Run Narrative · AI · available                                                              │
+│    Legs 1-2 complete; ship 2's report was altered and the agent replanned.                       │
+│    ▸ ● 14:01:10 AI First patrol leg completed (1 records)                                        │
+│    ▸ ● 14:01:10 AI Investigating ship 2 report (1 records)                                       │
+│    ▾ ▲ 14:01:10 AI Replan after report alteration (31 records)                                   │
+│        ● 14:01:39 FSM FSM patrol.leg_2 → patrol.leg_3                                            │
+│›   ▾ ▲ 14:01:10 AI Terminal summary: patrol complete (1 records)                                 │
+│        ● 14:01:39 FSM FSM transition 389                                                         │
+│      · Live — not yet summarized (1 records)                                                     │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Selected evidence · PgUp/PgDn ───────────────────────────────────────────────────────────────────┐
+│Terminal summary: patrol complete                                                                 │
+│mission-summary · warning · summary · AI · non-authoritative                                      │
+│Time: 2026-08-27T14:01:10Z – 2026-08-27T14:01:40Z                                                 │
+│                                                                                                  │
+│All patrol legs completed; the final report is available.                                         │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ / search · n/N next/previous match
+ ↑↓ select · ←→ expand/collapse · Enter toggle · f follow newest · i minimum importance

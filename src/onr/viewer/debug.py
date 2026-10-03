@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import quote
 
 _MAX_ARTIFACT_BYTES = 1024 * 1024
@@ -88,24 +89,26 @@ def _safe_directory(base: Path, *components: str) -> Path | None:
     return current
 
 
-def _safe_json_files(directory: Path | None) -> tuple[Path, ...]:
+def _safe_json_files(
+    directory: Path | None,
+) -> tuple[tuple[Path, os.stat_result], ...]:
     if directory is None:
         return ()
     try:
         entries = tuple(directory.iterdir())
     except OSError:
         return ()
-    files: list[Path] = []
+    files: list[tuple[Path, os.stat_result]] = []
     for path in entries:
         if path.suffix != ".json":
             continue
         try:
-            mode = path.lstat().st_mode
+            metadata = path.lstat()
         except OSError:
             continue
-        if stat.S_ISREG(mode):
-            files.append(path)
-    return tuple(sorted(files, key=lambda path: path.name))
+        if stat.S_ISREG(metadata.st_mode):
+            files.append((path, metadata))
+    return tuple(sorted(files, key=lambda item: item[0].name))
 
 
 def _safe_directories(directory: Path | None) -> tuple[Path, ...]:
@@ -316,84 +319,119 @@ def _llm_conversation(
     return conversation
 
 
-def _agent_records(
-    mission_root: Path | None, role: str
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    profiles: list[dict[str, object]] = []
-    profiles_root = _safe_directory(mission_root, "profiles") if mission_root else None
-    for path in _safe_json_files(profiles_root):
-        raw = _read_mapping(path)
-        profile = _profile(raw) if raw is not None else None
-        if profile is not None:
-            profiles.append({"role": role, **profile})
-
-    invocations: list[dict[str, object]] = []
-    for path in _safe_json_files(mission_root):
-        raw = _read_mapping(path)
-        invocation = _invocation(raw) if raw is not None else None
-        if invocation is not None:
-            invocations.append({"role": role, **invocation})
-    return profiles, invocations
+_FileKind = Literal["profile", "invocation", "llm"]
 
 
-def load_debug_artifacts(
-    storage_root: Path, mission_id: str, *, role: str | None = None
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    """Load exact-valid agent artifacts from canonical and legacy layouts."""
+@dataclass(frozen=True, slots=True)
+class _DebugFile:
+    """One discovered regular JSON file and the metadata identifying its content.
 
-    base = Path(storage_root).parent
-    mission_name = quote(mission_id, safe="._-")
-    if role is not None and not _valid_role(role):
-        return [], []
+    ``scope`` is the role directory the file was found under, or ``None`` for the
+    legacy layout whose role comes from the record's own ``agent_role``.
+    """
+
+    kind: _FileKind
+    scope: str | None
+    path: Path
+    identity: tuple[int, int, int, int, int]
+
+
+def _debug_files(
+    kind: _FileKind, scope: str | None, directory: Path | None
+) -> list[_DebugFile]:
+    return [
+        _DebugFile(
+            kind,
+            scope,
+            path,
+            (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            ),
+        )
+        for path, metadata in _safe_json_files(directory)
+    ]
+
+
+def _agent_files(base: Path, mission_name: str, role: str | None) -> list[_DebugFile]:
+    """Discover agent files, canonical role-first layout before legacy."""
 
     agent_root = _safe_directory(base, "debug", "agent")
-    profile_index: dict[tuple[str, str], dict[str, object]] = {}
-    invocation_index: dict[tuple[str, str], dict[str, object]] = {}
+    files: list[_DebugFile] = []
     for role_root in _safe_directories(agent_root):
         scope = role_root.name
         if not _valid_role(scope) or (role is not None and scope != role):
             continue
         canonical_root = _safe_directory(base, "debug", "agent", scope, mission_name)
-        canonical_profiles, canonical_invocations = _agent_records(
-            canonical_root, scope
+        profiles_root = (
+            _safe_directory(canonical_root, "profiles") if canonical_root else None
         )
-        for profile in canonical_profiles:
-            profile_index.setdefault((scope, cast(str, profile["agent_role"])), profile)
-        for invocation in canonical_invocations:
-            invocation_index.setdefault(
-                (scope, cast(str, invocation["invocation_id"])), invocation
-            )
+        files.extend(_debug_files("profile", scope, profiles_root))
+        files.extend(_debug_files("invocation", scope, canonical_root))
 
     legacy_root = _safe_directory(agent_root, mission_name) if agent_root else None
     legacy_profiles_root = (
         _safe_directory(legacy_root, "profiles") if legacy_root else None
     )
-    for path in _safe_json_files(legacy_profiles_root):
-        raw = _read_mapping(path)
-        profile = _profile(raw) if raw is not None else None
-        scope = profile.get("agent_role") if profile is not None else None
-        if (
-            profile is not None
-            and _valid_role(scope)
-            and (role is None or scope == role)
+    files.extend(_debug_files("profile", None, legacy_profiles_root))
+    files.extend(_debug_files("invocation", None, legacy_root))
+    return files
+
+
+def _llm_files(base: Path, mission_name: str, role: str | None) -> list[_DebugFile]:
+    llm_root = _safe_directory(base, "debug", "llm")
+    files: list[_DebugFile] = []
+    for role_root in _safe_directories(llm_root):
+        scope = role_root.name
+        if not _valid_role(scope) or (role is not None and scope != role):
+            continue
+        mission_root = _safe_directory(base, "debug", "llm", scope, mission_name)
+        files.extend(
+            file
+            for file in _debug_files("llm", scope, mission_root)
+            if file.path.stem.isdigit() and int(file.path.stem) >= 1
+        )
+    return files
+
+
+_Reader = Callable[[_DebugFile], Mapping[str, object] | None]
+
+
+def _read_file(file: _DebugFile) -> Mapping[str, object] | None:
+    return _read_mapping(file.path)
+
+
+def _agent_artifacts(
+    files: Iterable[_DebugFile], read: _Reader, role: str | None
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Validate agent files; the first valid record per identity wins."""
+
+    profile_index: dict[tuple[str, str], dict[str, object]] = {}
+    invocation_index: dict[tuple[str, str], dict[str, object]] = {}
+    for file in files:
+        raw = read(file)
+        if raw is None:
+            continue
+        if file.kind == "profile":
+            record = _profile(raw)
+            index, identity_field = profile_index, "agent_role"
+        else:
+            record = _invocation(raw)
+            index, identity_field = invocation_index, "invocation_id"
+        if record is None:
+            continue
+        scope = file.scope if file.scope is not None else record.get("agent_role")
+        if file.scope is None and (
+            not _valid_role(scope) or (role is not None and scope != role)
         ):
-            profile_index.setdefault(
-                (cast(str, scope), cast(str, profile["agent_role"])),
-                {"role": scope, **profile},
-            )
-    for path in _safe_json_files(legacy_root):
-        raw = _read_mapping(path)
-        invocation = _invocation(raw) if raw is not None else None
-        scope = invocation.get("agent_role") if invocation is not None else None
-        if (
-            invocation is not None
-            and _valid_role(scope)
-            and (role is None or scope == role)
-        ):
-            invocation_index.setdefault(
-                (cast(str, scope), cast(str, invocation["invocation_id"])),
-                {"role": scope, **invocation},
-            )
+            continue
+        index.setdefault(
+            (cast(str, scope), cast(str, record[identity_field])),
+            {"role": scope, **record},
+        )
 
     profiles = sorted(
         profile_index.values(),
@@ -414,6 +452,40 @@ def load_debug_artifacts(
     return profiles, invocations
 
 
+def _llm_artifacts(
+    files: Iterable[_DebugFile], read: _Reader
+) -> list[dict[str, object]]:
+    conversations: list[dict[str, object]] = []
+    for file in files:
+        raw = read(file)
+        conversation = (
+            _llm_conversation(
+                raw, role=cast(str, file.scope), sequence=int(file.path.stem)
+            )
+            if raw is not None
+            else None
+        )
+        if conversation is not None:
+            conversations.append(conversation)
+    return sorted(
+        conversations,
+        key=lambda item: (cast(str, item["role"]), cast(int, item["sequence"])),
+    )
+
+
+def load_debug_artifacts(
+    storage_root: Path, mission_id: str, *, role: str | None = None
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Load exact-valid agent artifacts from canonical and legacy layouts."""
+
+    if role is not None and not _valid_role(role):
+        return [], []
+    files = _agent_files(
+        Path(storage_root).parent, quote(mission_id, safe="._-"), role
+    )
+    return _agent_artifacts(files, _read_file, role)
+
+
 def load_llm_conversations(
     storage_root: Path, mission_id: str, *, role: str | None = None
 ) -> list[dict[str, object]]:
@@ -421,34 +493,78 @@ def load_llm_conversations(
 
     if role is not None and not _valid_role(role):
         return []
-    base = Path(storage_root).parent
-    llm_root = _safe_directory(base, "debug", "llm")
-    mission_name = quote(mission_id, safe="._-")
-    conversations: list[dict[str, object]] = []
-    for role_root in _safe_directories(llm_root):
-        scope = role_root.name
-        if not _valid_role(scope) or (role is not None and scope != role):
-            continue
-        mission_root = _safe_directory(base, "debug", "llm", scope, mission_name)
-        for path in _safe_json_files(mission_root):
-            if not path.stem.isdigit() or int(path.stem) < 1:
-                continue
-            raw = _read_mapping(path)
-            conversation = (
-                _llm_conversation(raw, role=scope, sequence=int(path.stem))
-                if raw is not None
-                else None
-            )
-            if conversation is not None:
-                conversations.append(conversation)
-    return sorted(
-        conversations,
-        key=lambda item: (cast(str, item["role"]), cast(int, item["sequence"])),
-    )
+    files = _llm_files(Path(storage_root).parent, quote(mission_id, safe="._-"), role)
+    return _llm_artifacts(files, _read_file)
+
+
+@dataclass(frozen=True, slots=True)
+class DebugArtifactSnapshot:
+    """All-role debug records of one Mission, as the loaders would return them.
+
+    ``version`` changes only when a discovered file appears, disappears, or
+    changes device, inode, size, mtime, or ctime; unchanged snapshots are one
+    object.
+    """
+
+    version: int
+    profiles: tuple[dict[str, object], ...]
+    invocations: tuple[dict[str, object], ...]
+    conversations: tuple[dict[str, object], ...]
+
+
+class DebugArtifactCatalog:
+    """Incrementally track one Mission's agent and raw LLM debug records.
+
+    Each snapshot rediscovers the layout with the loaders' symlink-refusing
+    rules and reparses only files whose metadata identity changed. The parse
+    cache holds only the currently discovered files.
+    """
+
+    def __init__(self, storage_root: Path, mission_id: str) -> None:
+        self.storage_root = storage_root
+        self.mission_id = mission_id
+        self._base = Path(storage_root).parent
+        self._mission_name = quote(mission_id, safe="._-")
+        self._files: tuple[_DebugFile, ...] = ()
+        self._parsed: dict[Path, tuple[_DebugFile, Mapping[str, object] | None]] = {}
+        self._snapshot = DebugArtifactSnapshot(0, (), (), ())
+
+    def snapshot(self) -> DebugArtifactSnapshot:
+        agent_files = _agent_files(self._base, self._mission_name, None)
+        llm_files = _llm_files(self._base, self._mission_name, None)
+        files = (*agent_files, *llm_files)
+        if files == self._files:
+            return self._snapshot
+
+        previous = self._parsed
+        parsed: dict[Path, tuple[_DebugFile, Mapping[str, object] | None]] = {}
+
+        def read(file: _DebugFile) -> Mapping[str, object] | None:
+            cached = previous.get(file.path)
+            if cached is not None and cached[0] == file:
+                value = cached[1]
+            else:
+                value = _read_file(file)
+            parsed[file.path] = (file, value)
+            return value
+
+        profiles, invocations = _agent_artifacts(agent_files, read, None)
+        conversations = _llm_artifacts(llm_files, read)
+        self._files = files
+        self._parsed = parsed
+        self._snapshot = DebugArtifactSnapshot(
+            self._snapshot.version + 1,
+            tuple(profiles),
+            tuple(invocations),
+            tuple(conversations),
+        )
+        return self._snapshot
 
 
 __all__ = [
     "KNOWN_DEBUG_ROLES",
+    "DebugArtifactCatalog",
+    "DebugArtifactSnapshot",
     "load_debug_artifacts",
     "load_llm_conversations",
 ]

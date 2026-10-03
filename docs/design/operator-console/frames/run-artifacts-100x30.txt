@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Artifacts · 2 ─────────────────────────────┐┌ Artifact Preview ──────────────────────────────────┐
+│ accepted-statechart.json Accepted Statech… ││ Title:     Accepted Statechart (attempt 1)         │
+│ report Public report (14 B)                ││ Source:    planner                                 │
+│                                            ││ Kind:      accepted-statechart.json                │
+│                                            ││ Class:     text                                    │
+│                                            ││ Media:     application/json                        │
+│                                            ││ Size:      18 B                                    │
+│                                            ││ Ref:       statechart-attempts/001/accepted-statech│
+│                                            ││            art.json                                │
+│                                            ││ Published: 2026-08-27T12:00:06Z                    │
+│                                            ││                                                    │
+│                                            ││ statechart-attempts/001/accepted-statechart.json   │
+│                                            ││                                                    │
+│                                            ││ Press Enter to open the paged inspector.           │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · Enter inspect · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -12,4 +12,4 @@ fi
 . "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate onr
 
-exec cargo run --manifest-path "$ROOT/operator-console/Cargo.toml" -- --bootstrap-host "$@"
+exec cargo run --release --manifest-path "$ROOT/operator-console/Cargo.toml" -- --bootstrap-host "$@"

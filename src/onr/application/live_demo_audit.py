@@ -4,20 +4,41 @@ from __future__ import annotations
 
 import json
 import math
-
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 def _read(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _environment_events(run_root: Path) -> list[Mapping[str, Any]]:
-    stream = run_root / "transport/topics/environment-data/missions/mission%3Ademo"
+def _recorded_mission_id(result: object) -> str | None:
+    """The Mission ID the run recorded in its closed-loop result."""
+    mission_id = result.get("mission_id") if isinstance(result, Mapping) else None
+    return mission_id if isinstance(mission_id, str) and mission_id else None
+
+
+def _topic_stream(run_root: Path, topic: str, mission_id: str | None) -> Path | None:
+    """One mission's file-transport stream, encoded like ``file_transport._part``."""
+    if mission_id is None:
+        return None
+    return run_root / "transport/topics" / topic / "missions" / quote(mission_id, safe="._-")
+
+
+def _stream_files(stream: Path | None) -> list[Path]:
+    return [] if stream is None else sorted(stream.glob("*.json"))
+
+
+def _relative_stream(run_root: Path, topic: str, mission_id: str | None) -> str | None:
+    stream = _topic_stream(run_root, topic, mission_id)
+    return None if stream is None else f"{stream.relative_to(run_root)}/"
+
+
+def _environment_events(run_root: Path, mission_id: str | None) -> list[Mapping[str, Any]]:
     events = []
-    for path in sorted(stream.glob("*.json")):
+    for path in _stream_files(_topic_stream(run_root, "environment-data", mission_id)):
         value = _read(path)
         if isinstance(value, Mapping) and value.get("event_kind") == "environment_data":
             events.append(value["payload"])
@@ -30,20 +51,25 @@ def _environment_events(run_root: Path) -> list[Mapping[str, Any]]:
     )
 
 
-def _operational_records(run_root: Path) -> list[Mapping[str, Any]]:
-    root = run_root / "agent-storage/operational-log"
+def _operational_records(run_root: Path, mission_id: str | None) -> list[Mapping[str, Any]]:
+    if mission_id is None:
+        return []
+    # FileOperationalLog groups by the raw Mission ID path component.
+    root = run_root / "agent-storage/operational-log" / mission_id / "events"
     return [
         value
-        for path in root.glob("*/events/*.json")
+        for path in root.glob("*.json")
         if isinstance((value := _read(path)), Mapping)
     ]
 
 
-def _agent_debug_records(run_root: Path) -> list[Mapping[str, Any]]:
+def _agent_debug_records(run_root: Path, mission_id: str | None) -> list[Mapping[str, Any]]:
+    if mission_id is None:
+        return []
     root = run_root / "debug/agent"
     return [
         value
-        for path in root.glob("*/**/[0-9]*.json")
+        for path in root.glob(f"*/{quote(mission_id, safe='._-')}/**/[0-9]*.json")
         if isinstance((value := _read(path)), Mapping)
     ]
 
@@ -60,6 +86,7 @@ def _physical_feedback_records(
 
 def _joint34_mission3_audit(
     run_root: Path,
+    mission_id: str | None,
     inspection: Mapping[str, Any],
     environments: list[Mapping[str, Any]],
 ) -> tuple[list[str], dict[str, Any], dict[str, Any]]:
@@ -169,9 +196,7 @@ def _joint34_mission3_audit(
 
     m3_reports = [
         report
-        for path in sorted(
-            (run_root / "transport/topics/mission3-agent-reports").glob("missions/*/*.json")
-        )
+        for path in _stream_files(_topic_stream(run_root, "mission3-agent-reports", mission_id))
         if (report := _read(path)).get("event_kind") == "mission3-agent-report"
     ]
     report_complete = False
@@ -369,14 +394,16 @@ def _joint34_mission3_audit(
         "inspection": dict(inspection),
         "reports": m3_reports,
         "investigate_commands": commands,
-        "classification_evidence_path": "transport/topics/environment-data/missions/mission%3Ademo/",
+        "classification_evidence_path": _relative_stream(
+            run_root, "environment-data", mission_id
+        ),
         "block_entered": False,
     }
     return failures, inspection_evidence, camera_control
 
 
 def _joint34_mission4_audit(
-    run_root: Path, search: Mapping[str, Any]
+    run_root: Path, mission_id: str | None, search: Mapping[str, Any]
 ) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     objectives = search.get("objectives")
@@ -395,6 +422,7 @@ def _joint34_mission4_audit(
         if (
             isinstance(entry, Mapping)
             and entry.get("kind") == "accepted"
+            and isinstance(receipt, Mapping)
             and isinstance(request, Mapping)
             and request.get("operation") == "add"
             and isinstance(objective, Mapping)
@@ -411,9 +439,7 @@ def _joint34_mission4_audit(
 
     report_events = [
         value
-        for path in sorted(
-            (run_root / "transport/topics/mission4-agent-reports").glob("missions/*/*.json")
-        )
+        for path in _stream_files(_topic_stream(run_root, "mission4-agent-reports", mission_id))
         if isinstance((value := _read(path)), Mapping)
         and value.get("event_kind") == "mission4-agent-report"
     ]
@@ -448,7 +474,7 @@ def _joint34_mission4_audit(
         "active_target_ids": sorted(target_ids),
         "worker_request_receipts": accepted_receipts,
         "target_reports": target_reports,
-        "reports_path": "transport/topics/mission4-agent-reports/missions/mission%3Ademo/",
+        "reports_path": _relative_stream(run_root, "mission4-agent-reports", mission_id),
     }
 
 
@@ -464,7 +490,7 @@ def _contains_private_fixture_key(value: object) -> bool:
     return False
 
 
-def aoi_trajectory_audit(run_root: Path, package_path: Path) -> dict[str, object]:
+def aoi_trajectory_audit(run_root: Path, package_path: Path) -> dict[str, Any]:
     """Strict dock-ingress audit of the recorded joint34 ``search_area`` run.
 
     Feeds recorded public maneuver feedback through the runtime repo's
@@ -479,7 +505,7 @@ def aoi_trajectory_audit(run_root: Path, package_path: Path) -> dict[str, object
         samples_from_feedback,
     )
 
-    def failure(reasons: list[str]) -> dict[str, object]:
+    def failure(reasons: list[str]) -> dict[str, Any]:
         return {"status": "fail", "failures": reasons, "action_ids": []}
 
     package = _read(Path(package_path))
@@ -543,7 +569,7 @@ def aoi_trajectory_audit(run_root: Path, package_path: Path) -> dict[str, object
     return audit
 
 
-def _first_search_polygon(run_root: Path, command_ids: list[str]) -> list[object]:
+def _first_search_polygon(run_root: Path, command_ids: list[str]) -> list[Mapping[str, Any]]:
     """The accepted search_area action polygon from the recorded commands."""
 
     for path in sorted((run_root / "physical-state" / "commands").glob("*.json")):
@@ -558,7 +584,7 @@ def _first_search_polygon(run_root: Path, command_ids: list[str]) -> list[object
 
 def _mission1_perception_audit(
     run_root: Path, environments: list[Mapping[str, Any]], perception: str
-) -> tuple[list[str], dict[str, object]]:
+) -> tuple[list[str], dict[str, Any]]:
     """Prove the Mission 1 evidence came from the external camera producer."""
     failures: list[str] = []
     expected = f"{perception}_camera_perception"
@@ -597,7 +623,7 @@ def audit_live_demo(
     mission4_answer_metrics: Mapping[str, object] | None = None,
     mission4_package: Path | None = None,
     perception: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Return and persist a pass/fail integration audit for one completed run."""
     root = Path(run_root)
     if mission_mode not in {"mission1", "mission2", "mission3", "mission4", "joint24", "joint34"}:
@@ -608,13 +634,16 @@ def audit_live_demo(
         raise ValueError("perception audit is Mission 1 only and must be yolo or ideal")
     result_path = root / "closed-loop-result.json"
     result = _read(result_path) if result_path.is_file() else None
-    environments = _environment_events(root)
-    records = _operational_records(root)
-    debug_records = _agent_debug_records(root)
+    mission_id = _recorded_mission_id(result)
+    environments = _environment_events(root, mission_id)
+    records = _operational_records(root, mission_id)
+    debug_records = _agent_debug_records(root, mission_id)
     failures: list[str] = []
     if not isinstance(result, Mapping):
         failures.append("closed_loop_result_missing")
     else:
+        if mission_id is None:
+            failures.append("closed_loop_result_mission_id_missing")
         if result.get("terminal") is not True:
             failures.append("fsm_not_terminal")
         if not result.get("physical_actions") or int(result.get("feedback_count", 0)) < 1:
@@ -658,7 +687,8 @@ def audit_live_demo(
     world = latest.get("world_model_info", {}) if isinstance(latest, Mapping) else {}
     if world.get("mission_mode", "mission1") != mission_mode:
         failures.append("mission_mode_mismatch")
-    perception_evidence: dict[str, object] | None = None
+    perception_evidence: dict[str, Any] | None = None
+    joint34_sections: dict[str, Any] = {}
     if perception is not None:
         perception_failures, perception_evidence = _mission1_perception_audit(
             root, environments, perception
@@ -704,7 +734,7 @@ def audit_live_demo(
         if not isinstance(inspection, Mapping):
             inspection = {}
         m3_failures, mission3_evidence, camera_control = _joint34_mission3_audit(
-            root, inspection, environments
+            root, mission_id, inspection, environments
         )
         failures.extend(m3_failures)
         mission3_block_entered = any(
@@ -716,6 +746,14 @@ def audit_live_demo(
         if not mission3_block_entered:
             failures.append("mission3_block_not_entered")
         mission3_evidence["block_entered"] = mission3_block_entered
+        camera_receipt_path = root / "mission3-camera-control-receipts.json"
+        camera_control["receipt_path"] = str(camera_receipt_path.resolve())
+        camera_receipt_path.write_text(
+            json.dumps(camera_control, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        joint34_sections["mission3_evidence"] = mission3_evidence
+        joint34_sections["camera_control"] = camera_control
     if mission_mode in {"mission4", "joint24", "joint34"}:
         search = world.get("mission4", {})
         if not isinstance(search, Mapping):
@@ -723,18 +761,20 @@ def audit_live_demo(
         all_found = search.get("status") == "completed" and search.get("reason") == "all_found"
         terminal = all_found
         if not terminal and mission_mode == "joint24":
-            reports = root / "transport/topics/mission4-agent-reports"
             terminal = any(
                 _read(path).get("event_kind") == "mission4-agent-report"
-                for path in sorted(reports.glob("missions/*/*.json"))
+                for path in _stream_files(
+                    _topic_stream(root, "mission4-agent-reports", mission_id)
+                )
             )
         if not terminal:
             failures.append("mission4_not_all_found")
         if not search.get("observations") or search.get("source") != "simulated":
             failures.append("mission4_fixture_evidence_missing")
         if mission_mode == "joint34":
-            m4_failures, mission4_evidence = _joint34_mission4_audit(root, search)
+            m4_failures, mission4_evidence = _joint34_mission4_audit(root, mission_id, search)
             failures.extend(m4_failures)
+            joint34_sections["mission4_evidence"] = mission4_evidence
         else:
             if len(search.get("requests", ())) < 2:
                 failures.append("mission4_requests_missing")
@@ -746,7 +786,6 @@ def audit_live_demo(
         if _contains_private_fixture_key(latest):
             failures.append("private_fixture_data_exposed")
 
-    ingress: dict[str, object] | None = None
     if mission_mode == "joint34":
         if mission4_package is None:
             ingress = {"status": "fail", "failures": ["mission4_package_missing"], "action_ids": []}
@@ -755,29 +794,20 @@ def audit_live_demo(
             ingress = aoi_trajectory_audit(root, Path(mission4_package))
             if ingress.get("status") != "pass":
                 failures.append("m4_dock_ingress_failed")
+        joint34_sections["aoi_trajectory"] = ingress
 
-    audit = {
+    audit: dict[str, Any] = {
         "status": "PASS" if not failures else "FAIL",
         "mission_mode": mission_mode,
         "run_root": str(root.resolve()),
+        "mission_id": mission_id,
         "failures": failures,
         "closed_loop_result": result,
         "environment_event_count": len(environments),
         "operational_record_count": len(records),
         "agent_debug_record_count": len(debug_records),
     }
-    if mission_mode == "joint34":
-        camera_receipt_path = root / "mission3-camera-control-receipts.json"
-        camera_control["receipt_path"] = str(camera_receipt_path.resolve())
-        camera_receipt_path.write_text(
-            json.dumps(camera_control, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        audit["mission3_evidence"] = mission3_evidence
-        audit["camera_control"] = camera_control
-        audit["mission4_evidence"] = mission4_evidence
-        if ingress is not None:
-            audit["aoi_trajectory"] = ingress
+    audit.update(joint34_sections)
     if perception_evidence is not None:
         audit["perception_evidence"] = perception_evidence
     if mission_metrics is not None:

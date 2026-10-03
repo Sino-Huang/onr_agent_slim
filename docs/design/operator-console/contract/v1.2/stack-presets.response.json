@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "default_preset_id": "mission1-harbor",
+  "presets": [
+    {
+      "preset_id": "mission1-harbor",
+      "title": "Mission 1 · Harbor (simulated)",
+      "mission_mode": "mission1",
+      "default_mission_text": "Please patrol the environment and confirm every reported event.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "mission1-airsim",
+      "title": "Mission 1 · AirSim live",
+      "mission_mode": "mission1",
+      "default_mission_text": "Patrol the window 60-130 s and verify every reported event.",
+      "supports": {
+        "airsim": [
+          true
+        ],
+        "perception": [
+          "ideal",
+          "yolo"
+        ]
+      },
+      "unsupported_reason": "AirSim without perception is not supported: the scene clock requires a perception service.",
+      "defaults": {
+        "airsim": true,
+        "perception": "yolo",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 290
+      }
+    }
+  ]
+}

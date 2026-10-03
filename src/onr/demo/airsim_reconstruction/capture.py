@@ -544,12 +544,14 @@ def _visible_ship_ids(path: Path) -> dict[int, list[int]]:
     }
 
 
-def _reset_drone_kinematics(client: Any, pose: DronePose) -> None:
+def _reset_drone_kinematics(
+    client: Any, pose: DronePose, *, vehicle_name: str = VEHICLE_NAME
+) -> None:
     """Command the pose while clearing accumulated SimpleFlight motion."""
 
     import airsim
 
-    client.enableApiControl(True, vehicle_name=VEHICLE_NAME)
+    client.enableApiControl(True, vehicle_name=vehicle_name)
     # airsim.KinematicsState is a msgpack type: no-arg constructor only.
     state = airsim.KinematicsState()
     state.position = airsim.Vector3r(*pose.ned_m)
@@ -560,7 +562,7 @@ def _reset_drone_kinematics(client: Any, pose: DronePose) -> None:
     state.angular_velocity = airsim.Vector3r(0.0, 0.0, 0.0)
     state.linear_acceleration = airsim.Vector3r(0.0, 0.0, 0.0)
     state.angular_acceleration = airsim.Vector3r(0.0, 0.0, 0.0)
-    client.simSetKinematics(state, ignore_collision=True)
+    client.simSetKinematics(state, ignore_collision=True, vehicle_name=vehicle_name)
 
 
 def _verify_drone_pose(client: Any, commanded: DronePose) -> dict[str, Any]:

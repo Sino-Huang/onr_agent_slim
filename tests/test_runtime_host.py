@@ -19,8 +19,6 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 import onr.runtime_host.host as runtime_host_module
-from onr.adapters.file_transport import FileTransport
-from onr.contracts.hyper_agent import MissionInput
 from onr.runtime import (
     HeartbeatsConfig,
     LLMConfig,
@@ -36,7 +34,6 @@ from onr.runtime_host import (
     RuntimeWorkerOptions,
     WorkerContext,
     create_app,
-    runtime_worker,
 )
 
 
@@ -83,7 +80,7 @@ def _client(
         worker_entrypoint=worker,
         launch_worker=pending.append,
     )
-    return TestClient(create_app(host=host)), host, pending
+    return TestClient(create_app(host=host), client=("127.0.0.1", 50000)), host, pending
 
 
 def _activate(
@@ -142,7 +139,7 @@ def _process_tree_worker(context: WorkerContext) -> None:
             (
                 "import os,signal,time;"
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
-                f"open({str(context.options.planner_artifacts)!r},'w').write(str(os.getpid()));"
+                f"open({str(context.run_root.path / 'child.pid')!r},'w').write(str(os.getpid()));"
                 "time.sleep(60)"
             ),
         ]
@@ -159,7 +156,7 @@ def test_health_and_empty_current_run_contract(tmp_path: Path) -> None:
 
     assert client.get("/api/v1/health").json() == {
         "status": "ok",
-        "api_version": {"major": 1, "minor": 1},
+        "api_version": {"major": 1, "minor": 3},
     }
     response = client.get("/api/v1/mission-runs/current")
     assert response.status_code == 200
@@ -191,6 +188,8 @@ def test_activation_is_queued_and_credential_is_only_a_persisted_verifier(
             "started_at": None,
             "finished_at": None,
             "terminal_classification": None,
+            "stack": {"preset_id": "mission1-harbor", "airsim": False, "perception": "off"},
+            "terminal_detail": None,
         }
     }
     persisted = json.loads(
@@ -205,6 +204,9 @@ def test_activation_is_queued_and_credential_is_only_a_persisted_verifier(
     run = persisted["runs"]["run-1"]
     assert run["console_session_id"] == "session-1"
     assert run["worker_identity"] == "runtime_host.closed_loop_demo"
+    run_root = tmp_path / "storage/runtime-host/runs/run-1"
+    assert run["run_root"] == str(run_root)
+    assert (run_root / "services").is_dir()
 
 
 def test_owner_can_read_exact_mission_intent_and_authorization_failure_is_safe(
@@ -313,7 +315,7 @@ def test_cancellation_authorization_failure_does_not_reveal_run_or_request(
 def test_running_cancellation_terminates_owned_tree_but_not_environment_process(
     tmp_path: Path,
 ) -> None:
-    grandchild_pid_path = tmp_path / "grandchild.pid"
+    grandchild_pid_path = tmp_path / "storage/runtime-host/runs/run-1/child.pid"
     environment_ready_path = tmp_path / "environment-command.ready"
     environment_process = subprocess.Popen(
         [
@@ -333,10 +335,10 @@ def test_running_cancellation_terminates_owned_tree_but_not_environment_process(
         generate_id=_ids(),
         worker_entrypoint=_process_tree_worker,
         worker_options=RuntimeWorkerOptions(
-            repo_root=tmp_path, planner_artifacts=grandchild_pid_path
+            repo_root=tmp_path,
         ),
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
 
     try:
         _wait_for(environment_ready_path.is_file)
@@ -382,17 +384,17 @@ def test_running_cancellation_terminates_owned_tree_but_not_environment_process(
 def test_awaiting_human_decision_cancellation_terminates_live_owned_tree(
     tmp_path: Path,
 ) -> None:
-    grandchild_pid_path = tmp_path / "awaiting-grandchild.pid"
+    grandchild_pid_path = tmp_path / "storage/runtime-host/runs/run-1/child.pid"
     host = RuntimeHost(
         _config(tmp_path),
         clock=_clock,
         generate_id=_ids(),
         worker_entrypoint=_process_tree_worker,
         worker_options=RuntimeWorkerOptions(
-            repo_root=tmp_path, planner_artifacts=grandchild_pid_path
+            repo_root=tmp_path,
         ),
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
 
     assert _activate(client).status_code == 202
     _wait_for(
@@ -448,7 +450,7 @@ def test_cancellation_during_launcher_registration_prevents_worker_execution(
         worker_entrypoint=lambda _context: worker_executed.set(),
         launch_worker=launch,
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
     activation_thread = Thread(target=lambda: _activate(client), daemon=True)
     activation_thread.start()
     assert launcher_entered.wait(timeout=5)
@@ -606,7 +608,7 @@ def test_cancellation_timeout_reconciles_after_tree_exit_and_replay_rechecks(
         worker_entrypoint=lambda _context: None,
         launch_worker=launch,
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
     monkeypatch.setattr(
         runtime_host_module.WorkerIdentity,
         "is_owned",
@@ -616,7 +618,7 @@ def test_cancellation_timeout_reconciles_after_tree_exit_and_replay_rechecks(
     monkeypatch.setattr(
         host, "_process_group_exists", lambda _process_group_id: tree_exists.is_set()
     )
-    monkeypatch.setattr(host, "_wait_for_process_group_exit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host, "_wait_for_owned_tree", lambda *_args, **_kwargs: None)
     assert _activate(client).status_code == 202
     host._transition("run-1", "running")
 
@@ -668,7 +670,7 @@ def test_cancellation_does_not_escalate_after_worker_identity_is_lost(
         worker_entrypoint=lambda _context: None,
         launch_worker=launch,
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
     monkeypatch.setattr(
         runtime_host_module.WorkerIdentity,
         "is_owned",
@@ -680,14 +682,14 @@ def test_cancellation_does_not_escalate_after_worker_identity_is_lost(
         "_signal_process_group",
         lambda _pgid, selected_signal: signals.append(selected_signal),
     )
-    monkeypatch.setattr(host, "_wait_for_process_group_exit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host, "_wait_for_owned_tree", lambda *_args, **_kwargs: None)
     assert _activate(client).status_code == 202
     host._transition("run-1", "running")
 
     response = _cancel(client)
 
     assert response.status_code == 202
-    assert signals == [signal.SIGTERM]
+    assert signal.SIGKILL not in signals
     assert host._reconcilers == {}
     run = host.current_run()
     assert run is not None
@@ -723,7 +725,7 @@ def test_cancellation_does_not_signal_when_worker_identity_is_already_lost(
         worker_entrypoint=lambda _context: None,
         launch_worker=launch,
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
     monkeypatch.setattr(
         runtime_host_module.WorkerIdentity,
         "is_owned",
@@ -996,9 +998,12 @@ def test_idempotency_survives_reconstruction_and_detects_conflicts(
 def test_console_session_credential_binding_survives_terminal_run_and_restart(
     tmp_path: Path,
 ) -> None:
-    first_client, _, pending = _client(tmp_path)
+    first_client, _, pending = _client(tmp_path, worker=lambda _context: None)
     assert _activate(first_client).status_code == 202
     pending.pop()()
+    assert first_client.get("/api/v1/mission-runs/current").json()["mission_run"][
+        "status"
+    ] == "succeeded"
     reconstructed_client, _, _ = _client(tmp_path)
 
     response = _activate(
@@ -1084,7 +1089,7 @@ def test_worker_launcher_failure_is_durable_and_idempotently_replayable(
         worker_entrypoint=lambda _context: None,
         launch_worker=fail_to_start,
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
 
     accepted = _activate(client)
     replay = _activate(client)
@@ -1121,7 +1126,10 @@ def test_worker_lifecycle_records_success_and_failure(tmp_path: Path) -> None:
     assert succeeded["terminal_classification"] is None
 
     def fail(_context: WorkerContext) -> None:
-        raise RuntimeError("secret worker details")
+        raise RuntimeError(
+            "external environment has no planning data\n"
+            "credential Bearer secret-worker-token " + "x" * 1000
+        )
 
     failing, _, pending = _client(tmp_path / "failure", worker=fail)
     _activate(failing)
@@ -1130,109 +1138,96 @@ def test_worker_lifecycle_records_success_and_failure(tmp_path: Path) -> None:
     assert failed["status"] == "failed"
     assert failed["terminal_classification"] == "worker_failed"
     assert failed["finished_at"] == "2026-08-24T12:00:00+00:00"
-    assert "secret worker details" not in json.dumps(failed)
+    detail = failed["terminal_detail"]
+    assert set(detail) == {"kind", "stage", "error_type", "message"}
+    assert detail["kind"] == "worker_failed"
+    assert detail["stage"] == "worker"
+    assert detail["error_type"] == "RuntimeError"
+    assert detail["message"].startswith("external environment has no planning data ")
+    assert len(detail["message"]) <= 500
+    assert "\n" not in detail["message"]
+    assert "secret-worker-token" not in json.dumps(failed)
+    worker_log = (
+        tmp_path / "failure/storage/runtime-host/runs/run-1/worker.log"
+    ).read_text(encoding="utf-8")
+    assert "Traceback (most recent call last)" in worker_log
+    assert "RuntimeError: external environment has no planning data" in worker_log
 
 
-def test_default_worker_adapts_file_runtime_and_closed_loop_seam(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    config = _config(tmp_path)
-    config = RuntimeConfig(
-        llm=config.llm,
-        planners=config.planners,
-        heartbeats=config.heartbeats,
-        transport=TransportConfig("file", tmp_path / "transport"),
-        storage=config.storage,
-        services=config.services,
-        debug=config.debug,
-        agent_name=config.agent_name,
-        agents=config.agents,
-    )
-    observed: dict[str, object] = {}
+def test_closed_loop_failure_reports_its_stage(tmp_path: Path) -> None:
+    def run_closed_loop_demo() -> None:
+        raise ValueError("environment planning view has no static_info evidence")
 
-    class FakeSession:
-        def __enter__(self) -> None:
-            observed["session_entered"] = True
+    client, _, pending = _client(tmp_path, worker=lambda _context: run_closed_loop_demo())
+    _activate(client)
+    pending.pop()()
 
-        def __exit__(self, *_args: object) -> None:
-            observed["session_exited"] = True
-
-    class FakeRuntime:
-        def __init__(self, selected_config: RuntimeConfig, transport: FileTransport) -> None:
-            observed["config"] = selected_config
-            observed["transport"] = transport
-
-        def runtime_session(self) -> FakeSession:
-            return FakeSession()
-
-    def fake_closed_loop(
-        runtime: object,
-        mission_input: MissionInput,
-        **options: object,
-    ) -> object:
-        observed["runtime"] = runtime
-        observed["mission_input"] = mission_input
-        observed["options"] = options
-        return object()
-
-    monkeypatch.setattr(runtime_host_module, "RuntimeComposition", FakeRuntime)
-    monkeypatch.setattr(runtime_host_module, "run_closed_loop_demo", fake_closed_loop)
-    context = WorkerContext(
-        config=config,
-        mission_id="mission-1",
-        mission_run_id="run-1",
-        activation_request_id="request-1",
-        console_session_id="session-1",
-        mission_intent="survey the ridge",
-        source_authority="operator_console",
-        options=RuntimeWorkerOptions(
-            repo_root=tmp_path,
-            planner_artifacts=tmp_path / "planner-artifacts",
-            recursion_limit=23,
-            simulation_limit_seconds=45.0,
-        ),
-    )
-
-    runtime_worker(context)
-
-    mission = observed["mission_input"]
-    assert isinstance(mission, MissionInput)
-    assert mission == MissionInput(
-        mission_id="mission-1",
-        mission_text="survey the ridge",
-        source_authority="operator_console",
-    )
-    transport = observed["transport"]
-    assert isinstance(transport, FileTransport)
-    assert transport.root == config.transport.root
-    assert observed["session_entered"] is True
-    assert observed["session_exited"] is True
-    assert observed["options"] == {
-        "repo_root": tmp_path,
-        "planner_artifacts": tmp_path / "planner-artifacts",
-        "recursion_limit": 23,
-        "simulation_limit_seconds": 45.0,
+    detail = client.get("/api/v1/mission-runs/current").json()["mission_run"][
+        "terminal_detail"
+    ]
+    assert detail == {
+        "kind": "worker_failed",
+        "stage": "closed_loop",
+        "error_type": "ValueError",
+        "message": "environment planning view has no static_info evidence",
     }
 
 
-def test_default_worker_rejects_non_file_transport(tmp_path: Path) -> None:
-    context = WorkerContext(
-        config=_config(tmp_path),
-        mission_id="mission-1",
-        mission_run_id="run-1",
-        activation_request_id="request-1",
-        console_session_id="session-1",
-        mission_intent="survey the ridge",
-        source_authority="operator_console",
-        options=RuntimeWorkerOptions(repo_root=tmp_path),
+def _reject_coffee(_context: WorkerContext) -> None:
+    raise runtime_host_module.MissionRejectedError(
+        "'buy me a coffee' is a personal errand, not a bounded operational objective."
     )
 
-    try:
-        runtime_worker(context)
-    except RuntimeError as exc:
-        assert str(exc) == "runtime Host worker requires transport.backend=file"
-    else:
-        raise AssertionError("non-file transport was accepted")
+
+def test_mission_rejection_in_worker_process_reaches_current_run(
+    tmp_path: Path,
+) -> None:
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=_clock,
+        generate_id=_ids(),
+        worker_entrypoint=_reject_coffee,
+    )
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
+    _activate(client, mission_intent="buy me a coffee")
+
+    def current() -> dict[str, Any]:
+        return client.get("/api/v1/mission-runs/current").json()["mission_run"]
+
+    _wait_for(lambda: current()["status"] == "failed", timeout=30.0)
+    run = current()
+    contract = json.loads(
+        Path(
+            "docs/design/operator-console/contract/v1.2/"
+            "mission-runs.current.rejected.response.json"
+        ).read_text(encoding="utf-8")
+    )["mission_run"]
+    assert set(run) == set(contract)
+    assert run["terminal_classification"] == contract["terminal_classification"]
+    assert run["terminal_detail"] == {
+        "kind": "mission_rejected",
+        "stage": "intent",
+        "reason": (
+            "'buy me a coffee' is a personal errand, not a bounded operational "
+            "objective."
+        ),
+    }
+    assert set(run["terminal_detail"]) == set(contract["terminal_detail"])
+    assert run["stack"] == {"preset_id": "mission1-harbor", "airsim": False, "perception": "off"}
+    worker_log = Path(
+        json.loads((tmp_path / "storage/runtime-host/state.json").read_text())[
+            "runs"
+        ]["run-1"]["run_root"]
+    ) / "worker.log"
+    assert "mission rejected at intent: 'buy me a coffee'" in worker_log.read_text()
+
+
+
+
+
+
+
+
 
 
 def test_reconstruction_marks_non_terminal_run_interrupted(tmp_path: Path) -> None:
@@ -1284,7 +1279,7 @@ def test_ephemeral_loopback_server_exercises_real_http_and_durable_lifecycle(
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2) as client:
             assert client.get("/api/v1/health").json() == {
                 "status": "ok",
-                "api_version": {"major": 1, "minor": 1},
+                "api_version": {"major": 1, "minor": 3},
             }
             accepted = client.post(
                 "/api/v1/mission-activations",

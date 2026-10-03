@@ -1,0 +1,1 @@
+{"details":{"command_id":"maneuver:maneuver-heartbeat:mission:demo:0:4","operation":"queue_command"},"event_kind":"control","event_time":"2026-09-30T05:50:06.169951+00:00","mission_id":"mission:demo","outcome":"queued","record_id":"mission:demo:22:control","schema_version":1,"sequence":22,"source":"maneuver-control"}

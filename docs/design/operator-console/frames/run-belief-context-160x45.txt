@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Bayesian Belief ───────────────────────────────────────────────────┐┌ Mission Context ───────────────────────────────────────────────────────────────────────┐
+│reporting_reliability · revision 8                                  ││Mission Snapshot · source health / freshness                                            │
+│2026-08-27T14:01:30Z                                                ││Version 397 · plan r4                                                                   │
+│ Entity                                       Mean   Δ prev  Δ prior││Time 2026-08-23T00:00:00+10:00 · sequence 396                                           │
+│▶ship 2                                       0.6230 +0.1200 +0.4900││· active_maneuver: healthy · fresh · r433                                               │
+│ ship 14                                      0.0600 +0.0000 -0.0700││· bayesian_belief_snapshot: healthy · fresh · r5                                        │
+│███████████████████████████ship 2 0.6230 █▍                         ││· environment_data: healthy · fresh · r433                                              │
+│1/2 · Δ prev +0.1200 · Δ prior +0.4900                              ││· fsm_status: healthy · fresh · r54                                                     │
+│Mean history · revisions 7–8                                        ││▲ plan: missing · stale · r—                                                            │
+│▄▄                                                                  ││Missing sources: plan                                                                   │
+│Honest 0.3100 · CI [0.4100, 0.8100]                                 ││FSM · enabled Transition Candidates                                                     │
+│Outcomes altered=2 · clean=1 · omitted=0                            ││Active: assignment-1-in-progress · updated                                              │
+│Variance 0.0120                                                     ││Plan r4 · statechart r4 · event assignment-1-may-begin                                  │
+│                                                                    ││assignment-1-outcome-confirmed: assignment-1-in-progress → assignment-2-in-progress     │
+│                                                                    ││Condition: confirm the completed evidence interval                                      │
+│                                                                    ││Readiness: {"live_evidence":"the drone is at the selected                               │
+│                                                                    ││location","not_before":{"seconds":200.5,"tick":401,"ticks_per_second":2}}               │
+│                                                                    ││assignment-1-abandoned: assignment-1-in-progress → patrol-replan-requested              │
+│                                                                    ││Condition: unconditional                                                                │
+│                                                                    ││Readiness: -                                                                            │
+│                                                                    ││                                                                                        │
+│                                                                    ││Active Maneuver                                                                         │
+│                                                                    ││search_area · active · sweep                                                            │
+│                                                                    ││Deadline 198.5000s · remaining 8.0000s                                                  │
+│                                                                    ││█████████████████████████████████████████62.0% ███████▌                                 │
+│                                                                    ││Latest Transition Intent                                                                │
+│                                                                    ││selected → assignment-2-in-progress                                                     │
+│                                                                    ││If confirm the completed evidence interval                                              │
+│                                                                    ││From assignment-1-in-progress · plan r4 · selected 187.0000s                            │
+│                                                                    ││AI Retain the sole planner-ordered next assignment.                                     │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││Latest Hyper outcome · AI non-authoritative                                             │
+│                                                                    ││replan · plan r3                                                                        │
+│                                                                    ││Mission 1 gate reports the next fixed-view leg is infeasible under belief revision 4.   │
+│                                                                    ││Triggers: mission1-gate:next_assignment_infeasible:belief-157                           │
+│                                                                    ││Requests:                                                                               │
+│                                                                    ││                                                                                        │
+└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ entity · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "world",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "world-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "world": {
+    "viewer": {
+      "available": true,
+      "reason": null
+    },
+    "state": {
+      "mission_time_seconds": 143.5,
+      "flight_state": "flying",
+      "active_maneuver": "navigate",
+      "state_version": 812
+    },
+    "frames": [
+      {
+        "source": "world",
+        "sequence": 812,
+        "media_type": "image/png"
+      },
+      {
+        "source": "camera_front_annotated",
+        "sequence": 406,
+        "media_type": "image/jpeg"
+      },
+      {
+        "source": "camera_front",
+        "sequence": 406,
+        "media_type": "image/jpeg"
+      },
+      {
+        "source": "camera_third_person",
+        "sequence": 406,
+        "media_type": "image/jpeg"
+      }
+    ],
+    "airsim": {
+      "mode": "world_model_follower",
+      "perception": "off",
+      "state": "capturing",
+      "reason": null,
+      "frame_mission_time_seconds": 143,
+      "world_mission_time_seconds": 143.5,
+      "lag_seconds": 0.5,
+      "ship_phase_error_seconds": 0.03,
+      "annotation": {
+        "kind": "ideal_segmentation",
+        "disclosure": "AirSim follows the world model. Boxes are ideal instance segmentation, not agent perception.",
+        "match": "exact",
+        "objects": 3,
+        "perception_mission_time_seconds": null
+      }
+    }
+  }
+}

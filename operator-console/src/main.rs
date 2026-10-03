@@ -1,15 +1,20 @@
-//! Operator Console entry point: terminal lifecycle, event loop, and the
-//! host worker thread. HTTP polling stays outside drawing; see
-//! `docs/design/operator-console/terminal-lifecycle.md` for the cleanup and
-//! panic restoration design.
+//! Operator Console entry point: optional Runtime Host bootstrap, terminal
+//! lifecycle, the event loop, and the host workers. HTTP stays outside
+//! drawing; see `docs/design/operator-console/terminal-lifecycle.md` for the
+//! cleanup and panic restoration design.
 
-use std::io;
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
+use operator_console::app::world::ImageProtocol;
 use operator_console::app::{App, CleanExitAction};
-use operator_console::host::{HostClient, UreqHostClient, spawn_worker};
+use operator_console::host::{HostClient, UreqHostClient, Workers};
 use operator_console::terminal::{TerminalGuard, install_panic_hook};
 use operator_console::ui;
 
@@ -19,9 +24,14 @@ const DEFAULT_HOST: &str = "http://127.0.0.1:8787";
 const TICK: Duration = Duration::from_millis(50);
 /// Mission Run polling cadence in the Run state.
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
-/// Bound on any single host request so the worker never wedges the console.
+/// Bound on any single host request so a worker never wedges.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const BOOTSTRAP_READY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default wait for a bootstrapped Host: importing it alone takes ~4 s warm.
+const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Host log lines echoed when the bootstrap fails.
+const LOG_TAIL_LINES: usize = 20;
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const USAGE: &str = "usage: operator-console [--bootstrap-host] [--host-ready-timeout SECS] [--image-protocol auto|kitty|sixel|iterm2|halfblocks|off] [http://127.0.0.1:PORT]";
 
 trait ChildHandle: std::fmt::Debug {
     fn is_live(&mut self) -> io::Result<bool>;
@@ -66,12 +76,33 @@ impl HostReadiness for UreqReadiness {
     }
 }
 
-struct UvicornSpawner;
+/// Repository checkout the console was built from.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Bootstrapped Host stdout+stderr: `var/runtime-host/host.log`.
+fn host_log_path() -> PathBuf {
+    repo_root().join("var/runtime-host/host.log")
+}
+
+struct UvicornSpawner {
+    log: PathBuf,
+}
 
 impl HostProcessSpawner for UvicornSpawner {
     fn spawn_host(&mut self, host: &str, port: u16) -> io::Result<Box<dyn ChildHandle>> {
+        if let Some(parent) = self.log.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let stdout = File::create(&self.log)?;
+        let stderr = stdout.try_clone()?;
         let python = std::env::var_os("ONR_PYTHON").unwrap_or_else(|| "python".into());
-        let child = Command::new(python)
+        let mut command = Command::new(python);
+        command
+            .current_dir(repo_root())
             .args([
                 "-m",
                 "uvicorn",
@@ -83,9 +114,12 @@ impl HostProcessSpawner for UvicornSpawner {
                 &port.to_string(),
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stdout(stdout)
+            .stderr(stderr);
+        // A console's PTY hangup must not kill its recoverable Runtime Host.
+        #[cfg(unix)]
+        command.process_group(0);
+        let child = command.spawn()?;
         Ok(Box::new(child))
     }
 }
@@ -126,39 +160,108 @@ fn consume_clean_exit(
     action: Option<CleanExitAction>,
     host: &mut BootstrappedHostGuard,
 ) -> io::Result<bool> {
-    if action.is_none() {
-        return Ok(false);
-    }
-    host.stop()?;
-    Ok(true)
-}
-
-struct Options {
-    host_addr: String,
-    bootstrap_host: bool,
-}
-
-fn options() -> io::Result<Options> {
-    let mut bootstrap_host = false;
-    let mut host_arg = None;
-    for argument in std::env::args().skip(1) {
-        if argument == "--bootstrap-host" {
-            bootstrap_host = true;
-        } else if argument.starts_with('-') || host_arg.replace(argument).is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "usage: operator-console [--bootstrap-host] [http://127.0.0.1:PORT]",
-            ));
+    match action {
+        None => Ok(false),
+        Some(CleanExitAction::Detached) => {
+            host.child = None;
+            Ok(true)
+        }
+        Some(_) => {
+            host.stop()?;
+            Ok(true)
         }
     }
-    let host_addr = std::env::var("ONR_HOST")
-        .ok()
-        .or(host_arg)
-        .unwrap_or_else(|| DEFAULT_HOST.to_string());
-    Ok(Options {
-        host_addr,
-        bootstrap_host,
-    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Options {
+    host_addr: Option<String>,
+    bootstrap_host: bool,
+    ready_timeout: Duration,
+    image_protocol: Option<ImageProtocol>,
+}
+
+fn parse_options(arguments: impl IntoIterator<Item = String>) -> io::Result<Options> {
+    let usage = || io::Error::new(io::ErrorKind::InvalidInput, USAGE);
+    let mut options = Options {
+        host_addr: None,
+        bootstrap_host: false,
+        ready_timeout: DEFAULT_READY_TIMEOUT,
+        image_protocol: None,
+    };
+    let mut arguments = arguments.into_iter();
+    while let Some(argument) = arguments.next() {
+        if argument == "--bootstrap-host" {
+            options.bootstrap_host = true;
+        } else if let Some(value) = argument
+            .strip_prefix("--host-ready-timeout=")
+            .map(str::to_string)
+            .or_else(|| {
+                (argument == "--host-ready-timeout")
+                    .then(|| arguments.next())
+                    .flatten()
+            })
+        {
+            let seconds: f64 = value.parse().map_err(|_| usage())?;
+            if !seconds.is_finite() || seconds <= 0.0 {
+                return Err(usage());
+            }
+            options.ready_timeout = Duration::from_secs_f64(seconds);
+        } else if let Some(value) = argument
+            .strip_prefix("--image-protocol=")
+            .map(str::to_string)
+            .or_else(|| {
+                (argument == "--image-protocol")
+                    .then(|| arguments.next())
+                    .flatten()
+            })
+        {
+            options.image_protocol = Some(
+                value
+                    .parse()
+                    .map_err(|error: String| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+            );
+        } else if argument.starts_with('-') || options.host_addr.replace(argument).is_some() {
+            return Err(usage());
+        }
+    }
+    Ok(options)
+}
+
+fn resolve_image_protocol(
+    cli: Option<ImageProtocol>,
+    environment: Option<&str>,
+) -> io::Result<ImageProtocol> {
+    match cli {
+        Some(protocol) => Ok(protocol),
+        None => environment
+            .unwrap_or("auto")
+            .parse()
+            .map_err(|error: String| io::Error::new(io::ErrorKind::InvalidInput, error)),
+    }
+}
+
+/// Optional local draw timing; no runtime telemetry is sent to the Host.
+fn draw_log() -> io::Result<Option<BufWriter<File>>> {
+    let Some(path) = std::env::var_os("ONR_CONSOLE_DRAW_LOG") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        repo_root().join(path)
+    };
+    if !path.starts_with(repo_root().join("var/tmp")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ONR_CONSOLE_DRAW_LOG must be under var/tmp",
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(Some(BufWriter::new(File::create(path)?)))
 }
 
 fn loopback_bind(base_url: &str) -> io::Result<(&str, u16)> {
@@ -180,17 +283,21 @@ fn loopback_bind(base_url: &str) -> io::Result<(&str, u16)> {
     Ok((host, port))
 }
 
+/// Start a Host if none answers, then wait up to `timeout` for health,
+/// reporting progress through `on_wait(elapsed)`.
 fn bootstrap_host(
     base_url: &str,
+    timeout: Duration,
     readiness: &mut dyn HostReadiness,
     spawner: &mut dyn HostProcessSpawner,
+    on_wait: &mut dyn FnMut(Duration),
 ) -> io::Result<Option<Box<dyn ChildHandle>>> {
     if readiness.is_healthy() {
         return Ok(None);
     }
     let (host, port) = loopback_bind(base_url)?;
     let mut child = spawner.spawn_host(host, port)?;
-    let deadline = Instant::now() + BOOTSTRAP_READY_TIMEOUT;
+    let started = Instant::now();
     loop {
         if readiness.is_healthy() {
             return Ok(Some(child));
@@ -200,55 +307,136 @@ fn bootstrap_host(
                 "bootstrapped Runtime Host exited before becoming ready",
             ));
         }
-        if Instant::now() >= deadline {
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
             child.force_stop()?;
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "bootstrapped Runtime Host did not become ready within 5 seconds",
+                format!(
+                    "bootstrapped Runtime Host did not become ready within {:.0} seconds (raise --host-ready-timeout)",
+                    timeout.as_secs_f64()
+                ),
             ));
         }
+        on_wait(elapsed);
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
+/// Last `n` lines of a text file (lossy UTF-8); empty if unreadable.
+fn tail_lines(path: &Path, n: usize) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect()
+}
+
+fn bootstrap_with_progress(
+    host_addr: &str,
+    timeout: Duration,
+) -> io::Result<Option<Box<dyn ChildHandle>>> {
+    let log = host_log_path();
+    let mut readiness = UreqReadiness::new(host_addr);
+    let mut spawner = UvicornSpawner { log: log.clone() };
+    let mut stderr = io::stderr();
+    let mut frame = 0usize;
+    let mut on_wait = |elapsed: Duration| {
+        frame = (frame + 1) % SPINNER.len();
+        let _ = write!(
+            stderr,
+            "\r{} Starting Runtime Host at {host_addr} … {:>4.1} s / {:.0} s (log: {})\x1b[K",
+            SPINNER[frame],
+            elapsed.as_secs_f64(),
+            timeout.as_secs_f64(),
+            log.display()
+        );
+        let _ = stderr.flush();
+    };
+    let result = bootstrap_host(
+        host_addr,
+        timeout,
+        &mut readiness,
+        &mut spawner,
+        &mut on_wait,
+    );
+    let mut stderr = io::stderr();
+    match &result {
+        Ok(Some(_)) => {
+            let _ = writeln!(stderr, "\r✔ Runtime Host ready at {host_addr}\x1b[K");
+        }
+        Ok(None) => {}
+        Err(_) => {
+            let _ = writeln!(stderr, "\r✖ Runtime Host bootstrap failed\x1b[K");
+            let lines = tail_lines(&log, LOG_TAIL_LINES);
+            if lines.is_empty() {
+                let _ = writeln!(stderr, "(no output in {})", log.display());
+            } else {
+                let _ = writeln!(stderr, "Last {} lines of {}:", lines.len(), log.display());
+                for line in lines {
+                    let _ = writeln!(stderr, "  {line}");
+                }
+            }
+        }
+    }
+    result
+}
+
 fn main() -> io::Result<()> {
-    let options = options()?;
-    let host_addr = options.host_addr;
-    let mut spawner = UvicornSpawner;
-    let mut readiness = UreqReadiness::new(&host_addr);
+    let options = parse_options(std::env::args().skip(1))?;
+    let image_protocol = resolve_image_protocol(
+        options.image_protocol,
+        std::env::var("ONR_CONSOLE_IMAGE_PROTOCOL").ok().as_deref(),
+    )?;
+    let mut draw_log = draw_log()?;
+    let host_addr = std::env::var("ONR_HOST")
+        .ok()
+        .or(options.host_addr)
+        .unwrap_or_else(|| DEFAULT_HOST.to_string());
     let mut bootstrapped_host = BootstrappedHostGuard::new(if options.bootstrap_host {
-        bootstrap_host(&host_addr, &mut readiness, &mut spawner)?
+        bootstrap_with_progress(&host_addr, options.ready_timeout)?
     } else {
         None
     });
 
     install_panic_hook();
     let mut guard = TerminalGuard::new()?;
-
-    let (command_tx, command_rx) = std::sync::mpsc::channel();
-    let (message_tx, message_rx) = std::sync::mpsc::channel();
-    let client = UreqHostClient::new(&host_addr, REQUEST_TIMEOUT);
-    let _worker = spawn_worker(client, command_rx, message_tx);
+    let mut workers = Workers::spawn(UreqHostClient::new(&host_addr, REQUEST_TIMEOUT));
 
     let mut app = App::new(host_addr);
+    app.configure_images(image_protocol.picker());
     let size = guard.terminal().size()?;
     app.handle_resize(size.width, size.height);
 
     let mut last_poll = Instant::now() - POLL_INTERVAL;
     while !app.should_quit() {
         app.check_deadlines();
-        while let Ok(message) = message_rx.try_recv() {
+        while let Some(message) = workers.try_recv() {
             app.handle_host_message(message);
         }
+        if let Some(result) = app.view.media.poll() {
+            match result {
+                Ok(()) => app.view.frame_error = None,
+                Err(error) => app.view.frame_error = Some(error),
+            }
+        }
+        app.request_visible_frame();
         if consume_clean_exit(app.take_clean_exit_action(), &mut bootstrapped_host)? {
             break;
         }
+        workers.flush_backlog();
         for command in app.take_commands() {
-            if command_tx.send(command).is_err() {
-                break;
-            }
+            app.handle_dispatch(workers.dispatch(command));
         }
-        guard.terminal().draw(|frame| ui::draw(frame, &app))?;
+        let draw_started = Instant::now();
+        guard.terminal().draw(|frame| ui::draw(frame, &mut app))?;
+        if let Some(log) = draw_log.as_mut() {
+            writeln!(log, "{}", draw_started.elapsed().as_micros())?;
+        }
         if event::poll(TICK)? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key),
@@ -256,10 +444,14 @@ fn main() -> io::Result<()> {
                 _ => {}
             }
         }
-        if matches!(app.logical_state_name(), "Run") && last_poll.elapsed() >= POLL_INTERVAL {
+        if app.logical_state_name() == "Run" && last_poll.elapsed() >= POLL_INTERVAL {
             app.request_poll();
             last_poll = Instant::now();
         }
+    }
+    consume_clean_exit(app.take_clean_exit_action(), &mut bootstrapped_host)?;
+    if let Some(log) = draw_log.as_mut() {
+        log.flush()?;
     }
     Ok(())
 }
@@ -267,13 +459,15 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootstrappedHostGuard, ChildHandle, HostProcessSpawner, HostReadiness, bootstrap_host,
-        consume_clean_exit, stop_bootstrapped_host,
+        BootstrappedHostGuard, ChildHandle, DEFAULT_READY_TIMEOUT, HostProcessSpawner,
+        HostReadiness, Options, bootstrap_host, consume_clean_exit, parse_options,
+        stop_bootstrapped_host, tail_lines,
     };
     use operator_console::app::CleanExitAction;
     use std::cell::Cell;
     use std::io;
     use std::rc::Rc;
+    use std::time::Duration;
 
     #[derive(Debug, Default)]
     struct FakeChild {
@@ -308,9 +502,17 @@ mod tests {
         }
     }
 
+    /// Healthy after `healthy_after` checks.
     struct FakeReadiness {
-        healthy: bool,
+        healthy_after: Option<usize>,
         checks: usize,
+    }
+
+    impl HostReadiness for FakeReadiness {
+        fn is_healthy(&mut self) -> bool {
+            self.checks += 1;
+            self.healthy_after.is_some_and(|after| self.checks > after)
+        }
     }
 
     #[derive(Debug)]
@@ -331,11 +533,133 @@ mod tests {
         }
     }
 
-    impl HostReadiness for FakeReadiness {
-        fn is_healthy(&mut self) -> bool {
-            self.checks += 1;
-            self.healthy
+    fn args(values: &[&str]) -> io::Result<Options> {
+        parse_options(values.iter().map(|value| (*value).to_string()))
+    }
+
+    #[test]
+    fn options_default_to_a_sixty_second_ready_timeout_and_accept_overrides() {
+        let defaults = args(&[]).unwrap();
+        assert_eq!(defaults.ready_timeout, DEFAULT_READY_TIMEOUT);
+        assert_eq!(DEFAULT_READY_TIMEOUT, Duration::from_secs(60));
+        let parsed = args(&[
+            "--bootstrap-host",
+            "--host-ready-timeout",
+            "90",
+            "http://127.0.0.1:9000",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed,
+            Options {
+                host_addr: Some("http://127.0.0.1:9000".to_string()),
+                bootstrap_host: true,
+                ready_timeout: Duration::from_secs(90),
+                image_protocol: None,
+            }
+        );
+        assert_eq!(
+            args(&["--host-ready-timeout=2.5"]).unwrap().ready_timeout,
+            Duration::from_millis(2500)
+        );
+        for invalid in [
+            &["--host-ready-timeout"][..],
+            &["--host-ready-timeout", "0"],
+            &["--host-ready-timeout", "soon"],
+            &["--unknown"],
+            &["http://127.0.0.1:1", "http://127.0.0.1:2"],
+        ] {
+            assert!(args(invalid).is_err(), "{invalid:?} must be rejected");
         }
+    }
+
+    #[test]
+    fn image_protocol_cli_precedes_environment_and_rejects_unknown_values() {
+        use operator_console::app::world::ImageProtocol;
+        assert_eq!(
+            super::resolve_image_protocol(None, None).unwrap(),
+            ImageProtocol::Auto
+        );
+        assert_eq!(
+            super::resolve_image_protocol(None, Some("off")).unwrap(),
+            ImageProtocol::Off
+        );
+        for (value, protocol) in [
+            ("auto", ImageProtocol::Auto),
+            ("kitty", ImageProtocol::Kitty),
+            ("sixel", ImageProtocol::Sixel),
+            ("iterm2", ImageProtocol::Iterm2),
+            ("halfblocks", ImageProtocol::Halfblocks),
+            ("off", ImageProtocol::Off),
+        ] {
+            let cli = args(&["--image-protocol", value]).unwrap().image_protocol;
+            assert_eq!(
+                super::resolve_image_protocol(cli, Some("invalid")).unwrap(),
+                protocol
+            );
+            assert_eq!(
+                args(&[&format!("--image-protocol={value}")])
+                    .unwrap()
+                    .image_protocol,
+                cli
+            );
+        }
+        assert!(args(&["--image-protocol"]).is_err());
+        assert!(args(&["--image-protocol=unknown"]).is_err());
+        assert!(super::resolve_image_protocol(None, Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn bootstrap_waits_for_readiness_reporting_progress_and_stops_at_the_deadline() {
+        let mut readiness = FakeReadiness {
+            healthy_after: Some(3),
+            checks: 0,
+        };
+        let mut spawner = FakeSpawner::default();
+        let mut waits = 0;
+        let owned = bootstrap_host(
+            "http://127.0.0.1:8787",
+            Duration::from_secs(60),
+            &mut readiness,
+            &mut spawner,
+            &mut |_| waits += 1,
+        )
+        .unwrap();
+        assert!(owned.is_some());
+        assert_eq!(spawner.spawns, 1);
+        assert_eq!(waits, 2);
+
+        let mut never = FakeReadiness {
+            healthy_after: None,
+            checks: 0,
+        };
+        let error = bootstrap_host(
+            "http://127.0.0.1:8787",
+            Duration::ZERO,
+            &mut never,
+            &mut FakeSpawner::default(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("--host-ready-timeout"));
+    }
+
+    #[test]
+    fn host_log_tail_returns_the_last_lines_only() {
+        let dir = super::repo_root()
+            .join("var/tmp")
+            .join(format!("host-log-tail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("host.log");
+        let text: String = (1..=25).map(|line| format!("line {line}\n")).collect();
+        std::fs::write(&path, text).unwrap();
+        let tail = tail_lines(&path, 20);
+        assert_eq!(tail.len(), 20);
+        assert_eq!(tail.first().map(String::as_str), Some("line 6"));
+        assert_eq!(tail.last().map(String::as_str), Some("line 25"));
+        assert!(tail_lines(&dir.join("missing.log"), 20).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -365,33 +689,25 @@ mod tests {
     }
 
     #[test]
-    fn process_spawner_is_an_explicit_bootstrap_boundary() {
-        let mut spawner = FakeSpawner::default();
-        let mut child = spawner.spawn_host("127.0.0.1", 8787).unwrap();
-        assert_eq!(spawner.spawns, 1);
-        stop_bootstrapped_host(Some(child.as_mut())).unwrap();
-        assert!(!child.is_live().unwrap());
-    }
-
-    #[test]
     fn healthy_existing_host_is_never_owned_or_stopped_on_clean_q_exit() {
         let mut readiness = FakeReadiness {
-            healthy: true,
+            healthy_after: Some(0),
             checks: 0,
         };
         let mut spawner = FakeSpawner::default();
-        let owned = bootstrap_host("http://127.0.0.1:8787", &mut readiness, &mut spawner).unwrap();
+        let owned = bootstrap_host(
+            "http://127.0.0.1:8787",
+            Duration::from_secs(60),
+            &mut readiness,
+            &mut spawner,
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(owned.is_none());
         assert_eq!(readiness.checks, 1);
         assert_eq!(spawner.spawns, 0);
 
-        let independent = FakeChild {
-            live: true,
-            stops: 0,
-        };
         let mut owned = BootstrappedHostGuard::new(None);
         assert!(consume_clean_exit(Some(CleanExitAction::Cancelled), &mut owned).unwrap());
-        assert!(independent.live);
-        assert_eq!(independent.stops, 0);
     }
 }

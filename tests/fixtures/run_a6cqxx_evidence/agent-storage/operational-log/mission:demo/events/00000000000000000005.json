@@ -1,0 +1,1 @@
+{"details":{"planner_id":"minizinc","planning_profile":"temporal"},"event_kind":"planning-intent","event_time":"2026-09-30T05:49:22.071562+00:00","mission_id":"mission:demo","outcome":"completed","record_id":"mission:demo:5:planning-intent","schema_version":1,"sequence":5,"source":"hyper-agent"}

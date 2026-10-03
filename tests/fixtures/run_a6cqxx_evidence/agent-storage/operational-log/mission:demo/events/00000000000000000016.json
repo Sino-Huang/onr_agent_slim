@@ -1,0 +1,1 @@
+{"details":{"operation":"publish_status","plan_revision":1,"state":"patrol-awaiting-first-assignment","status":"updated","transport_sequence":2},"event_kind":"fsm","event_time":"2026-09-30T05:50:06.047445+00:00","mission_id":"mission:demo","outcome":"updated","record_id":"mission:demo:16:fsm","schema_version":1,"sequence":16,"source":"fsm-runner"}

@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● failed 00:00:41 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✖ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ○ Done
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    failed · mission_rejected           ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
+│ Run:       run-fixture-001                     ││and the agent replanned.                        │
+│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
+│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Fi┌ ✖ MISSION REJECTED ──────────────────────────────────────────────────────────────────────┐   │
+│ ✖ │ Hyper Agent · stage 1 (intent parsing)                                                   │   │
+│ co│                                                                                          │   │
+│ op│ Intent:    "buy me a coffee"                                                             │   │
+│ co│ Reason:    'buy me a coffee' is a personal errand, not a bounded operational objective   │   │
+└───│            executable by the controlled vehicles and sensors.                            │───┘
+┌ Si│ Work:      0 planner files · 0 statecharts · 0 maneuvers (recorded)                      │───┐
+│ MA│ Elapsed:   41 s                                                                          │   │
+│   │                                                                                          │   │
+│   │ e edit a new Mission Intent · Enter view run details                                     │   │
+│   └──────────────────────────────────────────────────────────────────────────────────────────┘   │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · e new intent · q exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

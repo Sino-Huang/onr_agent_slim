@@ -1,0 +1,45 @@
+┌ Bayesian Belief ───────────────────────────────────────────────────┐┌ Mission Context ───────────────────────────────────────────────────────────────────────┐
+│No Bayesian belief                                                  ││Mission Snapshot · source health / freshness                                            │
+│no Bayesian belief for this mission mode (mission2)                 ││Version 397 · plan r4                                                                   │
+│                                                                    ││Time 2026-08-23T00:00:00+10:00 · sequence 396                                           │
+│                                                                    ││· active_maneuver: healthy · fresh · r433                                               │
+│                                                                    ││· bayesian_belief_snapshot: healthy · fresh · r5                                        │
+│                                                                    ││· environment_data: healthy · fresh · r433                                              │
+│                                                                    ││· fsm_status: healthy · fresh · r54                                                     │
+│                                                                    ││▲ plan: missing · stale · r—                                                            │
+│                                                                    ││Missing sources: plan                                                                   │
+│                                                                    ││FSM · enabled Transition Candidates                                                     │
+│                                                                    ││Active: assignment-1-in-progress · updated                                              │
+│                                                                    ││Plan r4 · statechart r4 · event assignment-1-may-begin                                  │
+│                                                                    ││assignment-1-outcome-confirmed: assignment-1-in-progress → assignment-2-in-progress     │
+│                                                                    ││Condition: confirm the completed evidence interval                                      │
+│                                                                    ││Readiness: {"live_evidence":"the drone is at the selected                               │
+│                                                                    ││location","not_before":{"seconds":200.5,"tick":401,"ticks_per_second":2}}               │
+│                                                                    ││assignment-1-abandoned: assignment-1-in-progress → patrol-replan-requested              │
+│                                                                    ││Condition: unconditional                                                                │
+│                                                                    ││Readiness: -                                                                            │
+│                                                                    ││                                                                                        │
+│                                                                    ││Active Maneuver                                                                         │
+│                                                                    ││search_area · active · sweep                                                            │
+│                                                                    ││Deadline 198.5000s · remaining 8.0000s                                                  │
+│                                                                    ││█████████████████████████████████████████62.0% ███████▌                                 │
+│                                                                    ││Latest Transition Intent                                                                │
+│                                                                    ││selected → assignment-2-in-progress                                                     │
+│                                                                    ││If confirm the completed evidence interval                                              │
+│                                                                    ││From assignment-1-in-progress · plan r4 · selected 187.0000s                            │
+│                                                                    ││AI Retain the sole planner-ordered next assignment.                                     │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││Latest Hyper outcome · AI non-authoritative                                             │
+│                                                                    ││replan · plan r3                                                                        │
+│                                                                    ││Mission 1 gate reports the next fixed-view leg is infeasible under belief revision 4.   │
+│                                                                    ││Triggers: mission1-gate:next_assignment_infeasible:belief-157                           │
+│                                                                    ││Requests:                                                                               │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+│                                                                    ││                                                                                        │
+└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘

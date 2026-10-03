@@ -1,4 +1,4 @@
-//! Real Rust-client/Python-Host interoperability for the additive v1.1 view.
+//! Rust interoperability with production API v1.3 routes and a real Host worker lifecycle.
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, HostClient, OperatorSection, OperatorViewPage,
+    ActivationOutcome, ActivationRequest, Fetched, HostClient, OperatorSection, OperatorViewPage,
     UreqHostClient,
 };
 
@@ -29,16 +29,17 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let root =
-        std::env::temp_dir().join(format!("operator-python-interop-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .to_path_buf();
+    let root = repo_root
+        .join("var/tmp")
+        .join(format!("operator-python-interop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
     let child = Command::new("python")
         .current_dir(&repo_root)
-        .arg(repo_root.join("tests/support/operator_host_fixture.py"))
+        .arg(repo_root.join("tests/support/operator_runtime_host.py"))
         .arg(port.to_string())
         .arg(&root)
         .stdout(Stdio::null())
@@ -50,7 +51,7 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(health) = client.health() {
-            assert_eq!((health.api_version.major, health.api_version.minor), (1, 1));
+            assert_eq!((health.api_version.major, health.api_version.minor), (1, 3));
             break;
         }
         assert!(
@@ -71,6 +72,7 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
                 console_session_id: "session-interop".to_string(),
                 mission_intent: "Survey the ridge".to_string(),
                 source_authority: "operator_console".to_string(),
+                stack: None,
             },
             "credential-interop",
         )
@@ -79,20 +81,53 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
         panic!("fixture activation was rejected");
     };
 
-    for section in [
-        OperatorSection::Overview,
-        OperatorSection::Agents,
-        OperatorSection::Environment,
-        OperatorSection::Artifacts,
-    ] {
-        let page = client
-            .operator_view(&accepted.mission_run_id, section, None, false)
-            .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let current = client.current_run("credential-interop").unwrap();
+        if let Some(run) = current.mission_run
+            && run.is_terminal()
+        {
+            assert_eq!(run.status, "succeeded");
+            break;
+        }
+        assert!(Instant::now() < deadline, "stub worker did not finish");
+        sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        std::fs::read_to_string(
+            fixture
+                .root
+                .join("runs")
+                .join(&accepted.mission_run_id)
+                .join("agent-storage/interop-worker-ran")
+        )
+        .unwrap(),
+        accepted.mission_run_id
+    );
+
+    for section in OperatorSection::ALL {
+        let Fetched::Fresh { value: page, .. } = client
+            .operator_view(
+                &accepted.mission_run_id,
+                section,
+                &Default::default(),
+                false,
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("an unconditional request is never 304");
+        };
         assert_eq!(page.meta().mission_run_id, accepted.mission_run_id);
         assert_eq!(page.meta().section, section);
         match (section, page) {
             (OperatorSection::Overview, OperatorViewPage::Overview(_))
             | (OperatorSection::Agents, OperatorViewPage::Agents(_))
+            | (OperatorSection::Progress, OperatorViewPage::Progress(_))
+            | (OperatorSection::Beliefs, OperatorViewPage::Beliefs(_))
+            | (OperatorSection::Context, OperatorViewPage::Context(_))
+            | (OperatorSection::World, OperatorViewPage::World(_))
+            | (OperatorSection::Stack, OperatorViewPage::Stack(_))
             | (OperatorSection::Environment, OperatorViewPage::Environment(_))
             | (OperatorSection::Artifacts, OperatorViewPage::Artifacts(_)) => {}
             _ => panic!("operator section decoded into the wrong Rust DTO"),

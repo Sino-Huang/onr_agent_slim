@@ -117,8 +117,36 @@ The durable Runtime Host-owned lifecycle record for a Mission Run, including its
 _Avoid_: Run Observation, operational log
 
 **Mission Run Cancellation**:
-A Runtime Host action that terminates a Run Worker and records the Mission Run as cancelled. It does not stop the separate environment or retract a submitted Maneuver Command.
-_Avoid_: Environment stop, maneuver rollback
+A Runtime Host action that terminates a Run Worker, stops the Environment Stack that worker launched, and records the Mission Run as cancelled. It does not stop an environment started outside the Host or retract a submitted Maneuver Command.
+_Avoid_: Environment authority, maneuver rollback
+
+**Environment Stack**:
+The per-Mission-Run set of local environment processes (AirSim engine, perception service, physical runtime with its world-model viewer, Mission 4 worker) that a Run Worker launches from a Stack Preset, waits on, and tears down when the run ends. The Host owns only their process lifecycle; environment state stays environment-authoritative.
+_Avoid_: Environment authority, shared session environment
+
+**Stack Preset**:
+A named, code-owned Environment Stack composition for one mission mode, with its supported toggles (AirSim, perception mode, update ownership), defaults, and default Mission Intent text.
+_Avoid_: Environment Profile, launcher script
+
+**Preflight Check**:
+A pre-activation probe of one Environment Stack prerequisite (vLLM, planner executables, engine, perception weights, free ports, active Mission Run, disk, GPU) reporting pass, warn, or fail; any failure makes the stack not launchable.
+_Avoid_: Readiness probe, health check
+
+**AirSim Follower**:
+The perception-off Environment Stack service that steps a frozen Harbor scene to the world model's Mission time, places the drone at the world-model pose and publishes the resulting camera frames with ideal segmentation boxes. It is visualization only; the world model never waits for it.
+_Avoid_: Perception, synchronizer, scene clock
+
+**Perception Annotation**:
+A scene-clock AirSim front-camera frame with the perception module's own output for that same frame (YOLO detections or ideal-perception reports) and a disclosure of the box provenance. A frame without a matching perception sample shows no boxes.
+_Avoid_: Ground truth, detection overlay from another frame
+
+**Mission Log Summary**:
+A non-authoritative vLLM summary of one window of new operational-log records, recording the covered sequence range. Mission Log Summaries are the middle level of the operator progress hierarchy, under the Run Narrative and over the raw records.
+_Avoid_: Run Narrative, Run Activity, authoritative state
+
+**Importance Level**:
+A deterministic, versioned code-owned classification of an operator-visible record as critical, warning, notable, routine, or debug. A Mission Log Summary takes the highest Importance Level of the records it covers; LLM text never assigns importance.
+_Avoid_: Severity from the model, log level
 
 **Host-Interrupted Failure**:
 A public Mission Run failure classification recorded when the Runtime Host stops unexpectedly and the Run Worker cannot safely continue.

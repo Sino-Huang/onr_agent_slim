@@ -1,0 +1,45 @@
+ RUN run-33bc80c9… ● failed 00:02:16 │ stack ■✖ │ host ○ idle
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✖ Intent (The operator Mission Intent "buy me a coffee" is a personal errand, not a bounded operational objective executable by the controlled vehicl
+┌ Invocations · paused · 0 newer ──────────────────────┐┌ Invocation Detail ───────────────────────────────────────────────────────────────────────────────────┐
+│ HYP workflow [complete] workflow                     ││ ID:        mission-5e34afc7-d5b0-457f-9ee7-d682d86a2d87:5:workflow                                   │
+│ HYP heartbeat [complete] Qwen/Qwen3.8-27B-FP8        ││ Role:      hyper-agent                                                                               │
+│ HYP planning-intent [complete] reject_mission_intent ││ Phase:     workflow                                                                                  │
+│ HYP planning-intent [complete] planning-intent       ││ Status:    ok / complete                                                                             │
+│ HYP heartbeat [complete] Qwen/Qwen3.8-27B-FP8        ││ Timing:    2026-10-01T17:42:30.098366+00:00 → 2026-10-01T17:42:30.098366+00:00 · 0 ms                │
+│ HYP workflow [complete] workflow                     ││                                                                                                      │
+│                                                      ││ AI Recorded Debug Reasoning (non-authoritative) · debug_evidence_unavailable                         │
+│                                                      ││ Debug evidence unavailable.                                                                          │
+│                                                      ││                                                                                                      │
+│                                                      ││ Response Content                                                                                     │
+│                                                      ││ -                                                                                                    │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+│                                                      ││                                                                                                      │
+└──────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn detail · ? help · e new intent · q exit
+ ✖ critical 1  ▲ warning 0  ● notable 2  · routine 0  ∙ debug 2

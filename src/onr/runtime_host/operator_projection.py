@@ -1,14 +1,16 @@
 """Incremental operator-facing projection of one Mission Run.
 
 The projection joins the Runtime Host's durable public observation log with the
-same debug loaders and step parser used by the read-only viewer.  Recorded model
-reasoning remains explicitly non-authoritative and is omitted when runtime debug
-recording is disabled.
+debug records and step parser used by the read-only viewer, reparsing only debug
+and planner files whose metadata changed.  Recorded model reasoning remains
+explicitly non-authoritative and is omitted when runtime debug recording is
+disabled.
 """
 
 from __future__ import annotations
 
 import base64
+import bisect
 import json
 import os
 import stat
@@ -25,18 +27,28 @@ from onr.contracts.environment import (
     environment_mission_time,
     environment_world_model_info,
 )
+from onr.ports.mission_log_summarizer import SummaryArtifact
 from onr.runtime_host.artifacts import (
     ARTIFACT_SCHEMA_VERSION,
     ArtifactNotFoundError,
     ArtifactUnavailableError,
+    PlannerArtifactInventory,
+    PlannerArtifactSnapshot,
     PublicArtifactInbox,
     _open_confined,
     _same_file_state,
     _snap_end_backward,
     _snap_start_forward,
+    service_log_artifacts,
 )
 from onr.runtime_host.observations import InvalidCursorError
-from onr.viewer.debug import load_debug_artifacts, load_llm_conversations
+from onr.runtime_host.progress import (
+    ProgressTree,
+    counts_by_importance,
+    derive_phase,
+    progress_payload,
+)
+from onr.viewer.debug import DebugArtifactCatalog, DebugArtifactSnapshot
 from onr.viewer.steps import Step, StepProjection
 
 OPERATOR_VIEW_SCHEMA_VERSION = 1
@@ -45,7 +57,17 @@ OPERATOR_MAX_LIMIT = 100
 PLANNER_MAX_BYTES = 1024 * 1024
 PLANNER_PREVIEW_BYTES = 4096
 
-OperatorSection = Literal["overview", "agents", "environment", "artifacts"]
+OperatorSection = Literal[
+    "overview",
+    "agents",
+    "environment",
+    "artifacts",
+    "progress",
+    "beliefs",
+    "context",
+    "world",
+    "stack",
+]
 
 _AGENT_ROLES = {"hyper-agent", "maneuver-control"}
 _PLANNER_LABELS = {
@@ -229,15 +251,111 @@ class _SectionState:
 
 
 @dataclass(slots=True)
+class _EnvironmentEvidence:
+    """Latest-state environment facts folded from observations in sequence order."""
+
+    fsm: dict[str, object] | None = None
+    feedback: dict[str, object] | None = None
+    beliefs: list[dict[str, object]] = field(default_factory=list)
+    warnings: dict[str, None] = field(default_factory=dict)
+
+    def ingest(self, observations: Iterable[Mapping[str, object]]) -> None:
+        for entry in observations:
+            item = _observation_item(entry)
+            if item is None:
+                continue
+            event_kind = item.get("event_kind")
+            if event_kind in {"fsm-status", "fsm-execution-record"}:
+                self.fsm = item
+            if event_kind in {"maneuver-feedback"}:
+                self.feedback = item
+            if event_kind in {"belief.updated", "belief.constraints", "risk.observed"}:
+                self.beliefs.append(item)
+                del self.beliefs[:-10]
+            missing = item.get("missing_fields")
+            if isinstance(missing, (list, tuple)):
+                for value in missing:
+                    self.warnings.setdefault(str(value), None)
+
+
+@dataclass(slots=True)
 class _RunState:
     observations: dict[int, dict[str, object]] = field(default_factory=dict)
+    ordered_observations: list[dict[str, object]] = field(default_factory=list)
     sections: dict[str, _SectionState] = field(default_factory=dict)
     environment: dict[str, object] | None = None
+    environment_evidence: _EnvironmentEvidence = field(
+        default_factory=_EnvironmentEvidence
+    )
     agent_observation_sequence: int = 0
     environment_observation_sequence: int = 0
+    progress: ProgressTree = field(default_factory=ProgressTree)
+    debug_catalog: DebugArtifactCatalog | None = None
+    # Debug agent rows derived from, and merged into "agents" for, this snapshot.
+    debug_snapshot: DebugArtifactSnapshot | None = None
+    debug_rows: dict[str, dict[str, object]] = field(default_factory=dict)
+    planner_root: Path | None = None
+    planner_inventory: PlannerArtifactInventory | None = None
+    planner_snapshot: PlannerArtifactSnapshot | None = None
+    planner_rows: dict[str, dict[str, object]] = field(default_factory=dict)
+    # Planner snapshot whose rows were last merged into the "artifacts" section.
+    planner_published: PlannerArtifactSnapshot | None = None
 
     def section(self, name: str) -> _SectionState:
         return self.sections.setdefault(name, _SectionState())
+
+    def ingest(self, observations: Iterable[Mapping[str, object]]) -> None:
+        added = False
+        for entry in observations:
+            sequence = _integer(entry.get("observation_sequence"))
+            if sequence is not None and sequence not in self.observations:
+                self.observations[sequence] = dict(entry)
+                added = True
+        if added:
+            self.ordered_observations = [
+                self.observations[key] for key in sorted(self.observations)
+            ]
+
+    def observations_after(self, sequence: int) -> list[dict[str, object]]:
+        ordered = self.ordered_observations
+        start = bisect.bisect_right(
+            ordered,
+            sequence,
+            key=lambda entry: cast(int, entry["observation_sequence"]),
+        )
+        return ordered[start:]
+
+    def debug_agent_rows(
+        self, storage_root: Path, mission_id: str
+    ) -> tuple[dict[str, dict[str, object]], bool]:
+        """Return debug agent rows and whether they changed since the last call."""
+        catalog = self.debug_catalog
+        if (
+            catalog is None
+            or catalog.storage_root != storage_root
+            or catalog.mission_id != mission_id
+        ):
+            catalog = self.debug_catalog = DebugArtifactCatalog(storage_root, mission_id)
+        snapshot = catalog.snapshot()
+        if snapshot is self.debug_snapshot:
+            return self.debug_rows, False
+        self.debug_rows = _debug_agent_rows(mission_id, snapshot)
+        self.debug_snapshot = snapshot
+        return self.debug_rows, True
+
+    def planner_artifacts(self, planner_root: Path) -> dict[str, dict[str, object]]:
+        """Return planner Artifact descriptors keyed by artifact id."""
+        inventory = self.planner_inventory
+        if inventory is None or self.planner_root != planner_root:
+            inventory = self.planner_inventory = PlannerArtifactInventory(
+                planner_root, _PLANNER_LABELS
+            )
+            self.planner_root = planner_root
+        snapshot = inventory.snapshot()
+        if snapshot is not self.planner_snapshot:
+            self.planner_rows = _planner_rows(planner_root, snapshot)
+            self.planner_snapshot = snapshot
+        return self.planner_rows
 
 
 def _flatten_steps(steps: Iterable[Step]) -> list[Step]:
@@ -303,32 +421,43 @@ def _agent_progress(
 
 
 def _agent_records(
+    observations: Iterable[Mapping[str, object]],
+    debug_rows: Mapping[str, dict[str, object]],
     *,
-    mission_id: str,
-    storage_root: Path,
-    debug: bool,
-    observations: Sequence[Mapping[str, object]],
+    debug_changed: bool,
 ) -> list[tuple[str, dict[str, object]]]:
+    """Merge progress from new observations with debug rows, debug rows winning.
+
+    Unchanged debug rows already sit in the section, so only colliding ones are
+    re-merged.
+    """
     records: dict[str, dict[str, object]] = {}
     for entry in observations:
         progress = _agent_progress(entry)
         if progress is not None:
             records[progress[0]] = progress[1]
+    if debug_changed:
+        records.update(debug_rows)
+    else:
+        for stable_id in records.keys() & debug_rows.keys():
+            records[stable_id] = debug_rows[stable_id]
+    return list(records.items())
 
-    if not debug:
-        return list(records.items())
 
-    _, invocations = load_debug_artifacts(storage_root, mission_id)
-    conversations = load_llm_conversations(storage_root, mission_id)
+def _debug_agent_rows(
+    mission_id: str, snapshot: DebugArtifactSnapshot
+) -> dict[str, dict[str, object]]:
+    invocations = snapshot.invocations
     view = StepProjection().project(
         mission_id,
         agent_invocations=invocations,
-        llm_records=conversations,
+        llm_records=snapshot.conversations,
     )
     invocation_by_role_sequence = {
         (record.get("role", record.get("agent_role")), record.get("sequence")): record
         for record in invocations
     }
+    records: dict[str, dict[str, object]] = {}
     for step in _flatten_steps(view.steps):
         if step.role not in _AGENT_ROLES:
             continue
@@ -365,7 +494,7 @@ def _agent_records(
             "tool_calls": [call.to_dict() for call in step.tool_calls],
             "debug_payload_disposition": "available",
         }
-    return list(records.items())
+    return records
 
 
 def _environment_record(
@@ -404,16 +533,6 @@ def _environment_record(
     }
 
 
-def _latest_item(
-    observations: Sequence[Mapping[str, object]], event_kinds: set[str]
-) -> dict[str, object] | None:
-    for entry in reversed(observations):
-        item = _observation_item(entry)
-        if item is not None and item.get("event_kind") in event_kinds:
-            return item
-    return None
-
-
 def _safe_environment(root: Path, mission_id: str) -> dict[str, object] | None:
     path = root / quote(mission_id, safe="._-") / "environment.json"
     descriptor: int | None = None
@@ -436,7 +555,7 @@ def _safe_environment(root: Path, mission_id: str) -> dict[str, object] | None:
 
 def _current_environment(
     environment: Mapping[str, object] | None,
-    observations: Sequence[Mapping[str, object]],
+    observed: _EnvironmentEvidence,
 ) -> dict[str, object]:
     evidence = environment if isinstance(environment, Mapping) else {}
     try:
@@ -449,33 +568,18 @@ def _current_environment(
         mission_time = None
         maneuver_lifecycle = None
         world_model_info = {}
-    fsm = _latest_item(observations, {"fsm-status", "fsm-execution-record"})
+    fsm = observed.fsm
     fsm_payload = fsm.get("payload") if isinstance(fsm, Mapping) else None
     fsm_payload = fsm_payload if isinstance(fsm_payload, Mapping) else {}
-    feedback = _latest_item(observations, {"maneuver-feedback"})
+    feedback = observed.feedback
     feedback_payload = (
         feedback.get("payload") if isinstance(feedback, Mapping) else None
     )
-    beliefs = [
-        item
-        for entry in observations
-        if (item := _observation_item(entry)) is not None
-        and item.get("event_kind")
-        in {"belief.updated", "belief.constraints", "risk.observed"}
-    ]
-    warnings: list[str] = []
-    for entry in observations:
-        item = _observation_item(entry)
-        missing = item.get("missing_fields") if item is not None else None
-        if isinstance(missing, (list, tuple)):
-            warnings.extend(str(value) for value in missing)
     return {
         "authority": "Runtime Host Mission Run state and environment evidence",
         "position": _plain(controlled_vehicle.get("position")),
         "velocity": _plain(
-            controlled_vehicle.get(
-                "velocity", controlled_vehicle.get("speed_mps")
-            )
+            controlled_vehicle.get("velocity", controlled_vehicle.get("speed_mps"))
         ),
         "mission_time_seconds": mission_time,
         "fsm_state": fsm_payload.get("active_state", fsm_payload.get("state")),
@@ -484,8 +588,8 @@ def _current_environment(
         "maneuver_feedback": _plain(feedback_payload),
         "world_model_info": _plain(world_model_info),
         "perceptions": _plain(evidence.get("perceptions", [])),
-        "belief_changes": [_plain(item) for item in beliefs[-10:]],
-        "warnings": list(dict.fromkeys(warnings))[-20:],
+        "belief_changes": [_plain(item) for item in observed.beliefs],
+        "warnings": list(observed.warnings)[-20:],
     }
 
 
@@ -528,67 +632,43 @@ def _valid_planner_ref(ref: str) -> bool:
     )
 
 
-def _planner_artifacts(root: Path) -> list[dict[str, object]]:
-    try:
-        root_mode = root.lstat().st_mode
-    except OSError:
-        return []
-    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
-        return []
-    pending = [root]
+def _planner_rows(
+    root: Path, snapshot: PlannerArtifactSnapshot
+) -> dict[str, dict[str, object]]:
     result: list[dict[str, object]] = []
-    while pending:
-        directory = pending.pop()
-        try:
-            entries = tuple(directory.iterdir())
-        except OSError:
+    for path, metadata in snapshot.files:
+        ref = path.relative_to(root).as_posix()
+        if not _valid_planner_ref(ref) or metadata.st_size > PLANNER_MAX_BYTES:
             continue
-        for path in sorted(entries, key=lambda item: item.name):
-            try:
-                mode = path.lstat().st_mode
-            except OSError:
-                continue
-            if stat.S_ISLNK(mode):
-                continue
-            if stat.S_ISDIR(mode):
-                pending.append(path)
-                continue
-            if path.name not in _PLANNER_LABELS or not stat.S_ISREG(mode):
-                continue
-            ref = path.relative_to(root).as_posix()
-            if not _valid_planner_ref(ref):
-                continue
-            metadata = path.stat()
-            if metadata.st_size > PLANNER_MAX_BYTES:
-                continue
-            media_type = {
-                ".json": "application/json",
-                ".py": "text/x-python",
-                ".pddl": "text/plain",
-                ".mzn": "text/plain",
-                ".dzn": "text/plain",
-            }.get(path.suffix.lower(), "text/plain")
-            result.append(
-                {
-                    "schema_version": ARTIFACT_SCHEMA_VERSION,
-                    "artifact_id": _planner_artifact_id(ref),
-                    "kind": path.name,
-                    "media_type": media_type,
-                    "byte_size": metadata.st_size,
-                    "content_digest": None,
-                    "display": {
-                        "title": _planner_label(path.name, ref),
-                        "summary": ref,
-                    },
-                    "published_at": datetime.fromtimestamp(
-                        metadata.st_mtime, UTC
-                    ).isoformat(),
-                    "classification": "text",
-                    "source": "planner",
-                    "ref": ref,
-                }
-            )
-    return sorted(result, key=lambda item: cast(str, item["ref"]))
+        media_type = {
+            ".json": "application/json",
+            ".py": "text/x-python",
+            ".pddl": "text/plain",
+            ".mzn": "text/plain",
+            ".dzn": "text/plain",
+        }.get(path.suffix.lower(), "text/plain")
+        result.append(
+            {
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "artifact_id": _planner_artifact_id(ref),
+                "kind": path.name,
+                "media_type": media_type,
+                "byte_size": metadata.st_size,
+                "content_digest": None,
+                "display": {
+                    "title": _planner_label(path.name, ref),
+                    "summary": ref,
+                },
+                "published_at": datetime.fromtimestamp(
+                    metadata.st_mtime, UTC
+                ).isoformat(),
+                "classification": "text",
+                "source": "planner",
+                "ref": ref,
+            }
+        )
+    result.sort(key=lambda item: cast(str, item["ref"]))
+    return {cast(str, item["artifact_id"]): item for item in result}
 
 
 def _public_artifacts(
@@ -624,6 +704,11 @@ class OperatorRunProjection:
     def __init__(self) -> None:
         self._runs: dict[str, _RunState] = {}
 
+    def discard_runs_except(self, retained: set[str]) -> None:
+        """Drop reloadable projections for runs no longer being watched."""
+        for run_id in self._runs.keys() - retained:
+            del self._runs[run_id]
+
     def view(
         self,
         *,
@@ -640,56 +725,44 @@ class OperatorRunProjection:
         cursor: str | None,
         before: str | None,
         raw: bool,
+        run_root: Path | None = None,
+        operational_records: Sequence[Mapping[str, object]] = (),
+        summaries: Sequence[SummaryArtifact] = (),
+        stack: Mapping[str, object] | None = None,
+        extra: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         mission_id = cast(str, run["mission_id"])
         mission_run_id = cast(str, run["mission_run_id"])
         state = self._runs.setdefault(mission_run_id, _RunState())
-        for entry in observations:
-            sequence = _integer(entry.get("observation_sequence"))
-            if sequence is not None:
-                state.observations.setdefault(sequence, dict(entry))
-        ordered_observations = [
-            state.observations[key] for key in sorted(state.observations)
-        ]
-
-        current_environment: dict[str, object] | None = None
-        if section in {"overview", "environment"}:
-            environment = _safe_environment(environment_root, mission_id)
-            if environment is not None:
-                state.environment = environment
-            current_environment = _current_environment(
-                state.environment, ordered_observations
-            )
+        state.ingest(observations)
 
         section_key = (
             section if section != "environment" else f"environment:{str(raw).lower()}"
         )
         selected_state = state.section(section_key)
         if section in {"overview", "agents"}:
-            agent_observations = [
-                entry
-                for entry in ordered_observations
-                if cast(int, entry["observation_sequence"])
-                > state.agent_observation_sequence
-            ]
-            agents = _agent_records(
-                mission_id=mission_id,
-                storage_root=storage_root,
-                debug=debug,
-                observations=agent_observations,
+            agent_observations = state.observations_after(
+                state.agent_observation_sequence
             )
-            state.section("agents").update(agents)
+            debug_rows, debug_changed = (
+                state.debug_agent_rows(storage_root, mission_id)
+                if debug
+                else ({}, False)
+            )
+            state.section("agents").update(
+                _agent_records(
+                    agent_observations, debug_rows, debug_changed=debug_changed
+                )
+            )
             if agent_observations:
                 state.agent_observation_sequence = cast(
                     int, agent_observations[-1]["observation_sequence"]
                 )
+        current_environment: dict[str, object] | None = None
         if section in {"overview", "environment"}:
-            environment_observations = [
-                entry
-                for entry in ordered_observations
-                if cast(int, entry["observation_sequence"])
-                > state.environment_observation_sequence
-            ]
+            environment_observations = state.observations_after(
+                state.environment_observation_sequence
+            )
             filtered_records = [
                 record
                 for entry in environment_observations
@@ -703,19 +776,38 @@ class OperatorRunProjection:
             state.section("environment:false").update(filtered_records)
             state.section("environment:true").update(raw_records)
             state.section("overview").update(filtered_records)
+            state.environment_evidence.ingest(environment_observations)
             if environment_observations:
                 state.environment_observation_sequence = cast(
                     int, environment_observations[-1]["observation_sequence"]
                 )
+            environment = _safe_environment(environment_root, mission_id)
+            if environment is not None:
+                state.environment = environment
+            current_environment = _current_environment(
+                state.environment, state.environment_evidence
+            )
         if section in {"overview", "artifacts"}:
+            planner_rows = state.planner_artifacts(planner_root)
+            planner_changed = state.planner_published is not state.planner_snapshot
+            state.planner_published = state.planner_snapshot
+            # Unchanged planner rows already sit in the section unchanged.
             artifacts = [
                 *_public_artifacts(artifact_inbox, mission_id, mission_run_id),
-                *_planner_artifacts(planner_root),
+                *(planner_rows.values() if planner_changed else ()),
+                *(service_log_artifacts(run_root) if run_root is not None else []),
             ]
             state.section("artifacts").update(
                 (cast(str, artifact["artifact_id"]), artifact) for artifact in artifacts
             )
 
+        if section == "progress":
+            state.progress.ingest(operational_records, summaries)
+            selected_state.update(
+                (cast(str, node["node_id"]), node) for node in state.progress.nodes()
+            )
+        elif section in {"beliefs", "context", "world", "stack"}:
+            selected_state.update([(section, extra or {})])
         records, next_cursor, before_cursor, has_more = selected_state.page(
             section=section_key,
             mission_run_id=mission_run_id,
@@ -739,7 +831,11 @@ class OperatorRunProjection:
             "before_cursor": before_cursor,
             "has_more": has_more,
         }
-        if section == "agents":
+        if section == "progress":
+            response["progress"] = progress_payload(nodes=records, narrative=narrative)
+        elif section in {"beliefs", "context", "world", "stack"}:
+            response[section] = dict(extra or {})
+        elif section == "agents":
             response["agents"] = records
         elif section == "environment":
             assert current_environment is not None
@@ -775,6 +871,10 @@ class OperatorRunProjection:
             artifact_values = list(state.section("artifacts").current.values())
             response["overview"] = {
                 "authority": "Runtime Host Mission Run Record",
+                "phase": derive_phase(
+                    run=run, records=operational_records, stack=stack
+                ),
+                "counts_by_importance": counts_by_importance(operational_records),
                 "latest_agents": latest_agents,
                 "fsm": {
                     "state": current_environment["fsm_state"],
@@ -821,11 +921,8 @@ class OperatorRunProjection:
         ref = _planner_ref(artifact_id)
         if ref is None:
             raise ArtifactNotFoundError
-        descriptors = {
-            cast(str, item["artifact_id"]): item
-            for item in _planner_artifacts(planner_root)
-        }
-        descriptor = descriptors.get(artifact_id)
+        state = self._runs.setdefault(mission_run_id, _RunState())
+        descriptor = state.planner_artifacts(planner_root).get(artifact_id)
         if descriptor is None:
             raise ArtifactNotFoundError
         requested_offset = 0 if offset is None else offset

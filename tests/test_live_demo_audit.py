@@ -5,10 +5,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 import pytest
 
 from onr.application.live_demo_audit import audit_live_demo
+
+HOST_MISSION_ID = "mission-3d9e2b1c-6f4a-4e8b-9c07-5a1d2e3f4b6c"
 
 
 def write(path: Path, value: object) -> None:
@@ -16,10 +20,13 @@ def write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def run_tree(root: Path, mode: str) -> None:
+def run_tree(root: Path, mode: str, mission_id: str = "mission:demo") -> None:
+    encoded = quote(mission_id, safe="._-")
+    section: dict[str, Any]
     write(
         root / "closed-loop-result.json",
         {
+            "mission_id": mission_id,
             "terminal": True,
             "final_fsm_state": "joint34-complete" if mode == "joint34" else "complete",
             "simulated_duration_seconds": 10.0,
@@ -97,7 +104,7 @@ def run_tree(root: Path, mode: str) -> None:
             {"history": [{"kind": "accepted"}, {"kind": "accepted"}]},
         )
     section["mission_mode"] = mode
-    stream = root / "transport/topics/environment-data/missions/mission%3Ademo"
+    stream = root / "transport/topics/environment-data/missions" / encoded
     for sequence in (1, 2):
         value = json.loads(json.dumps(section))
         if mode == "mission2":
@@ -110,7 +117,7 @@ def run_tree(root: Path, mode: str) -> None:
                 "world_model_info": value,
             }},
         )
-    log = root / "agent-storage/operational-log/mission:demo/events"
+    log = root / "agent-storage/operational-log" / mission_id / "events"
     write(
         log / "1.json",
         {"source": "hyper-agent", "event_kind": "workflow", "outcome": "completed"},
@@ -120,7 +127,7 @@ def run_tree(root: Path, mode: str) -> None:
         {"source": "maneuver-control", "event_kind": "heartbeat", "outcome": "completed"},
     )
     write(
-        root / "debug/agent/hyper-agent/mission%3Ademo/1.json",
+        root / "debug/agent/hyper-agent" / encoded / "1.json",
         {"kind": "llm", "completion_state": "complete", "error": None},
     )
     if mode == "joint34":
@@ -134,8 +141,7 @@ def run_tree(root: Path, mode: str) -> None:
             },
         )
         write(
-            root
-            / "transport/topics/mission3-agent-reports/missions/mission%3Ademo/1.json",
+            root / "transport/topics/mission3-agent-reports/missions" / encoded / "1.json",
             {"event_kind": "mission3-agent-report", "payload": {"reason": "mission_budget"}},
         )
 
@@ -145,6 +151,39 @@ def test_mission1_audit_accepts_yolo_camera_evidence(tmp_path: Path) -> None:
     audit = audit_live_demo(tmp_path, "mission1", perception="yolo")
     assert audit["status"] == "PASS", audit["failures"]
     assert audit["perception_evidence"]["external_camera_report_checks"] == 1
+
+
+def test_mission1_audit_reads_the_recorded_host_mission(tmp_path: Path) -> None:
+    run_tree(tmp_path, "mission1", HOST_MISSION_ID)
+    audit = audit_live_demo(tmp_path, "mission1", perception="yolo")
+    assert audit["status"] == "PASS", audit["failures"]
+    assert audit["mission_id"] == HOST_MISSION_ID
+    assert audit["environment_event_count"] == 2
+
+
+@pytest.mark.parametrize("recorded", [HOST_MISSION_ID, None])
+def test_audit_ignores_evidence_from_another_mission(
+    tmp_path: Path, recorded: str | None
+) -> None:
+    run_tree(tmp_path, "mission1")  # complete evidence, but for mission:demo
+    result_path = tmp_path / "closed-loop-result.json"
+    result = json.loads(result_path.read_text())
+    if recorded is None:
+        del result["mission_id"]
+    else:
+        result["mission_id"] = recorded
+    write(result_path, result)
+    audit = audit_live_demo(tmp_path, "mission1", perception="yolo")
+    assert audit["status"] == "FAIL"
+    assert audit["environment_event_count"] == 0
+    assert set(audit["failures"]) >= {
+        "environment_evidence_missing",
+        "perception_source_not_observed",
+        "mission1_report_checks_missing",
+        "hyper_workflow_not_completed",
+        "model_debug_receipt_missing",
+    }
+    assert ("closed_loop_result_mission_id_missing" in audit["failures"]) is (recorded is None)
 
 
 def test_mission1_audit_rejects_evidence_from_another_perception_source(tmp_path: Path) -> None:
@@ -189,6 +228,22 @@ def test_joint34_audit_rejects_premature_terminal(tmp_path: Path) -> None:
     write(result_path, result)
     audit = audit_live_demo(tmp_path, "joint34")
     assert "mission3_stopped_before_budget" in audit["failures"]
+
+
+def test_joint34_audit_fails_without_mission3_inspection(tmp_path: Path) -> None:
+    run_tree(tmp_path, "joint34")
+    stream = tmp_path / "transport/topics/environment-data/missions/mission%3Ademo"
+    for path in stream.glob("*.json"):
+        event = json.loads(path.read_text())
+        del event["payload"]["world_model_info"]["mission3"]
+        write(path, event)
+    audit = audit_live_demo(tmp_path, "joint34")
+    assert audit["status"] == "FAIL"
+    assert "mission3_selection_missing" in audit["failures"]
+    assert audit["mission3_evidence"]["inspection"] == {}
+    assert audit["camera_control"]["status"] == "FAIL"
+    receipts = json.loads((tmp_path / "mission3-camera-control-receipts.json").read_text())
+    assert receipts == audit["camera_control"]
 
 
 def test_live_demo_audit_joint34_requires_block_and_report(tmp_path: Path) -> None:

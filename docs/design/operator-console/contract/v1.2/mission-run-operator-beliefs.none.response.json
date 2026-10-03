@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "beliefs",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "beliefs-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "beliefs": {
+    "belief_kind": null,
+    "reason": "no Bayesian belief for this mission mode (mission2)",
+    "revision": null,
+    "created_at": null,
+    "entities": [],
+    "history": []
+  }
+}

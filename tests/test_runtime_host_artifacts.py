@@ -76,7 +76,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, Path]:
         launch_worker=pending.append,
         evidence_source=ScriptedEvidenceSource(),
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
     response = client.post(
         "/api/v1/mission-activations",
         headers={"Authorization": "Bearer console-secret"},
@@ -89,7 +89,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, Path]:
     )
     assert response.status_code == 202
     assert response.json()["mission_run_id"] == "run-1"
-    return client, config.storage.root / "artifact-inbox" / "run-1"
+    return client, host._runs_root / "run-1" / "agent-storage" / "artifact-inbox" / "run-1"
 
 
 def _digest(content: bytes) -> str:

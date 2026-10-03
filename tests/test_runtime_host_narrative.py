@@ -56,14 +56,14 @@ class ScriptedSummarizer:
         mission_id: str,
         mission_run_id: str,
         terminal: bool,
-        observations: list[dict[str, object]],
+        narrative_input: Mapping[str, object],
     ) -> str:
         self.calls.append(
             {
                 "mission_id": mission_id,
                 "mission_run_id": mission_run_id,
                 "terminal": terminal,
-                "observations": observations,
+                "narrative_input": narrative_input,
             }
         )
         result = self.results.pop(0) if self.results else "summary"
@@ -127,9 +127,10 @@ def _client(
         evidence_source=selected_source,
         narrative_summarizer=summarizer,
         narrative_interval_seconds=30.0,
+        narrative_poll_seconds=None,
     )
     return (
-        TestClient(create_app(host=host)),
+        TestClient(create_app(host=host), client=("127.0.0.1", 50000)),
         host,
         pending,
         selected_clock,
@@ -225,11 +226,17 @@ def _unavailable(*, terminal: bool = False) -> dict[str, object]:
     }
 
 
+def _tick_and_read(client: TestClient, host: RuntimeHost) -> dict[str, Any]:
+    host.narrative_tick()
+    return _narrative(client).json()["narrative"]
+
+
 def test_narrative_stays_none_until_evidence_advances(tmp_path: Path) -> None:
     summarizer = ScriptedSummarizer()
-    client, _, _, _, _, _ = _client(tmp_path, summarizer=summarizer)
+    client, host, _, _, _, _ = _client(tmp_path, summarizer=summarizer)
     activated = _activate(client)
 
+    host.narrative_tick()
     response = _narrative(client)
 
     assert response.status_code == 200
@@ -249,23 +256,49 @@ def test_narrative_stays_none_until_evidence_advances(tmp_path: Path) -> None:
     assert summarizer.calls == []
 
 
-def test_narrative_coalesces_evidence_advances_within_interval(tmp_path: Path) -> None:
-    summarizer = ScriptedSummarizer("first", "second")
-    client, _, _, clock, source, _ = _client(tmp_path, summarizer=summarizer)
+def test_narrative_requests_only_read_the_stored_record(tmp_path: Path) -> None:
+    summarizer = ScriptedSummarizer("generated in the background")
+    client, host, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
 
-    first = _narrative(client).json()["narrative"]
+    before = _narrative(client).json()["narrative"]
+    overview = client.get(
+        "/api/v1/mission-runs/run-1/operator-view", params={"section": "overview"}
+    ).json()["overview"]["narrative"]
+    assert summarizer.calls == []
+    assert before["status"] == overview["status"] == "none"
+
+    host.narrative_tick()
+
+    stored = _narrative(client).json()["narrative"]
+    overview = client.get(
+        "/api/v1/mission-runs/run-1/operator-view", params={"section": "overview"}
+    ).json()["overview"]["narrative"]
+    assert stored["text"] == overview["text"] == "generated in the background"
+    assert len(summarizer.calls) == 1
+
+
+def test_narrative_coalesces_evidence_advances_within_interval(tmp_path: Path) -> None:
+    summarizer = ScriptedSummarizer("first", "second")
+    client, host, _, clock, source, _ = _client(tmp_path, summarizer=summarizer)
+    mission_id = str(_activate(client)["mission_id"])
+    source.by_mission[mission_id] = [_op(mission_id, 1)]
+
+    first = _tick_and_read(client, host)
     source.by_mission[mission_id].append(_op(mission_id, 2))
-    coalesced = _narrative(client).json()["narrative"]
+    coalesced = _tick_and_read(client, host)
     clock.advance(30)
-    second = _narrative(client).json()["narrative"]
+    second = _tick_and_read(client, host)
+    clock.advance(30)
+    unchanged = _tick_and_read(client, host)
 
     assert first["text"] == "first"
     assert first["source_watermark"] == 1
     assert coalesced == first
     assert second["text"] == "second"
     assert second["source_watermark"] == 2
+    assert unchanged == second
     assert [call["terminal"] for call in summarizer.calls] == [False, False]
 
 
@@ -284,50 +317,119 @@ def test_narrative_generation_does_not_overlap(tmp_path: Path) -> None:
             assert release.wait(timeout=5)
             return "complete"
 
-    client, _, _, _, source, _ = _client(tmp_path, summarizer=BlockingSummarizer())
+    client, host, _, _, source, _ = _client(tmp_path, summarizer=BlockingSummarizer())
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
-    responses: list[Any] = []
-    first = Thread(target=lambda: responses.append(_narrative(client)), daemon=True)
+    first = Thread(target=host.narrative_tick, daemon=True)
     first.start()
     assert entered.wait(timeout=5)
 
-    second = Thread(target=lambda: responses.append(_narrative(client)), daemon=True)
-    second.start()
-    second.join(timeout=5)
-    assert not second.is_alive()
+    host.narrative_tick()
+    during = _narrative(client).json()["narrative"]
     release.set()
     first.join(timeout=5)
+    assert not first.is_alive()
 
     assert calls == 1
-    assert sorted(response.json()["narrative"]["status"] for response in responses) == [
-        "available",
-        "none",
-    ]
+    assert during["status"] == "none"
+    assert _narrative(client).json()["narrative"]["status"] == "available"
+
+
+def test_background_thread_generates_without_requests(tmp_path: Path) -> None:
+    generated = Event()
+
+    class SignalingSummarizer:
+        def summarize_narrative(self, **_kwargs: object) -> str:
+            generated.set()
+            return "background narrative"
+
+    source = ScriptedEvidenceSource()
+    pending: list[Callable[[], None]] = []
+    host = RuntimeHost(
+        _config(tmp_path),
+        clock=FakeClock(),
+        generate_id=_ids(),
+        launch_worker=pending.append,
+        evidence_source=source,
+        narrative_summarizer=SignalingSummarizer(),
+        narrative_poll_seconds=0.01,
+    )
+    try:
+        client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
+        mission_id = str(_activate(client)["mission_id"])
+        source.by_mission[mission_id] = [_op(mission_id, 1)]
+
+        assert generated.wait(timeout=10)
+    finally:
+        host.close()
+    assert _narrative(client).json()["narrative"]["text"] == "background narrative"
+
+
+@pytest.mark.parametrize("tick_while_running", [False, True])
+def test_run_replaced_right_after_ending_still_gets_terminal_narrative(
+    tmp_path: Path, tick_while_running: bool
+) -> None:
+    summarizer = ScriptedSummarizer(
+        *(["running"] if tick_while_running else []), "terminal", "second run"
+    )
+    client, host, pending, _, source, _ = _client(
+        tmp_path, summarizer=summarizer, worker=lambda _context: None
+    )
+    first_mission = str(_activate(client)["mission_id"])
+    source.by_mission[first_mission] = [_op(first_mission, 1)]
+    if tick_while_running:
+        host.narrative_tick()
+    pending.pop()()
+    second = client.post(
+        "/api/v1/mission-activations",
+        headers={"Authorization": "Bearer console-secret"},
+        json={
+            "activation_request_id": "request-2",
+            "console_session_id": "session-1",
+            "mission_intent": "Survey sector eight",
+            "source_authority": "operator_console",
+        },
+    ).json()
+    source.by_mission[str(second["mission_id"])] = [_op(str(second["mission_id"]), 1)]
+    assert "run-1" in host._narrative_watch
+
+    host.narrative_tick()
+    assert "run-1" not in host._narrative_watch
+    assert "run-1" not in host._run_observations
+
+    first = _narrative(client, "run-1").json()["narrative"]
+    assert first["terminal"] is True
+    assert first["text"] == "terminal"
+    assert _narrative(client, "run-2").json()["narrative"]["text"] == "second run"
+    expected_calls = (
+        [("run-1", False)] if tick_while_running else []
+    ) + [("run-1", True), ("run-2", False)]
+    assert [(call["mission_run_id"], call["terminal"]) for call in summarizer.calls] == (
+        expected_calls
+    )
 
 
 def test_terminal_narrative_is_attempted_once_across_restart_and_replay(
     tmp_path: Path,
 ) -> None:
     summarizer = ScriptedSummarizer("terminal summary")
-    client, _, pending, clock, source, config = _client(
+    client, host, pending, clock, source, config = _client(
         tmp_path, summarizer=summarizer, worker=lambda _context: None
     )
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
     pending.pop()()
 
-    first = _narrative(client).json()["narrative"]
-    repeated = _narrative(client).json()["narrative"]
-    restarted, _, _, _, _, _ = _client(
+    first = _tick_and_read(client, host)
+    repeated = _tick_and_read(client, host)
+    restarted, restarted_host, _, _, _, _ = _client(
         tmp_path,
         clock=clock,
         source=source,
         summarizer=summarizer,
         config=config,
     )
-    source.by_mission[mission_id] = [_op(mission_id, 1)]
-    after_restart = _narrative(restarted).json()["narrative"]
+    after_restart = _tick_and_read(restarted, restarted_host)
 
     assert first == repeated == after_restart
     assert first["terminal"] is True
@@ -338,18 +440,19 @@ def test_terminal_narrative_is_attempted_once_across_restart_and_replay(
 
 def test_failed_narrative_is_interval_gated_and_can_recover(tmp_path: Path) -> None:
     summarizer = ScriptedSummarizer(RuntimeError("private model failure"), "recovered")
-    client, _, _, clock, source, _ = _client(tmp_path, summarizer=summarizer)
+    client, host, _, clock, source, _ = _client(tmp_path, summarizer=summarizer)
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
 
+    host.narrative_tick()
     failed_response = _narrative(client)
-    immediate = _narrative(client)
+    immediate = _tick_and_read(client, host)
     clock.advance(30)
-    recovered = _narrative(client).json()["narrative"]
+    recovered = _tick_and_read(client, host)
 
     assert failed_response.json()["narrative"] == _unavailable()
     assert "private model failure" not in failed_response.text
-    assert immediate.json() == failed_response.json()
+    assert immediate == failed_response.json()["narrative"]
     assert recovered["status"] == "available"
     assert recovered["text"] == "recovered"
     assert recovered["source_watermark"] == 1
@@ -358,16 +461,16 @@ def test_failed_narrative_is_interval_gated_and_can_recover(tmp_path: Path) -> N
 
 def test_failed_terminal_narrative_is_never_retried(tmp_path: Path) -> None:
     summarizer = ScriptedSummarizer(RuntimeError("terminal failure"), "must not run")
-    client, _, pending, clock, source, _ = _client(
+    client, host, pending, clock, source, _ = _client(
         tmp_path, summarizer=summarizer, worker=lambda _context: None
     )
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
     pending.pop()()
 
-    failed = _narrative(client).json()["narrative"]
+    failed = _tick_and_read(client, host)
     clock.advance(300)
-    repeated = _narrative(client).json()["narrative"]
+    repeated = _tick_and_read(client, host)
 
     assert failed == _unavailable(terminal=True)
     assert repeated == failed
@@ -386,7 +489,7 @@ def test_dangling_terminal_attempt_is_published_unavailable_without_retry(
     pending.pop()()
     run_before = client.get("/api/v1/mission-runs/current").content
     narrative_path = (
-        config.storage.root / "runtime-host" / "narratives" / "run-1.json"
+        config.storage.root / "runtime-host" / "runs" / "run-1" / "narrative.json"
     )
     narrative_path.parent.mkdir(parents=True, exist_ok=True)
     narrative_path.write_text(
@@ -397,16 +500,15 @@ def test_dangling_terminal_attempt_is_published_unavailable_without_retry(
         encoding="utf-8",
     )
 
-    restarted, _, _, _, _, _ = _client(
+    restarted, restarted_host, _, _, _, _ = _client(
         tmp_path,
         clock=clock,
         source=source,
         summarizer=summarizer,
         config=config,
     )
-    response = _narrative(restarted)
 
-    assert response.json()["narrative"] == _unavailable(terminal=True)
+    assert _tick_and_read(restarted, restarted_host) == _unavailable(terminal=True)
     assert summarizer.calls == []
     assert restarted.get("/api/v1/mission-runs/current").content == run_before
 
@@ -421,7 +523,7 @@ def test_dangling_nonterminal_attempt_keeps_interval_gated_retry(
     state_path = config.storage.root / "runtime-host" / "state.json"
     original_state = state_path.read_bytes()
     narrative_path = (
-        config.storage.root / "runtime-host" / "narratives" / "run-1.json"
+        config.storage.root / "runtime-host" / "runs" / "run-1" / "narrative.json"
     )
     narrative_path.parent.mkdir(parents=True, exist_ok=True)
     narrative_path.write_text(
@@ -432,7 +534,7 @@ def test_dangling_nonterminal_attempt_keeps_interval_gated_retry(
         encoding="utf-8",
     )
 
-    restarted, _, _, _, _, _ = _client(
+    restarted, restarted_host, _, _, _, _ = _client(
         tmp_path,
         clock=clock,
         source=source,
@@ -442,15 +544,15 @@ def test_dangling_nonterminal_attempt_keeps_interval_gated_retry(
     state_path.write_bytes(original_state)
     run_before = restarted.get("/api/v1/mission-runs/current").content
 
-    first = _narrative(restarted).json()["narrative"]
+    first = _tick_and_read(restarted, restarted_host)
     clock.advance(29)
-    gated = _narrative(restarted).json()["narrative"]
+    gated = _tick_and_read(restarted, restarted_host)
     clock.advance(1)
-    recovered = _narrative(restarted).json()["narrative"]
+    recovered = _tick_and_read(restarted, restarted_host)
 
     assert first == gated == _unavailable()
-    assert summarizer.calls[0]["terminal"] is False
     assert len(summarizer.calls) == 1
+    assert summarizer.calls[0]["terminal"] is False
     assert recovered["status"] == "available"
     assert recovered["text"] == "recovered"
     assert restarted.get("/api/v1/mission-runs/current").content == run_before
@@ -468,11 +570,11 @@ def test_narrative_output_is_sanitized(
     tmp_path: Path, result: object, status: str, expected_text: str | None
 ) -> None:
     summarizer = ScriptedSummarizer(result)
-    client, _, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
+    client, host, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
 
-    narrative = _narrative(client).json()["narrative"]
+    narrative = _tick_and_read(client, host)
 
     assert narrative["status"] == status
     if status == "available":
@@ -486,24 +588,25 @@ def test_narrative_output_is_sanitized(
         assert narrative["text"] == expected_text
 
 
-def test_summarizer_receives_only_issued_observation_envelopes(tmp_path: Path) -> None:
+def test_summarizer_input_excludes_mission_intent_and_raw_evidence(
+    tmp_path: Path,
+) -> None:
     mission_intent = "SECRET MISSION INTENT"
     evidence_secret = "super-secret-observation-token"
     summarizer = ScriptedSummarizer("safe")
-    client, _, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
+    client, host, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
     mission_id = str(_activate(client, mission_intent=mission_intent)["mission_id"])
     source.by_mission[mission_id] = [
         _op(mission_id, 1),
         _redaction_challenge(mission_id, evidence_secret),
     ]
-    issued = client.get("/api/v1/mission-runs/run-1/observations").json()[
-        "observations"
-    ]
 
-    _narrative(client)
+    host.narrative_tick()
 
-    assert summarizer.calls[0]["observations"] == issued
-    serialized = json.dumps(summarizer.calls[0]["observations"])
+    narrative_input = summarizer.calls[0]["narrative_input"]
+    assert isinstance(narrative_input, Mapping)
+    assert narrative_input["source_watermark"] == 1
+    serialized = json.dumps(narrative_input)
     assert mission_intent not in serialized
     assert evidence_secret not in serialized
 
@@ -513,7 +616,7 @@ def test_narrative_attempts_do_not_change_run_or_activities(
     tmp_path: Path, result: object
 ) -> None:
     summarizer = ScriptedSummarizer(result)
-    client, _, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
+    client, host, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
     mission_id = str(_activate(client)["mission_id"])
     source.by_mission[mission_id] = [_op(mission_id, 1)]
     run_before = client.get("/api/v1/mission-runs/current").content
@@ -521,8 +624,9 @@ def test_narrative_attempts_do_not_change_run_or_activities(
         "/api/v1/mission-runs/run-1/activities"
     ).content
 
-    _narrative(client)
+    host.narrative_tick()
 
+    assert len(summarizer.calls) == 1
     assert client.get("/api/v1/mission-runs/current").content == run_before
     assert (
         client.get("/api/v1/mission-runs/run-1/activities").content

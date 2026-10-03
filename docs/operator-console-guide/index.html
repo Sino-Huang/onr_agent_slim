@@ -1,0 +1,1073 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ONR Operator Console — User Guide</title>
+<style>
+  :root {
+    --bg: #f7f7f4; --fg: #1d2125; --muted: #5b636b; --card: #ffffff; --line: #dcdcd4;
+    --accent: #1f6feb; --accent-soft: #e6efff; --warn: #9a6700; --warn-soft: #fff4d6;
+    --bad: #b42318; --bad-soft: #fdecea; --ok: #1a7f37; --ok-soft: #e7f6ec;
+    --term-bg: #0f1419; --term-fg: #d6dde4; --kbd-bg: #eef0f2;
+    --mono: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161b; --fg: #e3e7eb; --muted: #9aa4ae; --card: #1a2027; --line: #2c343d;
+      --accent: #58a6ff; --accent-soft: #15253b; --warn: #e3b341; --warn-soft: #2b2410;
+      --bad: #ff7b72; --bad-soft: #321a1a; --ok: #56d364; --ok-soft: #142a1a; --kbd-bg: #262d35;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+  nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+        padding: 24px 18px; border-right: 1px solid var(--line); background: var(--card); }
+  nav .brand { font-weight: 700; font-size: 1.05rem; margin-bottom: 4px; }
+  nav .sub { color: var(--muted); font-size: .85rem; margin-bottom: 18px; }
+  nav ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+  nav li { counter-increment: s; }
+  nav a { display: block; padding: 5px 8px; border-radius: 6px; color: var(--fg);
+          text-decoration: none; font-size: .93rem; }
+  nav a::before { content: counter(s) ". "; color: var(--muted); }
+  nav a:hover, nav a.active { background: var(--accent-soft); color: var(--accent); }
+  main { padding: 40px clamp(20px, 5vw, 64px) 80px; max-width: 1180px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.5rem; margin: 56px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.12rem; margin: 28px 0 8px; }
+  p, li { max-width: 78ch; }
+  .lede { font-size: 1.12rem; color: var(--muted); max-width: 72ch; }
+  a { color: var(--accent); }
+  code, kbd { font-family: var(--mono); font-size: .88em; }
+  code { background: var(--kbd-bg); padding: 1px 5px; border-radius: 4px; }
+  kbd { display: inline-block; min-width: 1.6em; text-align: center; padding: 1px 6px;
+        border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+        background: var(--kbd-bg); color: var(--fg); white-space: nowrap; }
+  pre.shell { background: var(--term-bg); color: var(--term-fg); padding: 14px 16px;
+              border-radius: 8px; overflow-x: auto; font: 14px/1.5 var(--mono); }
+  pre.shell .c { color: #7d8b99; }
+  .callout { border-left: 4px solid var(--accent); background: var(--accent-soft);
+             padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 16px 0; max-width: 82ch; }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .callout.bad { border-color: var(--bad); background: var(--bad-soft); }
+  .callout.ok { border-color: var(--ok); background: var(--ok-soft); }
+  .callout p { margin: 4px 0; }
+  .steps { counter-reset: step; list-style: none; padding: 0; }
+  .steps > li { counter-increment: step; position: relative; padding-left: 44px; margin: 14px 0; }
+  .steps > li::before { content: counter(step); position: absolute; left: 0; top: 0;
+        width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff;
+        display: grid; place-items: center; font-weight: 700; font-size: .9rem; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; background: var(--card);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: .95rem; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--kbd-bg); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  figure { margin: 20px 0; }
+  figcaption { color: var(--muted); font-size: .9rem; margin-top: 6px; }
+  .term-wrap { background: var(--term-bg); border-radius: 10px; padding: 0 0 10px; container-type: inline-size;
+               box-shadow: 0 6px 24px rgba(0,0,0,.18); overflow: hidden; }
+  .term-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #1b2229; }
+  .term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3b4550; display: inline-block; }
+  .term-bar i:nth-child(1) { background: #ff5f57; } .term-bar i:nth-child(2) { background: #febc2e; }
+  .term-bar i:nth-child(3) { background: #28c840; }
+  .term-bar span { margin-left: 8px; color: #8b98a5; font: 12px var(--mono); }
+  /* Frames are 100 columns wide: shrink the font so a whole frame fits its container. */
+  pre.term { margin: 0; padding: 8px 14px 0; color: var(--term-fg); overflow-x: auto;
+             font: min(12.5px, calc((100cqi - 30px) / 61))/1.22 var(--mono); white-space: pre; tab-size: 8; }
+  .tabdemo .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .tabdemo button { font: 600 .9rem system-ui, sans-serif; padding: 6px 12px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  .tabdemo button[aria-selected="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tabdemo button kbd { margin-right: 4px; }
+  .tabdemo .panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .tabdemo .explain { max-width: 82ch; }
+  .tabdemo .panel[hidden] { display: none; }
+  .tabdemo .explain h3 { margin-top: 0; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h4 { margin: 0 0 6px; }
+  .card p { margin: 4px 0; font-size: .95rem; }
+  .filter { width: 100%; max-width: 420px; padding: 8px 12px; font-size: 1rem; border-radius: 8px;
+            border: 1px solid var(--line); background: var(--card); color: var(--fg); margin: 6px 0 4px; }
+  .glyph { font-family: var(--mono); font-weight: 700; }
+  .g-crit { color: var(--bad); } .g-warn { color: var(--warn); } .g-note { color: var(--accent); }
+  .g-ok { color: var(--ok); }
+  .hint { color: var(--muted); font-size: .9rem; }
+  @media (max-width: 960px) {
+    .layout { grid-template-columns: 1fr; }
+    nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding-top: 24px; }
+  }
+  @media print { nav { display: none; } .layout { display: block; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav aria-label="Guide sections">
+  <div class="brand">ONR Operator Console</div>
+  <div class="sub">How to use the terminal UI</div>
+  <ol>
+    <li><a href="#what">What the console is</a></li>
+    <li><a href="#before">Before you start</a></li>
+    <li><a href="#launch">Start the console</a></li>
+    <li><a href="#launch-screen">Choose a stack and intent</a></li>
+    <li><a href="#review">Review and launch</a></li>
+    <li><a href="#run-screen">Read the run screen</a></li>
+    <li><a href="#tabs">The seven tabs</a></li>
+    <li><a href="#rejection">When a mission is rejected</a></li>
+    <li><a href="#cancel">Cancel, exit or detach</a></li>
+    <li><a href="#recovery">Recovering after a crash</a></li>
+    <li><a href="#legend">Symbols and badges</a></li>
+    <li><a href="#keys">Keyboard reference</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<main>
+<h1>Using the ONR Operator Console</h1>
+<p class="lede">The Operator Console is a full-screen terminal UI that launches one mission at a time,
+shows what the agents are doing while it runs, and lets you cancel it cleanly. This guide covers a full
+session, from opening the console to recovering a run after a crash. Every screen image below is a real
+console render frame, committed under <code>docs/design/operator-console/frames/</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="what">1. What the console is</h2>
+<p>There are two programs. You only interact with the first one:</p>
+<div class="grid2">
+  <div class="card"><h4>Operator Console (this TUI)</h4>
+    <p>A Rust terminal app. You use it to pick a stack, type a Mission Intent, watch progress and
+    cancel. It never starts simulators or agents itself.</p></div>
+  <div class="card"><h4>Runtime Host</h4>
+    <p>A local Python service (default <code>http://127.0.0.1:8787</code>). It starts and stops each run's
+    <strong>Environment Stack</strong>, owns all run state and writes evidence under
+    <code>var/runtime-host/runs/&lt;mission_run_id&gt;/</code>.</p></div>
+</div>
+<p>The launcher script starts a Host for you if none is running. Because the Host owns the run,
+closing or crashing the console does <em>not</em> stop the mission. See <a href="#recovery">Recovery</a>.</p>
+
+<!-- ============================================================ -->
+<h2 id="before">2. Before you start</h2>
+<ul>
+  <li><strong>Environment:</strong> the <code>onr</code> conda environment (the launcher activates it).</li>
+  <li><strong>Model server:</strong> vLLM must be serving the configured model at
+    <code>http://127.0.0.1:11411/v1/models</code>.</li>
+  <li><strong>Sibling checkouts:</strong> <code>onr_physical_runtime</code>, the scenario inputs and the planner
+    executables are needed even for simulated missions.</li>
+  <li><strong>AirSim runs only:</strong> the Harbor engine and its settings, plus the sibling
+    <code>onr_solution</code> producer. YOLO perception also needs <code>yolo_weight/best.pt</code> and
+    <code>ultralytics</code>.</li>
+  <li><strong>Terminal size:</strong> at least <strong>100×30</strong>. Use 140×40 or larger to see the overview
+    image and side panels; 160×45 works well for demos.</li>
+</ul>
+<pre class="shell"><span class="c"># one-time per shell</span>
+cd /data/ccu/sukaih/ONR/onr_agent_slim
+source /home/sukaih/miniconda3/etc/profile.d/conda.sh
+conda activate onr
+curl --fail http://127.0.0.1:11411/v1/models   <span class="c"># is vLLM up?</span>
+bash scripts/vllm/start_vllm.sh                 <span class="c"># only if it is not</span></pre>
+<p>You don't have to check every prerequisite by hand. The console runs a <strong>preflight</strong> check and
+names exactly what is missing.</p>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>terminal smaller than 100×30</span></div>
+  <pre class="term" data-frame="resize-required-80x24" aria-label="Console render frame resize-required-80x24">
+
+
+
+
+
+
+
+
+              ┌ Resize Required ─────────────────────────────────┐
+              │                Terminal too small                │
+              │                                                  │
+              │  The operator console requires at least 100x30.  │
+              │                  Current: 80x24                  │
+              └──────────────────────────────────────────────────┘</pre></div>
+  <figcaption>If the terminal is too small, the console says so and waits. Resize the window; there's no need to restart.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="launch">3. Start the console</h2>
+<pre class="shell">./scripts/tui/start_operator_console.sh
+<span class="c"># Inside tmux or herdr, use portable half-block graphics:</span>
+./scripts/tui/start_operator_console.sh --image-protocol halfblocks
+<span class="c"># Give a slow, cold Host start more time (default 60 s):</span>
+./scripts/tui/start_operator_console.sh --host-ready-timeout 120</pre>
+<table>
+  <tr><th>Option</th><th>Meaning</th></tr>
+  <tr><td><code>--image-protocol auto|kitty|sixel|iterm2|halfblocks|off</code></td>
+      <td>How world and camera images are drawn. <code>auto</code> queries the terminal.
+      <code>halfblocks</code> is the reliable choice inside multiplexers. <code>off</code> disables images.
+      The <code>ONR_CONSOLE_IMAGE_PROTOCOL</code> environment variable sets the same option.</td></tr>
+  <tr><td><code>--host-ready-timeout SECS</code></td><td>How long to wait for a bootstrapped Host to become healthy.</td></tr>
+  <tr><td><code>http://127.0.0.1:PORT</code></td><td>Connect to a Host on a non-default port.</td></tr>
+</table>
+<p>The first run compiles the release build, which takes a while. Warm it up before a demo. While the Host
+boots you'll see a spinner. Host output goes to <code>var/runtime-host/host.log</code>, and if the Host fails
+to start, the console prints the last 20 lines of that log.</p>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>connecting</span></div>
+  <pre class="term" data-frame="connecting-100x30" aria-label="Console render frame connecting-100x30"> ONR Operator Console ─ host 127.0.0.1:8787 api - ─ session c0ns01e0
+┌ Runtime Host ────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│ Connecting to Runtime Host at http://127.0.0.1:8787 ...                                          │
+│                                                                                                  │
+│ Waiting for health and API version handshake (requires API v1.2+).                               │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Ctrl+C: quit</pre></div>
+  <figcaption>The console waits for the Host's health check and API v1.2 handshake. An older Host is refused with an explicit message.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="launch-screen">4. Choose a stack and a Mission Intent</h2>
+<p>The Launch screen has three areas. <strong>Stack</strong> (top left) selects what to run.
+<strong>Preflight</strong> (top right) shows whether it can run. <strong>Mission Intent</strong> (bottom) is
+the plain-language task for the agents.</p>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>launch · ready</span></div>
+  <pre class="term" data-frame="launch-ready-100x30" aria-label="Console render frame launch-ready-100x30"> ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ Preflight · launchable ────────────────────────┐
+│ Preset     ‹ [Mission 1 · Harbor (simulated)] ›││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at      │
+│ AirSim     ‹ [off] │ on ›                      ││   127.0.0.1:11411)                             │
+│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›          ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs  │
+│ Updates    ‹ [coordinator_driven] ›            ││   about 2 GiB                                  │
+│ Sim limit  ‹ [600 s] ›                         ││                                                │
+│ mission1-harbor · mission1                     ││                                                │
+│ ⓘ Perception needs the recorded Harbor engine  ││                                                │
+│ scene: choose Mission 1 · AirSim live.         ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ ▸Mission Intent ─────────────────────────────────────────────────────────────────────────────────┐
+│ Please patrol the environment and confirm every reported event.                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ←/→ change · F2 demo prompts · Alt+Enter review &amp; launch · r preflight · F1 help
+ ✔ Ready: Alt+Enter to review and launch</pre></div>
+  <figcaption>Ready to launch. A <span class="glyph g-warn">▲</span> warning, such as low GPU headroom, does not block launch.</figcaption>
+</figure>
+
+<ol class="steps">
+  <li><strong>Pick a preset.</strong> Press <kbd>Tab</kbd> to reach the <em>Preset</em> field and
+    <kbd>←</kbd>/<kbd>→</kbd> to change it.
+    <code>mission1-harbor</code> is the simulated stack, which still uses the real world model, planners,
+    belief service and vLLM agents. <code>mission1-airsim</code> uses the real Harbor engine. Other presets:
+    <code>mission2</code>, <code>mission3</code>, <code>mission4</code>, <code>joint</code>, <code>joint24</code>,
+    <code>joint34</code>.</li>
+  <li><strong>Set the toggles.</strong> AirSim, Perception (<code>off</code>/<code>ideal</code>/<code>yolo</code>),
+    Updates and Sim limit. An option marked <code>✗</code> is unavailable for this preset, and the console
+    explains why. For example, <code>ideal</code>/<code>yolo</code> perception needs AirSim, and only
+    <code>mission1-airsim</code> plays the recorded engine scene they need.</li>
+  <li><strong>Pick an AirSim mode.</strong> With AirSim <em>on</em>, Harbor always starts. With perception
+    <code>off</code>, the world model runs on simulated information and AirSim follows it for
+    visualization. With <code>ideal</code> or <code>yolo</code>, the scene clock synchronizes the world
+    model to AirSim and the perception module feeds it.</li>
+  <li><strong>Wait for preflight.</strong> <span class="glyph g-ok">✔</span> pass,
+    <span class="glyph g-warn">▲</span> warning (launch allowed), <span class="glyph g-crit">✖</span> failure
+    (launch disabled). Press <kbd>r</kbd> to re-run it after fixing something.</li>
+  <li><strong>Write the intent.</strong> Type in the Mission Intent box. <kbd>Enter</kbd> inserts a newline
+    here; it does not launch. Press <kbd>F2</kbd> to insert a prepared prompt instead.</li>
+  <li><strong>Review.</strong> Press <kbd>Alt</kbd>+<kbd>Enter</kbd> (some terminals report
+    <kbd>Ctrl</kbd>+<kbd>Enter</kbd>) to open the review screen.</li>
+</ol>
+
+<div>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>F2 · demo prompts</span></div>
+  <pre class="term" data-frame="launch-demo-prompts-100x30" aria-label="Console render frame launch-demo-prompts-100x30"> ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ Preflight · launchable ────────────────────────┐
+│ Preset     ‹ [Mission 1 · Harbor (simulated)] ›││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at      │
+│ AirSim     ‹ [off] │ on ›                      ││   127.0.0.1:11411)                             │
+│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›          ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs  │
+│ Updates    ‹ [coordinator_driven] ›            ││   about 2 GiB                                  │
+│ Sim limit  ‹ [600 s] ›                         ││                                                │
+│ mission1-harbor · mission1                     ││                                                │
+│ ⓘ Percepti┌ Demo prompts (F2) ───────────────────────────────────────────────────────┐           │
+│ scene: cho│                                                                          │           │
+└───────────│   Preset mission · Mission 1 · Harbor (simulated)                        │───────────┘
+┌ ▸Mission I│     "Please patrol the environment and confirm every reported event."    │───────────┐
+│ Please pat│ ▸ Rejection · personal errand                                            │           │
+│           │     "buy me a coffee"                                                    │           │
+│           │   Rejection · trivia                                                     │           │
+│           │     "What is the capital of France?"                                     │           │
+│           │   Rejection · gibberish                                                  │           │
+│           │     "qzx vlorp blenk 7#k frabble wug snee"                               │           │
+│           │                                                                          │           │
+│           │ ↑↓ choose · Enter use as Mission Intent · Esc close                      │           │
+│           └──────────────────────────────────────────────────────────────────────────┘           │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ←/→ change · F2 demo prompts · Alt+Enter review &amp; launch · r preflight · F1 help
+ ✔ Ready: Alt+Enter to review and launch</pre></div>
+  <figcaption><kbd>F2</kbd> offers the preset mission and three out-of-scope prompts. The out-of-scope prompts let you demonstrate mission rejection.</figcaption>
+</figure>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>launch · blocked</span></div>
+  <pre class="term" data-frame="launch-blocked-100x30" aria-label="Console render frame launch-blocked-100x30"> ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ Preflight · launch blocked ────────────────────┐
+│ Preset     ‹ [Mission 1 · AirSim live] ›       ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at      │
+│ AirSim     ‹ off✗ │ [on] ›                     ││   127.0.0.1:11411)                             │
+│▸Perception ‹ off │ ideal │ [yolo] ›            ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs  │
+│ Updates    ‹ [coordinator_driven] ›            ││   about 2 GiB                                  │
+│ Sim limit  ‹ [290 s] ›                         ││ ✖ AirSim RPC port free (in use) — stop the     │
+│ mission1-airsim · mission1                     ││   other Harbor engine                          │
+│ ⓘ This preset plays the Harbor engine scene:   ││                                                │
+│ AirSim cannot be turned off.                   ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Mission Intent ──────────────────────────────────────────────────────────────────────────────────┐
+│ Patrol the window 60-130 s and verify every reported event.                                      │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ←/→ change · F2 demo prompts · Alt+Enter review &amp; launch · r preflight · F1 help
+ ✖ Launch disabled: AirSim RPC port free</pre></div>
+  <figcaption>Launch blocked: another Harbor engine already holds the AirSim RPC port. Stop the conflicting service; don't work around the busy-port check.</figcaption>
+</figure>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="review">5. Review and launch</h2>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>review activation</span></div>
+  <pre class="term" data-frame="review-activation-100x30" aria-label="Console render frame review-activation-100x30"> ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Review Mission Activation ───────────────────────────────────────────────────────────────────────┐
+│ Confirm activation of this Mission Intent:                                                       │
+│                                                                                                  │
+│   Please patrol the environment and confirm every reported event.                                │
+│                                                                                                  │
+│ Stack:     Mission 1 · Harbor (simulated) (mission1-harbor) · AirSim off · perception off ·      │
+│            coordinator_driven · limit 600 s                                                      │
+│ Preflight: ✔ 1 pass  ▲ 1 warn  ✖ 0 fail                                                          │
+│                                                                                                  │
+│ activation request: 8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b                                         │
+│ console session:    c0ns01e0-0000-4000-8000-5e5510n5a1d0                                         │
+│ source authority:   operator_console                                                             │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter: confirm and launch once · Esc: back to the Launch screen</pre></div>
+  <figcaption>Check the intent, stack and preflight summary. <kbd>Enter</kbd> launches exactly once. <kbd>Esc</kbd> returns to the Launch screen with your edits intact.</figcaption>
+</figure>
+<div class="callout warn"><p><strong>Expect a long startup.</strong> The Host must bring the whole
+Environment Stack to readiness first. Simulated Mission 1 prepares surveillance planning views during
+startup, which can take noticeably longer than the physical runtime alone. Real missions run actual model
+inference and can take tens of minutes.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="run-screen">6. Read the run screen</h2>
+<p>Once launched, every tab shares the same frame around its content:</p>
+<table>
+  <tr><th>Where</th><th>Example</th><th>What it tells you</th></tr>
+  <tr><td>Header line</td><td><code>RUN run-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live</code></td>
+      <td>Run ID and status, wall-clock elapsed, <strong>mission time</strong>, active statechart (FSM) state,
+      per-service stack health (<code>●</code> ready, <code>◐</code> starting) and Host connection.</td></tr>
+  <tr><td>Tab bar</td><td><code>1 Overview … 7 Artifacts</code></td><td>Press the number, or <kbd>Tab</kbd>/<kbd>Shift</kbd>+<kbd>Tab</kbd>.</td></tr>
+  <tr><td>Phase rail</td><td><code>✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing ─ ○ Done</code></td>
+      <td>Where the run is in its lifecycle. <code>✔</code> done, <code>▶</code> current, <code>○</code> not reached, <code>✖</code> failed at that phase.</td></tr>
+  <tr><td>Footer</td><td><code>1-7/Tab tabs · ? help · c cancel · q managed exit</code></td>
+      <td>The keys that work in the current tab. Below it are live counts per importance level.</td></tr>
+</table>
+<div class="callout"><p>In coordinator-driven mode, <strong>mission time can stay frozen</strong> while the agents
+think. The simulation is not hung; it is waiting for the agents.</p></div>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>? · help overlay</span></div>
+  <pre class="term" data-frame="run-help-100x30" aria-label="Console render frame run-help-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Over┌ Help · Esc or ? to close ────────────────────────────────────────────────────────┐
+ ✔ Stack│ Global                                                                           │
+┌ Missio│  1-7 · Tab/Shift+Tab  switch Run tabs                                            │───────┐
+│ Status│  ? · F1               toggle this help                                           │       │
+│ Missio│  c                    request cancellation of the owned run                      │tered  │
+│ Run:  │  q · Ctrl+C           managed exit (cancels an owned active run first)           │       │
+│ Stack:│  Ctrl+Q               detach: quit, run keeps going, session recoverable         │ecords)│
+│ Starte│  e                    after a terminal run: new Mission Intent, same stack       │       │
+│ Finish│                                                                                  │       │
+│       │ Launch screen                                                                    │       │
+│       │  Tab · Shift+Tab      next / previous field                                      │       │
+│       │  ←/→                  change the focused toggle                                  │       │
+│       │  F2                   demo prompts (preset mission, rejection battery)           │       │
+└───────│  r                    re-run preflight                                           │───────┘
+┌ Signif│  Alt+Enter            review and launch (disabled while a check fails)           │───────┐
+│ MAN #3│                                                                                  │       │
+│       │ Tabs                                                                             │       │
+│       │  Agents               ↑↓ select · f follow newest · PgUp/PgDn detail             │ion    │
+│       │  Progress             ↑↓ move · ←→ fold · f follow · i importance                │       │
+│       │  / · n/N              search Progress · next/previous match                      │       │
+│       │  Enter · Esc          accept/close search (typing captures tab/q/c)              │       │
+│       │  World                s cycle world/annotated front/front/3rd · p pause/resume   │       │
+│       │  Stack                ↑↓ service · f follow log · PgUp/PgDn scroll               │       │
+│       │  Artifacts            ↑↓ select · Enter inspect · ←/→ page · Esc close           │       │
+│       │  Belief/Context       ↑↓ · j/k select belief entity (detail below table)         │       │
+└───────│ ✖ critical  ▲ warning  ● notable  · routine  ∙ debug                             │───────┘
+────────│ HYP MAN CC FSM BEL ENV PER STK AI = LLM text, non-authoritative                  │────────
+ 1-7/Tab└──────────────────────────────────────────────────────────────────────────────────┘
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+  <figcaption>Press <kbd>?</kbd> (or <kbd>F1</kbd>) at any time for the built-in key list. <kbd>Esc</kbd> closes it.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="tabs">7. The seven tabs</h2>
+<p>Click a tab, or focus this box and press <kbd>1</kbd>–<kbd>7</kbd> just as you would in the console.</p>
+<div class="tabdemo" id="tabdemo" tabindex="0" aria-label="Interactive tab tour">
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="1"><kbd>1</kbd>Overview</button>
+    <button role="tab" aria-selected="false" data-tab="2"><kbd>2</kbd>Progress</button>
+    <button role="tab" aria-selected="false" data-tab="3"><kbd>3</kbd>Agents</button>
+    <button role="tab" aria-selected="false" data-tab="4"><kbd>4</kbd>Belief/Context</button>
+    <button role="tab" aria-selected="false" data-tab="5"><kbd>5</kbd>World</button>
+    <button role="tab" aria-selected="false" data-tab="6"><kbd>6</kbd>Stack</button>
+    <button role="tab" aria-selected="false" data-tab="7"><kbd>7</kbd>Artifacts</button>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="1">
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>1 · Overview</span></div>
+    <pre class="term" data-frame="run-overview-100x30" aria-label="Console render frame run-overview-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    running                             ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
+│ Run:       run-fixture-001                     ││and the agent replanned.                        │
+│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
+│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Finished:  -                                   ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ MAN #3 maneuver-handoff · maneuver-control · completed       ││ No Human Decision Requests       │
+│                                                              ││ require action.                  │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>Overview: is everything OK?</h3>
+      <p>The run card (status, mission, stack, timestamps), the latest <strong>Run Narrative</strong>, the
+      <strong>Significant Activity</strong> feed and any <strong>Human Decision Requests</strong>.</p>
+      <p>The Run Narrative is refreshed in the background about every 30 s and once more when the run ends.
+      It is labelled <code>AI · non-authoritative</code>: a model-written summary, not ground truth.</p>
+      <p>Human Decisions is a status-only view; it has no controls.</p></div>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="2" hidden>
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>2 · Progress</span></div>
+    <pre class="term" data-frame="run-progress-100x30" aria-label="Console render frame run-progress-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Progress · ≥ routine · FOLLOW ───────────────────────────────────────────────────────────────────┐
+│  ▾ ◆ Run Narrative · AI · available                                                              │
+│    Legs 1-2 complete; ship 2's report was altered and the agent replanned.                       │
+│    ▾ ▲ 14:01:10 AI Replan after report alteration (31 records)                                   │
+│›       ● 14:01:39 FSM FSM patrol.leg_2 → patrol.leg_3                                            │
+│      · Live — not yet summarized (1 records)                                                     │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Selected evidence · PgUp/PgDn ───────────────────────────────────────────────────────────────────┐
+│FSM patrol.leg_2 → patrol.leg_3                                                                   │
+│fsm-runner · notable · record                                                                     │
+│Time: 2026-08-27T14:01:39Z                                                                        │
+│                                                                                                  │
+│                                                                                                  │
+│Details:                                                                                          │
+│{                                                                                                 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ / search · n/N next/previous match
+ ↑↓ select · ←→ expand/collapse · Enter toggle · f follow newest · i minimum importance
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ move · ←→ fold · f follow · i importance · / search · n/N matches · ? help · c ca
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>Progress: what happened, at three levels</h3>
+      <p><strong>Run Narrative → Mission Log Summaries → raw records.</strong> Each summary covers an
+      exact range of operational records. Records that no summary covers yet appear under
+      <em>Live — not yet summarized</em>. When the next summary arrives, they move under it without
+      duplication.</p>
+      <ul>
+        <li><kbd>↑</kbd>/<kbd>↓</kbd> select; <kbd>←</kbd>/<kbd>→</kbd> or <kbd>Enter</kbd> fold/unfold</li>
+        <li><kbd>f</kbd> follow newest. Moving the selection pauses follow so you can read history.</li>
+        <li><kbd>i</kbd> cycles the minimum importance, for example to show <code>debug</code> heartbeats</li>
+        <li><kbd>/</kbd> search, <kbd>Enter</kbd> accept, <kbd>n</kbd>/<kbd>N</kbd> next/previous match</li>
+        <li><kbd>PgUp</kbd>/<kbd>PgDn</kbd> scroll the selected-evidence detail</li>
+      </ul>
+      <p class="hint">While the search box is open, typing is captured, so <kbd>q</kbd>, <kbd>c</kbd> and <kbd>Tab</kbd>
+      are entered as text. <kbd>Ctrl</kbd>+<kbd>C</kbd> still exits.</p></div>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="3" hidden>
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>3 · Agents</span></div>
+    <pre class="term" data-frame="run-agents-100x30" aria-label="Console render frame run-agents-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Invocations · following ─────────────┐┌ Invocation Detail ───────────────────────────────────────┐
+│ HYP planner-execution [complete] pl… ││ ID:        invocation-1                                  │
+│ HYP planner-execution [complete] pl… ││ Role:      hyper-agent                                   │
+│                                      ││ Phase:     planner-execution                             │
+│                                      ││ Status:    ok / complete                                 │
+│                                      ││ Timing:    2026-08-24T12:00:02Z → 2026-08-27T12:00:02Z · │
+│                                      ││            2000 ms                                       │
+│                                      ││                                                          │
+│                                      ││ AI Recorded Debug Reasoning (non-authoritative) · availa…│
+│                                      ││ Compare the candidate routes.                            │
+│                                      ││                                                          │
+│                                      ││ Response Content                                         │
+│                                      ││ Planner attempt completed.                               │
+│                                      ││                                                          │
+│                                      ││ Tool 1: planner_executor                                 │
+│                                      ││ Args:      {"attempt":2}                                 │
+│                                      ││ Result:    {"status":"accepted"}                         │
+│                                      ││ Error:     -                                             │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+└──────────────────────────────────────┘└──────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn detail · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>Agents: every model invocation</h3>
+      <p>The left list shows each agent call: role, phase and status. The right pane shows timing, recorded
+      debug reasoning, the response and every tool call with arguments, result and error.</p>
+      <ul>
+        <li><kbd>↑</kbd>/<kbd>↓</kbd> select (pauses following)</li>
+        <li><kbd>f</kbd> resume following the newest invocation</li>
+        <li><kbd>PgUp</kbd>/<kbd>PgDn</kbd> scroll the detail</li>
+      </ul>
+      <p class="hint">Recorded Debug Reasoning helps you understand a decision, but it is not mission
+      authority.</p></div>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="4" hidden>
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>4 · Belief / Context</span></div>
+    <pre class="term" data-frame="run-belief-context-100x30" aria-label="Console render frame run-belief-context-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Bayesian Belief ─────────────────────────┐┌ Mission Context ─────────────────────────────────────┐
+│reporting_reliability · revision 8        ││Mission Snapshot · source health / freshness          │
+│2026-08-27T14:01:30Z                      ││Version 397 · plan r4                                 │
+│ Entity             Mean   Δ prev  Δ prior││· Maneuver: healthy · fresh · r433                    │
+│▶ship 2             0.6230 +0.1200 +0.4900││· Belief: healthy · fresh · r5                        │
+│ ship 14            0.0600 +0.0000 -0.0700││· Environment: healthy · fresh · r433                 │
+│██████████████ship 2 0.6230               ││· FSM: healthy · fresh · r54                          │
+│1/2 · Δ prev +0.1200 · Δ prior +0.4900    ││▲ plan: missing · stale · r—                          │
+│Mean history · revisions 7–8              ││FSM · enabled Transition Candidates                   │
+│▄▄                                        ││Active: assignment-1-in-progress · updated            │
+│Honest 0.3100 · CI [0.4100, 0.8100]       ││→ assignment-2-in-progress · not before 200.5s        │
+│Outcomes altered=2 · clean=1 · omitted=0  ││If confirm the completed evidence interval            │
+│Variance 0.0120                           ││→ patrol-replan-requested · readiness unavailable     │
+│                                          ││If unconditional                                      │
+│                                          ││Active Maneuver                                       │
+│                                          ││search_area · active · sweep                          │
+│                                          ││Deadline 198.5000s · remaining 8.0000s                │
+│                                          ││████████████████████████62.0% ███▌                    │
+│                                          ││Latest Transition Intent                              │
+│                                          ││selected → assignment-2-in-progress                   │
+│                                          ││If confirm the completed evidence interval            │
+│                                          ││Latest Hyper outcome · AI non-authoritative           │
+│                                          ││replan · plan r3                                      │
+└──────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ entity · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>Belief &amp; Context: what the system believes, and why</h3>
+      <p><strong>Left: Bayesian Belief.</strong> Reporting-reliability mean per entity, with change since the
+      previous revision (Δ prev) and since the prior (Δ prior). The selected entity's gauge, mean-history
+      sparkline, credible interval and outcome counts stay visible below the table.
+      <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>j</kbd>/<kbd>k</kbd> select an entity. The selection follows that
+      entity even when the table reorders.</p>
+      <p><strong>Right: Mission Context.</strong> Health and freshness of each Mission Snapshot source, the
+      active FSM state and its enabled transition candidates, the Active Maneuver with its deadline, the
+      latest Transition Intent and the latest Hyper Agent outcome.</p>
+      <p class="hint">Missions 2–4 show an explicit "no Bayesian belief for this mission mode" message
+      rather than an empty gauge.</p></div>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="5" hidden>
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>5 · World</span></div>
+    <pre class="term" data-frame="run-world-airsim-follower-100x30" aria-label="Console render frame run-world-airsim-follower-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ front · annotated · seq 406 · live ──────────────────────────────────────────────────────────────┐
+│         ▄▄▄▄                                                                                     │
+│         ▄▄▄▄                                                                                     │
+│                                                                                                  │
+│▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄                                                                            │
+│▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀                                                                            │
+│                                                                                                  │
+│         ▀▀▀▀                                                                                     │
+│         ▀▀▀▀                                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Authoritative World State ───────────────────────────────────────────────────────────────────────┐
+│ Viewer:    available                                                                             │
+│ Mission t: 143.5 s                                                                               │
+│ Flight:    flying                                                                                │
+│ Maneuver:  navigate                                                                              │
+│ Version:   812                                                                                   │
+│ AirSim:    world-model follower · capturing · lag 0.5 s · ship phase ±0.03 s                     │
+│ Overlay:   ideal segmentation · 3 objects                                                        │
+│ Boxes:     AirSim follows the world model. Boxes are ideal instance segmentation, not agent      │
+│            perception.                                                                           │
+│ Sources:   world / camera_front_annotated / camera_front / camera_third_person                   │
+│ Position:  {"x":10,"y":20,"z":-30}                                                               │
+│ Velocity:  {"x":1,"y":0,"z":0}                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · s source · p pause · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>World: see the scene</h3>
+      <p>The live world-model image with maneuver overlays, or an AirSim camera, plus the authoritative
+      world state: mission time, flight state, maneuver and position.</p>
+      <ul>
+        <li><kbd>s</kbd> cycles <em>world → annotated front → front camera → third-person camera</em>,
+          skipping sources that have no frame yet</li>
+        <li><kbd>p</kbd> pauses or resumes <em>display fetching only</em>; the mission keeps running</li>
+      </ul>
+      <p><strong>AirSim without perception</strong> (the frame above). AirSim follows the world model: for
+      each new Mission time the scene is stepped forward, the drone is placed at the world-model pose and the
+      cameras are captured. The <code>AirSim:</code> row shows how far the frame lags the newest world
+      state and the measured ship timing error. The annotated front camera draws <em>ideal</em>
+      segmentation boxes; they are visualization, not agent perception.</p>
+      <p><strong>AirSim with perception.</strong> The annotated front camera draws the perception module's
+      own output for that frame: YOLO detections with scores, or the ships ideal perception reported. A
+      frame without its own perception sample says <em>no perception sample for this frame</em> instead of
+      showing older boxes.</p>
+      <p>Camera sources appear once a first image exists. After the run ends, the final world frame and any
+      captured camera frames remain viewable.</p>
+      <p class="hint">Images look blocky or are missing in tmux/herdr? Relaunch with <code>--image-protocol halfblocks</code>.</p></div>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="6" hidden>
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>6 · Stack</span></div>
+    <pre class="term" data-frame="run-stack-100x30" aria-label="Console render frame run-stack-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Services · mission1-harbor · AirSim off · perception off ────────────────────────────────────────┐
+│ ● ENV physical-runtime   ready    :5066 pid 41233                                                │
+│ ◐ STK closed-loop        starting                                                                │
+│                                                                                                  │
+│ Started:   2026-08-27T14:00:01Z                                                                  │
+│ Ready:     2026-08-27T14:00:09Z                                                                  │
+│ Exit:      -                                                                                     │
+│ Last line: · viewer listening on 127.0.0.1:5066                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Log · physical-runtime · 125 B · following ──────────────────────────────────────────────────────┐
+│ starting physical runtime for mission-fixture-001                                                │
+│ loading scenario harbor                                                                          │
+│ viewer listening on 127.0.0.1:5066                                                               │
+│ environment update 1 published                                                                   │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ service · f follow · PgUp/PgDn scroll · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>Stack: the processes behind the run</h3>
+      <p>Each service in this run's Environment Stack, with readiness, port, PID, start and ready times, exit
+      status and last log line. Below is the selected service's log tail.</p>
+      <ul>
+        <li><kbd>↑</kbd>/<kbd>↓</kbd> choose a service</li>
+        <li><kbd>f</kbd> follow the log; <kbd>PgUp</kbd>/<kbd>PgDn</kbd> scroll it</li>
+      </ul>
+      <p class="hint">This is the first place to look while a stack is booting or when a service fails.</p></div>
+  </div>
+
+  <div class="panel" role="tabpanel" data-panel="7" hidden>
+    <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>7 · Artifacts</span></div>
+    <pre class="term" data-frame="run-artifacts-100x30" aria-label="Console render frame run-artifacts-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Artifacts · 2 ─────────────────────────────┐┌ Artifact Preview ──────────────────────────────────┐
+│ accepted-statechart.json Accepted Statech… ││ Title:     Accepted Statechart (attempt 1)         │
+│ report Public report (14 B)                ││ Source:    planner                                 │
+│                                            ││ Kind:      accepted-statechart.json                │
+│                                            ││ Class:     text                                    │
+│                                            ││ Media:     application/json                        │
+│                                            ││ Size:      18 B                                    │
+│                                            ││ Ref:       statechart-attempts/001/accepted-statech│
+│                                            ││            art.json                                │
+│                                            ││ Published: 2026-08-27T12:00:06Z                    │
+│                                            ││                                                    │
+│                                            ││ statechart-attempts/001/accepted-statechart.json   │
+│                                            ││                                                    │
+│                                            ││ Press Enter to open the paged inspector.           │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+│                                            ││                                                    │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · Enter inspect · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+    <div class="explain"><h3>Artifacts: files the run produced</h3>
+      <p>Planner files, accepted statecharts, reports and verification logs, with source, size and media
+      type.</p>
+      <ul>
+        <li><kbd>↑</kbd>/<kbd>↓</kbd> select, <kbd>Enter</kbd> opens the paged inspector</li>
+        <li>In the inspector: <kbd>→</kbd>/<kbd>n</kbd> next and <kbd>←</kbd>/<kbd>p</kbd> previous
+          4096-byte page; <kbd>Esc</kbd> closes</li>
+      </ul>
+      <figure>
+        <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>artifact inspector</span></div>
+        <pre class="term" data-frame="run-artifact-inspector-100x30" aria-label="Console render frame run-artifact-inspector-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Artifact: planner-c3RhdGVjaGFydC1hdHRlbXB0cy8wMDEvYWNjZXB0ZWQtc3RhdGVjaGFydC5qc29u ──────────────┐
+│ bytes 0-4096 of 8192                                                                             │
+│                                                                                                  │
+│[2026-08-24T12:00:01Z] planner: deterministic search started                                      │
+│[2026-08-24T12:00:02Z] planner: expanded 42 states                                                │
+│[2026-08-24T12:00:03Z] planner: expanded 128 states                                               │
+│[2026-08-24T12:00:04Z] planner: candidate plan cost 17                                            │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ←/p →/n: page preview · Esc: close
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+      </figure></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="rejection">8. When a mission is rejected</h2>
+<p>If the intent is not an operational objective the vehicles can carry out (try <em>"buy me a coffee"</em>
+from <kbd>F2</kbd>), the Hyper Agent rejects it. A prominent card shows the actual reason, the intent, the
+stage and how much work was done.</p>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>MISSION REJECTED</span></div>
+  <pre class="term" data-frame="run-terminal-rejected-100x30" aria-label="Console render frame run-terminal-rejected-100x30"> RUN run-fixture-… ● failed 00:00:41 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✖ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ○ Done
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    failed · mission_rejected           ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
+│ Run:       run-fixture-001                     ││and the agent replanned.                        │
+│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
+│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Fi┌ ✖ MISSION REJECTED ──────────────────────────────────────────────────────────────────────┐   │
+│ ✖ │ Hyper Agent · stage 1 (intent parsing)                                                   │   │
+│ co│                                                                                          │   │
+│ op│ Intent:    "buy me a coffee"                                                             │   │
+│ co│ Reason:    'buy me a coffee' is a personal errand, not a bounded operational objective   │   │
+└───│            executable by the controlled vehicles and sensors.                            │───┘
+┌ Si│ Work:      0 planner files · 0 statecharts · 0 maneuvers (recorded)                      │───┐
+│ MA│ Elapsed:   41 s                                                                          │   │
+│   │                                                                                          │   │
+│   │ e edit a new Mission Intent · Enter view run details                                     │   │
+│   └──────────────────────────────────────────────────────────────────────────────────────────┘   │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · e new intent · q exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+  <figcaption>The run ends as <code>failed · mission_rejected</code>. This is the normal result for an out-of-scope intent, not a crash.</figcaption>
+</figure>
+<ul>
+  <li><kbd>Enter</kbd> shows run details. In <strong>3 Agents</strong> you can see the recorded
+    <code>reject_mission_intent</code> tool call.</li>
+  <li><kbd>e</kbd> returns to Launch with the <em>same</em> preset and toggles so you can write a new intent.
+    It becomes available only after cleanup (summary flush and stack teardown) has finished.</li>
+  <li><kbd>e</kbd> works the same way after any finished run, not only rejections.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="cancel">9. Cancel, exit or detach</h2>
+<div class="grid2">
+  <div class="card"><h4><kbd>c</kbd> then <kbd>Enter</kbd>: cancel the run</h4>
+    <p>Stops this run's worker and its Environment Stack. The console stays open. Teardown can take up to
+    about 9 s. The Harbor configuration is restored even after a forced teardown.</p></div>
+  <div class="card"><h4><kbd>q</kbd> or <kbd>Ctrl</kbd>+<kbd>C</kbd>: managed exit</h4>
+    <p>Quits the console. If you own an active run, the console asks you to confirm cancellation first.
+    A second <kbd>Ctrl</kbd>+<kbd>C</kbd> does not silently abandon the run.</p></div>
+  <div class="card"><h4><kbd>Ctrl</kbd>+<kbd>Q</kbd>: detach</h4>
+    <p>Quits <em>without</em> cancelling. The Host, the run and your owner session keep going, and
+    relaunching the console reconnects you to the same run.</p></div>
+</div>
+<figure>
+  <div class="term-wrap"><div class="term-bar"><i></i><i></i><i></i><span>c · cancel confirmation</span></div>
+  <pre class="term" data-frame="run-cancellation-confirmation-100x30" aria-label="Console render frame run-cancellation-confirmation-100x30"> RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    running                             ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
+│ Run:       run-fixture-001                     ││and the agent replanned.                        │
+│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
+│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Finished:  -                                   ││                                                │
+│             ┌ Cancel Mission Run ──────────────────────────────────────────────────┐             │
+│             │                                                                      │             │
+│             │ Request cancellation of Mission Run run-fixture-001?                 │             │
+│             │                                                                      │             │
+└─────────────│ The Runtime Host records cancellation-requested, then stops the      │─────────────┘
+┌ Significant │ Run Worker and its Environment Stack before reporting cancelled.     │─────────────┐
+│ MAN #3 maneu│                                                                      │quests       │
+│             │ Enter: confirm cancellation · Esc: keep running                      │             │
+│             │                                                                      │ decision    │
+│             └──────────────────────────────────────────────────────────────────────┘             │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter: confirm cancellation · Esc: keep running · Ctrl+Q: detach
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646</pre></div>
+  <figcaption><kbd>Enter</kbd> confirms, <kbd>Esc</kbd> keeps the run going and <kbd>Ctrl</kbd>+<kbd>Q</kbd> detaches.</figcaption>
+</figure>
+<div class="callout bad"><p><strong>Don't kill the Host to end a demo.</strong> Use <kbd>c</kbd> or <kbd>q</kbd>.
+A killed Host cannot resume its run. See below.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="recovery">10. Recovering after a crash</h2>
+<table>
+  <tr><th>What happened</th><th>What survives</th><th>What to do</th></tr>
+  <tr><td>Console killed (even <code>kill -9</code>), terminal closed, or <kbd>Ctrl</kbd>+<kbd>Q</kbd></td>
+      <td>The Host and the run keep going. Your Console Session is saved at
+      <code>~/.local/state/onr/operator-console/session.json</code>.</td>
+      <td>Run the launcher again. It reconnects to the same Host and recovers ownership of the run,
+      including the ability to cancel it.</td></tr>
+  <tr><td>Your saved run is gone, or the Host is running a newer run</td>
+      <td>Nothing to recover</td>
+      <td>The console returns to Launch and does not take over someone else's run.</td></tr>
+  <tr><td>Host killed</td>
+      <td>The run cannot resume</td>
+      <td>Restart the Host, for example by running the launcher. It removes the leftover processes it can
+      prove belong to that run and records the run as <code>failed · host_interrupted</code>.</td></tr>
+</table>
+<div class="callout"><p>A console that <em>reconnected</em> to an already-running Host never stops that Host when it
+exits. Only the console that bootstrapped the Host does.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="legend">11. Symbols and badges</h2>
+<h3>Importance</h3>
+<p>Importance comes from a fixed mapping, not from the model. A summary inherits the highest importance of
+the records it covers.</p>
+<table>
+  <tr><th>Glyph</th><th>Level</th><th>Glyph</th><th>Level</th></tr>
+  <tr><td class="glyph g-crit">✖</td><td>critical</td><td class="glyph">·</td><td>routine</td></tr>
+  <tr><td class="glyph g-warn">▲</td><td>warning</td><td class="glyph">∙</td><td>debug (hidden by default; <kbd>i</kbd> to show)</td></tr>
+  <tr><td class="glyph g-note">●</td><td>notable</td><td></td><td></td></tr>
+</table>
+<h3>Source badges</h3>
+<table>
+  <tr><th>Badge</th><th>Source</th><th>Badge</th><th>Source</th></tr>
+  <tr><td><code>HYP</code></td><td>Hyper Agent / planning command handler</td><td><code>BEL</code></td><td>Belief service</td></tr>
+  <tr><td><code>MAN</code></td><td>Maneuver control</td><td><code>ENV</code></td><td>Environment / physical runtime</td></tr>
+  <tr><td><code>CC</code></td><td>Context coordination</td><td><code>PER</code></td><td>Perception</td></tr>
+  <tr><td><code>FSM</code></td><td>Statechart (FSM) runner</td><td><code>STK</code></td><td>Runtime Host / stack</td></tr>
+  <tr><td><code>AI</code></td><td colspan="3">Model-written text (narrative, summaries). Useful, but <strong>non-authoritative</strong>.
+      Run, FSM and environment state are the authority.</td></tr>
+</table>
+<p class="hint">Set <code>NO_COLOR=1</code> to turn off colours; the glyphs still carry the meaning.</p>
+
+<!-- ============================================================ -->
+<h2 id="keys">12. Keyboard reference</h2>
+<input class="filter" id="keyfilter" type="search" placeholder="Filter keys, e.g. cancel, search, camera…" aria-label="Filter keyboard reference">
+<table id="keytable">
+  <tr><th>Where</th><th>Keys</th><th>Action</th></tr>
+  <tr><td>Anywhere</td><td><kbd>?</kbd> · <kbd>F1</kbd></td><td>Toggle help</td></tr>
+  <tr><td>Anywhere</td><td><kbd>Esc</kbd></td><td>Close overlay / go back</td></tr>
+  <tr><td>Launch</td><td><kbd>Tab</kbd> · <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Next / previous field</td></tr>
+  <tr><td>Launch</td><td><kbd>←</kbd> <kbd>→</kbd></td><td>Change the focused toggle</td></tr>
+  <tr><td>Launch</td><td><kbd>F2</kbd></td><td>Demo prompts (preset mission, rejection prompts)</td></tr>
+  <tr><td>Launch</td><td><kbd>r</kbd></td><td>Re-run preflight</td></tr>
+  <tr><td>Launch</td><td><kbd>Enter</kbd></td><td>Newline in the Mission Intent</td></tr>
+  <tr><td>Launch</td><td><kbd>Alt</kbd>+<kbd>Enter</kbd> (or <kbd>Ctrl</kbd>+<kbd>Enter</kbd>)</td><td>Review and launch</td></tr>
+  <tr><td>Review</td><td><kbd>Enter</kbd> · <kbd>Esc</kbd></td><td>Confirm and launch once · back to Launch</td></tr>
+  <tr><td>Run</td><td><kbd>1</kbd>–<kbd>7</kbd> · <kbd>Tab</kbd> · <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Switch tabs</td></tr>
+  <tr><td>Run</td><td><kbd>↑</kbd> <kbd>↓</kbd> · <kbd>j</kbd> <kbd>k</kbd></td><td>Select entries</td></tr>
+  <tr><td>Run</td><td><kbd>c</kbd>, then <kbd>Enter</kbd></td><td>Cancel the owned run; console stays open</td></tr>
+  <tr><td>Run</td><td><kbd>q</kbd> · <kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>Managed exit (confirms cancellation of an owned active run)</td></tr>
+  <tr><td>Run</td><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Detach: quit without cancelling; recover later</td></tr>
+  <tr><td>Run (finished)</td><td><kbd>e</kbd></td><td>New Mission Intent with the same stack</td></tr>
+  <tr><td>Progress</td><td><kbd>←</kbd> <kbd>→</kbd> · <kbd>Enter</kbd></td><td>Collapse / expand</td></tr>
+  <tr><td>Progress</td><td><kbd>f</kbd></td><td>Follow newest</td></tr>
+  <tr><td>Progress</td><td><kbd>i</kbd></td><td>Cycle minimum importance</td></tr>
+  <tr><td>Progress</td><td><kbd>/</kbd> · <kbd>n</kbd> / <kbd>N</kbd></td><td>Search · next / previous match</td></tr>
+  <tr><td>Progress</td><td><kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>Scroll selected-evidence detail</td></tr>
+  <tr><td>Agents</td><td><kbd>f</kbd> · <kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>Follow newest invocation · scroll detail</td></tr>
+  <tr><td>Belief/Context</td><td><kbd>↑</kbd> <kbd>↓</kbd> · <kbd>j</kbd> <kbd>k</kbd></td><td>Select belief entity</td></tr>
+  <tr><td>World</td><td><kbd>s</kbd></td><td>Cycle source: world → annotated front → front camera → third-person camera</td></tr>
+  <tr><td>World</td><td><kbd>p</kbd></td><td>Pause / resume display fetching (mission continues)</td></tr>
+  <tr><td>Stack</td><td><kbd>f</kbd> · <kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>Follow service log · scroll</td></tr>
+  <tr><td>Artifacts</td><td><kbd>Enter</kbd></td><td>Open the paged inspector</td></tr>
+  <tr><td>Inspector</td><td><kbd>→</kbd>/<kbd>n</kbd> · <kbd>←</kbd>/<kbd>p</kbd> · <kbd>Esc</kbd></td><td>Next / previous 4096-byte page · close</td></tr>
+  <tr><td>Rejection card</td><td><kbd>e</kbd> · <kbd>Enter</kbd></td><td>New intent after cleanup · view run details</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="trouble">13. Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Look here</th></tr>
+  <tr><td>Host never becomes healthy</td><td><code>var/runtime-host/host.log</code>; try <code>--host-ready-timeout 120</code> for a cold start.</td></tr>
+  <tr><td>Launch disabled</td><td>The <span class="glyph g-crit">✖</span> line in Preflight names the cause. Fix it, then press <kbd>r</kbd>.</td></tr>
+  <tr><td>Stack stuck on <code>◐ starting</code></td><td><strong>6 Stack</strong>: select the service and read its log tail. Full logs: <code>&lt;run_root&gt;/services/</code>.</td></tr>
+  <tr><td>Run failed with a short reason</td><td>The run card shows a sanitized reason and stage. The full traceback is in <code>&lt;run_root&gt;/worker.log</code>.</td></tr>
+  <tr><td>No camera source on AirSim</td><td><code>&lt;run_root&gt;/world-frames/camera-capture.json</code>: <code>state</code> (<code>capturing</code>, <code>unavailable</code>, <code>stopped</code>) and <code>reason</code>.</td></tr>
+  <tr><td>Images broken inside tmux/herdr</td><td>Relaunch with <code>--image-protocol halfblocks</code>, or use <code>off</code>.</td></tr>
+  <tr><td>Is an AirSim + YOLO run actually correct?</td><td>A green TUI is not the acceptance gate. Run
+    <code>python scripts/audit_live_demo.py --run-root var/runtime-host/runs/&lt;id&gt; --mission-mode mission1 --perception yolo</code>
+    and require a PASS in <code>live-acceptance.json</code>.</td></tr>
+</table>
+<p><code>&lt;run_root&gt;</code> is <code>var/runtime-host/runs/&lt;mission_run_id&gt;/</code>. Don't change global transport or
+storage paths to run a demo; the Host writes each run's configuration there.</p>
+
+<h3>Further reading</h3>
+<ul>
+  <li><a href="../../scripts/tui/README.md">scripts/tui/README.md</a>: launcher reference</li>
+  <li><a href="../operator-console-demo.md">docs/operator-console-demo.md</a>: step-by-step boss-demo script</li>
+  <li><a href="../mission1-airsim-yolo-live-demo.md">docs/mission1-airsim-yolo-live-demo.md</a>: AirSim + YOLO prerequisites and audit</li>
+  <li><a href="../design/operator-console/README.md">docs/design/operator-console/README.md</a>: v1.2 design and contracts</li>
+</ul>
+</main>
+</div>
+
+<script>
+(() => {
+  // Interactive tab tour: click or press 1-7 while focused.
+  const demo = document.getElementById("tabdemo");
+  const buttons = [...demo.querySelectorAll("[data-tab]")];
+  const panels = [...demo.querySelectorAll("[data-panel]")];
+  const show = (n) => {
+    buttons.forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === n)));
+    panels.forEach((p) => { p.hidden = p.dataset.panel !== n; });
+  };
+  buttons.forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
+  demo.addEventListener("keydown", (event) => {
+    if (/^[1-7]$/.test(event.key)) { show(event.key); event.preventDefault(); }
+  });
+
+  // Keyboard-reference filter.
+  const filter = document.getElementById("keyfilter");
+  const rows = [...document.querySelectorAll("#keytable tr")].slice(1);
+  filter.addEventListener("input", () => {
+    const q = filter.value.trim().toLowerCase();
+    rows.forEach((r) => { r.hidden = q !== "" && !r.textContent.toLowerCase().includes(q); });
+  });
+
+  // Highlight the current section in the sidebar.
+  const links = new Map([...document.querySelectorAll("nav a")].map((a) => [a.hash.slice(1), a]));
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      links.forEach((a) => a.classList.remove("active"));
+      links.get(e.target.id)?.classList.add("active");
+    });
+  }, { rootMargin: "0px 0px -70% 0px" });
+  document.querySelectorAll("main h2[id]").forEach((h) => observer.observe(h));
+})();
+</script>
+</body>
+</html>

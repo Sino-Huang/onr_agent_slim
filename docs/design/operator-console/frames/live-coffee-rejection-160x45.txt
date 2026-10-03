@@ -1,0 +1,45 @@
+ RUN run-33bc80c9… ● failed 00:02:16 │ stack ■✖ │ host ○ idle
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✖ Intent (The operator Mission Intent "buy me a coffee" is a personal errand, not a bounded operational objective executable by the controlled vehicl
+┌ Mission Run ────────────────────────────────────────────────────────────────────┐┌ world · seq 0 · final ────────────────────────────────────────────────────┐
+│ Status:    failed · mission_rejected                                            ││▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                             │
+│ Mission:   mission-5e34afc7-d5b0-457f-9ee7-d682d86a2d87                         ││▄▄▀▀▀▀▀▀▀▀▀▀▀                                                              │
+│ Run:       run-33bc80c9-6bf9-4561-8ae8-49b09b6ecdb5                             ││▀▀▀   ▀ ▄▄▀▀ ▀ ▀      ▀      ▀      ▀ ▀      ▄                             │
+│ Stack:     mission1-harbor · AirSim off · perception off                        ││▀▀▀▀▀ ▀ ▄▀▀▀▀▀ ▀▀▀▀▀▀ ▀ ▀▀▀▀ ▀ ▀▀▀▀▀▀ ▀▀▀▀▀▀ ▄                             │
+│ Started:   2026-10-01T17:40:15.667610+00:00                                     ││      ▄▄▀▀      ▀▀                                                         │
+│ Finished:  2026-10-01T17:42:31.521178+00:00                                     ││     ▄▄▀▀                                                                  │
+│ ✖ Mission rejected at intent: The operator Mission Intent "buy me a coffee" is  ││ ▄▄▄▄▀▀ ▄▄▄▄ ▄ ▄ ▄▄▄▄   ▄▄▄▄  ▄▄▄▄▄ ▄ ▄ ▄▄▄▄ ▀                             │
+│ a personal errand, not a bounded operational objective executable by the        ││ ▄▄▄▀▀▄ ▄▄▄▄ ▄ ▄ ▄▄▄▄ ▄ ▄▄▄▄ ▄▀▄▄▄▄ ▄ ▄ ▄▄▄▄ ▀                             │
+└─────────────────────────────────────────────────────────────────────────────────┘│ ▄▄▀▀        ▄ ▄              ▀▀    ▄▄▄      ▀                             │
+┌ Progress ───────────────────────────────────────────────────────────────────────┐│▄▄▀▀        ▄▄▄     ▄▄   ▄▄         ▀▀                                     │
+│◆ Run Narrative · AI · non-authoritative                                         ││▀▀    ▀      ▀ ▀    ▀▀▀▄ ▀▄▄▄▄▄▄▄  ▄▀ ▀      ▄                             │
+│The mission initiated two success┌ ✖ MISSION REJECTED ──────────────────────────────────────────────────────────────────────┐▀▀ ▄                             │
+│entering the intent phase. The op│ Hyper Agent · stage 1 (intent parsing)                                                   │                                 │
+│evaluated and rejected as it is a│                                                                                          │                                 │
+│operational objective executable │ Intent:    "buy me a coffee"                                                             │▄▄ ▀                             │
+│the intent specifies no patrol, m│ Reason:    The operator Mission Intent "buy me a coffee" is a personal errand, not a     │   ▀                             │
+│PlanningIntent could be derived. │            bounded operational objective executable by the controlled vehicles and       │                                 │
+│completed at 17:42 UTC, resulting│            sensors in the supplied environment. It specifies no patrol, monitoring,      │   ▄                             │
+│statechart, and executing phases │            survey, inspection, search, or rescue task, target area, or measurable        │▀▀ ▄                             │
+│run has now reached a terminal fa│            outcome for the drone, so no PlanningIntent can be derived.                   │▀▀ ▄                             │
+│the mission cannot proceed withou│ Work:      0 planner files · 0 statecharts · 0 maneuvers (recorded)                      │                                 │
+│● AI A `hyper_workflow` operation│ Elapsed:   136 s                                                                         │▄                                │
+│`mission_rejected` status. (1 rec│                                                                                          │▄▄▄▄                             │
+│✖ AI The mission initiated two he│ e edit a new Mission Intent · Enter view run details                                     │─────────────────────────────────┘
+│2) at 17:41 UTC, both completed s└──────────────────────────────────────────────────────────────────────────────────────────┘─────────────────────────────────┐
+│                                                                                 ││reporting_reliability · r1                                                 │
+│                                                                                 ││ship 1 0.1329 · Δ prior +0.0000 · prev —                                   │
+│                                                                                 ││ship 2 0.1329 · Δ prior +0.0000 · prev —                                   │
+│                                                                                 ││ship 3 0.1329 · Δ prior +0.0000 · prev —                                   │
+│                                                                                 ││ship 4 0.1329 · Δ prior +0.0000 · prev —                                   │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
+┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v2 · plan r—                                                      │
+│ No Human Decision Requests require action.                                      ││▲ missing [plan, fsm_status, active_maneuver] · stale [active_maneuver,    │
+│ Status-only view: no decision controls.                                         ││fsm_status, plan] · unhealthy [active_maneuver, fsm_status, plan]          │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · e new intent · q exit
+ ✖ critical 1  ▲ warning 0  ● notable 2  · routine 0  ∙ debug 2

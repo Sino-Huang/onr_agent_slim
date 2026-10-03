@@ -1,30 +1,30 @@
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0 · LEGACY VIEW     │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌ Mission Run ──────────────────────────────────┐┌ Run Activities ─────────────────────────────────┐
-│ Status:   awaiting_human_decision             ││ No Run Activities recorded.                     │
-│ Mission:  mission-7c1f9a2e                    ││                                                 │
-│ Run:      run-51d3b84c                        ││                                                 │
-│ Created:  2026-08-24T12:00:00Z                ││                                                 │
-│ Started:  2026-08-24T12:00:03Z                ││                                                 │
-│ Finished: -                                   ││                                                 │
-│ Terminal: -                                   ││                                                 │
-└───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-┌ Observations ─────────────────┐┌ Artifacts ────────────────────┐┌ Conversation ──────────────────┐
-│ No Run Observations recorded. ││ No Artifacts published.       ││ No Conversation recorded.      │
-│                               ││ (reserved for a later view)   ││ (reserved for a later view)    │
-│                               ││                               ││                                │
-│                               ││                               ││                                │
-│                               ││                               ││                                │
-│                               ││                               ││                                │
-└───────────────────────────────┘└───────────────────────────────┘└────────────────────────────────┘
-┌ Narrative ────────────────────────────────────┐┌ Human Decisions ────────────────────────────────┐
-│ No Run Narrative generated.                   ││ AWAITING HUMAN DECISION                         │
-│                                               ││ Status: awaiting_human_decision                 │
-│                                               ││ The Mission Run is paused, awaiting a Human     │
-│                                               ││ Decision.                                       │
-│                                               ││ Status-only view: no decision controls.         │
-└───────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Legacy Host v1.0 · Tab: focus pane · Up/k Down/j: select · Enter: inspect Artifact · c/q         │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ RUN run-fixture-… ● awaiting_human_decision 00:00:40 │ t=12.5 s │ FSM navigate │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    awaiting_human_decision             ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
+│ Run:       run-fixture-001                     ││and the agent replanned.                        │
+│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
+│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Finished:  -                                   ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ MAN #3 maneuver-handoff · maneuver-control · completed       ││ AWAITING HUMAN DECISION          │
+│                                                              ││ Status: awaiting_human_decision  │
+│                                                              ││ The Mission Run is paused,       │
+│                                                              ││ awaiting a Human Decision.       │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

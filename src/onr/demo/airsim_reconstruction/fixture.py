@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .engine import build_engine_settings
+
 DEFAULT_VESSELS_DIR = Path(
     "/data/ccu/sukaih/ONR/onr_physical_runtime/data/harbor_world/vessels"
 )
@@ -26,7 +28,6 @@ DEFAULT_OUT_DIR = Path("var/demo-video/mission1-20260916-airsim/fixture")
 DEFAULT_LEAD_IN_SECONDS = 10.0
 SCENARIO_NAME = "mission1-20260916"
 EXPECTED_SHIP_IDS = tuple(range(1, 21))
-EXPECTED_PASSENGER_IDS = set(range(21, 47))
 
 SHIP_KEYS = {
     "id",
@@ -384,8 +385,12 @@ def _resolved_mesh(
 ) -> dict[str, object]:
     if not isinstance(source_mesh, dict):
         raise TypeError(f"Ship {ship_id} mesh must be an object")
+    # World-model vessel files name the bare mesh (``Mesh``); engine scenario
+    # ship files already carry the resolved ``MeshName`` (``bare.bare``).
     bare_name = source_mesh.get("Mesh")
-    if not isinstance(bare_name, str):
+    if bare_name is None and isinstance(source_mesh.get("MeshName"), str):
+        bare_name = source_mesh["MeshName"].split(".", 1)[0]
+    if not isinstance(bare_name, str) or not bare_name:
         raise TypeError(f"Ship {ship_id} source mesh has no string Mesh name")
     # Segmentation-blind meshes never render into the engine's instance
     # segmentation pass (verified across the full 600-tick capture on
@@ -648,11 +653,6 @@ def build_fixture(
 
     passenger_source_dir = vessels_path / "passengers"
     passenger_paths = sorted(passenger_source_dir.glob("*.json"))
-    if len(passenger_paths) != 26:
-        raise ValueError(
-            f"Expected 26 passenger files in {passenger_source_dir}, "
-            f"found {len(passenger_paths)}"
-        )
 
     passenger_files: dict[str, tuple[Path, dict[str, Any]]] = {}
     passenger_object_ids: set[int] = set()
@@ -677,11 +677,8 @@ def build_fixture(
             "Ship/passenger cross-reference mismatch: "
             f"missing files={missing_files}, unreferenced files={unreferenced_files}"
         )
-    if passenger_object_ids != EXPECTED_PASSENGER_IDS:
-        raise ValueError(
-            "Passenger objectIds must be exactly 21 through 46, got "
-            f"{sorted(passenger_object_ids)}"
-        )
+    if not passenger_object_ids or min(passenger_object_ids) < 1:
+        raise ValueError("Passenger objectIds must be positive")
     collisions = ship_object_ids & passenger_object_ids
     if collisions:
         raise ValueError(f"ObjectId collision across ships and passengers: {sorted(collisions)}")
@@ -859,6 +856,21 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="remove an existing output path before building",
     )
+    parser.add_argument(
+        "--engine-settings",
+        type=Path,
+        default=None,
+        help="also write <out>/engine/settings_airsim.json from these AirSim settings",
+    )
+    parser.add_argument("--engine-port", type=int, default=41461)
+    parser.add_argument(
+        "--capture-size",
+        type=int,
+        nargs=2,
+        metavar=("WIDTH", "HEIGHT"),
+        default=(1920, 1080),
+        help="capture size for every camera in the written engine settings",
+    )
     return parser
 
 
@@ -912,6 +924,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({result.ship_count} ships, {result.passenger_count} passengers, "
         f"{result.output_count} checksummed outputs)"
     )
+    if args.engine_settings is not None:
+        width, height = args.capture_size
+        settings = build_engine_settings(
+            args.engine_settings,
+            out_dir / "engine" / "settings_airsim.json",
+            api_port=args.engine_port,
+            width=width,
+            height=height,
+        )
+        print(f"Wrote engine settings {settings} ({width}x{height})")
     return 0
 
 

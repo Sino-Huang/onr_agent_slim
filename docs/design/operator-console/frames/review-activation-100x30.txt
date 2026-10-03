@@ -1,13 +1,14 @@
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ onr operator console  host http://127.0.0.1:8787 · api v1.0 · session c0ns01e0 · LEGACY VIEW     │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
 ┌ Review Mission Activation ───────────────────────────────────────────────────────────────────────┐
 │ Confirm activation of this Mission Intent:                                                       │
 │                                                                                                  │
-│   Hold the ridge line.                                                                           │
-│   Report obstacles by grid square.                                                               │
+│   Please patrol the environment and confirm every reported event.                                │
 │                                                                                                  │
-│ activation request: req-8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b                                     │
+│ Stack:     Mission 1 · Harbor (simulated) (mission1-harbor) · AirSim off · perception off ·      │
+│            coordinator_driven · limit 600 s                                                      │
+│ Preflight: ✔ 1 pass  ▲ 1 warn  ✖ 0 fail                                                          │
+│                                                                                                  │
+│ activation request: 8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b                                         │
 │ console session:    c0ns01e0-0000-4000-8000-5e5510n5a1d0                                         │
 │ source authority:   operator_console                                                             │
 │                                                                                                  │
@@ -23,8 +24,7 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Enter: confirm and submit once · Esc: return to editing                                          │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter: confirm and launch once · Esc: back to the Launch screen
+

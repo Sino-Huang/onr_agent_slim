@@ -1,0 +1,1 @@
+{"details":{"minizinc_solver":"coin-bc","plan_revision":1,"planner_id":"minizinc"},"event_kind":"planner-execution","event_time":"2026-09-30T05:49:59.353981+00:00","mission_id":"mission:demo","outcome":"verified","record_id":"mission:demo:8:planner-execution","schema_version":1,"sequence":8,"source":"hyper-agent"}

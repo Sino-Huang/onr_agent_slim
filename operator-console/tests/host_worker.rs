@@ -1,30 +1,72 @@
-//! Slice D: the host worker thread executes commands off the UI thread and
-//! returns typed messages.
+//! Control, evidence, and media workers: lane isolation, per-key coalescing
+//! of identical polls, and ordered, never-dropped mutations.
 
-use std::sync::Mutex;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use operator_console::app::{HostCommand, HostMessage};
+use operator_console::host::workers::Dispatch;
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, ActivitiesPage, ApiVersion, ArtifactContentPage,
-    ArtifactsPage, CancellationAccepted, CancellationOutcome, CancellationRequest,
-    ConversationEntriesPage, CurrentRun, Health, HostClient, HostError, MissionIntent,
-    NarrativeResponse, ObservationsPage, OperatorSection, OperatorViewPage, RunNarrative,
-    RunRecord, spawn_worker,
+    ActivationAccepted, ActivationOutcome, ActivationRequest, ApiVersion, ArtifactContentPage,
+    CancellationAccepted, CancellationOutcome, CancellationRequest, ConversationEntriesPage,
+    CurrentRun, Fetched, FrameSource, Health, HostClient, HostCommand, HostError, HostMessage,
+    MissionIntent, OperatorSection, OperatorViewPage, PreflightQuery, StackPreflight, StackPresets,
+    StackToggles, Workers, WorldFrame,
 };
+use parking_lot::{Condvar, Mutex};
 
-#[derive(Default)]
-struct ScriptedClient {
-    calls: Mutex<Vec<String>>,
+/// Client whose `current_run` blocks until the gate opens, announcing entry.
+struct GatedClient {
+    open: Mutex<bool>,
+    opened: Condvar,
+    entered: Mutex<Sender<&'static str>>,
 }
 
-impl HostClient for ScriptedClient {
+impl GatedClient {
+    fn shared() -> (Shared, Receiver<&'static str>) {
+        let (tx, rx) = channel();
+        (
+            Shared(std::sync::Arc::new(Self {
+                open: Mutex::new(false),
+                opened: Condvar::new(),
+                entered: Mutex::new(tx),
+            })),
+            rx,
+        )
+    }
+    fn release(&self) {
+        *self.open.lock() = true;
+        self.opened.notify_all();
+    }
+
+    fn wait_open(&self) {
+        let mut open = self.open.lock();
+        while !*open {
+            self.opened.wait(&mut open);
+        }
+    }
+}
+
+fn unscripted<T>() -> Result<T, HostError> {
+    Err(HostError::Transport("not scripted".to_string()))
+}
+
+/// Local handle so the test can keep the gate while a worker owns a clone.
+#[derive(Clone)]
+struct Shared(std::sync::Arc<GatedClient>);
+
+impl std::ops::Deref for Shared {
+    type Target = GatedClient;
+
+    fn deref(&self) -> &GatedClient {
+        &self.0
+    }
+}
+
+impl HostClient for Shared {
     fn health(&self) -> Result<Health, HostError> {
-        self.calls.lock().unwrap().push("health".to_string());
         Ok(Health {
             status: "ok".to_string(),
-            api_version: ApiVersion { major: 1, minor: 0 },
+            api_version: ApiVersion { major: 1, minor: 2 },
         })
     }
 
@@ -33,44 +75,23 @@ impl HostClient for ScriptedClient {
         request: &ActivationRequest,
         _credential: &str,
     ) -> Result<ActivationOutcome, HostError> {
-        self.calls.lock().unwrap().push("activate".to_string());
-        Ok(ActivationOutcome::Accepted(
-            operator_console::host::ActivationAccepted {
-                activation_request_id: request.activation_request_id.clone(),
-                mission_id: "mission-1".to_string(),
-                mission_run_id: "run-1".to_string(),
-                status: "queued".to_string(),
-                created_at: "2026-08-24T12:00:00Z".to_string(),
-            },
-        ))
+        Ok(ActivationOutcome::Accepted(ActivationAccepted {
+            activation_request_id: request.activation_request_id.clone(),
+            mission_id: "mission-1".to_string(),
+            mission_run_id: "run-1".to_string(),
+            status: "queued".to_string(),
+            created_at: "2026-08-24T12:00:00Z".to_string(),
+        }))
     }
 
     fn current_run(&self, _credential: &str) -> Result<CurrentRun, HostError> {
-        self.calls.lock().unwrap().push("current".to_string());
-        Ok(CurrentRun {
-            mission_run: Some(RunRecord {
-                mission_id: "mission-1".to_string(),
-                mission_run_id: "run-1".to_string(),
-                status: "running".to_string(),
-                created_at: Some("2026-08-24T12:00:00Z".to_string()),
-                started_at: Some("2026-08-24T12:00:03Z".to_string()),
-                finished_at: None,
-                terminal_classification: None,
-            }),
-        })
+        let _ = self.entered.lock().send("current");
+        self.wait_open();
+        Ok(CurrentRun { mission_run: None })
     }
 
-    fn mission_intent(
-        &self,
-        mission_run_id: &str,
-        _credential: &str,
-    ) -> Result<MissionIntent, HostError> {
-        self.calls.lock().unwrap().push("intent".to_string());
-        Ok(MissionIntent {
-            mission_run_id: mission_run_id.to_string(),
-            mission_intent: "survey the ridge".to_string(),
-            source_authority: "operator_console".to_string(),
-        })
+    fn mission_intent(&self, _: &str, _: &str) -> Result<MissionIntent, HostError> {
+        unscripted()
     }
 
     fn cancel(
@@ -79,239 +100,213 @@ impl HostClient for ScriptedClient {
         request: &CancellationRequest,
         _credential: &str,
     ) -> Result<CancellationOutcome, HostError> {
-        self.calls.lock().unwrap().push("cancel".to_string());
         Ok(CancellationOutcome::Accepted(CancellationAccepted {
             mission_run_id: mission_run_id.to_string(),
             cancellation_request_id: request.cancellation_request_id.clone(),
             disposition: "cancellation_requested".to_string(),
             status: "running".to_string(),
-            requested_at: "2026-08-24T12:05:00Z".to_string(),
+            requested_at: "2026-08-24T12:00:05Z".to_string(),
         }))
     }
 
-    fn observations(
-        &self,
-        mission_run_id: &str,
-        _cursor: Option<&str>,
-    ) -> Result<ObservationsPage, HostError> {
-        self.calls.lock().unwrap().push("observations".to_string());
-        Ok(ObservationsPage {
-            schema_version: 1,
-            mission_id: "mission-1".to_string(),
-            mission_run_id: mission_run_id.to_string(),
-            observations: Vec::new(),
-            next_cursor: None,
-        })
+    fn stack_presets(&self) -> Result<StackPresets, HostError> {
+        unscripted()
     }
 
-    fn fetch_narrative(&self, mission_run_id: &str) -> Result<NarrativeResponse, HostError> {
-        self.calls.lock().unwrap().push("narrative".to_string());
-        Ok(NarrativeResponse {
-            schema_version: 1,
-            mission_id: "mission-1".to_string(),
-            mission_run_id: mission_run_id.to_string(),
-            narrative: RunNarrative {
-                status: "none".to_string(),
-                text: None,
-                generated_at: None,
-                source_watermark: 0,
-                terminal: false,
-                evidence: None,
-            },
-        })
-    }
-
-    fn activities(
-        &self,
-        mission_run_id: &str,
-        _cursor: Option<&str>,
-    ) -> Result<ActivitiesPage, HostError> {
-        self.calls.lock().unwrap().push("activities".to_string());
-        Ok(ActivitiesPage {
-            schema_version: 1,
-            mission_id: "mission-1".to_string(),
-            mission_run_id: mission_run_id.to_string(),
-            mapping_version: 1,
-            activities: Vec::new(),
-            next_cursor: None,
-        })
-    }
-
-    fn artifacts(
-        &self,
-        mission_run_id: &str,
-        _cursor: Option<&str>,
-    ) -> Result<ArtifactsPage, HostError> {
-        self.calls.lock().unwrap().push("artifacts".to_string());
-        Ok(ArtifactsPage {
-            schema_version: 1,
-            mission_id: "mission-1".to_string(),
-            mission_run_id: mission_run_id.to_string(),
-            artifacts: Vec::new(),
-            next_cursor: None,
-        })
+    fn stack_preflight(&self, _: &PreflightQuery) -> Result<StackPreflight, HostError> {
+        unscripted()
     }
 
     fn artifact_content(
         &self,
-        mission_run_id: &str,
-        artifact_id: &str,
-        offset: Option<u64>,
-        _limit: Option<u64>,
+        _: &str,
+        _: &str,
+        _: Option<u64>,
+        _: Option<u64>,
     ) -> Result<ArtifactContentPage, HostError> {
-        self.calls.lock().unwrap().push("content".to_string());
-        Ok(ArtifactContentPage {
-            schema_version: 1,
-            mission_id: "mission-1".to_string(),
-            mission_run_id: mission_run_id.to_string(),
-            artifact_id: artifact_id.to_string(),
-            classification: "text".to_string(),
-            media_type: "text/plain".to_string(),
-            byte_size: Some(0),
-            offset: offset.unwrap_or(0),
-            next_offset: None,
-            eof: true,
-            truncated: false,
-            content: Some(String::new()),
-        })
+        unscripted()
     }
 
     fn conversation_entries(
         &self,
-        mission_run_id: &str,
-        artifact_id: &str,
-        _cursor: Option<&str>,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
     ) -> Result<ConversationEntriesPage, HostError> {
-        self.calls.lock().unwrap().push("entries".to_string());
-        Ok(ConversationEntriesPage {
-            schema_version: 1,
-            mission_id: "mission-1".to_string(),
-            mission_run_id: mission_run_id.to_string(),
-            artifact_id: artifact_id.to_string(),
-            entries: Vec::new(),
-            next_cursor: None,
-        })
+        unscripted()
     }
 
     fn operator_view(
         &self,
-        _mission_run_id: &str,
-        _section: OperatorSection,
-        _cursor: Option<&str>,
-        _raw: bool,
-    ) -> Result<OperatorViewPage, HostError> {
-        self.calls.lock().unwrap().push("operator-view".to_string());
-        Err(HostError::Transport("not scripted".to_string()))
+        _: &str,
+        _: OperatorSection,
+        _: &operator_console::host::OperatorCursor,
+        _: bool,
+        _: Option<&str>,
+    ) -> Result<Fetched<OperatorViewPage>, HostError> {
+        Ok(Fetched::NotModified)
+    }
+
+    fn world_frame(
+        &self,
+        _: &str,
+        _: FrameSource,
+        _: Option<&str>,
+    ) -> Result<Fetched<WorldFrame>, HostError> {
+        Ok(Fetched::NotModified)
     }
 }
 
-fn recv_timeout(rx: &std::sync::mpsc::Receiver<HostMessage>) -> HostMessage {
-    rx.recv_timeout(Duration::from_secs(2))
-        .expect("worker should answer within 2s")
+fn recv(workers: &Workers) -> HostMessage {
+    workers
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker should answer")
+}
+
+fn poll_current() -> HostCommand {
+    HostCommand::PollCurrent {
+        credential: "cred".to_string(),
+    }
+}
+
+fn overview() -> HostCommand {
+    HostCommand::FetchOperatorView {
+        mission_run_id: "run-1".to_string(),
+        section: OperatorSection::Overview,
+        cursor: Default::default(),
+        raw: false,
+        etag: Some("\"etag\"".to_string()),
+        request_id: 1,
+    }
+}
+
+fn preflight(n: u64) -> HostCommand {
+    HostCommand::Preflight {
+        request_id: n,
+        query: PreflightQuery {
+            preset_id: format!("preset-{n}"),
+            toggles: StackToggles {
+                airsim: false,
+                perception: "off".to_string(),
+                update_ownership: "coordinator_driven".to_string(),
+            },
+        },
+    }
+}
+
+fn cancel(id: &str) -> HostCommand {
+    HostCommand::Cancel {
+        mission_run_id: "run-1".to_string(),
+        request: CancellationRequest {
+            cancellation_request_id: id.to_string(),
+        },
+        credential: "cred".to_string(),
+    }
 }
 
 #[test]
-fn worker_executes_commands_and_reports_in_order() {
-    let (command_tx, command_rx) = channel();
-    let (message_tx, message_rx) = channel();
-    let client = ScriptedClient::default();
-    let handle = spawn_worker(client, command_rx, message_tx);
+fn a_blocked_control_request_does_not_stall_evidence_or_media() {
+    let (client, entered) = GatedClient::shared();
+    let mut workers = Workers::spawn(client.clone());
+    assert_eq!(workers.dispatch(poll_current()), Dispatch::Queued);
+    assert_eq!(entered.recv().unwrap(), "current");
 
-    command_tx.send(HostCommand::Connect).unwrap();
-    match recv_timeout(&message_rx) {
-        HostMessage::Connected(Ok(health)) => {
-            assert_eq!((health.api_version.major, health.api_version.minor), (1, 0));
-        }
-        other => panic!("expected Connected, got {other:?}"),
+    assert_eq!(workers.dispatch(overview()), Dispatch::Queued);
+    match recv(&workers) {
+        HostMessage::OperatorView {
+            section: OperatorSection::Overview,
+            result: Ok(Fetched::NotModified),
+            ..
+        } => {}
+        other => panic!("expected the evidence answer first, got {other:?}"),
     }
+    workers.dispatch(HostCommand::FetchWorldFrame {
+        mission_run_id: "run-1".to_string(),
+        source: FrameSource::World,
+        etag: None,
+    });
+    assert!(matches!(recv(&workers), HostMessage::WorldFrame { .. }));
 
-    command_tx
-        .send(HostCommand::FetchIntent {
-            mission_run_id: "run-1".to_string(),
-            credential: "cred".to_string(),
-        })
-        .unwrap();
+    client.release();
+    assert!(matches!(recv(&workers), HostMessage::Current(Ok(_))));
+    workers.shutdown();
+}
+
+#[test]
+fn identical_polls_coalesce_while_in_flight_and_mutations_never_do() {
+    let (client, entered) = GatedClient::shared();
+    let mut workers = Workers::spawn(client.clone());
+    assert_eq!(workers.dispatch(poll_current()), Dispatch::Queued);
+    entered.recv().unwrap();
     assert!(matches!(
-        recv_timeout(&message_rx),
-        HostMessage::Intent(Ok(_))
+        workers.dispatch(poll_current()),
+        Dispatch::Coalesced { .. }
     ));
-
-    command_tx
-        .send(HostCommand::Cancel {
-            mission_run_id: "run-1".to_string(),
-            request: CancellationRequest {
-                cancellation_request_id: "cancel-1".to_string(),
-            },
-            credential: "cred".to_string(),
-        })
-        .unwrap();
+    // A different poll on the same lane is its own key.
+    assert_eq!(workers.dispatch(preflight(1)), Dispatch::Queued);
+    let mut repeated = preflight(1);
+    if let HostCommand::Preflight { request_id, .. } = &mut repeated {
+        *request_id = 999;
+    }
     assert!(matches!(
-        recv_timeout(&message_rx),
-        HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(_)))
+        workers.dispatch(repeated),
+        Dispatch::Coalesced {
+            original_request_id: Some(1),
+            ..
+        }
     ));
+    // Identical mutations are both sent.
+    assert_eq!(workers.dispatch(cancel("c-1")), Dispatch::Queued);
+    assert_eq!(workers.dispatch(cancel("c-1")), Dispatch::Queued);
 
-    command_tx
-        .send(HostCommand::Submit {
-            request: Box::new(ActivationRequest {
-                activation_request_id: "req-1".to_string(),
-                console_session_id: "session-1".to_string(),
-                mission_intent: "survey the ridge".to_string(),
-                source_authority: "operator_console".to_string(),
-            }),
-            credential: "cred".to_string(),
-        })
-        .unwrap();
-    match recv_timeout(&message_rx) {
-        HostMessage::Activated(Ok(ActivationOutcome::Accepted(accepted))) => {
-            assert_eq!(accepted.mission_run_id, "run-1");
+    client.release();
+    let mut cancels = 0;
+    let mut currents = 0;
+    for _ in 0..4 {
+        match recv(&workers) {
+            HostMessage::Current(_) => currents += 1,
+            HostMessage::Cancelled(Ok(_)) => cancels += 1,
+            HostMessage::Preflight { .. } => {}
+            other => panic!("unexpected {other:?}"),
         }
-        other => panic!("expected Activated, got {other:?}"),
     }
+    assert_eq!((currents, cancels), (1, 2));
+    // Once answered, the same poll is issued again.
+    assert_eq!(workers.dispatch(poll_current()), Dispatch::Queued);
+    assert!(matches!(recv(&workers), HostMessage::Current(_)));
+    workers.shutdown();
+}
 
-    command_tx
-        .send(HostCommand::PollCurrent {
-            credential: "cred".to_string(),
-        })
-        .unwrap();
-    match recv_timeout(&message_rx) {
-        HostMessage::Current(Ok(current)) => {
-            assert_eq!(current.mission_run.unwrap().status, "running");
+#[test]
+fn a_full_queue_drops_polls_but_defers_mutations_in_order() {
+    let (client, entered) = GatedClient::shared();
+    let mut workers = Workers::spawn(client.clone());
+    workers.dispatch(poll_current());
+    entered.recv().unwrap();
+    let mut queued = 0;
+    let mut n = 0;
+    loop {
+        n += 1;
+        match workers.dispatch(preflight(n)) {
+            Dispatch::Queued => queued += 1,
+            Dispatch::Dropped(_) => break,
+            other => panic!("unexpected {other:?}"),
         }
-        other => panic!("expected Current, got {other:?}"),
     }
+    assert_eq!(queued, 16, "control queue is bounded at 16");
+    assert_eq!(workers.dispatch(cancel("first")), Dispatch::Deferred);
+    assert_eq!(workers.dispatch(cancel("second")), Dispatch::Deferred);
+    workers.flush_backlog();
 
-    command_tx
-        .send(HostCommand::FetchNarrative {
-            mission_run_id: "run-1".to_string(),
-        })
-        .unwrap();
-    match recv_timeout(&message_rx) {
-        HostMessage::Narrative {
-            mission_run_id,
-            result: Ok(_),
-        } => assert_eq!(mission_run_id, "run-1"),
-        other => panic!("expected Narrative, got {other:?}"),
-    }
-
-    command_tx
-        .send(HostCommand::FetchConversationEntries {
-            mission_run_id: "run-1".to_string(),
-            artifact_id: "conversation-1".to_string(),
-        })
-        .unwrap();
-    match recv_timeout(&message_rx) {
-        HostMessage::ConversationEntries {
-            mission_run_id,
-            artifact_id,
-            result: Ok(page),
-        } => {
-            assert_eq!(mission_run_id, "run-1");
-            assert_eq!(artifact_id, "conversation-1");
-            assert!(page.items.is_empty());
+    client.release();
+    let mut order = Vec::new();
+    while order.len() < 2 {
+        workers.flush_backlog();
+        if let HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(accepted))) = recv(&workers)
+        {
+            order.push(accepted.cancellation_request_id);
         }
-        other => panic!("expected ConversationEntries, got {other:?}"),
     }
-
-    drop(command_tx);
-    handle.join().expect("worker exits when the channel closes");
+    assert_eq!(order, ["first", "second"]);
+    workers.shutdown();
 }

@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "context",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "context-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "context": {
+    "mission_snapshot": {
+      "version": 397,
+      "plan_revision": 4,
+      "created_at": "2026-08-23T00:00:00+10:00",
+      "sequence": 396,
+      "source_health": {
+        "active_maneuver": "healthy",
+        "bayesian_belief_snapshot": "healthy",
+        "environment_data": "healthy",
+        "fsm_status": "healthy",
+        "plan": "missing"
+      },
+      "source_freshness": {
+        "active_maneuver": true,
+        "bayesian_belief_snapshot": true,
+        "environment_data": true,
+        "fsm_status": true,
+        "plan": false
+      },
+      "source_revisions": {
+        "active_maneuver": 433,
+        "bayesian_belief_snapshot": 5,
+        "environment_data": 433,
+        "fsm_status": 54
+      },
+      "missing_sources": [
+        "plan"
+      ]
+    },
+    "fsm_status": {
+      "active_state": "assignment-1-in-progress",
+      "status": "updated",
+      "plan_revision": 4,
+      "statechart_revision": 4,
+      "last_applied_event": "assignment-1-may-begin",
+      "sequence": 54,
+      "transition_candidates": [
+        {
+          "event": "assignment-1-outcome-confirmed",
+          "source": "assignment-1-in-progress",
+          "target": "assignment-2-in-progress",
+          "condition": "confirm the completed evidence interval",
+          "readiness": {
+            "live_evidence": "the drone is at the selected location",
+            "not_before": {
+              "seconds": 200.5,
+              "tick": 401,
+              "ticks_per_second": 2
+            }
+          }
+        },
+        {
+          "event": "assignment-1-abandoned",
+          "source": "assignment-1-in-progress",
+          "target": "patrol-replan-requested",
+          "condition": null,
+          "readiness": null
+        }
+      ]
+    },
+    "active_maneuver": {
+      "maneuver_id": "assignment-entry:candidate-ee5ae8ec--candidate-611bcaab",
+      "action": "search_area",
+      "status": "active",
+      "phase": "sweep",
+      "progress": 0.62,
+      "progress_detail": {
+        "cleared_cells": 31,
+        "total_cells": 50
+      },
+      "deadline_seconds": 198.5,
+      "remaining_seconds": 8.0,
+      "mission_time_seconds": 190.5,
+      "plan_revision": 4
+    },
+    "latest_transition_intent": {
+      "intent_id": "transition-intent-selection:mission-fixture-001:16",
+      "status": "selected",
+      "source_state": "assignment-1-in-progress",
+      "target": "assignment-2-in-progress",
+      "condition": "confirm the completed evidence interval",
+      "rationale": "Retain the sole planner-ordered next assignment.",
+      "selected_at_seconds": 187.0,
+      "plan_revision": 4,
+      "sequence": 16
+    },
+    "latest_hyper_outcome": {
+      "disposition": "replan",
+      "evidence_summary": "Mission 1 gate reports the next fixed-view leg is infeasible under belief revision 4.",
+      "plan_revision": 3,
+      "trigger_identities": [
+        "mission1-gate:next_assignment_infeasible:belief-157"
+      ],
+      "request_identities": [],
+      "sequence": 2
+    }
+  }
+}

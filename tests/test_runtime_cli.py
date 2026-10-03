@@ -7,14 +7,18 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 import onr.runtime.cli as runtime_cli
 from onr.adapters.file_transport import FileTransport
+from onr.adapters.role_skills import FilesystemRoleSkillCatalog
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import MissionInput
 from onr.contracts.planning import PlannerChoice, PlannerPlan, PlanningOutcome
+from onr.contracts.transport import TransportEvent
+from onr.runtime.composition import RuntimeComposition
 from onr.runtime.lease import RuntimeLeaseStore
 
 
@@ -69,7 +73,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     workflow_revisions: list[int] = []
     workflow_belief_files: list[Path] = []
     supervisor_prompts: list[str] = []
-    belief_requests: list[dict[str, object]] = []
+    belief_requests: list[dict[str, Any]] = []
     planning_snapshot = MissionSnapshot(
         "mission:demo",
         1,
@@ -176,7 +180,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
             _ = args, kwargs
             return object()
 
-    def run_revision(*args: object, **kwargs: object) -> object:
+    def run_revision(*args: object, **kwargs: Any) -> object:
         _ = args
         workflow_prompts.append(str(kwargs["system_prompt"]))
         workflow_revisions.append(int(kwargs["revision"]))
@@ -206,9 +210,7 @@ def test_closed_loop_routes_workflow_and_supervisor_prompts_independently(
     assert workflow_belief_files == [belief_file, belief_file]
     assert supervisor_prompts == [prompts["hyper-supervisor"]]
     assert belief_requests[0]["belief_kind"] == "reporting_reliability"
-    assert tuple(key.entity_id for key in belief_requests[0]["keys"]) == tuple(
-        [1]
-    )
+    assert tuple(key.entity_id for key in belief_requests[0]["keys"]) == (1,)
 
     planning_view.environment_event.payload = {
         "static_info": [],
@@ -414,7 +416,11 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         def verify_llm_reachability(self) -> None:
             calls.append("verify")
 
-        def runtime_session(self):  # type: ignore[no-untyped-def]
+        def create_chat_model(self) -> str:
+            return "summary-model"
+
+        def mission_session(self, mission_id: str, *, model: object):  # type: ignore[no-untyped-def]
+            calls.append(("mission-session", mission_id, model))
             return nullcontext()
 
     runtime = FakeRuntime()
@@ -496,7 +502,10 @@ def test_cli_composes_and_runs_closed_loop_through_injected_seam(
         {"repo_root": tmp_path, "config_path": Path("runtime.yaml")},
     )
     assert calls[1] == "verify"
-    closed_loop = calls[2]
+    assert calls[2] == ("mission-session", "mission:demo", "summary-model")
+    closed_loop = cast(
+        tuple[str, object, MissionInput, dict[str, object]], calls[3]
+    )
     assert closed_loop[0] == "closed-loop"
     assert closed_loop[1] is runtime
     assert closed_loop[2] == MissionInput(
@@ -633,15 +642,15 @@ def test_run_hyper_revision_raises_mission_rejected_with_operator_reason(
 
     with pytest.raises(runtime_cli.MissionRejectedError, match="buy me a coffee"):
         runtime_cli._run_hyper_revision(
-            runtime,
+            cast(RuntimeComposition, runtime),
             MissionInput("mission:demo", "buy me a coffee", "operator"),
             model=object(),
             system_prompt="prompt",
-            skill_catalog=object(),
+            skill_catalog=cast(FilesystemRoleSkillCatalog, object()),
             backend_root=tmp_path,
             artifact_root=tmp_path / "artifacts",
-            planning_snapshot=object(),
-            environment_event=object(),
+            planning_snapshot=cast(MissionSnapshot, object()),
+            environment_event=cast(TransportEvent, object()),
             environment_file=tmp_path / "environment.json",
             belief_snapshot=None,
             belief_file=None,
@@ -663,7 +672,8 @@ def test_cli_reports_mission_rejection_as_clean_operator_message(
             ),
         ),
         verify_llm_reachability=lambda: None,
-        runtime_session=lambda: nullcontext(),
+        create_chat_model=lambda: object(),
+        mission_session=lambda _mission_id, *, model: nullcontext(),
     )
     monkeypatch.setattr(runtime_cli, "_create_runtime", lambda **kwargs: runtime)
 

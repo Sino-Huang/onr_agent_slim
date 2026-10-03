@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "world",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "world-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "world": {
+    "viewer": {
+      "available": true,
+      "reason": null
+    },
+    "state": {
+      "mission_time_seconds": 143.5,
+      "flight_state": "flying",
+      "active_maneuver": "navigate",
+      "state_version": 812
+    },
+    "frames": [
+      {
+        "source": "world",
+        "sequence": 812,
+        "media_type": "image/png"
+      },
+      {
+        "source": "camera_front",
+        "sequence": 812,
+        "media_type": "image/jpeg"
+      }
+    ]
+  }
+}

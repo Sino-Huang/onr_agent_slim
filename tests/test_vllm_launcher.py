@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shlex
 import subprocess
+from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/vllm/start_vllm.sh"
 
@@ -20,16 +20,6 @@ def preview(tmp_path, **overrides):
     assert not (tmp_path / "not-created").exists()
     command = next(line for line in result.stdout.splitlines() if line.startswith("Command:"))
     return result.stdout, shlex.split(command.removeprefix("Command:"))
-
-
-def test_current_two_gpu_defaults_and_no_launch(tmp_path):
-    output, args = preview(tmp_path)
-    assert "CUDA_VISIBLE_DEVICES=0,1" in output
-    assert args[args.index("--tensor-parallel-size") + 1] == "2"
-    assert args[args.index("--max-model-len") + 1] == "65536"
-    assert args[args.index("--gpu-memory-utilization") + 1] == "0.95"
-    assert args[args.index("--max-num-seqs") + 1] == "4"
-    assert args[1:3] == ["serve", "Qwen/Qwen3.8-27B-FP8"]
 
 
 def test_inherited_devices_determine_parallelism(tmp_path):

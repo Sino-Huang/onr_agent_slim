@@ -1,0 +1,1 @@
+{"details":{"operation":"hyper_workflow","status":"execution_ready"},"event_kind":"workflow","event_time":"2026-09-30T05:50:05.780155+00:00","mission_id":"mission:demo","outcome":"completed","record_id":"mission:demo:10:workflow","schema_version":1,"sequence":10,"source":"hyper-agent"}

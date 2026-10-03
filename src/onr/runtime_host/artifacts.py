@@ -15,7 +15,10 @@ import json
 import os
 import re
 import stat
+import time
+from collections.abc import Collection
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -187,7 +190,9 @@ class PublicArtifactInbox:
                 adjusted_offset,
                 _snap_end_backward(descriptor, requested_end, adjusted_offset),
             )
-            window = os.pread(descriptor, adjusted_end - adjusted_offset, adjusted_offset)
+            window = os.pread(
+                descriptor, adjusted_end - adjusted_offset, adjusted_offset
+            )
             if len(window) != adjusted_end - adjusted_offset:
                 raise OSError("Artifact content changed during read")
             try:
@@ -347,7 +352,9 @@ def _load_artifact(
         or not isinstance(display, dict)
         or set(display) != _DISPLAY_FIELDS
         or not _nonempty_text(display.get("title"))
-        or not (display.get("summary") is None or isinstance(display.get("summary"), str))
+        or not (
+            display.get("summary") is None or isinstance(display.get("summary"), str)
+        )
     ):
         return None
     content = value.get("content")
@@ -409,7 +416,9 @@ def _conversation_entries(artifact_directory: Path) -> list[dict[str, object]]:
             filename_sequence = int(stem)
         except (ValueError, OverflowError):
             continue
-        value = _read_json_mapping(path, root=entries_directory, maximum=MAX_ENTRY_BYTES)
+        value = _read_json_mapping(
+            path, root=entries_directory, maximum=MAX_ENTRY_BYTES
+        )
         entry = _validated_entry(value, artifact_directory)
         if entry is None or filename_sequence != entry["sequence"]:
             continue
@@ -458,7 +467,9 @@ def _validated_entry(
         content_ref = None
     else:
         content = None
-        content_ref = _validated_content_ref(value.get("content_ref"), artifact_directory)
+        content_ref = _validated_content_ref(
+            value.get("content_ref"), artifact_directory
+        )
         if content_ref is None:
             return None
     return {
@@ -607,11 +618,19 @@ def _safe_directory(path: Path) -> Path | None:
         metadata = path.lstat()
     except OSError:
         return None
-    return path if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) else None
+    return (
+        path
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+        else None
+    )
 
 
 def _valid_artifact_id(value: object) -> bool:
-    return isinstance(value, str) and _ARTIFACT_ID_RE.fullmatch(value) is not None and value != ".."
+    return (
+        isinstance(value, str)
+        and _ARTIFACT_ID_RE.fullmatch(value) is not None
+        and value != ".."
+    )
 
 
 def _valid_relative_path(value: object) -> bool:
@@ -707,6 +726,266 @@ def _content_response(
     }
 
 
+def service_log_artifacts(run_root: Path) -> list[dict[str, object]]:
+    """Allowlist regular run-local service logs, never arbitrary caller paths."""
+    if _safe_directory(run_root) is None:
+        return []
+    paths = [("worker-log", run_root / "worker.log")]
+    try:
+        for path in (
+            (run_root / "services").glob("*.log")
+            if _safe_directory(run_root / "services") is not None
+            else ()
+        ):
+            if _ARTIFACT_ID_RE.fullmatch(f"service-log-{path.stem}"):
+                paths.append((f"service-log-{path.stem}", path))
+    except OSError:
+        pass
+    result: list[dict[str, object]] = []
+    for artifact_id, path in paths:
+        try:
+            metadata = path.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            continue
+        result.append(
+            {
+                "artifact_id": artifact_id,
+                "classification": "service_log",
+                "media_type": "text/plain",
+                "byte_size": metadata.st_size,
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "kind": "service_log",
+                "content_digest": None,
+                "display": {
+                    "title": f"{path.stem} log",
+                    "summary": str(path.relative_to(run_root)),
+                },
+                "published_at": datetime.fromtimestamp(
+                    metadata.st_mtime, UTC
+                ).isoformat(),
+                "source": "service_log",
+                "ref": str(path.relative_to(run_root)),
+            }
+        )
+    return sorted(result, key=lambda item: cast(str, item["artifact_id"]))
+
+
+def service_log_content(
+    run_root: Path,
+    mission_id: str,
+    mission_run_id: str,
+    artifact_id: str,
+    *,
+    offset: int | None = None,
+    limit: int | None = None,
+) -> dict[str, object]:
+    descriptors = {
+        item["artifact_id"]: item for item in service_log_artifacts(run_root)
+    }
+    descriptor = descriptors.get(artifact_id)
+    if descriptor is None:
+        raise ArtifactNotFoundError
+    start = 0 if offset is None else offset
+    size = DEFAULT_PREVIEW_BYTES if limit is None else limit
+    if start < 0 or not 1 <= size <= MAX_PREVIEW_BYTES:
+        raise ValueError("invalid service log window")
+    fd: int | None = None
+    try:
+        fd = _open_confined(run_root / cast(str, descriptor["ref"]), run_root)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("not a regular service log")
+        if start > metadata.st_size:
+            raise ValueError("Artifact offset exceeds content size")
+        # Byte offsets are exact, including when a window splits UTF-8 characters.
+        window = os.pread(fd, size, start)
+        end = start + len(window)
+        eof = end >= metadata.st_size
+        return {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "mission_id": mission_id,
+            "mission_run_id": mission_run_id,
+            "artifact_id": artifact_id,
+            "classification": "service_log",
+            "media_type": "text/plain",
+            "byte_size": metadata.st_size,
+            "offset": start,
+            "next_offset": None if eof else end,
+            "eof": eof,
+            "truncated": False,
+            "content": window.decode("utf-8", errors="replace"),
+        }
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ArtifactUnavailableError from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+# Directory timestamps advance in kernel clock ticks, so a change landing in the
+# same tick as a listing leaves them unchanged. Listings of directories changed
+# this recently are not trusted and are taken again on the next snapshot.
+_LISTING_SETTLE_NS = 2_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerArtifactSnapshot:
+    """Allowlisted regular files beneath one planner root, ordered by ref.
+
+    ``version`` changes only when the set of files or one file's identity,
+    type, size, mtime, or ctime changes; unchanged snapshots are one object.
+    """
+
+    version: int
+    files: tuple[tuple[Path, os.stat_result], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryListing:
+    identity: tuple[int, int, int, int]
+    settled: bool
+    subdirectories: tuple[tuple[tuple[str, ...], Path], ...]
+    files: tuple[tuple[str, Path], ...]
+
+
+class PlannerArtifactInventory:
+    """Track allowlisted regular files beneath a planner root.
+
+    Every snapshot lstats each directory from the root down and each candidate
+    file, never following a symlinked root, directory, or file. Directory
+    listings are reused while the directory's device, inode, mtime, and ctime
+    are unchanged. File contents are never read.
+    """
+
+    def __init__(self, root: Path, allowed_names: Collection[str]) -> None:
+        self._root = root
+        self._allowed_names = frozenset(allowed_names)
+        self._listings: dict[tuple[str, ...], _DirectoryListing] = {}
+        self._identities: tuple[tuple[object, ...], ...] = ()
+        self._snapshot = PlannerArtifactSnapshot(version=0, files=())
+
+    def snapshot(self) -> PlannerArtifactSnapshot:
+        files = self._scan()
+        identities = tuple(
+            (
+                path,
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            for path, metadata in files
+        )
+        if identities != self._identities:
+            self._identities = identities
+            self._snapshot = PlannerArtifactSnapshot(
+                version=self._snapshot.version + 1, files=files
+            )
+        return self._snapshot
+
+    def _scan(self) -> tuple[tuple[Path, os.stat_result], ...]:
+        listed_after_ns = time.time_ns()
+        visited: list[tuple[tuple[str, ...], Path, _DirectoryListing]] = []
+        found: list[tuple[tuple[str, ...], str, Path, os.stat_result]] = []
+        pending: list[tuple[tuple[str, ...], Path]] = [((), self._root)]
+        while pending:
+            parts, directory = pending.pop()
+            listing = self._listing(parts, directory, listed_after_ns)
+            if listing is None:
+                continue
+            visited.append((parts, directory, listing))
+            for ref, path in listing.files:
+                try:
+                    metadata = os.lstat(path)
+                except OSError:
+                    continue
+                if stat.S_ISREG(metadata.st_mode):
+                    found.append((parts, ref, path, metadata))
+            pending.extend(listing.subdirectories)
+        # Paths resolve through every ancestor, so a directory renamed or
+        # replaced by a symlink mid-scan could have led later lstats outside
+        # the tree. Drop every subtree whose directory is no longer the one read.
+        replaced = {
+            parts
+            for parts, directory, listing in visited
+            if not _same_directory(directory, listing.identity)
+        }
+        if replaced:
+            visited = [item for item in visited if not _beneath(item[0], replaced)]
+            found = [item for item in found if not _beneath(item[0], replaced)]
+        self._listings = {parts: listing for parts, _, listing in visited}
+        found.sort(key=lambda item: item[1])
+        return tuple((path, metadata) for _, _, path, metadata in found)
+
+    def _listing(
+        self, parts: tuple[str, ...], directory: Path, listed_after_ns: int
+    ) -> _DirectoryListing | None:
+        try:
+            metadata = os.lstat(directory)
+        except OSError:
+            return None
+        if not stat.S_ISDIR(metadata.st_mode):
+            return None
+        identity = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+        cached = self._listings.get(parts)
+        if cached is not None and cached.settled and cached.identity == identity:
+            return cached
+        subdirectories: list[str] = []
+        files: list[str] = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        is_directory = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_directory:
+                        subdirectories.append(entry.name)
+                    elif entry.name in self._allowed_names:
+                        files.append(entry.name)
+        except OSError:
+            return None
+        prefix = "".join(f"{part}/" for part in parts)
+        return _DirectoryListing(
+            identity=identity,
+            settled=max(metadata.st_mtime_ns, metadata.st_ctime_ns)
+            + _LISTING_SETTLE_NS
+            < listed_after_ns,
+            subdirectories=tuple(
+                ((*parts, name), directory / name) for name in sorted(subdirectories)
+            ),
+            files=tuple(
+                (f"{prefix}{name}", directory / name) for name in sorted(files)
+            ),
+        )
+
+
+def _same_directory(path: Path, identity: tuple[int, int, int, int]) -> bool:
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(metadata.st_mode) and (
+        metadata.st_dev,
+        metadata.st_ino,
+    ) == identity[:2]
+
+
+def _beneath(parts: tuple[str, ...], directories: set[tuple[str, ...]]) -> bool:
+    return any(parts[:depth] in directories for depth in range(len(parts) + 1))
+
+
 __all__ = [
     "ARTIFACT_SCHEMA_VERSION",
     "DEFAULT_PAGE_SIZE",
@@ -719,5 +998,7 @@ __all__ = [
     "MAX_PREVIEW_BYTES",
     "ArtifactNotFoundError",
     "ArtifactUnavailableError",
+    "PlannerArtifactInventory",
+    "PlannerArtifactSnapshot",
     "PublicArtifactInbox",
 ]

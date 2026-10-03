@@ -591,7 +591,7 @@ class RuntimeComposition:
         skill_version: str | None = None,
         backend_root: Path | None = None,
         fsm_runner: FSMRunner | None = None,
-        belief_service: BayesianBeliefService | None = None,
+        belief_service: BayesianBeliefService | ReportingReliabilityService | None = None,
         communication_port: object | None = None,
     ) -> ManeuverControl:
         """Compose tool-driven Maneuver Control with opaque live dependencies."""

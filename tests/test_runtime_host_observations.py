@@ -82,7 +82,7 @@ def _client(
         launch_worker=pending.append,
         evidence_source=source,
     )
-    return TestClient(create_app(host=host)), host, pending, selected_config
+    return TestClient(create_app(host=host), client=("127.0.0.1", 50000)), host, pending, selected_config
 
 
 def _activate(client: TestClient) -> dict[str, object]:

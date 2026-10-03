@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "artifacts": [
+    {
+      "schema_version": 1,
+      "artifact_id": "service-log-physical-runtime",
+      "kind": "service_log",
+      "media_type": "text/plain",
+      "byte_size": 20480,
+      "content_digest": null,
+      "display": {
+        "title": "physical-runtime log",
+        "summary": "services/physical-runtime.log"
+      },
+      "published_at": "2026-08-27T14:00:01Z",
+      "classification": "service_log"
+    }
+  ],
+  "next_cursor": null
+}

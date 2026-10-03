@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Over┌ Help · Esc or ? to close ────────────────────────────────────────────────────────┐
+ ✔ Stack│ Global                                                                           │
+┌ Missio│  1-7 · Tab/Shift+Tab  switch Run tabs                                            │───────┐
+│ Status│  ? · F1               toggle this help                                           │       │
+│ Missio│  c                    request cancellation of the owned run                      │tered  │
+│ Run:  │  q · Ctrl+C           managed exit (cancels an owned active run first)           │       │
+│ Stack:│  Ctrl+Q               detach: quit, run keeps going, session recoverable         │ecords)│
+│ Starte│  e                    after a terminal run: new Mission Intent, same stack       │       │
+│ Finish│                                                                                  │       │
+│       │ Launch screen                                                                    │       │
+│       │  Tab · Shift+Tab      next / previous field                                      │       │
+│       │  ←/→                  change the focused toggle                                  │       │
+│       │  F2                   demo prompts (preset mission, rejection battery)           │       │
+└───────│  r                    re-run preflight                                           │───────┘
+┌ Signif│  Alt+Enter            review and launch (disabled while a check fails)           │───────┐
+│ MAN #3│                                                                                  │       │
+│       │ Tabs                                                                             │       │
+│       │  Agents               ↑↓ select · f follow newest · PgUp/PgDn detail             │ion    │
+│       │  Progress             ↑↓ move · ←→ fold · f follow · i importance                │       │
+│       │  / · n/N              search Progress · next/previous match                      │       │
+│       │  Enter · Esc          accept/close search (typing captures tab/q/c)              │       │
+│       │  World                s cycle world/annotated front/front/3rd · p pause/resume   │       │
+│       │  Stack                ↑↓ service · f follow log · PgUp/PgDn scroll               │       │
+│       │  Artifacts            ↑↓ select · Enter inspect · ←/→ page · Esc close           │       │
+│       │  Belief/Context       ↑↓ · j/k select belief entity (detail below table)         │       │
+└───────│ ✖ critical  ▲ warning  ● notable  · routine  ∙ debug                             │───────┘
+────────│ HYP MAN CC FSM BEL ENV PER STK AI = LLM text, non-authoritative                  │────────
+ 1-7/Tab└──────────────────────────────────────────────────────────────────────────────────┘
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -1,0 +1,45 @@
+ RUN run-998f35fe… ● running 00:12:59 │ FSM assignment-1-in-progress │ stack ●● │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 2) ─ ○ Done
+┌ Bayesian Belief ───────────────────────────────────────────────────┐┌ Mission Context ───────────────────────────────────────────────────────────────────────┐
+│reporting_reliability · revision 15                                 ││Mission Snapshot · source health / freshness                                            │
+│2026-08-23T00:00:00+10:00                                           ││Version 421 · plan r2                                                                   │
+│Entity                                        Mean   Δ prev  Δ prior││Time 2026-08-23T00:00:00+10:00 · sequence 420                                           │
+│ship 5                                        0.7289 +0.0000 +0.5960││· active_maneuver: healthy · fresh · r451                                               │
+│ship 4                                        0.0189 +0.0000 -0.1140││· bayesian_belief_snapshot: healthy · fresh · r15                                       │
+│ship 13                                       0.0189 -0.0289 -0.1140││· environment_data: healthy · fresh · r451                                              │
+│ship 16                                       0.0051 +0.0000 -0.1278││· fsm_status: healthy · fresh · r35                                                     │
+│ship 1                                        0.0035 +0.0000 -0.1294││· plan: healthy · fresh · r2                                                            │
+│ship 2                                        0.0035 +0.0000 -0.1294││Missing sources: none                                                                   │
+│ship 6                                        0.0035 +0.0000 -0.1294││FSM · enabled Transition Candidates                                                     │
+│ship 8                                        0.0035 +0.0000 -0.1294││Active: assignment-1-in-progress · updated                                              │
+│ship 9                                        0.0035 +0.0000 -0.1294││Plan r2 · statechart r2 · event assignment-1-may-begin                                  │
+│ship 10                                       0.0035 +0.0000 -0.1294││assignment-1-outcome-confirmed: assignment-1-in-progress → patrol-objective-complete    │
+│ship 11                                       0.0035 +0.0000 -0.1294││Condition: confirm the completed evidence interval                                      │
+│ship 12                                       0.0035 +0.0000 -0.1294││Readiness: {"live_evidence":"the pursued vessel is held in the                          │
+│ship 14                                       0.0035 +0.0000 -0.1294││FoV","not_before":{"seconds":299.5,"tick":599,"ticks_per_second":2},"sensed_evidence":{"│
+│ship 17                                       0.0035 +0.0000 -0.1294││Active Maneuver                                                                         │
+│ship 18                                       0.0035 +0.0000 -0.1294││pursue · active · search                                                                │
+│ship 19                                       0.0035 +0.0000 -0.1294││Deadline —s · remaining —s                                                              │
+│ship 20                                       0.0035 +0.0000 -0.1294││{"action_name":"forward","controller_mode":"search","entity_id":5,"separation_m":169.494│
+│ship 3                                        0.0031 +0.0000 -0.1298││Latest Transition Intent                                                                │
+│ship 7                                        0.0013 +0.0000 -0.1316││selected → patrol-objective-complete                                                    │
+│ship 15                                       0.0013 +0.0000 -0.1316││If confirm the completed evidence interval                                              │
+│Mean history · revisions 1–15                                       ││From assignment-1-in-progress · plan r2 · selected 174.0000s                            │
+│Mean history · revisions 1–15                                       ││AI Retain the sole planner-ordered next assignment.                                     │
+│Mean history · revisions 1–15                                       ││                                                                                        │
+│Mean history · revisions 1–15                                       ││                                                                                        │
+│Mean history · revisions 1–15                                       ││Latest Hyper outcome · AI non-authoritative                                             │
+│Mean history · revisions 1–15                                       ││replan · plan r1                                                                        │
+│Mean history · revisions 1–15                                       ││Maneuver Control requires a planner-selected reachable recovery rendezvous.             │
+│Mean history · revisions 1–15                                       ││Triggers:                                                                               │
+│Mean history · revisions 1–15                                       ││maneuver-message:maneuver-heartbeat:mission-6ccc1788-a6a9-42ba-97d9-530866823484:7:1,   │
+│Mean history · revisions 1–15                                       ││mission1-gate:explicit_replan_request:belief-284                                        │
+│Mean history · revisions 1–15                                       ││Requests:                                                                               │
+│Mean history · revisions 1–15                                       ││maneuver-message:maneuver-heartbeat:mission-6ccc1788-a6a9-42ba-97d9-530866823484:7:1    │
+│Mean history · revisions 1–15                                       ││                                                                                        │
+│Mean history · revisions 1–15                                       ││                                                                                        │
+└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 0  ● notable 26  · routine 40  ∙ debug 422

@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● queued 00:01:14 │ host ✖ offline
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ Phase: waiting for overview.phase from the Host
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    queued                              ││◆ Run Narrative · AI · non-authoritative        │
+│ ✖ offline - showing last received evidence     ││Waiting for the Run Narrative from the Host     │
+│ Mission:   mission-fixture-001                 ││Progress evidence has not arrived yet.          │
+│ Run:       run-fixture-001                     ││                                                │
+│ Stack:     mission1-harbor · AirSim off · perc…││                                                │
+│ Started:   2026-08-24T12:00:00Z                ││                                                │
+│ Finished:  -                                   ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ No activity received.                                        ││ No Human Decision Requests       │
+│                                                              ││ require action.                  │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · c cancel · q managed exit
+ Host poll failed (unexpected status 500: boom); showing last known state

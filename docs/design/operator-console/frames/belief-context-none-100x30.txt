@@ -1,0 +1,30 @@
+┌ Bayesian Belief ─────────────────────────┐┌ Mission Context ─────────────────────────────────────┐
+│No Bayesian belief                        ││Mission Snapshot · source health / freshness          │
+│no Bayesian belief for this mission mode  ││Version 397 · plan r4                                 │
+│(mission2)                                ││· Maneuver: healthy · fresh · r433                    │
+│                                          ││· Belief: healthy · fresh · r5                        │
+│                                          ││· Environment: healthy · fresh · r433                 │
+│                                          ││· FSM: healthy · fresh · r54                          │
+│                                          ││▲ plan: missing · stale · r—                          │
+│                                          ││FSM · enabled Transition Candidates                   │
+│                                          ││Active: assignment-1-in-progress · updated            │
+│                                          ││→ assignment-2-in-progress · not before 200.5s        │
+│                                          ││If confirm the completed evidence interval            │
+│                                          ││→ patrol-replan-requested · readiness unavailable     │
+│                                          ││If unconditional                                      │
+│                                          ││Active Maneuver                                       │
+│                                          ││search_area · active · sweep                          │
+│                                          ││Deadline 198.5000s · remaining 8.0000s                │
+│                                          ││████████████████████████62.0% ███▌                    │
+│                                          ││Latest Transition Intent                              │
+│                                          ││selected → assignment-2-in-progress                   │
+│                                          ││If confirm the completed evidence interval            │
+│                                          ││Latest Hyper outcome · AI non-authoritative           │
+│                                          ││replan · plan r3                                      │
+│                                          ││Mission 1 gate reports the next fixed-view leg is     │
+│                                          ││infeasible under belief revision 4.                   │
+│                                          ││                                                      │
+│                                          ││                                                      │
+│                                          ││                                                      │
+│                                          ││                                                      │
+└──────────────────────────────────────────┘└──────────────────────────────────────────────────────┘

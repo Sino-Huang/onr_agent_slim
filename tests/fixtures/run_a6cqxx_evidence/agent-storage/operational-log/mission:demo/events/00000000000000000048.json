@@ -1,0 +1,1 @@
+{"details":{"operation":"publish_snapshot","revision":26},"event_kind":"heartbeat","event_time":"2026-09-30T05:50:31.298491+00:00","mission_id":"mission:demo","outcome":"completed","record_id":"mission:demo:48:heartbeat","schema_version":1,"sequence":48,"source":"context-coordination"}

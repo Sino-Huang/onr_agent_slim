@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "default_preset_id": "mission1-harbor",
+  "presets": [
+    {
+      "preset_id": "mission1-harbor",
+      "title": "Mission 1 · Harbor (simulated)",
+      "mission_mode": "mission1",
+      "default_mission_text": "Please patrol the environment and confirm every reported event.",
+      "supports": {
+        "airsim": [
+          false,
+          true
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": "Perception needs the recorded Harbor engine scene: choose Mission 1 · AirSim live.",
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "mission1-airsim",
+      "title": "Mission 1 · AirSim live",
+      "mission_mode": "mission1",
+      "default_mission_text": "Patrol the window 60-130 s and verify every reported event.",
+      "supports": {
+        "airsim": [
+          true
+        ],
+        "perception": [
+          "off",
+          "ideal",
+          "yolo"
+        ]
+      },
+      "unsupported_reason": "This preset plays the Harbor engine scene: AirSim cannot be turned off.",
+      "defaults": {
+        "airsim": true,
+        "perception": "yolo",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 290
+      }
+    }
+  ]
+}

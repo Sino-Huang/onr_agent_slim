@@ -10,6 +10,8 @@ import os
 import secrets
 import signal
 import time
+import traceback
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,18 +19,26 @@ from datetime import datetime
 from multiprocessing import Event as ProcessEvent
 from multiprocessing import Process
 from pathlib import Path
-from threading import Lock, RLock, Thread, current_thread
-from typing import Any, Protocol
+from threading import Event, Lock, RLock, Thread, current_thread
+from typing import Any, Protocol, cast
 
 from onr.adapters.file_transport import FileTransport
 from onr.contracts.hyper_agent import MissionInput
-from onr.runtime.cli import run_closed_loop_demo
+from onr.runtime.cli import MissionRejectedError, run_closed_loop_demo
 from onr.runtime.composition import RuntimeComposition
-from onr.runtime.config import RuntimeConfig
-from onr.runtime_host.artifacts import ArtifactNotFoundError, PublicArtifactInbox
+from onr.runtime.config import RuntimeConfig, load_runtime_config
+from onr.runtime_host.airsim_overlay import PerceptionAnnotator
+from onr.runtime_host.artifacts import (
+    ArtifactNotFoundError,
+    PublicArtifactInbox,
+    service_log_content,
+)
+from onr.runtime_host.beliefs import beliefs_section
+from onr.runtime_host.context_view import context_section
 from onr.runtime_host.narrative import (
     RunNarrativeRecord,
     RunNarrativeSummarizer,
+    build_narrative_input,
     sanitize_narrative_text,
 )
 from onr.runtime_host.observations import (
@@ -36,11 +46,10 @@ from onr.runtime_host.observations import (
     DEFAULT_PAGE_SIZE,
     OBSERVATION_SCHEMA_VERSION,
     EvidenceSource,
-    FileEvidenceSource,
-    ObservationLog,
+    EvidenceTailer,
+    RunObservations,
     decode_cursor,
     encode_cursor,
-    map_activities,
     page_entries,
 )
 from onr.runtime_host.operator_projection import (
@@ -48,7 +57,19 @@ from onr.runtime_host.operator_projection import (
     OperatorRunProjection,
     OperatorSection,
 )
-from onr.viewer.trace import TraceProjection, TraceViewItem
+from onr.runtime_host.progress import load_mission_log_summaries
+from onr.runtime_host.run_files import JsonFileCache
+from onr.runtime_host.run_root import RunRoot
+from onr.runtime_host.stack import (
+    StackFailure,
+    StackPlan,
+    StackSupervisor,
+    load_stack_catalog,
+    plan_mission_run,
+    run_preflight,
+)
+from onr.runtime_host.world import CameraCapture, WorldView
+from onr.viewer.trace import sanitize_payload
 
 Clock = Callable[[], str]
 IdGenerator = Callable[[str], str]
@@ -57,6 +78,7 @@ _NONTERMINAL_STATUSES = {"queued", "running", "awaiting_human_decision"}
 _WORKER_IDENTITY = "runtime_host.closed_loop_demo"
 _WORKER_OWNERSHIP_ENV = "ONR_RUNTIME_HOST_WORKER_TOKEN"
 _WORKER_START_TIMEOUT_SECONDS = 5.0
+_TERMINAL_DETAIL_TEXT_LIMIT = 500
 
 
 class _EventLike(Protocol):
@@ -111,13 +133,17 @@ class WorkerIdentity:
             and self.process_session_id == self.pid
             and _process_start_time(self.pid) == self.process_start_time
         )
-        return leader_matches or (
-            self.process_group_id == self.process_session_id
-            and _owned_group_member_exists(
-                self.process_group_id,
-                self.process_session_id,
-                self.ownership_token,
+        return (
+            leader_matches
+            or (
+                self.process_group_id == self.process_session_id
+                and _owned_group_member_exists(
+                    self.process_group_id,
+                    self.process_session_id,
+                    self.ownership_token,
+                )
             )
+            or bool(_owned_detached_groups(self.ownership_token, self.process_group_id))
         )
 
 
@@ -153,15 +179,11 @@ class HostNotFoundError(Exception):
 @dataclass(frozen=True, slots=True)
 class RuntimeWorkerOptions:
     repo_root: Path
-    planner_artifacts: Path | None = None
     recursion_limit: int = 120
-    simulation_limit_seconds: float = 600.0
 
     def __post_init__(self) -> None:
         if self.recursion_limit < 1:
             raise ValueError("worker recursion limit must be positive")
-        if self.simulation_limit_seconds <= 0:
-            raise ValueError("worker simulation limit must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,39 +196,161 @@ class WorkerContext:
     mission_intent: str
     source_authority: str
     options: RuntimeWorkerOptions
+    run_root: RunRoot
+    stack_options: Mapping[str, object] | None = None
+    report_rejection: Callable[[str], None] | None = None
+
+
+def _camera_capture(plan: StackPlan) -> CameraCapture | None:
+    """Read-only, perception-annotated camera capture for scene-clock runs.
+
+    Perception-off AirSim runs need none: the follower service owns the frozen
+    engine and publishes its own post-step frames (ADR 0016).
+    """
+    toggles = plan.request.toggles
+    if not toggles.airsim or toggles.perception == "off":
+        return None
+    engine = plan.request.engine
+    return CameraCapture(
+        plan.run_root.path,
+        cameras={
+            "camera_front": engine.airsim_camera,
+            "camera_third_person": engine.airsim_third_person_camera,
+        },
+        vehicle_name=engine.airsim_vehicle,
+        rpc_port=engine.rpc_port,
+        viewer_port=plan.viewer_port,
+        airsim_settings=engine.airsim_settings,
+        annotator=PerceptionAnnotator(
+            plan.run_root.path,
+            perception=toggles.perception,
+            mission_id=plan.request.mission_id,
+        ),
+    )
 
 
 def runtime_worker(context: WorkerContext) -> None:
-    """Run an operator Mission through the current closed-loop runtime seam."""
-
-    if context.config.transport.backend != "file":
-        raise RuntimeError("runtime Host worker requires transport.backend=file")
+    """Launch the owned stack and run the mission using its materialized inputs."""
+    options = dict(context.stack_options or {})
+    plan = plan_mission_run(
+        preset_id=cast(str | None, options.get("preset_id")),
+        stack=options,
+        run_root=context.run_root,
+        mission_id=context.mission_id,
+        repo_root=context.options.repo_root,
+    )
     mission_input = MissionInput(
         mission_id=context.mission_id,
         mission_text=context.mission_intent,
         source_authority=context.source_authority,
     )
-    runtime = RuntimeComposition(
-        context.config,
-        FileTransport(context.config.transport.root),
-    )
-    planner_artifacts = context.options.planner_artifacts
-    if planner_artifacts is None:
-        planner_artifacts = (
-            context.config.storage.root
-            / "runtime-host"
-            / "planner-artifacts"
-            / context.mission_run_id
+    supervisor = StackSupervisor(plan)
+    stop_monitor = Event()
+    failures: list[StackFailure] = []
+
+    def cancelled(_signal: int, _frame: object) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise _WorkerCancelled
+
+    def service_failed(_signal: int, _frame: object) -> None:
+        if failures:
+            raise failures[0]
+
+    def monitor() -> None:
+        while not stop_monitor.wait(0.25):
+            failure = supervisor.poll()
+            if failure is not None:
+                failures.append(failure)
+                os.kill(os.getpid(), signal.SIGUSR1)
+                return
+
+    previous_term = signal.signal(signal.SIGTERM, cancelled)
+    previous_failure = signal.signal(signal.SIGUSR1, service_failed)
+    thread: Thread | None = None
+    camera: CameraCapture | None = None
+    failed = True
+    try:
+        # Built before the stack so its SDK/encoder imports never delay the
+        # mission once services are ready.
+        camera = _camera_capture(plan)
+        supervisor.start()
+        if camera is not None:
+            # Started only after the engine is ready; stopped in teardown.
+            camera.start()
+        # Mission 1 planning inputs are produced by the post-readiness prep steps.
+        config = load_runtime_config(
+            plan.agent_config, repo_root=context.options.repo_root
         )
-    with runtime.runtime_session():
-        run_closed_loop_demo(
-            runtime,
-            mission_input,
-            repo_root=context.options.repo_root,
-            planner_artifacts=planner_artifacts,
-            recursion_limit=context.options.recursion_limit,
-            simulation_limit_seconds=context.options.simulation_limit_seconds,
+        if config.transport.backend != "file":
+            raise RuntimeError("runtime Host worker requires transport.backend=file")
+        runtime = RuntimeComposition(config, FileTransport(config.transport.root))
+        supervisor.begin_closed_loop()
+        thread = Thread(target=monitor, name="stack-monitor", daemon=True)
+        thread.start()
+        with runtime.mission_session(
+            context.mission_id, model=runtime.create_chat_model()
+        ):
+            try:
+                result = run_closed_loop_demo(
+                    runtime,
+                    mission_input,
+                    repo_root=context.options.repo_root,
+                    planner_artifacts=plan.closed_loop.planner_artifacts,
+                    recursion_limit=context.options.recursion_limit,
+                    simulation_limit_seconds=plan.closed_loop.simulation_limit_seconds,
+                )
+            except MissionRejectedError as exc:
+                # The authoritative decision need not wait for the final LLM summary.
+                if context.report_rejection is not None:
+                    context.report_rejection(exc.reason)
+                raise
+            finally:
+                # Session closeout can wait on a final LLM summary. Services
+                # terminated during that unwind are expected teardown, not a
+                # new failure that can replace rejection or cancellation.
+                stop_monitor.set()
+                thread.join()
+        failure = supervisor.poll()
+        if failures:
+            raise failures[0]
+        if failure is not None:
+            raise failure
+        context.run_root.closed_loop_result.write_text(
+            json.dumps(result.to_dict(), sort_keys=True) + "\n", encoding="utf-8"
         )
+        failed = False
+    finally:
+        # A late monitor signal or repeated cancel must not interrupt teardown.
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        stop_monitor.set()
+        if thread is not None:
+            thread.join()
+        failed = failed or bool(failures)
+        try:
+            try:
+                try:
+                    # Bounded: the capture must end before the engine stops.
+                    if camera is not None:
+                        camera.stop()
+                finally:
+                    # Capture even when no client fetched a frame; never skip
+                    # teardown.
+                    WorldView(context.run_root.path, timeout=0.25).capture_final()
+            finally:
+                try:
+                    supervisor.end_closed_loop(failed=failed)
+                finally:
+                    supervisor.stop()
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
+            signal.signal(signal.SIGUSR1, previous_failure)
+    if failures:
+        raise failures[0]
+
+
+class _WorkerCancelled(BaseException):
+    """Unwind the worker without misclassifying an owner cancellation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,40 +448,76 @@ class RuntimeHost:
         worker_options: RuntimeWorkerOptions | None = None,
         evidence_source: EvidenceSource | None = None,
         artifact_inbox_root: Path | None = None,
+        runs_root: Path | None = None,
         narrative_summarizer: RunNarrativeSummarizer | None = None,
         narrative_interval_seconds: float = 30.0,
+        narrative_poll_seconds: float | None = 2.0,
     ) -> None:
+        """Create the Host and recover persisted runs.
+
+        ``evidence_source`` replaces the per-run evidence tailer with a full-rescan
+        source. ``runs_root`` holds one Run Root per Mission Run (default
+        ``<storage>/runtime-host/runs``). With a summarizer, a background thread
+        calls ``narrative_tick`` every ``narrative_poll_seconds``; ``None`` leaves
+        ticking to the caller.
+        """
+
         self.config = config
         self.root = config.storage.root / "runtime-host"
         self._state_path = self.root / "state.json"
         self._state_lock_path = self.root / "state.lock"
+        self._runs_root = runs_root if runs_root is not None else self.root / "runs"
         self._clock = clock
         self._generate_id = generate_id
         self._worker_entrypoint = worker_entrypoint or runtime_worker
         self._launch_worker = launch_worker or _launch_process
-        self._worker_options = worker_options or RuntimeWorkerOptions(repo_root=Path.cwd())
-        self._evidence_source = evidence_source or FileEvidenceSource(
-            storage_root=config.storage.root,
-            transport_backend=config.transport.backend,
-            transport_root=config.transport.root,
+        self._worker_options = worker_options or RuntimeWorkerOptions(
+            repo_root=Path.cwd()
         )
-        self._artifact_inbox = PublicArtifactInbox(
-            artifact_inbox_root or config.storage.root / "artifact-inbox"
-        )
+        self._evidence_source = evidence_source
+        self._artifact_inbox_root = artifact_inbox_root
         self._operator_projection = OperatorRunProjection()
+        self._world_views: dict[str, WorldView] = {}
+        self._stack_catalog = load_stack_catalog()
+        self._stack_status_cache = JsonFileCache[dict[str, Any]](
+            dict, max_bytes=1024 * 1024
+        )
+        self._projection_lock = Lock()
         self._narrative_summarizer = narrative_summarizer
         self._narrative_interval_seconds = narrative_interval_seconds
         self._lock = RLock()
-        self._narrative_locks: dict[str, Lock] = {}
+        self._run_observations: dict[str, RunObservations] = {}
+        self._evidence_lock = Lock()
+        self._narrative_guard = Lock()
+        self._narrative_attempt = Lock()
         self._narrative_records: dict[str, RunNarrativeRecord] = {}
+        self._narrative_stop = Event()
+        self._narrative_watch: set[str] = set()
+        self._narrative_thread: Thread | None = None
         self._workers: dict[str, WorkerHandle] = {}
         self._reconcilers: dict[str, Thread] = {}
+        _reset_locks_in_forked_worker(self)
         recoveries: list[tuple[str, dict[str, Any]]] = []
         with self._state_guard():
             state = self._load_state()
             changed = False
             now = self._clock()
             for run in state["runs"].values():
+                if "run_root" not in run:
+                    # Persist the pre-v1.2 root once; per-run readers keep one
+                    # required path, without legacy aliases or copying history.
+                    historical = RunRoot.for_run(
+                        self.root / "runs", str(run["mission_run_id"])
+                    )
+                    selected = (
+                        historical
+                        if historical.path.is_dir()
+                        else RunRoot.for_run(
+                            self._runs_root, str(run["mission_run_id"])
+                        )
+                    )
+                    run["run_root"] = str(selected.path)
+                    changed = True
                 if run["status"] in _NONTERMINAL_STATUSES:
                     identity = WorkerIdentity.from_state(run)
                     if identity is not None and identity.is_owned():
@@ -359,6 +539,9 @@ class RuntimeHost:
                         changed = True
             if changed:
                 self._save_state(state)
+            current = self._current_run(state)
+            if current is not None and self._narrative_summarizer is not None:
+                self._narrative_watch.add(str(current["mission_run_id"]))
         for mission_run_id, run in recoveries:
             cancelled = run.get("cancellation_requested") is True
             exited = self._terminate_owned_worker(
@@ -382,6 +565,26 @@ class RuntimeHost:
                         identity.process_group_id,
                         cancelled,
                     )
+        if narrative_summarizer is not None and narrative_poll_seconds is not None:
+            self._narrative_thread = Thread(
+                target=self._narrative_loop,
+                args=(narrative_poll_seconds,),
+                name="runtime-host-narrative",
+                daemon=True,
+            )
+            self._narrative_thread.start()
+
+    def close(self) -> None:
+        """Stop the background Run Narrative thread.
+
+        An in-flight generation is not interrupted; the daemon thread exits after
+        it, so shutdown waits only briefly.
+        """
+
+        self._narrative_stop.set()
+        thread = self._narrative_thread
+        if thread is not None and thread is not current_thread():
+            thread.join(timeout=5.0)
 
     def activate(
         self,
@@ -391,12 +594,23 @@ class RuntimeHost:
         mission_intent: str,
         source_authority: str,
         credential: str,
+        stack: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        preset = self._stack_catalog.preset(
+            None if stack is None else cast(str | None, stack.get("preset_id"))
+        )
+        toggles = self._stack_catalog.toggles(preset, stack)
+        stack_options = {
+            "preset_id": preset.preset_id,
+            **toggles.payload(),
+            "simulation_limit_seconds": toggles.simulation_limit_seconds,
+        }
         request_fields = {
             "activation_request_id": activation_request_id,
             "console_session_id": console_session_id,
             "mission_intent": mission_intent,
             "source_authority": source_authority,
+            "stack": stack_options,
         }
         with self._state_guard():
             state = self._load_state()
@@ -433,6 +647,7 @@ class RuntimeHost:
             now = self._clock()
             mission_id = self._generate_id("mission")
             mission_run_id = self._generate_id("run")
+            run_root = RunRoot.for_run(self._runs_root, mission_run_id).create()
             credential_verifier = session_verifier or _credential_verifier(credential)
             response: dict[str, object] = {
                 "activation_request_id": activation_request_id,
@@ -446,6 +661,7 @@ class RuntimeHost:
                 "activation_request_id": activation_request_id,
                 "mission_intent": mission_intent,
                 "source_authority": source_authority,
+                "stack": stack_options,
                 "request_digest": _digest_json(
                     {**request_fields, "credential_identity": credential_verifier}
                 ),
@@ -464,11 +680,25 @@ class RuntimeHost:
                 "started_at": None,
                 "finished_at": None,
                 "terminal_classification": None,
+                "terminal_detail": None,
+                "stack": {
+                    "preset_id": preset.preset_id,
+                    "airsim": toggles.airsim,
+                    "perception": toggles.perception,
+                },
+                "stack_options": stack_options,
+                "mission_mode": preset.mission_mode,
+                "run_root": str(run_root.path),
                 "cancellation_requested": False,
                 "worker_launch_state": "launching",
             }
             state["current_run_id"] = mission_run_id
             self._save_state(state)
+
+        if self._narrative_summarizer is not None:
+            with self._narrative_guard:
+                self._narrative_watch.add(mission_run_id)
+        self._prune_run_caches()
 
         context = WorkerContext(
             config=self.config,
@@ -479,6 +709,11 @@ class RuntimeHost:
             mission_intent=mission_intent,
             source_authority=source_authority,
             options=self._worker_options,
+            run_root=run_root,
+            stack_options=stack_options,
+            report_rejection=lambda reason: self._report_rejection(
+                mission_run_id, reason
+            ),
         )
         start_gate = ProcessEvent()
         cancel_after_registration = False
@@ -522,6 +757,89 @@ class RuntimeHost:
             run = self._current_run(self._load_state())
             return None if run is None else _public_run(run)
 
+    def stack_presets(self) -> dict[str, object]:
+        return self._stack_catalog.payload(self._worker_options.repo_root)
+
+    def stack_preflight(self, options: Mapping[str, object]) -> dict[str, object]:
+        def active_run() -> str | None:
+            run = self.current_run()
+            if run is not None and run["status"] in _NONTERMINAL_STATUSES:
+                return str(run["mission_run_id"])
+            return None
+
+        return run_preflight(
+            self._stack_catalog,
+            cast(str | None, options.get("preset_id")),
+            options,
+            repo_root=self._worker_options.repo_root,
+            active_run=active_run,
+        )
+
+    def _world_view(self, run: Mapping[str, object]) -> WorldView:
+        run_id = str(run["mission_run_id"])
+        if run_id not in self._world_views:
+            self._prune_run_caches(requested_run_id=run_id)
+        with self._lock:
+            view = self._world_views.get(run_id)
+            if view is None:
+                view = WorldView(self._run_root(run).path)
+                self._world_views[run_id] = view
+            return view
+
+    def world_frame(self, mission_run_id: str, source: str):
+        with self._state_guard():
+            run = self._load_state()["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        return self._world_view(run).frame(
+            source,
+            live=run["status"] in _NONTERMINAL_STATUSES,
+        )
+
+    def _run_root(self, run: Mapping[str, object]) -> RunRoot:
+        return RunRoot(Path(str(run["run_root"])))
+
+    def _artifact_inbox_for(self, run: Mapping[str, object]) -> PublicArtifactInbox:
+        return PublicArtifactInbox(
+            self._artifact_inbox_root
+            or self._run_root(run).agent_storage / "artifact-inbox"
+        )
+
+    def _stack_section(self, run: Mapping[str, Any]) -> dict[str, object]:
+        root = self._run_root(run)
+        status = self._stack_status_cache.get(root.stack_status)
+        payload: dict[str, Any] = (
+            dict(status)
+            if isinstance(status, Mapping)
+            else {
+                "preset_id": (run.get("stack") or {}).get("preset_id"),
+                "toggles": {
+                    key: (run.get("stack_options") or {}).get(key)
+                    for key in ("airsim", "perception", "update_ownership")
+                },
+                "services": [],
+            }
+        )
+        payload.pop("schema_version", None)
+        payload.pop("updated_at", None)
+        for service in payload.get("services", []):
+            if not isinstance(service, dict):
+                continue
+            path = (
+                root.worker_log
+                if service.get("log_artifact_id") == "worker-log"
+                else root.service_log(str(service["name"]))
+            )
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    handle.seek(max(0, handle.tell() - 4096))
+                    lines = handle.read().decode("utf-8", errors="replace").splitlines()
+                service["last_line"] = lines[-1][:500] if lines else None
+            except OSError:
+                service["last_line"] = None
+        return payload
+
     def observations(
         self,
         mission_run_id: str,
@@ -529,87 +847,146 @@ class RuntimeHost:
         cursor: str | None = None,
         limit: int | None = None,
     ) -> dict[str, object]:
-        with self._state_guard():
-            run, log = self._refresh_observations(mission_run_id)
-            max_sequence = len(log.entries)
-            after = (
-                0
-                if cursor is None
-                else decode_cursor(
-                    cursor,
-                    mission_run_id=mission_run_id,
-                    max_sequence=max_sequence,
-                )
+        run, entries = self._issued_observations(mission_run_id)
+        after = (
+            0
+            if cursor is None
+            else decode_cursor(
+                cursor,
+                mission_run_id=mission_run_id,
+                max_sequence=len(entries),
             )
-            page, last_sequence = page_entries(
-                log.entries, after=after, limit=limit or DEFAULT_PAGE_SIZE
-            )
-            observations = _observation_envelopes(page)
-            return {
-                "schema_version": OBSERVATION_SCHEMA_VERSION,
-                "mission_id": run["mission_id"],
-                "mission_run_id": mission_run_id,
-                "observations": observations,
-                "next_cursor": (
-                    None
-                    if last_sequence is None
-                    else encode_cursor(mission_run_id, last_sequence)
-                ),
-            }
+        )
+        page, last_sequence = page_entries(
+            entries, after=after, limit=limit or DEFAULT_PAGE_SIZE
+        )
+        return {
+            "schema_version": OBSERVATION_SCHEMA_VERSION,
+            "mission_id": run["mission_id"],
+            "mission_run_id": mission_run_id,
+            "observations": _observation_envelopes(page),
+            "next_cursor": (
+                None
+                if last_sequence is None
+                else encode_cursor(mission_run_id, last_sequence)
+            ),
+        }
 
     def narrative(self, mission_run_id: str) -> dict[str, object]:
+        """Read the stored Run Narrative; generation happens in ``narrative_tick``."""
+
         with self._state_guard():
-            run, log = self._refresh_observations(mission_run_id)
-            record = self._narrative_record(mission_run_id)
-            attempt_lock = self._narrative_locks.setdefault(mission_run_id, Lock())
-            should_attempt = self._should_attempt_narrative(
-                run, record, len(log.entries), self._clock()
-            )
-            response = self._narrative_response(run, mission_run_id, record)
-        if self._narrative_summarizer is None or not should_attempt:
-            return response
-        if not attempt_lock.acquire(blocking=False):
-            with self._state_guard():
-                current = self._narrative_record(mission_run_id)
-                return self._narrative_response(run, mission_run_id, current)
+            run = self._load_state()["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        return {
+            "schema_version": 1,
+            "mission_id": run["mission_id"],
+            "mission_run_id": mission_run_id,
+            "narrative": self._public_narrative(mission_run_id),
+        }
+
+    def narrative_tick(self) -> None:
+        """Attempt each due Run Narrative once.
+
+        Covers the current run plus runs this Host saw running, so a run replaced
+        by a new activation right after it ended still gets its terminal attempt.
+        A non-terminal run is regenerated when its operational log advanced and
+        ``narrative_interval_seconds`` passed since the last attempt; a terminal
+        run gets exactly one terminal attempt. Overlapping ticks return at once.
+        """
+
+        summarizer = self._narrative_summarizer
+        if summarizer is None or not self._narrative_attempt.acquire(blocking=False):
+            return
         try:
             with self._state_guard():
-                run, log = self._refresh_observations(mission_run_id)
-                record = self._narrative_record(mission_run_id)
-                now = self._clock()
-                max_sequence = len(log.entries)
-                if not self._should_attempt_narrative(
-                    run, record, max_sequence, now
-                ):
-                    return self._narrative_response(run, mission_run_id, record)
-                terminal = run["status"] not in _NONTERMINAL_STATUSES
-                observations = _observation_envelopes(log.entries)
-                mission_id = str(run["mission_id"])
-                record.begin_attempt(started_at=now, terminal=terminal)
-            try:
-                generated = self._narrative_summarizer.summarize_narrative(
+                state = self._load_state()
+                current = self._current_run(state)
+                with self._narrative_guard:
+                    run_ids = sorted(
+                        run_id
+                        for run_id in self._narrative_watch
+                        if current is None or run_id != current["mission_run_id"]
+                    )
+                if current is not None:
+                    run_ids.append(str(current["mission_run_id"]))
+                runs = [
+                    dict(state["runs"][run_id])
+                    for run_id in dict.fromkeys(run_ids)
+                    if isinstance(state["runs"].get(run_id), dict)
+                ]
+            for run in runs:
+                mission_run_id = str(run["mission_run_id"])
+                with self._narrative_guard:
+                    if (
+                        run["status"] not in _NONTERMINAL_STATUSES
+                        and self._narrative_record(mission_run_id).terminal_generated
+                    ):
+                        self._narrative_watch.discard(mission_run_id)
+                        continue
+                    self._narrative_watch.add(mission_run_id)
+                self._attempt_narrative(summarizer, run)
+                if run["status"] not in _NONTERMINAL_STATUSES:
+                    with self._narrative_guard:
+                        self._narrative_watch.discard(mission_run_id)
+                    self._prune_run_caches()
+        finally:
+            self._narrative_attempt.release()
+
+    def _attempt_narrative(
+        self, summarizer: RunNarrativeSummarizer, run: Mapping[str, Any]
+    ) -> None:
+        mission_run_id = str(run["mission_run_id"])
+        mission_id = str(run["mission_id"])
+        terminal = run["status"] not in _NONTERMINAL_STATUSES
+        now = self._clock()
+        with self._narrative_guard:
+            record = self._narrative_record(mission_run_id)
+            if not self._narrative_due(record, terminal=terminal, now=now):
+                return
+            previous = record.public_narrative().get("text")
+        _, observations = self._run_evidence(mission_run_id)
+        observations.refresh(observed_at=now)
+        narrative_input = build_narrative_input(
+            run=_public_run(run),
+            records=observations.operational_records(),
+            summaries=load_mission_log_summaries(
+                self._run_root(run).agent_storage, mission_id
+            ),
+            stack_status=self._stack_section(run),
+            previous_narrative=previous if isinstance(previous, str) else None,
+        )
+        watermark = narrative_input["source_watermark"]
+        if not isinstance(watermark, int) or isinstance(watermark, bool):
+            watermark = 0
+        with self._narrative_guard:
+            record = self._narrative_record(mission_run_id)
+            if not terminal and watermark <= record.source_watermark:
+                return
+            record.begin_attempt(started_at=now, terminal=terminal)
+        try:
+            text = sanitize_narrative_text(
+                summarizer.summarize_narrative(
                     mission_id=mission_id,
                     mission_run_id=mission_run_id,
                     terminal=terminal,
-                    observations=observations,
+                    narrative_input=narrative_input,
                 )
-                text = sanitize_narrative_text(generated)
-            except Exception:  # noqa: BLE001 - failures publish only typed evidence.
-                text = None
-            with self._state_guard():
-                record = self._narrative_record(mission_run_id)
-                if text is None:
-                    record.publish_unavailable(generated_at=now, terminal=terminal)
-                else:
-                    record.publish_available(
-                        text=text,
-                        generated_at=now,
-                        source_watermark=max_sequence,
-                        terminal=terminal,
-                    )
-                return self._narrative_response(run, mission_run_id, record)
-        finally:
-            attempt_lock.release()
+            )
+        except Exception:  # noqa: BLE001 - failures publish only typed evidence.
+            text = None
+        with self._narrative_guard:
+            record = self._narrative_record(mission_run_id)
+            if text is None:
+                record.publish_unavailable(generated_at=now, terminal=terminal)
+            else:
+                record.publish_available(
+                    text=text,
+                    generated_at=now,
+                    source_watermark=watermark,
+                    terminal=terminal,
+                )
 
     def activities(
         self,
@@ -618,33 +995,33 @@ class RuntimeHost:
         cursor: str | None = None,
         limit: int | None = None,
     ) -> dict[str, object]:
-        with self._state_guard():
-            run, log = self._refresh_observations(mission_run_id)
-            activities = map_activities(log.entries)
-            after = (
-                0
-                if cursor is None
-                else decode_cursor(
-                    cursor,
-                    mission_run_id=mission_run_id,
-                    max_sequence=len(activities),
-                )
+        run, observations = self._run_evidence(mission_run_id)
+        observations.refresh(observed_at=self._clock(), wait=False)
+        activities = observations.activities()
+        after = (
+            0
+            if cursor is None
+            else decode_cursor(
+                cursor,
+                mission_run_id=mission_run_id,
+                max_sequence=len(activities),
             )
-            page, last_sequence = page_entries(
-                activities, after=after, limit=limit or DEFAULT_PAGE_SIZE
-            )
-            return {
-                "schema_version": OBSERVATION_SCHEMA_VERSION,
-                "mission_id": run["mission_id"],
-                "mission_run_id": mission_run_id,
-                "mapping_version": ACTIVITY_MAPPING_VERSION,
-                "activities": page,
-                "next_cursor": (
-                    None
-                    if last_sequence is None
-                    else encode_cursor(mission_run_id, last_sequence)
-                ),
-            }
+        )
+        page, last_sequence = page_entries(
+            activities, after=after, limit=limit or DEFAULT_PAGE_SIZE
+        )
+        return {
+            "schema_version": OBSERVATION_SCHEMA_VERSION,
+            "mission_id": run["mission_id"],
+            "mission_run_id": mission_run_id,
+            "mapping_version": ACTIVITY_MAPPING_VERSION,
+            "activities": page,
+            "next_cursor": (
+                None
+                if last_sequence is None
+                else encode_cursor(mission_run_id, last_sequence)
+            ),
+        }
 
     def artifacts(
         self,
@@ -656,16 +1033,15 @@ class RuntimeHost:
         """Return one page from the Mission Run's Public Artifact Inbox."""
 
         with self._state_guard():
-            state = self._load_state()
-            run = state["runs"].get(mission_run_id)
-            if not isinstance(run, dict):
-                raise HostNotFoundError
-            return self._artifact_inbox.artifacts(
-                str(run["mission_id"]),
-                mission_run_id,
-                cursor=cursor,
-                limit=limit,
-            )
+            run = self._load_state()["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        return self._artifact_inbox_for(run).artifacts(
+            str(run["mission_id"]),
+            mission_run_id,
+            cursor=cursor,
+            limit=limit,
+        )
 
     def artifact_content(
         self,
@@ -678,24 +1054,35 @@ class RuntimeHost:
         """Read one public Artifact content preview."""
 
         with self._state_guard():
-            state = self._load_state()
-            run = state["runs"].get(mission_run_id)
-            if not isinstance(run, dict):
-                raise HostNotFoundError
-            mission_id = str(run["mission_id"])
-            try:
-                return self._artifact_inbox.artifact_content(
-                    mission_id,
-                    mission_run_id,
-                    artifact_id,
-                    offset=offset,
-                    limit=limit,
-                )
-            except ArtifactNotFoundError:
+            run = self._load_state()["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        mission_id = str(run["mission_id"])
+        if artifact_id == "worker-log" or artifact_id.startswith("service-log-"):
+            return service_log_content(
+                self._run_root(run).path,
+                mission_id,
+                mission_run_id,
+                artifact_id,
+                offset=offset,
+                limit=limit,
+            )
+        try:
+            return self._artifact_inbox_for(run).artifact_content(
+                mission_id,
+                mission_run_id,
+                artifact_id,
+                offset=offset,
+                limit=limit,
+            )
+        except ArtifactNotFoundError:
+            planner_root = self._run_root(run).planner_artifacts
+            # The projection owns a per-run planner inventory cache.
+            with self._projection_lock:
                 return self._operator_projection.planner_artifact_content(
                     mission_id=mission_id,
                     mission_run_id=mission_run_id,
-                    planner_root=self._planner_root(mission_run_id),
+                    planner_root=planner_root,
                     artifact_id=artifact_id,
                     offset=offset,
                     limit=limit,
@@ -712,17 +1099,16 @@ class RuntimeHost:
         """Return one public Conversation Artifact entry page."""
 
         with self._state_guard():
-            state = self._load_state()
-            run = state["runs"].get(mission_run_id)
-            if not isinstance(run, dict):
-                raise HostNotFoundError
-            return self._artifact_inbox.conversation_entries(
-                str(run["mission_id"]),
-                mission_run_id,
-                artifact_id,
-                cursor=cursor,
-                limit=limit,
-            )
+            run = self._load_state()["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        return self._artifact_inbox_for(run).conversation_entries(
+            str(run["mission_id"]),
+            mission_run_id,
+            artifact_id,
+            cursor=cursor,
+            limit=limit,
+        )
 
     def operator_view(
         self,
@@ -736,16 +1122,37 @@ class RuntimeHost:
     ) -> dict[str, object]:
         """Return one incremental operator-facing section for a Mission Run."""
 
-        with self._state_guard():
-            run, log = self._refresh_observations(mission_run_id)
-            narrative = self._narrative_record(mission_run_id).public_narrative()
+        run, observations = self._run_evidence(mission_run_id)
+        entries = observations.refresh(observed_at=self._clock(), wait=False)
+        narrative = self._public_narrative(mission_run_id)
+        root = self._run_root(run)
+        stack = self._stack_section(run)
+        extra = None
+        if section == "beliefs":
+            extra = beliefs_section(
+                root.path, str(run["mission_id"]), run.get("mission_mode")
+            )
+        elif section == "context":
+            extra = context_section(root.transport, str(run["mission_id"]))
+        elif section == "world":
+            extra = self._world_view(run).section(
+                live=run["status"] in _NONTERMINAL_STATUSES,
+            )
+        elif section == "stack":
+            extra = stack
+        summaries = load_mission_log_summaries(
+            root.agent_storage, str(run["mission_id"])
+        )
+        # The projection keeps per-run paging state; it was serialized by the state
+        # lock before evidence reading moved out of it.
+        with self._projection_lock:
             return self._operator_projection.view(
                 run=run,
-                observations=log.entries,
-                storage_root=self.config.storage.root,
-                environment_root=self.config.environment_profile.artifact_root,
-                planner_root=self._planner_root(mission_run_id),
-                artifact_inbox=self._artifact_inbox,
+                observations=entries,
+                storage_root=root.agent_storage,
+                environment_root=root.environment_artifacts,
+                planner_root=root.planner_artifacts,
+                artifact_inbox=self._artifact_inbox_for(run),
                 narrative=narrative,
                 debug=self.config.debug,
                 section=section,
@@ -753,15 +1160,12 @@ class RuntimeHost:
                 cursor=cursor,
                 before=before,
                 raw=raw,
+                run_root=root.path,
+                operational_records=observations.operational_records(),
+                summaries=summaries,
+                stack=stack,
+                extra=extra,
             )
-
-    def _planner_root(self, mission_run_id: str) -> Path:
-        configured = self._worker_options.planner_artifacts
-        return (
-            configured
-            if configured is not None
-            else self.root / "planner-artifacts" / mission_run_id
-        )
 
     def mission_intent(self, mission_run_id: str, credential: str) -> dict[str, object]:
         with self._state_guard():
@@ -822,7 +1226,9 @@ class RuntimeHost:
                 with self._state_guard():
                     state = self._load_state()
                     persisted = state["runs"].get(mission_run_id)
-                    persisted_run = dict(persisted) if isinstance(persisted, dict) else None
+                    persisted_run = (
+                        dict(persisted) if isinstance(persisted, dict) else None
+                    )
                 identity = (
                     WorkerIdentity.from_state(persisted_run)
                     if persisted_run is not None
@@ -857,58 +1263,191 @@ class RuntimeHost:
                     terminal_classification="cancelled_by_owner",
                 )
             return
+        if os.environ.get(_WORKER_OWNERSHIP_ENV) and os.getpgrp() == os.getpid():
+            with context.run_root.worker_log.open("ab", buffering=0) as log:
+                os.dup2(log.fileno(), 1)
+                os.dup2(log.fileno(), 2)
         self._transition(context.mission_run_id, "running")
         try:
             self._worker_entrypoint(context)
-        except Exception:  # noqa: BLE001 - worker failures become durable run state.
+        except _WorkerCancelled:
+            return
+        except StackFailure as exc:
+            _append_worker_log(context.run_root, self._clock(), traceback.format_exc())
+            self._transition(
+                context.mission_run_id,
+                "failed",
+                terminal_classification="stack_failed",
+                terminal_detail={
+                    "kind": "stack_failed",
+                    "service": exc.service,
+                    "message": _terminal_detail_text(exc.message),
+                },
+            )
+        except MissionRejectedError as exc:
+            # This runs inside the Run Worker process; the state file under the
+            # cross-process lock carries the detail back to the Host process.
+            reason = _terminal_detail_text(exc.reason)
+            _append_worker_log(
+                context.run_root,
+                self._clock(),
+                f"mission rejected at intent: {reason}\n",
+            )
+            self._transition(
+                context.mission_run_id,
+                "failed",
+                terminal_classification="mission_rejected",
+                terminal_detail={
+                    "kind": "mission_rejected",
+                    "stage": "intent",
+                    "reason": reason,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - worker failures become durable run state.
+            stage = _failure_stage(exc)
+            _append_worker_log(
+                context.run_root,
+                self._clock(),
+                f"worker failed at {stage}\n{''.join(traceback.format_exception(exc))}",
+            )
             self._transition(
                 context.mission_run_id,
                 "failed",
                 terminal_classification="worker_failed",
+                terminal_detail={
+                    "kind": "worker_failed",
+                    "stage": stage,
+                    "error_type": type(exc).__name__,
+                    "message": _terminal_detail_text(str(exc)),
+                },
             )
         else:
             self._transition(context.mission_run_id, "succeeded")
 
-    def _refresh_observations(
+    def _report_rejection(self, mission_run_id: str, reason: str) -> None:
+        """Publish the decision now; lifecycle stays active until owned teardown."""
+        with self._state_guard():
+            state = self._load_state()
+            run = state["runs"].get(mission_run_id)
+            if (
+                not isinstance(run, dict)
+                or run["status"] not in _NONTERMINAL_STATUSES
+                or run.get("cancellation_requested") is True
+            ):
+                return
+            run["terminal_detail"] = {
+                "kind": "mission_rejected",
+                "stage": "intent",
+                "reason": _terminal_detail_text(reason),
+            }
+            self._save_state(state)
+
+    def _prune_run_caches(self, *, requested_run_id: str | None = None) -> None:
+        """Keep the current run, pending narratives and one requested old run.
+
+        Observations, frames and narratives remain durable under each Run Root.
+        Prune only at lifecycle boundaries or a cache miss, never on steady polls.
+        """
+        with self._state_guard():
+            current = self._current_run(self._load_state())
+        retained = set() if current is None else {str(current["mission_run_id"])}
+        if requested_run_id is not None:
+            retained.add(requested_run_id)
+        with self._narrative_guard:
+            retained.update(self._narrative_watch)
+            for run_id in self._narrative_records.keys() - retained:
+                del self._narrative_records[run_id]
+        with self._evidence_lock:
+            for run_id in self._run_observations.keys() - retained:
+                del self._run_observations[run_id]
+        with self._projection_lock:
+            self._operator_projection.discard_runs_except(retained)
+        with self._lock:
+            for run_id in self._world_views.keys() - retained:
+                del self._world_views[run_id]
+
+    def _run_evidence(
         self, mission_run_id: str
-    ) -> tuple[dict[str, Any], ObservationLog]:
-        state = self._load_state()
-        run = state["runs"].get(mission_run_id)
+    ) -> tuple[dict[str, Any], RunObservations]:
+        """Return the run record and its long-lived observations, without refreshing."""
+
+        with self._state_guard():
+            run = self._load_state()["runs"].get(mission_run_id)
         if not isinstance(run, dict):
             raise HostNotFoundError
-        try:
-            records = list(self._evidence_source.records(str(run["mission_id"])))
-        except Exception:  # noqa: BLE001 - retain the last committed evidence.
-            records = []
-        items = _project_evidence(records)
-        log = ObservationLog(
-            self.root / "observations" / f"{mission_run_id}.json"
+        if mission_run_id not in self._run_observations:
+            self._prune_run_caches(requested_run_id=mission_run_id)
+        with self._evidence_lock:
+            observations = self._run_observations.get(mission_run_id)
+            if observations is None:
+                mission_id = str(run["mission_id"])
+                log_path = self._run_root(run).path / "observations.json"
+                if self._evidence_source is not None:
+                    observations = RunObservations(
+                        log_path, mission_id, source=self._evidence_source
+                    )
+                else:
+                    observations = RunObservations(
+                        log_path, mission_id, tailer=self._evidence_tailer(run)
+                    )
+                self._run_observations[mission_run_id] = observations
+        return run, observations
+
+    def _evidence_tailer(self, run: Mapping[str, object]) -> EvidenceTailer:
+        root = self._run_root(run)
+        return EvidenceTailer(
+            str(run["mission_id"]),
+            operational_log_root=root.operational_log,
+            transport_root=root.transport,
         )
-        log.ingest(items, observed_at=self._clock())
-        return run, log
+
+    def _issued_observations(
+        self, mission_run_id: str
+    ) -> tuple[dict[str, Any], tuple[dict[str, object], ...]]:
+        """Refresh outside the state lock; a concurrent refresh serves its last entries."""
+
+        run, observations = self._run_evidence(mission_run_id)
+        return run, observations.refresh(observed_at=self._clock(), wait=False)
+
+    def _narrative_loop(self, poll_seconds: float) -> None:
+        while not self._narrative_stop.wait(poll_seconds):
+            try:
+                self.narrative_tick()
+            except Exception:  # noqa: BLE001, S112 - the next tick retries.
+                continue
 
     def _narrative_record(self, mission_run_id: str) -> RunNarrativeRecord:
         record = self._narrative_records.get(mission_run_id)
         if record is None:
+            run = self._load_state()["runs"][mission_run_id]
             record = RunNarrativeRecord(
-                self.root / "narratives" / f"{mission_run_id}.json", mission_run_id
+                self._run_root(run).path / "narrative.json",
+                mission_run_id,
             )
             self._narrative_records[mission_run_id] = record
         return record
 
-    def _should_attempt_narrative(
-        self,
-        run: Mapping[str, object],
-        record: RunNarrativeRecord,
-        max_sequence: int,
-        now: str,
-    ) -> bool:
+    def _public_narrative(self, mission_run_id: str) -> dict[str, object]:
+        terminal_without_model = False
         if self._narrative_summarizer is None:
-            return False
-        if run["status"] not in _NONTERMINAL_STATUSES:
+            with self._state_guard():
+                run = self._load_state()["runs"].get(mission_run_id)
+            terminal_without_model = (
+                isinstance(run, dict) and run["status"] not in _NONTERMINAL_STATUSES
+            )
+        if mission_run_id not in self._narrative_records:
+            self._prune_run_caches(requested_run_id=mission_run_id)
+        with self._narrative_guard:
+            record = self._narrative_record(mission_run_id)
+            if terminal_without_model and not record.terminal_generated:
+                record.publish_unavailable(generated_at=self._clock(), terminal=True)
+            return record.public_narrative()
+
+    def _narrative_due(
+        self, record: RunNarrativeRecord, *, terminal: bool, now: str
+    ) -> bool:
+        if terminal:
             return not record.terminal_generated
-        if max_sequence <= record.source_watermark:
-            return False
         last_attempt_at = record.last_attempt_at
         if last_attempt_at is None:
             return True
@@ -916,27 +1455,20 @@ class RuntimeHost:
             datetime.fromisoformat(now) - datetime.fromisoformat(last_attempt_at)
         ).total_seconds() >= self._narrative_interval_seconds
 
-    @staticmethod
-    def _narrative_response(
-        run: Mapping[str, object],
-        mission_run_id: str,
-        record: RunNarrativeRecord,
-    ) -> dict[str, object]:
-        return {
-            "schema_version": 1,
-            "mission_id": run["mission_id"],
-            "mission_run_id": mission_run_id,
-            "narrative": record.public_narrative(),
-        }
-
     def _transition(
         self,
         mission_run_id: str,
         status: str,
         *,
         terminal_classification: str | None = None,
+        terminal_detail: Mapping[str, object] | None = None,
         cancellation_tree_exited: bool = False,
     ) -> None:
+        if cancellation_tree_exited:
+            with self._state_guard():
+                completed_run = self._load_state()["runs"].get(mission_run_id)
+            if isinstance(completed_run, dict):
+                self._mark_stack_stopped(self._run_root(completed_run))
         with self._state_guard():
             state = self._load_state()
             run = state["runs"].get(mission_run_id)
@@ -952,6 +1484,7 @@ class RuntimeHost:
             if status != "running" and run.get("cancellation_requested") is True:
                 status = "cancelled"
                 terminal_classification = "cancelled_by_owner"
+                terminal_detail = None
             run["status"] = status
             now = self._clock()
             if status == "running":
@@ -959,7 +1492,37 @@ class RuntimeHost:
             else:
                 run["finished_at"] = now
                 run["terminal_classification"] = terminal_classification
+                run["terminal_detail"] = (
+                    None if terminal_detail is None else dict(terminal_detail)
+                )
             self._save_state(state)
+
+    def _mark_stack_stopped(self, root: RunRoot) -> None:
+        """A forcibly reaped stack must not retain stale ready service badges."""
+        status = self._stack_status_cache.get(root.stack_status)
+        if status is None:
+            return
+        services = [
+            {**service, "state": "stopped", "importance": "routine"}
+            if service.get("state") in {"ready", "starting"}
+            else dict(service)
+            for service in status.get("services", [])
+        ]
+        if services == status.get("services"):
+            return
+        path = root.stack_status.with_name(".stack-status.host.tmp")
+        try:
+            path.write_text(
+                json.dumps(
+                    {**status, "services": services, "updated_at": self._clock()}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(path, root.stack_status)
+        except OSError:
+            # Lifecycle authority still records the verified process-tree exit.
+            pass
 
     def _terminate_owned_worker(
         self,
@@ -977,16 +1540,35 @@ class RuntimeHost:
         process_group_id = identity.process_group_id
         if not identity.is_owned():
             return self._finish_unowned_cancellation(mission_run_id, process_group_id)
-        self._signal_process_group(process_group_id, signal.SIGTERM)
-        self._wait_for_process_group_exit(process_group_id, worker, timeout=1.0)
-        if self._process_group_exists(process_group_id):
-            if not identity.is_owned():
+        # Let the worker unwind through reverse supervisor teardown first.
+        if _process_start_time(identity.pid) == identity.process_start_time:
+            try:
+                os.kill(identity.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        self._wait_for_owned_tree(identity, worker, timeout=7.0)
+        for selected_signal in (signal.SIGTERM, signal.SIGKILL):
+            if not identity.is_owned() and self._process_group_exists(process_group_id):
                 return self._finish_unowned_cancellation(
                     mission_run_id, process_group_id
                 )
-            self._signal_process_group(process_group_id, signal.SIGKILL)
-            self._wait_for_process_group_exit(process_group_id, worker, timeout=3.0)
-        exited = not self._process_group_exists(process_group_id)
+            owned_worker_group = _process_start_time(
+                identity.pid
+            ) == identity.process_start_time or _owned_group_member_exists(
+                process_group_id,
+                identity.process_session_id,
+                identity.ownership_token,
+            )
+            if owned_worker_group and self._process_group_exists(process_group_id):
+                self._signal_process_group(process_group_id, selected_signal)
+            for group in _owned_detached_groups(
+                identity.ownership_token, process_group_id
+            ):
+                self._signal_process_group(group, selected_signal)
+            self._wait_for_owned_tree(identity, worker, timeout=1.0)
+        exited = not self._process_group_exists(
+            process_group_id
+        ) and not _owned_detached_groups(identity.ownership_token, process_group_id)
         if exited and reconcile:
             self._transition(
                 mission_run_id,
@@ -1003,6 +1585,25 @@ class RuntimeHost:
                 worker,
             )
         return exited
+
+    def _wait_for_owned_tree(
+        self,
+        identity: WorkerIdentity,
+        worker: WorkerHandle | None,
+        *,
+        timeout: float,
+    ) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if worker is not None:
+                worker.join(timeout=0.02)
+            if not self._process_group_exists(
+                identity.process_group_id
+            ) and not _owned_detached_groups(
+                identity.ownership_token, identity.process_group_id
+            ):
+                return
+            time.sleep(0.05)
 
     def _finish_unowned_cancellation(
         self, mission_run_id: str, process_group_id: int
@@ -1058,8 +1659,14 @@ class RuntimeHost:
     def _reconcile_cancelled_worker(
         self, mission_run_id: str, process_group_id: int, worker: WorkerHandle | None
     ) -> None:
-        while self._process_group_exists(process_group_id):
+        with self._state_guard():
+            run = self._load_state()["runs"].get(mission_run_id, {})
+            token = str(run.get("worker_ownership_token", ""))
+        while self._process_group_exists(process_group_id) or (
+            token and _owned_detached_groups(token, process_group_id)
+        ):
             self._wait_for_process_group_exit(process_group_id, worker, timeout=0.25)
+            time.sleep(0.05)
         self._transition(
             mission_run_id,
             "cancelled",
@@ -1071,7 +1678,12 @@ class RuntimeHost:
     def _reconcile_recovered_worker(
         self, mission_run_id: str, process_group_id: int, cancelled: bool
     ) -> None:
-        while self._process_group_exists(process_group_id):
+        with self._state_guard():
+            run = self._load_state()["runs"].get(mission_run_id, {})
+            token = str(run.get("worker_ownership_token", ""))
+        while self._process_group_exists(process_group_id) or (
+            token and _owned_detached_groups(token, process_group_id)
+        ):
             time.sleep(0.25)
         self._transition(
             mission_run_id,
@@ -1095,14 +1707,27 @@ class RuntimeHost:
             os.killpg(process_group_id, 0)
         except ProcessLookupError:
             return False
-        return True
+        # killpg(0) also succeeds for zombie-only groups. A reconstructed Host
+        # has no ChildHandle to reap them, but they cannot retain live services.
+        try:
+            for path in Path("/proc").iterdir():
+                if not path.name.isdigit():
+                    continue
+                identity = _process_identity(int(path.name))
+                if identity is not None and identity[0] == process_group_id:
+                    return True
+        except OSError:
+            return True  # An unreadable procfs cannot prove that the group died.
+        return False
 
     @classmethod
     def _wait_for_process_group_exit(
         cls, process_group_id: int, worker: WorkerHandle | None, *, timeout: float
     ) -> None:
         deadline = time.monotonic() + timeout
-        while cls._process_group_exists(process_group_id) and time.monotonic() < deadline:
+        while (
+            cls._process_group_exists(process_group_id) and time.monotonic() < deadline
+        ):
             if worker is not None:
                 worker.join(timeout=0.02)
             else:
@@ -1207,25 +1832,6 @@ def _digest_json(value: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _project_evidence(records: Sequence[object]) -> tuple[TraceViewItem, ...]:
-    """Project heterogeneous public records without bypassing the redaction seam."""
-
-    groups: dict[str, tuple[int, list[Any]]] = {}
-    for index, record in enumerate(records):
-        key = _projection_batch_key(record)
-        group = groups.get(key)
-        if group is None:
-            group = (index, [])
-            groups[key] = group
-        group[1].append(record)
-    projection = TraceProjection()
-    return tuple(
-        item
-        for _, batch in sorted(groups.values(), key=lambda group: group[0])
-        for item in projection.project(batch)
-    )
-
-
 def _observation_envelopes(
     entries: Sequence[Mapping[str, object]],
 ) -> list[dict[str, object]]:
@@ -1240,43 +1846,6 @@ def _observation_envelopes(
     ]
 
 
-def _projection_batch_key(record: object) -> str:
-    if isinstance(record, str):
-        try:
-            decoded = json.loads(record)
-        except (TypeError, ValueError):
-            return "malformed"
-        record = decoded
-    if not isinstance(record, Mapping):
-        return "malformed"
-    keys = set(record)
-    if "entry_state" in keys or "transitions" in keys and "states" in keys:
-        return "statechart"
-    if "record_id" in keys:
-        return "operational_log"
-    if "summary_id" in keys:
-        return "summary"
-    if "feedback_id" in keys:
-        return "maneuver_feedback"
-    if "request_id" in keys and "requester" in keys:
-        return "replan_request"
-    if "command_id" in keys and "command_kind" in keys:
-        return "command"
-    if "command_id" in keys and "target_service" in keys:
-        return "receipt"
-    if "command_id" in keys:
-        return "outcome"
-    if "event_id" in keys:
-        return "transport_event"
-    if "version" in keys or "source_references" in keys:
-        return "snapshot"
-    if "record_revision" in keys or "active_configuration" in keys:
-        return "fsm_execution"
-    if "transition_candidates" in keys:
-        return "fsm_status"
-    return "malformed"
-
-
 def _process_start_time(pid: int) -> str | None:
     identity = _process_identity(pid)
     return None if identity is None else identity[2]
@@ -1289,7 +1858,7 @@ def _process_identity(pid: int) -> tuple[int, int, str] | None:
         return None
     closing = raw.rfind(")")
     fields = raw[closing + 2 :].split() if closing >= 0 else []
-    if len(fields) <= 19:
+    if len(fields) <= 19 or fields[0] in {"Z", "X"}:
         return None
     try:
         return int(fields[2]), int(fields[3]), fields[19]
@@ -1323,11 +1892,36 @@ def _owned_group_member_exists(
     return False
 
 
+def _owned_detached_groups(ownership_token: str, worker_group: int) -> set[int]:
+    """Find owned detached Harbor groups, leaving the restoration guardian alone."""
+    expected = f"{_WORKER_OWNERSHIP_ENV}={ownership_token}".encode()
+    groups: set[int] = set()
+    try:
+        paths = tuple(Path("/proc").iterdir())
+    except OSError:
+        return groups
+    for path in paths:
+        if not path.name.isdecimal():
+            continue
+        identity = _process_identity(int(path.name))
+        if identity is None or identity[0] == worker_group:
+            continue
+        try:
+            if expected not in (path / "environ").read_bytes().split(b"\0"):
+                continue
+            if b"--guard-parent" in (path / "cmdline").read_bytes().split(b"\0"):
+                continue
+        except OSError:
+            continue
+        # A detached session is private to this stack, unlike external services.
+        if identity[0] == identity[1]:
+            groups.add(identity[0])
+    return groups
+
+
 def _credential_verifier(credential: str) -> str:
     salt = os.urandom(16)
-    digest = hashlib.scrypt(
-        credential.encode("utf-8"), salt=salt, n=2**14, r=8, p=1
-    )
+    digest = hashlib.scrypt(credential.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
     return f"scrypt${salt.hex()}${digest.hex()}"
 
 
@@ -1360,4 +1954,63 @@ def _public_run(run: Mapping[str, object]) -> dict[str, object]:
         "finished_at",
         "terminal_classification",
     )
-    return {key: run[key] for key in keys if key in run}
+    public = {key: run[key] for key in keys if key in run}
+    # v1.2 fields are always present; runs recorded before v1.2 report null.
+    public["stack"] = run.get("stack")
+    public["terminal_detail"] = run.get("terminal_detail")
+    return public
+
+
+def _terminal_detail_text(value: object) -> str:
+    """Redact credential-shaped text, drop control characters, cap the length."""
+
+    text = value if isinstance(value, str) else str(value)
+    safe, _ = sanitize_payload({"value": text})
+    redacted = safe.get("value")
+    text = redacted if isinstance(redacted, str) else ""
+    printable = "".join(
+        character if character.isprintable() else " " for character in text
+    )
+    return " ".join(printable.split())[:_TERMINAL_DETAIL_TEXT_LIMIT]
+
+
+def _failure_stage(exc: BaseException) -> str:
+    """Best-effort closed-loop stage at which a worker exception was raised."""
+
+    frames = {frame.name for frame in traceback.extract_tb(exc.__traceback__)}
+    if "_run_hyper_revision" in frames:
+        return "hyper"
+    if "run_closed_loop_demo" in frames:
+        return "closed_loop"
+    return "worker"
+
+
+def _append_worker_log(run_root: RunRoot, now: str, text: str) -> None:
+    try:
+        run_root.worker_log.parent.mkdir(parents=True, exist_ok=True)
+        with run_root.worker_log.open("a", encoding="utf-8") as handle:
+            handle.write(f"{now} {text}")
+    except OSError:
+        pass
+
+
+def _reset_locks_in_forked_worker(host: RuntimeHost) -> None:
+    """Give a forked Run Worker fresh in-process locks.
+
+    A Host thread may hold the state lock at fork time; the child's copy would
+    then stay locked forever. The cross-process ``flock`` still serializes state.
+    """
+
+    reference = weakref.ref(host)
+
+    def reset() -> None:
+        selected = reference()
+        if selected is not None:
+            selected._lock = RLock()
+            selected._narrative_guard = Lock()
+            selected._narrative_attempt = Lock()
+            selected._projection_lock = Lock()
+            selected._evidence_lock = Lock()
+            selected._stack_status_cache = JsonFileCache(dict, max_bytes=1024 * 1024)
+
+    os.register_at_fork(after_in_child=reset)

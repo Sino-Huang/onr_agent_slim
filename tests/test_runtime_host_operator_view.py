@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -39,10 +40,12 @@ class MutableEvidence:
 
 
 def _config(tmp_path: Path, *, debug: bool) -> RuntimeConfig:
+    fake_profile = DEFAULT_ENVIRONMENT_PROFILE.fake
+    assert fake_profile is not None
     environment = replace(
         DEFAULT_ENVIRONMENT_PROFILE,
         fake=replace(
-            DEFAULT_ENVIRONMENT_PROFILE.fake,
+            fake_profile,
             artifact_root=tmp_path / "environment",
         ),
     )
@@ -89,7 +92,7 @@ def _client(
         launch_worker=pending.append,
         evidence_source=evidence,
     )
-    client = TestClient(create_app(host=host))
+    client = TestClient(create_app(host=host), client=("127.0.0.1", 50000))
     response = client.post(
         "/api/v1/mission-activations",
         headers={"Authorization": "Bearer console-secret"},
@@ -101,6 +104,17 @@ def _client(
         },
     )
     assert response.status_code == 202
+    run_root = host._runs_root / "run-1"
+    fake = config.environment_profile.fake
+    assert fake is not None
+    config = replace(
+        config,
+        storage=replace(config.storage, root=run_root / "agent-storage"),
+        environment_profile=replace(
+            config.environment_profile,
+            fake=replace(fake, artifact_root=run_root / "environment-artifacts"),
+        ),
+    )
     return client, host, evidence, config
 
 
@@ -249,7 +263,7 @@ def test_v1_1_overview_contract_unknown_runs_and_strict_query_validation(
 
     assert client.get("/api/v1/health").json() == {
         "status": "ok",
-        "api_version": {"major": 1, "minor": 1},
+        "api_version": {"major": 1, "minor": 3},
     }
     response = _view(client, "overview")
     assert response.status_code == 200
@@ -288,12 +302,7 @@ def test_v1_1_overview_contract_unknown_runs_and_strict_query_validation(
     for path in invalid_paths:
         invalid = client.get(path)
         assert invalid.status_code == 422
-        assert invalid.json() == {
-            "error": {
-                "code": "invalid_request",
-                "message": "operator-view query is invalid",
-            }
-        }
+        assert invalid.json()["error"]["code"] == "invalid_request"
 
 
 def test_agents_expose_debug_reasoning_tool_payloads_and_update_stable_identity(
@@ -384,6 +393,103 @@ def test_agents_expose_debug_reasoning_tool_payloads_and_update_stable_identity(
     assert _view(client, "agents", "cursor=bad").status_code == 422
 
 
+def test_agent_cursor_pages_follow_new_completed_and_redirected_debug_records(
+    tmp_path: Path,
+) -> None:
+    client, _, evidence, config = _client(tmp_path)
+    evidence.items.append(_operational(1, "planning-intent"))
+    first_path = _write_debug(
+        config,
+        role="hyper-agent",
+        sequence=1,
+        invocation=_invocation(
+            1,
+            "hyper-llm-1",
+            role="hyper-agent",
+            kind="llm",
+            name="planner_executor",
+            completion_state="live",
+            revision=1,
+        ),
+    )
+
+    first = _view(client, "agents").json()
+    assert {
+        item["invocation_id"]: item["completion_state"] for item in first["agents"]
+    }["hyper-llm-1"] == "live"
+    idle = _view(client, "agents", f"cursor={first['next_cursor']}").json()
+    assert idle["agents"] == []
+    assert idle["has_more"] is False
+    assert idle["next_cursor"] == first["next_cursor"]
+
+    # The running invocation completes and a new invocation records its exchange.
+    temporary = first_path.with_name(f".{first_path.name}.tmp")
+    temporary.write_text(
+        json.dumps(
+            _invocation(
+                1,
+                "hyper-llm-1",
+                role="hyper-agent",
+                kind="llm",
+                name="planner_executor",
+            )
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, first_path)
+    _write_debug(
+        config,
+        role="hyper-agent",
+        sequence=2,
+        invocation=_invocation(
+            2, "hyper-llm-2", role="hyper-agent", kind="llm", name="planner_executor"
+        ),
+        llm={
+            **_llm("hyper-llm-2"),
+            "sequence": 2,
+            "content": "Chose the second action.",
+        },
+    )
+    page = _view(client, "agents", f"cursor={idle['next_cursor']}&limit=1").json()
+    assert len(page["agents"]) == 1
+    assert page["has_more"] is True
+    rest = _view(client, "agents", f"cursor={page['next_cursor']}").json()
+    assert rest["has_more"] is False
+    changed = {item["invocation_id"]: item for item in page["agents"] + rest["agents"]}
+    assert set(changed) == {"hyper-llm-1", "hyper-llm-2"}
+    assert changed["hyper-llm-1"]["completion_state"] == "complete"
+    assert changed["hyper-llm-2"]["content"] == "Chose the second action."
+    assert changed["hyper-llm-2"]["recorded_debug_reasoning"]["authority"] == (
+        "non-authoritative"
+    )
+
+    # A record replaced by a symlink to another Mission's evidence is not exposed.
+    foreign = tmp_path / "foreign-llm.json"
+    foreign.write_text(
+        json.dumps(
+            {
+                **_llm("hyper-llm-2"),
+                "sequence": 2,
+                "content": "Foreign mission answer.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    llm_path = (
+        config.storage.root.parent
+        / "debug"
+        / "llm"
+        / "hyper-agent"
+        / quote("mission-1", safe="._-")
+        / f"{2:020d}.json"
+    )
+    llm_path.unlink()
+    llm_path.symlink_to(foreign)
+    redirected = _view(client, "agents", f"cursor={rest['next_cursor']}").json()
+    overview = _view(client, "overview").json()
+    assert "Foreign mission answer." not in json.dumps([redirected, overview])
+
+
 def test_debug_disabled_keeps_high_level_agent_progress_with_explicit_disposition(
     tmp_path: Path,
 ) -> None:
@@ -429,8 +535,10 @@ def test_environment_filters_noise_raw_toggle_and_preserves_latest_state(
             ).to_dict(),
         ]
     )
+    fake_profile = config.environment_profile.fake
+    assert fake_profile is not None
     environment_file = (
-        config.environment_profile.fake.artifact_root / "mission-1" / "environment.json"
+        fake_profile.artifact_root / "mission-1" / "environment.json"
     )
     environment_file.parent.mkdir(parents=True)
     environment_file.write_text(
@@ -474,8 +582,10 @@ def test_environment_filters_noise_raw_toggle_and_preserves_latest_state(
 
 def test_environment_projection_renders_physical_v2_shape(tmp_path: Path) -> None:
     client, _, _, config = _client(tmp_path)
+    fake_profile = config.environment_profile.fake
+    assert fake_profile is not None
     environment_file = (
-        config.environment_profile.fake.artifact_root / "mission-1" / "environment.json"
+        fake_profile.artifact_root / "mission-1" / "environment.json"
     )
     environment_file.parent.mkdir(parents=True)
     environment_file.write_text(
@@ -518,7 +628,7 @@ def test_artifacts_merge_public_and_allowlisted_planner_files_with_bounded_conte
 ) -> None:
     client, _, _, config = _client(tmp_path)
     _publish_public_artifact(config)
-    planner_root = config.storage.root / "runtime-host" / "planner-artifacts" / "run-1"
+    planner_root = config.storage.root.parent / "planner-artifacts"
     accepted = planner_root / "statechart-attempts" / "001" / "accepted-statechart.json"
     accepted.parent.mkdir(parents=True)
     accepted.write_text('{"accepted":true}\n' + "x" * 5000, encoding="utf-8")

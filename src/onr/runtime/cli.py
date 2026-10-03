@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from onr.adapters.file_transport import FileTransport
 from onr.adapters.role_skills import FilesystemRoleSkillCatalog
@@ -24,6 +24,7 @@ from onr.application.mission4_planning import (
 from onr.application.mission4_planning import (
     decision_from_trigger as mission4_decision_from_trigger,
 )
+from onr.application.reporting_reliability import ReportingReliabilityService
 from onr.contracts.bayesian_belief import BayesianBeliefSnapshot, BeliefKey
 from onr.contracts.context_coordination import MissionSnapshot
 from onr.contracts.hyper_agent import HyperHeartbeatInvocation, MissionInput
@@ -205,7 +206,7 @@ def _mission_end_time(
         if not isinstance(search, Mapping):
             raise TypeError("environment planning view has no Mission 4 search state")
         return float(search["deadline_s"])
-    return float(world_model_info["mission_end_time_s"])
+    return float(cast(float, world_model_info["mission_end_time_s"]))
 
 
 class MissionRejectedError(RuntimeError):
@@ -349,14 +350,17 @@ def run_closed_loop_demo(
     belief_service = (
         None
         if mode not in {"mission1", "joint"}
-        else runtime.create_bayesian_belief_service(
-            mission_id=mission_input.mission_id,
-            keys=tuple(
-                BeliefKey(entity_id, "reporting-corruption") for entity_id in ship_ids
+        else cast(
+            ReportingReliabilityService,
+            runtime.create_bayesian_belief_service(
+                mission_id=mission_input.mission_id,
+                keys=tuple(
+                    BeliefKey(entity_id, "reporting-corruption") for entity_id in ship_ids
+                ),
+                belief_kind="reporting_reliability",
+                context_topic="planning-evidence",
+                clock=lambda: "2026-08-23T00:00:00+10:00",
             ),
-            belief_kind="reporting_reliability",
-            context_topic="planning-evidence",
-            clock=lambda: "2026-08-23T00:00:00+10:00",
         )
     )
     belief = None if belief_service is None else belief_service.load_current_snapshot()
@@ -557,7 +561,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         load_system_prompt(repo_root / "conf/system_prompt", "maneuver-control")
 
         stage = "closed-loop Mission run"
-        with runtime.runtime_session():
+        # The mission session runs the Mission Log Summary worker beside the loop.
+        with runtime.mission_session(
+            mission_input.mission_id, model=runtime.create_chat_model()
+        ):
             result = run_closed_loop_demo(
                 runtime,
                 mission_input,

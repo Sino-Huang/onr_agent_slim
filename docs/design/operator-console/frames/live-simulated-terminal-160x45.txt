@@ -1,0 +1,45 @@
+ RUN run-998f35fe… ● succeeded 00:28:15 │ FSM patrol-objective-complete │ stack ■■ │ host ○ idle
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✔ Executing ─ ✔ Done
+┌ Mission Run ────────────────────────────────────────────────────────────────────┐┌ world · seq 599 · final ──────────────────────────────────────────────────┐
+│ Status:    succeeded                                                            ││▄▄▄▄▄▄▄▄▀▀▀▄▀▄▀▀▀▀▀▄▄▄▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                             │
+│ Mission:   mission-6ccc1788-a6a9-42ba-97d9-530866823484                         ││▄▄▀▀▀▀▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▀▀▀▀▀                                         │
+│ Run:       run-998f35fe-690d-4127-8eec-b8e040f23902                             ││▀▀▀   ▀▄▀▄▀▀▀▄▄▄▄▀▀▄▀▀▀▀▀▀▀▀▀▄▀▀▀▀  ▀▀▀      ▄                             │
+│ Stack:     mission1-harbor · AirSim off · perception off                        ││▀▀▀▀▀ ▀▀▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▀▄▀▀▀▀▀▀▀▀▀ ▄                             │
+│ Started:   2026-10-01T17:44:59.444221+00:00                                     ││      ▄▄▀▀   ▀▀▀▀▀▀▀▀▀▀▀▀                                                  │
+│ Finished:  2026-10-01T18:13:14.905736+00:00                                     ││     ▄▄▀▀▀   ▄▄▄▄▄▄▄ ▀▀▀   ▀▀                                              │
+│                                                                                 ││ ▄▄▄▄▀▀  ▄▄▄▄▀ ▀    ▄ ▄ ▄▄▄▄ ▄▄▄▄ ▄▄▀ ▄▄▄▄▄▄ ▀                             │
+│                                                                                 ││ ▄▄▄▀▀▄ ▄▀▀▀▄▄▄▄▄▀▄▄▄▄▄▄▄▄▄▄▄▄▀▀▄▄▄▄▄▄▄▄▄▄▄▄ ▀                             │
+└─────────────────────────────────────────────────────────────────────────────────┘│ ▄▄▀▀     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄▄▀ ▄▄▀▀▄▄   ▀                             │
+┌ Progress ───────────────────────────────────────────────────────────────────────┐│▄▄▀▀        ▄▄▄     ▄▄▀  ▄▄ ▀▀▀▀▀▀▀ ▀▀▄▄▄▀                                 │
+│◆ Run Narrative · AI · non-authoritative                                         ││▀▀    ▀      ▀ ▀    ▀▀▀▄▄▄▄▄▄▄▄▄▄▀▀▀▄▀▀▀▀▀   ▄                             │
+│The mission has successfully reached its terminal phase, with the finite state   ││▀▀▀▀▀ ▀ ▀▀▀▀▀▀ ▀▀▀▀▀▀ ▀▀▀▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▄                             │
+│machine confirming the transition to "patrol-objective-complete" under plan      ││                        ▀▀▀▄▄▀▄▀▄▄▄                                        │
+│revision 4. This final transition, executed between 18:12:44 and 18:12:45 UTC,   ││▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄      ▀▀▀▀▀▀▀▄▄    ▄▄                                  │
+│concludes the active execution loop of assignment-1. Following this state change,││▀▄▄▄▄▄▀▀▀▀   ▀▀▄▄▀▀▀▄ ▄ ▄▄▄▄▄▄▀▄▀▀ ▄▄ ▄▄▄▄▄▄ ▀                             │
+│the system continued to process final transport sequences 75 and 76 while the    ││▀▀▀▀▀▀▀▄▀▄▄▄▀▀▄▄▀▀▄ ▀▀▄▄▄▄▄▄▀▀▄▄▄▄▄ ▄ ▄      ▀                             │
+│maneuver-control system recorded one successful tool call and one transition at  ││ ▀▀▀▄▄▄▄▄▄▄▄▄▄▀▀      ▀▀▄▀▄▀▀▄▀▄▀▄▄                                        │
+│18:13:02 UTC. The run status is officially marked as "succeeded," with no        ││▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀    ▀▀▀▀▀▀▄▄▄▄▄▀ ▀ ▀      ▄                             │
+│critical errors, warnings, or unplanned replanning events observed during the    ││    ▀▀▀▀▄▀▀▀        ▀ ▀ ▀▀▀▀▀▀▀▀▀▀▀ ▀ ▀ ▀▀▀▀ ▄                             │
+│concluding interval. All monitoring snapshots, including the final revision 682, ││  ▀▄▄▄▄▄▀▀▀▀ ▀▀▀▀▀▀ ▀   ▀▀▄▄▀▀▀▀▀▀▀ ▀ ▀ ▀▀▀▀ ▄                             │
+│confirm completed outcomes, bringing the operational sequence to a stable close. ││  ▄▀ ▀ ▀  ▄▄ ▄▄ ▄▄▄       ▀▀▀▀▀▀▀                                          │
+│The mission is now fully terminated, having achieved its patrol objectives       ││▄        ▄    ▄▄▄▄                       ▄▄                                │
+│without deviation.                                                               ││▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄ ▄▄▄▄ ▄ ▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄                             │
+│● AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued execution in the     │└───────────────────────────────────────────────────────────────────────────┘
+│state "patrol-objective-complete" on 2026-10-01… (4 records)                     │┌ Belief ───────────────────────────────────────────────────────────────────┐
+│● AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 transitioned from state        ││reporting_reliability · r17                                                │
+│"assignment-1-in-progress" to "patrol-objective-co… (2 records)                  ││ship 5 0.8529 · Δ prior +0.7200 · prev +0.0906                             │
+│· AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued execution under plan ││ship 4 0.0189 · Δ prior -0.1140 · prev +0.0000                             │
+│revision 4 on 2026-10-01, maintaining the s… (45 records)                        ││ship 13 0.0189 · Δ prior -0.1140 · prev +0.0000                            │
+│                                                                                 ││ship 16 0.0051 · Δ prior -0.1278 · prev +0.0000                            │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
+┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v682 · plan r4                                                    │
+│ No Human Decision Requests require action.                                      ││Sources: no reported health/freshness warnings                             │
+│ Status-only view: no decision controls.                                         ││FSM patrol-objective-complete · candidates 0                               │
+│                                                                                 ││pursue · active                                                            │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · e new intent · q exit
+ ✖ critical 0  ▲ warning 0  ● notable 54  · routine 85  ∙ debug 685

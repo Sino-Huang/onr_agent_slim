@@ -1,0 +1,45 @@
+ RUN run-998f35fe… ● succeeded 00:28:15 │ FSM patrol-objective-complete │ stack ■■ │ host ○ idle
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✔ Executing ─ ✔ Done
+┌ Progress · ≥ routine · paused ────────────────────────────────────────────────────────────┐┌ Selected evidence · PgUp/PgDn ──────────────────────────────────┐
+│        ● 18:06:13.435702+00:00 HYP Planning intent accepted (minizinc, temporal)          ││Planning intent accepted (minizinc, temporal)                    │
+│        ● 18:06:13.653929+00:00 HYP Planner chosen: minizinc (temporal)                    ││hyper-agent · notable · record                                   │
+│        ● 18:06:42.348939+00:00 HYP Planner assets accepted: data.dzn,model.mzn            ││Time: 2026-10-01T17:55:48.009992+00:00                           │
+│        ● 18:06:43.116161+00:00 HYP Planner minizinc verified plan (rev 4)                 ││                                                                 │
+│        ● 18:06:43.454886+00:00 HYP Statechart verified                                    ││                                                                 │
+│        ● 18:06:54.634587+00:00 HYP Hyper workflow completed (execution_ready)             ││Details:                                                         │
+│        ● 18:06:55.124697+00:00 FSM FSM superseded by plan (rev 4)                         ││{                                                                │
+│        · 18:06:55.367715+00:00 FSM FSM patrol-awaiting-first-assignment updated           ││  "planner_id": "minizinc",                                      │
+│        · 18:06:56.333691+00:00 FSM FSM patrol-awaiting-first-assignment updated           ││  "planning_profile": "temporal"                                 │
+│        · 18:06:56.947674+00:00 FSM FSM patrol-awaiting-first-assignment updated           ││}                                                                │
+│        ● 18:06:57.202903+00:00 FSM FSM patrol-awaiting-first-assignment → assignment-1-in-││                                                                 │
+│        · 18:06:57.459030+00:00 FSM FSM assignment-1-in-progress updated                   ││                                                                 │
+│        · 18:06:57.962868+00:00 FSM FSM assignment-1-in-progress updated                   ││                                                                 │
+│        · 18:06:58.713658+00:00 FSM FSM assignment-1-in-progress updated                   ││                                                                 │
+│        ● 18:06:59.022251+00:00 MAN Maneuver command queued                                ││                                                                 │
+│        ● 18:06:59.232018+00:00 MAN Maneuver heartbeat · 1 transition(s)                   ││                                                                 │
+│        · 18:06:59.463118+00:00 FSM FSM assignment-1-in-progress updated                   ││                                                                 │
+│    ▸ ● 18:07:06.767594+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued exe││                                                                 │
+│    ▸ ● 17:59:45.334114+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 re-entered th││                                                                 │
+│    ▾ ● 18:01:01.903160+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 advanced thro││                                                                 │
+│        ● 18:01:02.075086+00:00 HYP Planning intent accepted (minizinc, temporal)          ││                                                                 │
+│        ● 18:01:02.252589+00:00 HYP Planner chosen: minizinc (temporal)                    ││                                                                 │
+│    ▸ ● 18:01:30.521611+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 completed the││                                                                 │
+│    ▸ ● 18:01:59.463248+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued exe││                                                                 │
+│    ▸ ● 17:54:08.693237+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued its││                                                                 │
+│    ▾ ● 17:55:47.859543+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 progressed in││                                                                 │
+│›       ● 17:55:48.009992+00:00 HYP Planning intent accepted (minizinc, temporal)          ││                                                                 │
+│        ● 17:55:48.165104+00:00 HYP Planner chosen: minizinc (temporal)                    ││                                                                 │
+│        ● 17:56:14.681395+00:00 HYP Planner assets accepted: data.dzn,model.mzn            ││                                                                 │
+│        ● 17:56:15.581059+00:00 HYP Planner minizinc verified plan (rev 2)                 ││                                                                 │
+│    ▸ ● 17:56:15.846200+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 transitioned ││                                                                 │
+│    ▸ · 17:51:51.363650+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued its││                                                                 │
+│    ▸ · 17:53:01.470092+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued its││                                                                 │
+│    ▸ · 17:50:45.130501+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued its││                                                                 │
+│    ▸ · 17:49:43.733361+00:00 AI Mission 6ccc1788-a6a9-42ba-97d9-530866823484 continued its││                                                                 │
+└───────────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────┘
+ /Planning intent accepted · 3/4 matches · n/N next/previous
+ ↑↓ select · ←→ expand/collapse · Enter toggle · f follow newest · i minimum importance
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ move · ←→ fold · f follow · i importance · / search · n/N matches · ? help · e new intent · q exit
+ Host overview poll failed (transport error: timeout: global); showing last known state

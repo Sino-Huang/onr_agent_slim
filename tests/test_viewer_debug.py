@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,11 @@ import pytest
 
 import onr.viewer.server as viewer_server
 from onr.runtime.lease import RuntimeLease, RuntimeLeaseStore
+from onr.viewer.debug import (
+    DebugArtifactCatalog,
+    load_debug_artifacts,
+    load_llm_conversations,
+)
 from onr.viewer.server import ViewerHTTPServer, create_server
 from tests.config_helpers import write_environment_profile
 
@@ -588,3 +594,133 @@ def test_debug_endpoint_headers_head_and_query_validation(tmp_path: Path) -> Non
     assert head_response.getheader("Content-Length") == str(len(get_body))
     assert head_body == b""
     assert all(json.loads(body) == _EMPTY for body in invalid_bodies)
+
+
+def _replace(path: Path, value: object) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    _write(temporary, value)
+    os.replace(temporary, path)
+
+
+def _assert_catalog_matches_loaders(
+    catalog: DebugArtifactCatalog, storage: Path, mission_id: str
+) -> None:
+    snapshot = catalog.snapshot()
+    profiles, invocations = load_debug_artifacts(storage, mission_id)
+    assert list(snapshot.profiles) == profiles
+    assert list(snapshot.invocations) == invocations
+    assert list(snapshot.conversations) == load_llm_conversations(storage, mission_id)
+
+
+def test_debug_catalog_tracks_record_changes_like_the_loaders(tmp_path: Path) -> None:
+    storage = tmp_path / "storage"
+    canonical = _mission_root(storage, "mission-one")
+    legacy = _mission_root(storage, "mission-one", legacy=True)
+    llm_root = _llm_root(storage, "mission-one", "hyper-agent")
+    live = {
+        **_invocation(1, "invocation-live"),
+        "schema_version": 2,
+        "output": None,
+        "finished_at": None,
+        "updated_at": "2026-08-19T01:00:01+00:00",
+        "completion_state": "live",
+        "revision": 1,
+    }
+    _write(canonical / "profiles" / "hyper.json", _profile("hyper-agent"))
+    _write(canonical / "01.json", live)
+    _write(legacy / "02.json", _invocation(2, "legacy-maneuver", role="maneuver-control"))
+    _write(llm_root / "01.json", _llm_artifact_v2())
+    catalog = DebugArtifactCatalog(storage, "mission-one")
+
+    first = catalog.snapshot()
+    assert [item["invocation_id"] for item in first.invocations] == [
+        "invocation-live",
+        "legacy-maneuver",
+    ]
+    assert first.conversations[0]["completion_state"] == "live"
+    assert catalog.snapshot() is first
+    _assert_catalog_matches_loaders(catalog, storage, "mission-one")
+
+    # Completion replaces the running invocation and its raw conversation.
+    _replace(
+        canonical / "01.json",
+        {
+            **live,
+            "output": {"done": True},
+            "finished_at": "2026-08-19T01:00:02+00:00",
+            "completion_state": "complete",
+            "revision": 2,
+        },
+    )
+    _replace(
+        llm_root / "01.json",
+        {
+            **_llm_artifact_v2(),
+            "content": "finished answer",
+            "finished_at": "2026-08-19T01:00:02+00:00",
+            "completion_state": "complete",
+            "revision": 4,
+        },
+    )
+    completed = catalog.snapshot()
+    assert completed.version > first.version
+    assert completed.invocations[0]["completion_state"] == "complete"
+    assert completed.conversations[0]["content"] == "finished answer"
+    _assert_catalog_matches_loaders(catalog, storage, "mission-one")
+
+    # A partially written record stays hidden until it becomes valid.
+    partial = canonical / "03.json"
+    partial.write_text('{"schema_version": 1, "sequence"', encoding="utf-8")
+    assert "invocation-three" not in json.dumps(catalog.snapshot().invocations)
+    _write(partial, _invocation(3, "invocation-three"))
+    assert "invocation-three" in json.dumps(catalog.snapshot().invocations)
+    _assert_catalog_matches_loaders(catalog, storage, "mission-one")
+
+    # Deleted records disappear; symlinked leaves and mission roots are refused.
+    (legacy / "02.json").unlink()
+    outside = tmp_path / "outside.json"
+    _write(outside, {**_llm_artifact_v2(), "content": "foreign answer"})
+    (llm_root / "01.json").unlink()
+    (llm_root / "01.json").symlink_to(outside)
+    changed = catalog.snapshot()
+    assert "legacy-maneuver" not in json.dumps(changed.invocations)
+    assert changed.conversations == ()
+    _assert_catalog_matches_loaders(catalog, storage, "mission-one")
+
+    foreign = _mission_root(storage, "mission-foreign")
+    _write(foreign / "01.json", _invocation(1, "foreign-invocation"))
+    canonical.rename(tmp_path / "moved-mission")
+    canonical.symlink_to(foreign, target_is_directory=True)
+    redirected = catalog.snapshot()
+    assert "foreign-invocation" not in json.dumps(redirected.invocations)
+    assert "invocation-three" not in json.dumps(redirected.invocations)
+    _assert_catalog_matches_loaders(catalog, storage, "mission-one")
+
+
+def test_debug_catalogs_are_isolated_by_storage_root_and_mission(
+    tmp_path: Path,
+) -> None:
+    first_storage = tmp_path / "first" / "storage"
+    second_storage = tmp_path / "second" / "storage"
+    _write(
+        _mission_root(first_storage, "mission-one") / "01.json",
+        _invocation(1, "first-root"),
+    )
+    _write(
+        _mission_root(first_storage, "mission-two") / "01.json",
+        _invocation(1, "first-root-other-mission"),
+    )
+    _write(
+        _mission_root(second_storage, "mission-one") / "01.json",
+        _invocation(1, "second-root"),
+    )
+
+    def invocation_ids(storage: Path, mission_id: str) -> list[object]:
+        snapshot = DebugArtifactCatalog(storage, mission_id).snapshot()
+        return [item["invocation_id"] for item in snapshot.invocations]
+
+    assert invocation_ids(first_storage, "mission-one") == ["first-root"]
+    assert invocation_ids(first_storage, "mission-two") == [
+        "first-root-other-mission"
+    ]
+    assert invocation_ids(second_storage, "mission-one") == ["second-root"]

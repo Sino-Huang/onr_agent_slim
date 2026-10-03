@@ -1,0 +1,45 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ───────────────────────────────────────────────────┐┌ Preflight · launchable ──────────────────────────────────────────────────────────────────────────┐
+│ Preset     ‹ [Mission 1 · Harbor (simulated)] ›          ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.0.0.1:11411)                                       │
+│ AirSim     ‹ [off] │ on ›                                ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs about 2 GiB                                        │
+│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›                    ││                                                                                                  │
+│ Updates    ‹ [coordinator_driven] ›                      ││                                                                                                  │
+│ Sim limit  ‹ [600 s] ›                                   ││                                                                                                  │
+│ mission1-harbor · mission1                               ││                                                                                                  │
+│ ⓘ Perception needs the recorded Harbor engine scene:     ││                                                                                                  │
+│ choose Mission 1 · AirSim live.                          ││                                                                                                  │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ ▸Mission Intent ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Please patrol the environment and confirm every reported event.                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ←/→ change · F2 demo prompts · Alt+Enter review & launch · r preflight · F1 help
+ ✔ Ready: Alt+Enter to review and launch

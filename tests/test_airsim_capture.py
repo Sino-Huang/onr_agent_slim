@@ -299,7 +299,7 @@ def test_prepare_capture_frame_resets_kinematics_flushes_and_verifies(
             events.append(("enable", enabled, vehicle_name))
 
         def simSetKinematics(
-            self, state: KinematicsState, *, ignore_collision: bool
+            self, state: KinematicsState, *, ignore_collision: bool, vehicle_name: str
         ) -> None:
             events.append(("reset", state, ignore_collision))
 

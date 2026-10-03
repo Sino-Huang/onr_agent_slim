@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Invocations · following ─────────────┐┌ Invocation Detail ───────────────────────────────────────┐
+│ HYP planner-execution [complete] pl… ││ ID:        invocation-1                                  │
+│ HYP planner-execution [complete] pl… ││ Role:      hyper-agent                                   │
+│                                      ││ Phase:     planner-execution                             │
+│                                      ││ Status:    ok / complete                                 │
+│                                      ││ Timing:    2026-08-24T12:00:02Z → 2026-08-27T12:00:02Z · │
+│                                      ││            2000 ms                                       │
+│                                      ││                                                          │
+│                                      ││ AI Recorded Debug Reasoning (non-authoritative) · availa…│
+│                                      ││ Compare the candidate routes.                            │
+│                                      ││                                                          │
+│                                      ││ Response Content                                         │
+│                                      ││ Planner attempt completed.                               │
+│                                      ││                                                          │
+│                                      ││ Tool 1: planner_executor                                 │
+│                                      ││ Args:      {"attempt":2}                                 │
+│                                      ││ Result:    {"status":"accepted"}                         │
+│                                      ││ Error:     -                                             │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+└──────────────────────────────────────┘└──────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn detail · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

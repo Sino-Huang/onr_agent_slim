@@ -5,18 +5,32 @@ from __future__ import annotations
 import json
 import os
 import unicodedata
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, cast
+
+from onr.ports.mission_log_summarizer import SummaryArtifact
+from onr.runtime_host.importance import (
+    NOTABLE,
+    importance_rank,
+    max_importance,
+    record_importance,
+    record_title,
+)
+from onr.runtime_host.progress import counts_by_importance, derive_phase
 
 NARRATIVE_SCHEMA_VERSION = 1
 SUMMARY_UNAVAILABLE_EVIDENCE = {
     "kind": "summary-unavailable",
     "message": "Run Narrative generation failed; Mission Run state is unaffected.",
 }
+NARRATIVE_MAX_SUMMARIES = 8
+NARRATIVE_MAX_SUMMARY_CHARACTERS = 2000
+NARRATIVE_MAX_LIVE_RECORDS = 40
 
 
 class RunNarrativeSummarizer(Protocol):
-    """Summarize issued public observation envelopes for one Mission Run."""
+    """Summarize one Mission Run from its Narrative Input (D6)."""
 
     def summarize_narrative(
         self,
@@ -24,7 +38,7 @@ class RunNarrativeSummarizer(Protocol):
         mission_id: str,
         mission_run_id: str,
         terminal: bool,
-        observations: list[dict[str, object]],
+        narrative_input: Mapping[str, object],
     ) -> str: ...
 
 
@@ -188,6 +202,94 @@ def sanitize_narrative_text(value: object) -> str | None:
     if not cleaned:
         return None
     return cleaned[:4000]
+
+
+def build_narrative_input(
+    *,
+    run: Mapping[str, object],
+    records: Sequence[Mapping[str, object]],
+    summaries: Sequence[SummaryArtifact],
+    stack_status: Mapping[str, object] | None = None,
+    previous_narrative: str | None = None,
+) -> dict[str, object]:
+    """Bounded Run Narrative input: latest window summaries plus run state (D6).
+
+    ``run`` is the public Mission Run record; ``records`` are operational-log
+    record dicts in sequence order; ``summaries`` are the run's Mission Log
+    Summaries. The Mission Intent is never included. ``source_watermark`` is
+    the highest operational-log sequence the input reflects.
+    """
+
+    importance: dict[int, str] = {}
+    titles: dict[int, str] = {}
+    fsm_state: str | None = None
+    fsm: dict[str, object] | None = None
+    for record in records:
+        sequence = record.get("sequence")
+        if type(sequence) is not int:
+            continue
+        importance[sequence] = record_importance(record)
+        titles[sequence] = record_title(record, previous_fsm_state=fsm_state)
+        details = record.get("details")
+        if (
+            record.get("source") == "fsm-runner"
+            and record.get("event_kind") == "fsm"
+            and isinstance(details, Mapping)
+            and isinstance(details.get("state"), str)
+        ):
+            fsm_state = cast(str, details["state"])
+            fsm = {
+                "state": fsm_state,
+                "status": record.get("outcome"),
+                "plan_revision": details.get("plan_revision"),
+            }
+    ordered = sorted(summaries, key=lambda item: item.sequence)
+    selected = ordered[-NARRATIVE_MAX_SUMMARIES:]
+    covered_end = max((item.input_end_sequence for item in ordered), default=0)
+    live = [
+        {
+            "sequence": sequence,
+            "event_time": record.get("event_time"),
+            "importance": importance[sequence],
+            "title": titles[sequence],
+        }
+        for record in records
+        if type(sequence := record.get("sequence")) is int
+        and sequence > covered_end
+        and importance_rank(importance[sequence]) >= importance_rank(NOTABLE)
+    ][-NARRATIVE_MAX_LIVE_RECORDS:]
+    detail = run.get("terminal_detail")
+    return {
+        "run": {
+            "status": run.get("status"),
+            "terminal_classification": run.get("terminal_classification"),
+            "terminal_detail": dict(detail) if isinstance(detail, Mapping) else None,
+        },
+        "phase": derive_phase(run=run, records=records, stack=stack_status),
+        "fsm": fsm,
+        "counts_by_importance": counts_by_importance(records),
+        "summaries_omitted": len(ordered) - len(selected),
+        "summaries": [
+            {
+                "sequence": item.sequence,
+                "created_at": item.created_at,
+                "input_start_sequence": item.input_start_sequence,
+                "input_end_sequence": item.input_end_sequence,
+                "importance": max_importance(
+                    importance[sequence]
+                    for sequence in range(
+                        item.input_start_sequence, item.input_end_sequence + 1
+                    )
+                    if sequence in importance
+                ),
+                "text": item.summary[:NARRATIVE_MAX_SUMMARY_CHARACTERS],
+            }
+            for item in selected
+        ],
+        "live_records": live,
+        "previous_narrative": previous_narrative,
+        "source_watermark": max(importance, default=0),
+    }
 
 
 def _valid_record(raw: object, mission_run_id: str) -> bool:

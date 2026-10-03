@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "stack",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "stack-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "stack": {
+    "preset_id": "mission1-harbor",
+    "toggles": {
+      "airsim": false,
+      "perception": "off",
+      "update_ownership": "coordinator_driven"
+    },
+    "services": [
+      {
+        "name": "physical-runtime",
+        "required": true,
+        "state": "ready",
+        "pid": 41233,
+        "port": 5066,
+        "started_at": "2026-08-27T14:00:01Z",
+        "ready_at": "2026-08-27T14:00:09Z",
+        "exit_code": null,
+        "log_artifact_id": "service-log-physical-runtime",
+        "last_line": "viewer listening on 127.0.0.1:5066",
+        "importance": "routine"
+      },
+      {
+        "name": "closed-loop",
+        "required": true,
+        "state": "starting",
+        "pid": null,
+        "port": null,
+        "started_at": "2026-08-27T14:00:09Z",
+        "ready_at": null,
+        "exit_code": null,
+        "log_artifact_id": "worker-log",
+        "last_line": null,
+        "importance": "routine"
+      }
+    ]
+  }
+}

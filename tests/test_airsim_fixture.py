@@ -464,3 +464,72 @@ def test_unknown_mesh_has_clear_error(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unknown boat mesh 'Unknown_Test_Mesh'"):
         build_fixture(vessels_dir, DEFAULT_STATIC_MESHES_PATH, tmp_path / "out")
+
+
+ENGINE_SCENARIO_SHIPS = Path(
+    "/data/ccu/sukaih/ONR/onr_scenario/offshore_dock_1/non_collision/0/ships"
+)
+
+
+@pytest.mark.skipif(
+    not ENGINE_SCENARIO_SHIPS.is_dir(), reason="needs the sibling onr_scenario checkout"
+)
+def test_engine_scenario_builds_a_follower_fixture_with_settings(tmp_path: Path) -> None:
+    out_dir = tmp_path / "follower"
+    source_settings = tmp_path / "settings.json"
+    source_settings.write_text(
+        json.dumps(
+            {
+                "ApiServerPort": 41461,
+                "Vehicles": {
+                    "SimpleFlight": {
+                        "Cameras": {
+                            "front_center_custom": {
+                                "CaptureSettings": [{"ImageType": 5, "Width": 1920, "Height": 1080}]
+                            }
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        fixture_main(
+            [
+                "--vessels", str(ENGINE_SCENARIO_SHIPS),
+                "--static-meshes", str(DEFAULT_STATIC_MESHES_PATH),
+                "--out", str(out_dir),
+                "--lead-in-s", "30",
+                "--trajectory-ned-offset", "0", "0", "0",
+                "--scenario-name", "follower",
+                "--engine-settings", str(source_settings),
+                "--engine-port", "41451",
+                "--capture-size", "960", "540",
+            ]
+        )
+        == 0
+    )
+
+    source = _load(ENGINE_SCENARIO_SHIPS / "1.json")
+    ship = _load(out_dir / "scenarios/follower/ships/1.json")
+    mapping = _load(out_dir / "mapping.json")
+    assert isinstance(source, dict) and isinstance(ship, dict) and isinstance(mapping, dict)
+    # Engine-format meshes resolve by bare name; seg-blind meshes are substituted.
+    assert source["mesh"]["MeshName"] == "Fishing_boat.Fishing_boat"
+    assert ship["mesh"]["MeshName"].startswith("Fishing_boat_2")
+    # The canonical scene is the source scene shifted by the lead-in.
+    assert ship["pose"][60][:3] == source["pose"][0][:3] and ship["pose"][60][4] == 30.0
+    embedded = {
+        passenger["objectId"]
+        for path in ENGINE_SCENARIO_SHIPS.glob("*.json")
+        if path.stem.isdigit()
+        for passenger in _load(path)["passengers"]  # type: ignore[index]
+    }
+    assert {int(key) for key in mapping["passengers"]} == embedded
+    assert len(embedded) == 28
+    settings = _load(out_dir / "engine/settings_airsim.json")
+    assert isinstance(settings, dict) and settings["ApiServerPort"] == 41451
+    capture = settings["Vehicles"]["SimpleFlight"]["Cameras"]["front_center_custom"]
+    assert capture["CaptureSettings"] == [{"ImageType": 5, "Width": 960, "Height": 540}]

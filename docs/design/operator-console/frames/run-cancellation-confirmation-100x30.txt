@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    running                             ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
+│ Run:       run-fixture-001                     ││and the agent replanned.                        │
+│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
+│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Finished:  -                                   ││                                                │
+│             ┌ Cancel Mission Run ──────────────────────────────────────────────────┐             │
+│             │                                                                      │             │
+│             │ Request cancellation of Mission Run run-fixture-001?                 │             │
+│             │                                                                      │             │
+└─────────────│ The Runtime Host records cancellation-requested, then stops the      │─────────────┘
+┌ Significant │ Run Worker and its Environment Stack before reporting cancelled.     │─────────────┐
+│ MAN #3 maneu│                                                                      │quests       │
+│             │ Enter: confirm cancellation · Esc: keep running                      │             │
+│             │                                                                      │ decision    │
+│             └──────────────────────────────────────────────────────────────────────┘             │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter: confirm cancellation · Esc: keep running · Ctrl+Q: detach
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

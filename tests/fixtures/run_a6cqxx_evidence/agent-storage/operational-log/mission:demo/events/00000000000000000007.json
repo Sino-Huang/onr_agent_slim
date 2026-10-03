@@ -1,0 +1,1 @@
+{"details":{"generated_assets":"data.dzn,model.mzn","planner_id":"minizinc","sequence":1},"event_kind":"planner-assets","event_time":"2026-09-30T05:49:59.045941+00:00","mission_id":"mission:demo","outcome":"accepted","record_id":"mission:demo:7:planner-assets","schema_version":1,"sequence":7,"source":"hyper-agent"}

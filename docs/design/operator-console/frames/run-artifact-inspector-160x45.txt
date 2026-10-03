@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Artifact: planner-c3RhdGVjaGFydC1hdHRlbXB0cy8wMDEvYWNjZXB0ZWQtc3RhdGVjaGFydC5qc29u ──────────────────────────────────────────────────────────────────────────┐
+│ bytes 0-4096 of 8192                                                                                                                                         │
+│                                                                                                                                                              │
+│[2026-08-24T12:00:01Z] planner: deterministic search started                                                                                                  │
+│[2026-08-24T12:00:02Z] planner: expanded 42 states                                                                                                            │
+│[2026-08-24T12:00:03Z] planner: expanded 128 states                                                                                                           │
+│[2026-08-24T12:00:04Z] planner: candidate plan cost 17                                                                                                        │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ←/p →/n: page preview · Esc: close
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

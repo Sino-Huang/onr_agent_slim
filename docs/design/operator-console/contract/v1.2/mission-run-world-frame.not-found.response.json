@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "frame_unavailable",
+    "message": "no world frame is available for this Mission Run"
+  }
+}

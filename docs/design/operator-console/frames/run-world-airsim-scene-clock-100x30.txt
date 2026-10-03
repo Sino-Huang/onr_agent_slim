@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ world · seq 812 · live ──────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│           ▄▄▄▄▄                                                                                  │
+│                                                                                                  │
+│           ▄              ▄                                                                       │
+│▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄                                                                       │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                       │
+│▀▀▀▀▀▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀▀▀▀▀▀                                                                       │
+│                                                                                                  │
+│           ▀▀▀▀▀                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Authoritative World State ───────────────────────────────────────────────────────────────────────┐
+│ Viewer:    available                                                                             │
+│ Mission t: 143.5 s                                                                               │
+│ Flight:    flying                                                                                │
+│ Maneuver:  navigate                                                                              │
+│ Version:   812                                                                                   │
+│ AirSim:    scene clock · perception yolo · capturing                                             │
+│ Overlay:   no perception sample for this frame (last 143.0 s)                                    │
+│ Sources:   world / camera_front_annotated / camera_front / camera_third_person                   │
+│ Position:  {"x":10,"y":20,"z":-30}                                                               │
+│ Velocity:  {"x":1,"y":0,"z":0}                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · s source · p pause · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -1,0 +1,45 @@
+ RUN run-d002469e… ● succeeded 00:02:07 │ FSM assignment-1-in-progress │ stack  │ host ○ idle
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ○ Stack ─ ○ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ✔ Done
+┌ Bayesian Belief ───────────────────────────────────────────────────┐┌ Mission Context ───────────────────────────────────────────────────────────────────────┐
+│reporting_reliability · revision 5                                  ││Mission Snapshot · source health / freshness                                            │
+│2026-08-23T00:00:00+10:00                                           ││Version 397 · plan r4                                                                   │
+│ Entity                                       Mean   Δ prev  Δ prior││Time 2026-08-23T00:00:00+10:00 · sequence 396                                           │
+│▶ship 2                                       0.6231 +0.0000 +0.4902││· active_maneuver: healthy · fresh · r433                                               │
+│ ship 1                                       0.1329 -0.0000 +0.0000││· bayesian_belief_snapshot: healthy · fresh · r5                                        │
+│ ship 3                                       0.1329 -0.0000 +0.0000││· environment_data: healthy · fresh · r433                                              │
+│ ship 4                                       0.1329 -0.0000 +0.0000││· fsm_status: healthy · fresh · r54                                                     │
+│ ship 5                                       0.1329 -0.0000 +0.0000││· plan: healthy · fresh · r4                                                            │
+│ ship 6                                       0.1329 -0.0000 +0.0000││Missing sources: none                                                                   │
+│ ship 7                                       0.1329 -0.0000 +0.0000││FSM · enabled Transition Candidates                                                     │
+│ ship 8                                       0.1329 -0.0000 +0.0000││Active: assignment-1-in-progress · updated                                              │
+│ ship 9                                       0.1329 -0.0000 +0.0000││Plan r4 · statechart r4 · event assignment-1-may-begin                                  │
+│ ship 11                                      0.1329 -0.0000 +0.0000││assignment-1-outcome-confirmed: assignment-1-in-progress → assignment-2-in-progress     │
+│ ship 12                                      0.1329 -0.0000 +0.0000││Condition: confirm the completed evidence interval                                      │
+│ ship 13                                      0.1329 -0.0000 +0.0000││Readiness: {"live_evidence":"the drone is at the selected                               │
+│ ship 16                                      0.1329 -0.0000 +0.0000││location","not_before":{"seconds":200.5,"tick":401,"ticks_per_second":2},"sensed_evidenc│
+│ ship 17                                      0.1329 -0.0000 +0.0000││Active Maneuver                                                                         │
+│ ship 18                                      0.1329 -0.0000 +0.0000││navigate · active · navigate                                                            │
+│ ship 19                                      0.1329 -0.0000 +0.0000││Deadline 198.5000s · remaining 7.9998s                                                  │
+│ ship 20                                      0.1329 -0.0000 +0.0000││{"path_steps":21,"planner_message":"Path found: 21 steps to                             │
+│ ship 10                                      0.0578 -0.0000 -0.0751││Latest Transition Intent                                                                │
+│ ship 14                                      0.0578 -0.0000 -0.0751││selected → assignment-2-in-progress                                                     │
+│ ship 15                                      0.0578 -0.0751 -0.0751││If confirm the completed evidence interval                                              │
+│███████████████████████████ship 2 0.6231 █▍                         ││From assignment-1-in-progress · plan r4 · selected 187.0002s                            │
+│1/20 · Δ prev +0.0000 · Δ prior +0.4902                             ││AI Retain the sole planner-ordered next assignment.                                     │
+│Mean history · revisions 1–5                                        ││                                                                                        │
+│▁▁▁▄▄                                                               ││                                                                                        │
+│Honest 0.0000 · CI [0.2164, 0.9428]                                 ││Latest Hyper outcome · AI non-authoritative                                             │
+│Outcomes altered=1 · clean=0 · omitted=0                            ││replan · plan r3                                                                        │
+│Variance 0.0384                                                     ││Mission 1 gate (trigger mission1-gate:next_assignment_infeasible:belief-157,            │
+│                                                                    ││input_revision 157, belief revision 4) reports the plan's next fixed-view leg —         │
+│                                                                    ││assignment-2, candidate-90d7281a38aa1d3bd0a13e1f at (-920,-874), arrival deadline       │
+│                                                                    ││243.5s — as infeasible. This is a concrete feasibility break in the remainder of the    │
+│                                                                    ││route, not a repeated ledger or stale source; all sources are healthy and fresh.        │
+│                                                                    ││Current assignment-1 (plan rev 3, (-1064,-842), deadline 198.5s) remains in progress    │
+│                                                                    ││with the drone ~77m out in navigate phase. An infeasible next leg materially            │
+│                                                                    ││invalidates the route, so a fresh planner verification is warranted to recompute        │
+└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ entity · ? help · e new intent · q exit
+ ✖ critical 0  ▲ warning 0  ● notable 0  · routine 0  ∙ debug 0

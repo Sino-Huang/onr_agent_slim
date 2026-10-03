@@ -366,6 +366,10 @@ _COMMON_EVENT_PAYLOAD_FIELDS = {
     "uncertainty_score",
     "version",
 }
+# Every TransportEvent payload key the projection reads. Evidence readers may drop
+# the rest of a bulky payload before projecting; only error-evidence identities,
+# which hash the record as supplied, depend on the dropped keys.
+PROJECTED_TRANSPORT_PAYLOAD_FIELDS = frozenset(_COMMON_EVENT_PAYLOAD_FIELDS)
 _TRANSPORT_IDENTITIES = {
     "mission-overview": ("runtime", "mission-overview"),
     "hyper-agent": ("hyper-agent", "hyper-agent"),
@@ -609,7 +613,7 @@ class TraceViewItem:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "TraceViewItem":
+    def from_dict(cls, value: Mapping[str, object]) -> TraceViewItem:
         data = dict(value)
         if "event_id" not in data and "trace_id" in data:
             data["event_id"] = data["trace_id"]
@@ -796,15 +800,9 @@ class TraceProjection:
                     canonical.append(adapted)
                     raw_source_kinds.add(adapted.source_kind)
             except _RecordError as exc:
-                key = (exc.code, _digest(raw))
+                key = (exc.code, self._record_digest(raw))
                 failure_counts[key] += 1
-                failures.append(
-                    _error(
-                        exc.code,
-                        evidence_key=(*key, failure_counts[key]),
-                        category=exc.code,
-                    )
-                )
+                failures.append(self._record_failure(exc.code, key, failure_counts[key]))
 
         if raw_source_kinds and (saw_envelope or len(raw_source_kinds) > 1):
             retained: list[_CanonicalRecord] = []
@@ -924,9 +922,7 @@ class TraceProjection:
         for index, record in enumerate(marked):
             item = record.item
             if record.resync_sequence is not None:
-                marked[index] = replace(
-                    record, item=replace(item, replay_disposition="resynchronized")
-                )
+                marked[index] = self._with_disposition(record, "resynchronized")
                 continue
             stream_kind = (
                 "observation"
@@ -945,9 +941,7 @@ class TraceProjection:
                 and source_sequence < floor
                 and item.replay_disposition == "normal"
             ):
-                marked[index] = replace(
-                    record, item=replace(item, replay_disposition="stale")
-                )
+                marked[index] = self._with_disposition(record, "stale")
             if record.ordered and item.replay_disposition == "normal":
                 streams[(item.mission_id, stream_kind, source_sequence)].append(index)
         for indexes in streams.values():
@@ -957,11 +951,23 @@ class TraceProjection:
                 )[1:]:
                     item = marked[index].item
                     if item.replay_disposition == "normal":
-                        marked[index] = replace(
-                            marked[index],
-                            item=replace(item, replay_disposition="replayed"),
+                        marked[index] = self._with_disposition(
+                            marked[index], "replayed"
                         )
         return marked
+
+    def _with_disposition(
+        self, record: _CanonicalRecord, disposition: ReplayDisposition
+    ) -> _CanonicalRecord:
+        return replace(record, item=replace(record.item, replay_disposition=disposition))
+
+    def _record_digest(self, raw: Mapping[str, object]) -> str:
+        return _digest(raw)
+
+    def _record_failure(
+        self, code: str, key: tuple[str, str], occurrence: int
+    ) -> TraceViewItem:
+        return _error(code, evidence_key=(*key, occurrence), category=code)
 
     def _gap_evidence(self, records: list[_CanonicalRecord]) -> list[TraceViewItem]:
         streams: dict[tuple[str, str], set[int]] = defaultdict(set)
@@ -1666,4 +1672,86 @@ class TraceProjection:
         return _CanonicalRecord(item, "fsm_execution")
 
 
-__all__ = ["ReplayDisposition", "TraceProjection", "TraceViewItem", "sanitize_payload"]
+class MemoizedTraceProjection(TraceProjection):
+    """Projection for a growing batch of retained raw records.
+
+    Callers that re-project the same record objects plus new ones (an evidence
+    tailer) pay the per-record adaptation, fingerprint, canonical-key, and
+    replay-disposition cost once per record. Results are identical to
+    ``TraceProjection``; the caches are keyed by object identity and keep each
+    key's object alive, so a key is never reused for a different record.
+    """
+
+    def __init__(self) -> None:
+        self._adapted: dict[int, tuple[object, _CanonicalRecord | str]] = {}
+        self._fingerprints: dict[int, tuple[TraceViewItem, str]] = {}
+        self._canonical_keys: dict[int, tuple[TraceViewItem, tuple[str, str]]] = {}
+        self._dispositions: dict[
+            tuple[int, ReplayDisposition], tuple[TraceViewItem, TraceViewItem]
+        ] = {}
+        self._digests: dict[int, tuple[Mapping[str, object], str]] = {}
+        self._failures: dict[tuple[str, tuple[str, str], int], TraceViewItem] = {}
+
+    def _adapt(self, raw: Mapping[str, object]) -> _CanonicalRecord:
+        hit = self._adapted.get(id(raw))
+        if hit is None or hit[0] is not raw:
+            try:
+                value: _CanonicalRecord | str = super()._adapt(raw)
+            except _RecordError as exc:
+                value = exc.code
+            hit = (raw, value)
+            self._adapted[id(raw)] = hit
+        if isinstance(hit[1], str):
+            raise _RecordError(hit[1])
+        return hit[1]
+
+    def _source_fingerprint(self, item: TraceViewItem) -> str:  # type: ignore[override]
+        hit = self._fingerprints.get(id(item))
+        if hit is None or hit[0] is not item:
+            hit = (item, TraceProjection._source_fingerprint(item))
+            self._fingerprints[id(item)] = hit
+        return hit[1]
+
+    def _canonical_key(self, item: TraceViewItem) -> tuple[str, str]:  # type: ignore[override]
+        hit = self._canonical_keys.get(id(item))
+        if hit is None or hit[0] is not item:
+            hit = (item, TraceProjection._canonical_key(item))
+            self._canonical_keys[id(item)] = hit
+        return hit[1]
+
+    def _with_disposition(
+        self, record: _CanonicalRecord, disposition: ReplayDisposition
+    ) -> _CanonicalRecord:
+        source = record.item
+        hit = self._dispositions.get((id(source), disposition))
+        if hit is None or hit[0] is not source:
+            hit = (source, replace(source, replay_disposition=disposition))
+            self._dispositions[(id(source), disposition)] = hit
+        return replace(record, item=hit[1])
+
+    def _record_digest(self, raw: Mapping[str, object]) -> str:
+        hit = self._digests.get(id(raw))
+        if hit is None or hit[0] is not raw:
+            hit = (raw, _digest(raw))
+            self._digests[id(raw)] = hit
+        return hit[1]
+
+    def _record_failure(
+        self, code: str, key: tuple[str, str], occurrence: int
+    ) -> TraceViewItem:
+        cache_key = (code, key, occurrence)
+        item = self._failures.get(cache_key)
+        if item is None:
+            item = super()._record_failure(code, key, occurrence)
+            self._failures[cache_key] = item
+        return item
+
+
+__all__ = [
+    "PROJECTED_TRANSPORT_PAYLOAD_FIELDS",
+    "MemoizedTraceProjection",
+    "ReplayDisposition",
+    "TraceProjection",
+    "TraceViewItem",
+    "sanitize_payload",
+]

@@ -7,7 +7,15 @@ not certify the pending colleague-owned perception or native AirSim gates. For
 Mission 1 with the real engine and YOLO perception, see
 [mission1-airsim-yolo-live-demo.md](mission1-airsim-yolo-live-demo.md).
 
-Start one mission at a time in an existing Herdr session:
+Preferred interactive path:
+
+```bash
+./scripts/tui/start_operator_console.sh --image-protocol halfblocks
+```
+
+Choose `mission2`, `mission3`, `mission4`, `joint24` or `joint34`, wait for preflight, review the preset mission and launch. The Host uses `var/runtime-host/runs/<mission_run_id>/`; services, logs, world frames and run state are visible in the console. Mission 2–4 have no agent-side Bayesian belief service, which the Belief & Context tab states explicitly. See [the demo runbook](operator-console-demo.md).
+
+For scripted capture, start one mission at a time in an existing herdr session; these launchers render the same Stack Builder plan:
 
 ```bash
 bash scripts/live_demo_with_wm/herdr_start_mission2_live_demo.sh <session>
@@ -30,6 +38,10 @@ prints every resolved input and the isolated run directory. Mission 1 retains
 `var/live_demo_with_wm/run.*`; Missions 2–4 write to
 `var/live_demo_with_wm/mission2/run.*`, `mission3/run.*`, and `mission4/run.*`,
 respectively.
+Each wrapper selects the matching preset in `conf/stack_presets.yaml`
+(`ONR_DEMO_PRESET`); the shared launcher renders the Stack Builder's plan
+(`python -m onr.runtime_host.stack plan --demo-env`), the same composition the
+Runtime Host runs, into herdr panes.
 The scripted worker allows one hour of wall time by default for queued shared
 vLLM deployments; override it with `ONR_DEMO_MISSION4_WORKER_TIMEOUT_SECONDS`.
 

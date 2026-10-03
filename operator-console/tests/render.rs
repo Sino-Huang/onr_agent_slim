@@ -1,69 +1,58 @@
-//! Slice B: Ratatui `TestBackend` render tests.
+//! Ratatui `TestBackend` render snapshots for the Launch screen and every
+//! Run tab at the compact minimum (100x30) and a standard-plus size (160x45).
 //!
-//! The required state frames are committed as readable plain-text captures
-//! under `docs/design/operator-console/frames/` and treated as test fixtures.
-//! Regenerate after an intentional layout change with:
+//! Frames are committed as readable plain-text captures under
+//! `docs/design/operator-console/frames/`. Regenerate after an intentional
+//! layout change with:
 //!
 //! ```sh
 //! UPDATE_FRAMES=1 cargo test --test render
 //! ```
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use operator_console::app::{
-    App, AppState, CancellationState, Clock, HostCommand, HostMessage, LivenessThresholds,
-    MIN_HEIGHT, MIN_WIDTH, OwnerSessionState, PaneFocus, SessionStateFile,
-};
+use common::*;
+use crossterm::event::KeyCode;
+use operator_console::app::{App, LaunchField};
 use operator_console::host::{
-    ActivationAccepted, ActivitiesPage, ArtifactContentPage, ArtifactsPage, CancellationAccepted,
-    CancellationOutcome, ConversationEntriesPage, CurrentRun, EvidencePage, NarrativeResponse,
-    ObservationsPage, OperatorAgentsPage, OperatorArtifactsPage, OperatorEnvironmentPage,
-    OperatorOverviewPage, OperatorSection, OperatorViewPage, RunRecord,
+    ActivationOutcome, ApiVersion, Health, HostError, HostMessage, OperatorSection,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-const SESSION_ID: &str = "c0ns01e0-0000-4000-8000-5e5510n5a1d0";
-
-#[derive(Debug)]
-struct ManualClock(Mutex<Instant>);
-
-impl ManualClock {
-    fn advance(&self, duration: Duration) {
-        *self.0.lock().unwrap() += duration;
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Instant {
-        *self.0.lock().unwrap()
-    }
-}
+use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+use operator_console::host::{FrameSource, WorldFrame};
+use ratatui_image::picker::Picker;
+const SIZES: [(u16, u16); 2] = [(100, 30), (160, 45)];
 
 fn frames_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/design/operator-console/frames")
 }
 
-fn test_session_file(name: &str) -> SessionStateFile {
-    SessionStateFile::at(
-        std::env::temp_dir()
-            .join(format!(
-                "operator-console-render-{name}-{}",
-                uuid::Uuid::new_v4()
-            ))
-            .join("operator-console/session.json"),
-    )
-}
-
-fn render(app: &App, width: u16, height: u16) -> String {
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).unwrap();
+pub fn render(app: &mut App, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
         .draw(|frame| operator_console::ui::draw(frame, app))
         .unwrap();
+    if app.view.media.is_enabled() && app.view.frame.is_some() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !app.view.media.is_ready() {
+            if let Some(result) = app.view.media.poll() {
+                result.unwrap();
+            }
+            terminal
+                .draw(|frame| operator_console::ui::draw(frame, app))
+                .unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "image snapshot did not encode"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     let buffer = terminal.backend().buffer();
     let mut lines: Vec<String> = (0..height)
         .map(|y| {
@@ -78,580 +67,445 @@ fn render(app: &App, width: u16, height: u16) -> String {
     lines.join("\n")
 }
 
-fn assert_frame(name: &str, actual: String) {
+fn assert_frame(name: &str, actual: &str) {
     let path = frames_dir().join(name);
     if std::env::var_os("UPDATE_FRAMES").is_some() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, &actual).unwrap();
+        fs::write(&path, actual).unwrap();
         return;
     }
     let expected = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("missing fixture frame {}: {e}", path.display()));
-    let expected: Vec<String> = expected.lines().map(|l| l.trim_end().to_string()).collect();
-    let actual_lines: Vec<String> = actual.lines().map(|l| l.trim_end().to_string()).collect();
+        .unwrap_or_else(|error| panic!("missing fixture frame {}: {error}", path.display()));
+    let expected: Vec<&str> = expected.lines().map(str::trim_end).collect();
+    let actual: Vec<&str> = actual.lines().map(str::trim_end).collect();
     assert_eq!(
-        actual_lines, expected,
+        actual, expected,
         "frame mismatch for {name}; run UPDATE_FRAMES=1 cargo test --test render to regenerate"
     );
 }
 
-fn editing_app(intent: &str) -> App {
-    let mut app = App::new_with_session_file(
-        "http://127.0.0.1:8787".to_string(),
-        test_session_file("editing"),
-    );
-    app.session.session_id = SESSION_ID.to_string();
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(operator_console::host::Health {
-        status: "ok".to_string(),
-        api_version: operator_console::host::ApiVersion { major: 1, minor: 0 },
-    })));
-    app.intent = intent.to_string();
-    app.cursor = intent.chars().count();
-    app
-}
-
-fn review_app() -> App {
-    let mut app = editing_app("Hold the ridge line.\nReport obstacles by grid square.");
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::ALT,
-    ));
-    app.pin_review_request_id("req-8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b");
-    assert_eq!(app.state, AppState::ReviewActivation);
-    app
-}
-
-fn run_app(record: RunRecord) -> App {
-    let mut app = review_app();
-    let mission_run_id = record.mission_run_id.clone();
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Activated(Ok(
-        operator_console::host::ActivationOutcome::Accepted(ActivationAccepted {
-            activation_request_id: "req".to_string(),
-            mission_id: record.mission_id.clone(),
-            mission_run_id: record.mission_run_id.clone(),
-            status: record.status.clone(),
-            created_at: record.created_at.clone().unwrap_or_default(),
-        }),
-    )));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(record),
-    })));
-    app.handle_host_message(HostMessage::Narrative {
-        mission_run_id,
-        result: Ok(narrative_response("none")),
-    });
-    assert_eq!(app.state, AppState::Run);
-    app
-}
-
-fn narrative_response(status: &str) -> NarrativeResponse {
-    serde_json::from_str(match status {
-        "none" => {
-            include_str!(
-                "../../docs/design/operator-console/contract/v1/mission-run-narrative.none.response.json"
-            )
+/// Snapshot `app` at both sizes as `<name>-<w>x<h>.txt`.
+fn snapshot(name: &str, app: &mut App) {
+    for (width, height) in SIZES {
+        app.handle_resize(width, height);
+        if name.starts_with("run-world") || (name == "run-overview" && width >= 140) {
+            install_world_frame(app);
         }
-        "available" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-narrative.available.response.json"
-        ),
-        "unavailable" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-narrative.unavailable.response.json"
-        ),
-        _ => panic!("unknown narrative fixture"),
-    })
-    .unwrap()
+        assert_frame(
+            &format!("{name}-{width}x{height}.txt"),
+            &render(app, width, height),
+        );
+    }
 }
 
-fn narrative_app(status: &str) -> App {
-    let mut app = evidence_app();
-    app.handle_host_message(HostMessage::Narrative {
-        mission_run_id: app.run.as_ref().unwrap().mission_run_id.clone(),
-        result: Ok(narrative_response(status)),
-    });
-    app
-}
-
-fn evidence_app() -> App {
-    let mut app = run_app(RunRecord {
-        mission_id: "mission-fixture-001".to_string(),
-        mission_run_id: "run-fixture-001".to_string(),
-        ..running_record()
-    });
-    let activities: ActivitiesPage = serde_json::from_str(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-activities.page.response.json"
-    ))
-    .unwrap();
-    let observations: ObservationsPage = serde_json::from_str(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-observations.page.response.json"
-    ))
-    .unwrap();
-    app.handle_host_message(HostMessage::Activities(Ok(EvidencePage {
-        items: activities.activities,
-        truncated: false,
-    })));
-    app.handle_host_message(HostMessage::Observations(Ok(EvidencePage {
-        items: observations.observations,
-        truncated: false,
-    })));
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Down,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    app
-}
-
-fn artifact_app() -> App {
-    let mut app = evidence_app();
-    let artifacts: ArtifactsPage = serde_json::from_str(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-artifacts.page.response.json"
-    ))
-    .unwrap();
-    app.handle_host_message(HostMessage::Artifacts(Ok(EvidencePage {
-        items: artifacts.artifacts,
-        truncated: false,
-    })));
-    app.pane_focus = PaneFocus::Artifacts;
-    app
-}
-
-fn content_page(name: &str) -> ArtifactContentPage {
-    serde_json::from_str(match name {
-        "text" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.text-page.response.json"
-        ),
-        "binary" => include_str!(
-            "../../docs/design/operator-console/contract/v1/mission-run-artifact-content.binary.response.json"
-        ),
-        _ => panic!("unknown content fixture"),
-    })
-    .unwrap()
-}
-
-fn liveness_app(elapsed: Duration) -> App {
-    let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
-    let mut app = App::new_with_session_file_and_clock(
-        "http://127.0.0.1:8787".to_string(),
-        test_session_file("liveness"),
-        clock.clone(),
-    )
-    .with_liveness_thresholds(LivenessThresholds::default());
-    app.session.session_id = SESSION_ID.to_string();
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(operator_console::host::Health {
-        status: "ok".to_string(),
-        api_version: operator_console::host::ApiVersion { major: 1, minor: 0 },
-    })));
-    app.run = Some(RunRecord {
-        mission_id: "mission-fixture-001".to_string(),
-        mission_run_id: "run-fixture-001".to_string(),
-        ..running_record()
-    });
-    app.state = AppState::Run;
-    let evidence = evidence_app();
-    app.activities = evidence.activities;
-    app.observations = evidence.observations;
-    app.selected_activity = evidence.selected_activity;
-    clock.advance(elapsed);
-    app
-}
-
-fn recovered_owner_app() -> App {
-    let file = test_session_file("recovered");
-    file.save(&OwnerSessionState {
-        host_authority: "http://127.0.0.1:8787".to_string(),
-        host_api_major: 1,
-        mission_run_id: "run-51d3b84c".to_string(),
-        console_session_id: SESSION_ID.to_string(),
-        credential: "recovered-owner-credential".to_string(),
-    })
-    .unwrap();
-
-    let mut app = App::new_with_session_file("http://127.0.0.1:8787".to_string(), file.clone());
-    file.remove().unwrap();
-    app.take_commands();
-    app.handle_host_message(HostMessage::Connected(Ok(operator_console::host::Health {
-        status: "ok".to_string(),
-        api_version: operator_console::host::ApiVersion { major: 1, minor: 0 },
-    })));
-    app.take_commands();
-    app.handle_host_message(HostMessage::Intent(Ok(
-        operator_console::host::MissionIntent {
-            mission_run_id: "run-51d3b84c".to_string(),
-            mission_intent: "Hold the ridge line.\nReport obstacles by grid square.".to_string(),
-            source_authority: "operator_console".to_string(),
+/// An owned running run with overview and stack sections answered.
+fn populated_run_app(name: &str) -> App {
+    let (mut app, _clock) = run_app(name);
+    app.handle_host_message(HostMessage::Current(Ok(
+        operator_console::host::CurrentRun {
+            mission_run: Some(running_run()),
         },
     )));
-    app.handle_host_message(HostMessage::Current(Ok(CurrentRun {
-        mission_run: Some(running_record()),
-    })));
-    assert_eq!(app.state, AppState::Run);
-    assert!(app.recovered_owner());
-    app
-}
-
-fn running_record() -> RunRecord {
-    RunRecord {
-        mission_id: "mission-7c1f9a2e".to_string(),
-        mission_run_id: "run-51d3b84c".to_string(),
-        status: "running".to_string(),
-        created_at: Some("2026-08-24T12:00:00Z".to_string()),
-        started_at: Some("2026-08-24T12:00:03Z".to_string()),
-        finished_at: None,
-        terminal_classification: None,
-    }
-}
-
-fn operator_page(section: OperatorSection) -> OperatorViewPage {
-    match section {
-        OperatorSection::Overview => OperatorViewPage::Overview(Box::new(
-            serde_json::from_str::<OperatorOverviewPage>(include_str!(
-                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-overview.response.json"
-            ))
-            .unwrap(),
-        )),
-        OperatorSection::Agents => OperatorViewPage::Agents(Box::new(
-            serde_json::from_str::<OperatorAgentsPage>(include_str!(
-                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-agents.response.json"
-            ))
-            .unwrap(),
-        )),
-        OperatorSection::Environment => OperatorViewPage::Environment(Box::new(
-            serde_json::from_str::<OperatorEnvironmentPage>(include_str!(
-                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-environment.response.json"
-            ))
-            .unwrap(),
-        )),
-        OperatorSection::Artifacts => OperatorViewPage::Artifacts(Box::new(
-            serde_json::from_str::<OperatorArtifactsPage>(include_str!(
-                "../../docs/design/operator-console/contract/v1.1/mission-run-operator-artifacts.response.json"
-            ))
-            .unwrap(),
-        )),
-    }
-}
-
-fn operator_app(section: OperatorSection) -> App {
-    let mut app = run_app(RunRecord {
-        mission_id: "mission-fixture-001".to_string(),
-        mission_run_id: "run-fixture-001".to_string(),
-        ..running_record()
-    });
-    app.health.as_mut().unwrap().api_version.minor = 1;
-    let key = match section {
-        OperatorSection::Overview => None,
-        OperatorSection::Agents => Some('2'),
-        OperatorSection::Environment => Some('3'),
-        OperatorSection::Artifacts => Some('4'),
-    };
-    if let Some(key) = key {
-        app.handle_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char(key),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-    } else {
-        app.request_poll();
-    }
+    app.request_poll();
     let commands = app.take_commands();
-    let request_id = commands
-        .iter()
-        .find_map(|command| match command {
-            HostCommand::FetchOperatorView {
-                request_id,
-                section: requested,
-                ..
-            } if *requested == section => Some(*request_id),
-            _ => None,
+    for section in sections(&commands) {
+        let id = section_request_id(&commands, section);
+        app.handle_host_message(section_reply(section, id, None, |_| {}));
+    }
+    app
+}
+
+fn on_tab(app: &mut App, digit: char) -> Vec<operator_console::host::HostCommand> {
+    app.handle_key(key(KeyCode::Char(digit)));
+    app.take_commands()
+}
+
+/// A synthetic frame for the selected source, sequenced as the Host advertised.
+fn install_world_frame(app: &mut App) {
+    let source = app.view.frame_source;
+    let sequence = app
+        .view
+        .world
+        .as_ref()
+        .and_then(|world| {
+            world
+                .frames
+                .iter()
+                .find(|frame| frame.source == source.as_str())
         })
+        .and_then(|frame| frame.sequence)
+        .unwrap_or(812);
+    app.configure_images(Some(Picker::halfblocks()));
+    let mut image = RgbaImage::new(320, 240);
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        *pixel = if x > 140 && x < 180 && y > 30 && y < 210 {
+            Rgba([245, 210, 40, 255])
+        } else if y > 100 && y < 140 {
+            Rgba([70, 140, 100, 255])
+        } else {
+            Rgba([25, 50, 100, 255])
+        };
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image)
+        .write_to(&mut bytes, ImageFormat::Png)
         .unwrap();
-    app.handle_host_message(HostMessage::OperatorView {
-        mission_run_id: "run-fixture-001".to_string(),
-        section,
-        request_id,
-        result: Ok(operator_page(section)),
+    app.handle_host_message(HostMessage::WorldFrame {
+        mission_run_id: RUN_ID.into(),
+        source,
+        result: Ok(operator_console::host::Fetched::Fresh {
+            value: WorldFrame {
+                source,
+                media_type: "image/png".into(),
+                etag: Some("snapshot-world".into()),
+                sequence: Some(sequence),
+                mission_time: Some("143.5".into()),
+                bytes: bytes.into_inner(),
+            },
+            etag: Some("snapshot-world".into()),
+        }),
     });
+}
+
+#[test]
+fn launch_screen_ready() {
+    let (mut app, _clock) = ready_launch_app("render-launch");
+    snapshot("launch-ready", &mut app);
+}
+
+#[test]
+fn launch_screen_blocked_by_a_failing_check_on_the_airsim_preset() {
+    let (mut app, clock) = ready_launch_app("render-launch-blocked");
+    focus(&mut app, LaunchField::Preset);
+    app.handle_key(key(KeyCode::Right));
+    focus(&mut app, LaunchField::Perception);
+    clock.advance(std::time::Duration::from_millis(300));
+    app.check_deadlines();
+    let (request_id, query) = single_preflight(&mut app);
+    app.handle_host_message(HostMessage::Preflight {
+        request_id,
+        result: Ok(preflight(&query, false)),
+    });
+    snapshot("launch-blocked", &mut app);
+}
+
+#[test]
+fn launch_screen_while_presets_load() {
+    let (mut app, _clock) = app_with_clock("render-launch-loading");
+    app.handle_host_message(HostMessage::Connected(Ok(health())));
+    snapshot("launch-loading", &mut app);
+}
+
+#[test]
+fn launch_screen_wraps_a_long_intent_and_places_the_cursor_on_it() {
+    let (mut app, _clock) = ready_launch_app("render-launch-wrap");
+    app.launch.editor.set_text(
+        "Patrol the window 60-130 s north -1150..-550 east -950..-450 and verify every reported event, then hold position over ship 2 until the mission budget is spent.",
+    );
+    for (width, height) in SIZES {
+        app.handle_resize(width, height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| operator_console::ui::draw(frame, &mut app))
+            .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer();
+        // The cursor sits just after the final "." of the wrapped intent.
+        assert_eq!(buffer[(cursor.x - 1, cursor.y)].symbol(), ".");
+        assert_eq!(buffer[(cursor.x, cursor.y)].symbol(), " ");
+        assert_frame(
+            &format!("launch-wrapped-intent-{width}x{height}.txt"),
+            &render(&mut app, width, height),
+        );
+    }
+}
+
+#[test]
+fn demo_prompt_picker() {
+    let (mut app, _clock) = ready_launch_app("render-demo");
+    app.handle_key(key(KeyCode::F(2)));
+    app.handle_key(key(KeyCode::Down));
+    snapshot("launch-demo-prompts", &mut app);
+}
+
+#[test]
+fn review_activation() {
+    let (mut app, _clock) = ready_launch_app("render-review");
+    app.handle_key(alt_enter());
+    app.pin_review_request_id("8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b");
+    snapshot("review-activation", &mut app);
+}
+
+#[test]
+fn host_too_old() {
+    let (mut app, _clock) = app_with_clock("render-too-old");
+    app.handle_host_message(HostMessage::Connected(Ok(Health {
+        status: "ok".to_string(),
+        api_version: ApiVersion { major: 1, minor: 1 },
+    })));
+    snapshot("host-too-old", &mut app);
+}
+
+#[test]
+fn connecting_and_activation_rejected() {
+    let (mut app, _clock) = app_with_clock("render-connecting");
+    snapshot("connecting", &mut app);
+    let (mut app, _clock) = ready_launch_app("render-activation-rejected");
+    app.handle_key(alt_enter());
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_host_message(HostMessage::Activated(Ok(ActivationOutcome::Rejected {
+        code: "mission_run_active".to_string(),
+        message: "another Mission Run is active".to_string(),
+    })));
+    snapshot("activation-rejected", &mut app);
+}
+
+#[test]
+fn run_overview_tab() {
+    let mut app = populated_run_app("render-overview");
+    snapshot("run-overview", &mut app);
+}
+
+#[test]
+fn run_overview_before_evidence_and_offline() {
+    let (mut app, clock) = run_app("render-overview-empty");
+    app.view = operator_console::app::RunView::default();
+    snapshot("run-overview-waiting", &mut app);
+    app.handle_host_message(HostMessage::Current(Err(HostError::UnexpectedStatus(
+        500,
+        "boom".to_string(),
+    ))));
+    clock.advance(std::time::Duration::from_secs(31));
+    snapshot("run-overview-offline", &mut app);
+}
+
+#[test]
+fn run_progress_tab_renders_the_hierarchy() {
+    let mut app = populated_run_app("render-progress");
+    on_tab(&mut app, '2');
+    snapshot("run-progress", &mut app);
+}
+
+#[test]
+fn run_agents_tab() {
+    let mut app = populated_run_app("render-agents");
+    let id = section_request_id(&on_tab(&mut app, '3'), OperatorSection::Agents);
+    app.handle_host_message(agents_reply(id, &["a-1", "a-2"]));
+    snapshot("run-agents", &mut app);
+}
+
+#[test]
+fn run_belief_context_tab_renders_both_sections() {
+    let mut app = populated_run_app("render-belief");
+    on_tab(&mut app, '4');
+    snapshot("run-belief-context", &mut app);
+}
+
+#[test]
+fn belief_tab_keeps_the_selected_entity_detail_visible_with_twenty_entities() {
+    let mut app = populated_run_app("render-belief-twenty");
+    on_tab(&mut app, '4');
+    let beliefs = app.view.beliefs.as_mut().unwrap();
+    let template = beliefs.entities[0].clone();
+    beliefs.entities = (1..=20)
+        .map(|n| {
+            let mut entity = template.clone();
+            entity.entity_id = n.to_string();
+            entity.label = format!("ship {n}");
+            entity.mean = if n == 20 { 0.9 } else { 0.1 };
+            entity.means_by_revision = if n == 20 {
+                vec![Some(0.5), Some(1.0)]
+            } else {
+                vec![Some(0.1), Some(0.1)]
+            };
+            entity
+        })
+        .collect();
+    for _ in 0..19 {
+        app.handle_key(key(KeyCode::Char('j')));
+    }
+    app.handle_key(key(KeyCode::Down)); // clamps at the last entity
+    for (width, height) in SIZES {
+        app.handle_resize(width, height);
+        let screen = render(&mut app, width, height);
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(
+            screen.contains("20/20 · Δ prev"),
+            "{width}x{height}:\n{screen}"
+        );
+        assert!(screen.contains("ship 20 0.9000"), "gauge for the selection");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains('▶') && line.contains("ship 20 ")),
+            "selected row scrolled into the table viewport at {width}x{height}"
+        );
+        let history = lines
+            .iter()
+            .position(|line| line.contains("Mean history"))
+            .unwrap();
+        assert!(
+            lines[history + 1].starts_with("│▄█"),
+            "sparkline of 0.5 → 1.0 at {width}x{height}: {}",
+            lines[history + 1]
+        );
+        assert!(screen.contains("Variance"), "detail is not clipped");
+    }
+    // A newer revision reorders entities; the selection follows the entity ID.
+    app.view.beliefs.as_mut().unwrap().entities.reverse();
+    let screen = render(&mut app, 100, 30);
+    assert!(screen.contains("1/20 · Δ prev"), "{screen}");
+    assert!(screen.contains("ship 20 0.9000"));
+}
+
+#[test]
+fn run_world_tab_renders_viewer_state() {
+    let mut app = populated_run_app("render-world");
+    let commands = on_tab(&mut app, '5');
+    for section in sections(&commands) {
+        let id = section_request_id(&commands, section);
+        app.handle_host_message(section_reply(section, id, None, |_| {}));
+    }
+    snapshot("run-world", &mut app);
+}
+
+/// A v1.3 World section: the committed `example` world, optionally edited.
+fn open_world_tab(name: &str, example: &str, edit: impl FnOnce(&mut serde_json::Value)) -> App {
+    let mut app = populated_run_app(name);
+    let mut world = contract("v1.3", example)["world"].clone();
+    edit(&mut world);
+    let commands = on_tab(&mut app, '5');
+    for section in sections(&commands) {
+        let id = section_request_id(&commands, section);
+        let world = world.clone();
+        app.handle_host_message(section_reply(section, id, None, move |value| {
+            if section == OperatorSection::World {
+                value["world"] = world;
+            }
+        }));
+    }
     app
 }
 
 #[test]
-fn editing_frame_matches_committed_capture() {
-    let app = editing_app("Hold the ridge line.\nReport obstacles by grid square.");
-    assert_frame("editing-100x30.txt", render(&app, MIN_WIDTH, MIN_HEIGHT));
-}
-
-#[test]
-fn review_frame_matches_committed_capture() {
-    let app = review_app();
-    assert_frame(
-        "review-activation-100x30.txt",
-        render(&app, MIN_WIDTH, MIN_HEIGHT),
+fn run_world_tab_shows_the_airsim_follower_on_the_annotated_front_camera() {
+    let mut app = open_world_tab(
+        "render-world-follower",
+        "mission-run-operator-world.follower.response.json",
+        |_| {},
     );
+    app.handle_key(key(KeyCode::Char('s')));
+    app.take_commands();
+    assert_eq!(app.view.frame_source, FrameSource::CameraFrontAnnotated);
+    snapshot("run-world-airsim-follower", &mut app);
 }
 
 #[test]
-fn run_dashboard_frame_matches_committed_capture() {
-    let app = run_app(running_record());
-    assert_frame(
-        "run-dashboard-100x30.txt",
-        render(&app, MIN_WIDTH, MIN_HEIGHT),
-    );
-}
-
-#[test]
-fn operator_overview_frame_matches_committed_capture() {
-    assert_frame(
-        "operator-overview-100x30.txt",
-        render(&operator_app(OperatorSection::Overview), 100, 30),
-    );
-}
-
-#[test]
-fn operator_agents_frame_matches_committed_capture() {
-    assert_frame(
-        "operator-agents-100x30.txt",
-        render(&operator_app(OperatorSection::Agents), 100, 30),
-    );
-}
-
-#[test]
-fn operator_environment_frame_matches_committed_capture() {
-    assert_frame(
-        "operator-environment-100x30.txt",
-        render(&operator_app(OperatorSection::Environment), 100, 30),
-    );
-}
-
-#[test]
-fn operator_artifacts_frame_matches_committed_capture() {
-    assert_frame(
-        "operator-artifacts-100x30.txt",
-        render(&operator_app(OperatorSection::Artifacts), 100, 30),
-    );
-}
-
-#[test]
-fn available_narrative_frame_matches_committed_capture() {
-    let app = narrative_app("available");
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("(non-authoritative)"));
-    assert!(frame.contains("The recon patrol held the ridge line"));
-    assert_frame("run-dashboard-narrative-100x30.txt", frame);
-}
-
-#[test]
-fn unavailable_narrative_frame_matches_committed_capture() {
-    let app = narrative_app("unavailable");
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("Run Narrative unavailable."));
-    assert!(frame.contains("Run Narrative generation failed; Mission Run"));
-    assert!(frame.contains("state is unaffected."));
-    assert_frame("run-dashboard-narrative-unavailable-100x30.txt", frame);
-}
-
-#[test]
-fn activity_detail_frame_matches_committed_capture() {
-    let app = evidence_app();
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("maneuver_command"));
-    assert!(frame.contains("command-outcome"));
-    assert!(frame.contains("maneuver_control"));
-    assert_frame("activity-detail-100x30.txt", frame);
-}
-
-#[test]
-fn stale_run_frame_matches_committed_capture() {
-    let app = liveness_app(Duration::from_secs(5));
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("stale - showing last received evidence"));
-    assert!(frame.contains("maneuver_command"));
-    assert_frame("run-stale-100x30.txt", frame);
-}
-
-#[test]
-fn offline_run_frame_matches_committed_capture() {
-    let app = liveness_app(Duration::from_secs(30));
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("offline - showing last received evidence"));
-    assert_frame("run-offline-100x30.txt", frame);
-}
-
-#[test]
-fn cancellation_confirmation_frame_matches_committed_capture() {
-    let mut app = run_app(running_record());
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('c'),
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    assert_eq!(app.cancellation, CancellationState::Confirming);
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("Request cancellation of Mission Run"));
-    assert!(frame.contains("Enter: confirm cancellation"));
-    assert_frame("cancellation-confirmation-100x30.txt", frame);
-}
-
-#[test]
-fn cancellation_requested_frame_matches_committed_capture() {
-    let mut app = run_app(running_record());
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('c'),
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    let cancellation_request_id = match app.take_commands().remove(0) {
-        HostCommand::Cancel { request, .. } => request.cancellation_request_id,
-        other => panic!("expected Cancel, got {other:?}"),
-    };
-    app.handle_host_message(HostMessage::Cancelled(Ok(CancellationOutcome::Accepted(
-        CancellationAccepted {
-            mission_run_id: "run-51d3b84c".to_string(),
-            cancellation_request_id,
-            disposition: "cancellation_requested".to_string(),
-            status: "running".to_string(),
-            requested_at: "2026-08-24T12:05:00Z".to_string(),
+fn run_world_tab_shows_a_scene_clock_frame_without_a_perception_sample() {
+    let mut app = open_world_tab(
+        "render-world-scene-clock",
+        "mission-run-operator-world.scene-clock.response.json",
+        |world| {
+            let annotation = &mut world["airsim"]["annotation"];
+            annotation["match"] = serde_json::json!("none");
+            annotation["objects"] = serde_json::json!(0);
+            annotation["perception_mission_time_seconds"] = serde_json::json!(143.0);
         },
-    ))));
-    assert!(matches!(
-        app.cancellation,
-        CancellationState::Requested { .. }
+    );
+    snapshot("run-world-airsim-scene-clock", &mut app);
+}
+
+#[test]
+fn run_stack_tab_with_log_tail() {
+    let mut app = populated_run_app("render-stack");
+    on_tab(&mut app, '6');
+    app.handle_host_message(service_log_reply(
+        0,
+        "starting physical runtime for mission-fixture-001\nloading scenario harbor\nviewer listening on 127.0.0.1:5066\nenvironment update 1 published\n",
+        125,
     ));
-    app.cancellation = CancellationState::Requested {
-        cancellation_request_id: "cancel-8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b".to_string(),
-    };
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("cancellation requested"));
-    assert!(frame.contains("cancel-8f3a1c2e-4b5d-4e6f-9a0b-1c2d3e4f5a6b"));
-    assert_frame("cancellation-requested-100x30.txt", frame);
+    snapshot("run-stack", &mut app);
 }
 
 #[test]
-fn recovered_owner_frame_matches_committed_capture() {
-    let app = recovered_owner_app();
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("Recovered owner session"));
-    assert!(frame.contains("Mission Intent"));
-    assert!(frame.contains("Hold the ridge line."));
-    assert_frame("recovered-owner-100x30.txt", frame);
+fn run_artifacts_tab_and_inspector() {
+    let mut app = populated_run_app("render-artifacts");
+    let id = section_request_id(&on_tab(&mut app, '7'), OperatorSection::Artifacts);
+    app.handle_host_message(artifacts_reply(id));
+    snapshot("run-artifacts", &mut app);
+    let artifact = app.view.selected_artifact.clone().unwrap();
+    app.handle_key(key(KeyCode::Enter));
+    app.take_commands();
+    app.handle_host_message(content_reply(&artifact, 0, "text-page"));
+    snapshot("run-artifact-inspector", &mut app);
 }
 
 #[test]
-fn resize_required_frame_matches_committed_capture() {
-    let mut app = run_app(running_record());
-    app.handle_resize(80, 24);
-    assert_eq!(app.state.name(), "ResizeRequired");
-    assert_frame("resize-required-80x24.txt", render(&app, 80, 24));
+fn run_help_overlay() {
+    let mut app = populated_run_app("render-help");
+    app.handle_key(key(KeyCode::Char('?')));
+    snapshot("run-help", &mut app);
 }
 
 #[test]
-fn connecting_frame_reports_host() {
-    let mut app = App::new("http://127.0.0.1:8787".to_string());
-    app.session.session_id = SESSION_ID.to_string();
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("Connecting to Runtime Host at http://127.0.0.1:8787"));
+fn run_cancellation_confirmation() {
+    let mut app = populated_run_app("render-cancel");
+    app.handle_key(key(KeyCode::Char('c')));
+    snapshot("run-cancellation-confirmation", &mut app);
 }
 
 #[test]
-fn submitting_frame_shows_pending_acknowledgement() {
-    let mut app = review_app();
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    assert_eq!(app.state, AppState::Submitting);
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("Submitting Mission Activation"));
-}
-
-#[test]
-fn error_frame_shows_message_and_recovery_hints() {
-    let mut app = editing_app("hold position");
-    app.handle_host_message(HostMessage::Activated(Err(
-        operator_console::host::HostError::Transport("connection lost".to_string()),
+fn run_terminal_rejected_shows_the_terminal_detail() {
+    let mut app = populated_run_app("render-rejected");
+    app.launch.editor.set_text("buy me a coffee");
+    app.handle_host_message(HostMessage::Current(Ok(
+        operator_console::host::CurrentRun {
+            mission_run: Some(rejected_run()),
+        },
     )));
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("Activation failed: transport error: connection lost"));
-    assert!(frame.contains("Esc: return to editing"));
-}
-
-#[test]
-fn dashboard_marks_terminal_classification() {
-    let mut record = running_record();
-    record.status = "failed".to_string();
-    record.finished_at = Some("2026-08-24T12:05:00Z".to_string());
-    record.terminal_classification = Some("host_interrupted".to_string());
-    let app = run_app(record);
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("failed"));
-    assert!(frame.contains("host_interrupted"));
+    app.request_poll();
+    let commands = app.take_commands();
+    for section in sections(&commands) {
+        app.handle_host_message(section_reply(
+            section,
+            section_request_id(&commands, section),
+            None,
+            |page| {
+                page["run_status"] = serde_json::json!("failed");
+                page["has_more"] = serde_json::json!(false);
+                match section {
+                    OperatorSection::Artifacts => page["artifacts"] = serde_json::json!([]),
+                    OperatorSection::Environment => {
+                        page["environment"]["timeline"] = serde_json::json!([])
+                    }
+                    OperatorSection::Context => {
+                        page["context"]["active_maneuver"] = serde_json::Value::Null
+                    }
+                    OperatorSection::Overview => {
+                        page["overview"]["narrative"]["terminal"] = serde_json::json!(true);
+                        page["overview"]["narrative"]["status"] = serde_json::json!("unavailable");
+                        page["overview"]["phase"]["current"] = serde_json::json!("intent");
+                        for step in page["overview"]["phase"]["steps"].as_array_mut().unwrap() {
+                            let status = match step["id"].as_str().unwrap() {
+                                "stack" => "done",
+                                "intent" => "failed",
+                                _ => "pending",
+                            };
+                            step["status"] = serde_json::json!(status);
+                            step["detail"] = serde_json::Value::Null;
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        ));
+    }
+    snapshot("run-terminal-rejected", &mut app);
 }
 
 #[test]
 fn below_minimum_renders_only_resize_required() {
-    let app = run_app(running_record());
-    let frame = render(&app, MIN_WIDTH - 1, MIN_HEIGHT - 1);
-    assert!(frame.contains("Terminal too small"));
-    assert!(!frame.contains("Run Activities"));
-    assert!(!frame.contains("Mission Intent"));
-}
-
-#[test]
-fn artifact_text_page_frame_matches_committed_capture() {
-    let mut app = artifact_app();
-    app.selected_artifact = Some("planner-log".to_string());
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    app.take_commands();
-    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("text"))));
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("planner: expanded 42 states"));
-    assert!(frame.contains("bytes 0-"));
-    assert_frame("artifact-text-page-100x30.txt", frame);
-}
-
-#[test]
-fn artifact_binary_metadata_frame_matches_committed_capture() {
-    let mut app = artifact_app();
-    app.selected_artifact = Some("detection-frame".to_string());
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    app.take_commands();
-    app.handle_host_message(HostMessage::ArtifactContent(Ok(content_page("binary"))));
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("application/octet-stream"));
-    assert!(frame.contains("metadata only"));
-    assert_frame("artifact-binary-metadata-100x30.txt", frame);
-}
-
-#[test]
-fn conversation_entries_frame_matches_committed_capture() {
-    let mut app = artifact_app();
-    app.selected_artifact = Some("operator-conversation".to_string());
-    let entries: ConversationEntriesPage = serde_json::from_str(include_str!(
-        "../../docs/design/operator-console/contract/v1/mission-run-artifact-entries.page.response.json"
-    ))
-    .unwrap();
-    app.handle_host_message(HostMessage::ConversationEntries {
-        mission_run_id: "run-fixture-001".to_string(),
-        artifact_id: "operator-conversation".to_string(),
-        result: Ok(EvidencePage {
-            items: entries.entries,
-            truncated: false,
-        }),
-    });
-    let frame = render(&app, MIN_WIDTH, MIN_HEIGHT);
-    assert!(frame.contains("#4 perception-agent"));
-    assert!(frame.contains("[perception_rationale] [ref]"));
-    assert_frame("conversation-entries-100x30.txt", frame);
+    let (mut app, _clock) = ready_launch_app("render-resize");
+    app.handle_resize(80, 24);
+    assert_frame("resize-required-80x24.txt", &render(&mut app, 80, 24));
 }

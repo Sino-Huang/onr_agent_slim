@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
-DEFAULT_MAX_PROMPT_CHARACTERS = 128_000
+# The Narrative Input is already bounded (latest summaries plus run state);
+# this is a safety net, not the normal limit.
+DEFAULT_MAX_PROMPT_CHARACTERS = 64_000
 
 
 class RunNarrativeSummarizationError(RuntimeError):
@@ -13,7 +16,7 @@ class RunNarrativeSummarizationError(RuntimeError):
 
 
 class ModelRunNarrativeSummarizer:
-    """Invoke one chat model with issued, already-redacted observations only."""
+    """Invoke one chat model with the Run Narrative input only (D6)."""
 
     def __init__(
         self,
@@ -31,25 +34,30 @@ class ModelRunNarrativeSummarizer:
         *,
         mission_id: str,
         terminal: bool,
-        observations: list[dict[str, object]],
+        narrative_input: Mapping[str, object],
     ) -> str:
         try:
             serialized = json.dumps(
-                observations,
+                narrative_input,
                 allow_nan=False,
+                ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
             )
         except (TypeError, ValueError) as exc:
             raise RunNarrativeSummarizationError(
-                "issued observation envelopes are not JSON serializable"
+                "Run Narrative input is not JSON serializable"
             ) from exc
         prompt = (
-            "Summarize the issued public observation envelopes for this Mission Run. "
-            "Return only the narrative text.\n"
+            "Write the Run Narrative for this Mission Run: a short operator-facing "
+            "account of what has happened and what is happening now, in at most "
+            "six sentences. Build on PREVIOUS_NARRATIVE when present. The "
+            "window summaries are model-written and non-authoritative; the run "
+            "state, phase, FSM state and live records are authoritative and win "
+            "on conflict. Do not invent events. Return only the narrative text.\n"
             f"MISSION_ID: {mission_id}\n"
             f"TERMINAL: {str(terminal).lower()}\n"
-            "ISSUED OBSERVATION ENVELOPES:\n"
+            "NARRATIVE INPUT (latest Mission Log Summaries plus current run state):\n"
             f"{serialized}"
         )
         if len(prompt) > self.max_prompt_characters:
@@ -58,11 +66,13 @@ class ModelRunNarrativeSummarizer:
 
     @staticmethod
     def _response_text(response: object) -> str:
-        value = response if isinstance(response, str) else getattr(response, "content", None)
+        value = (
+            response
+            if isinstance(response, str)
+            else getattr(response, "content", None)
+        )
         if not isinstance(value, str) or not value.strip():
-            raise RunNarrativeSummarizationError(
-                "Run Narrative model returned no text"
-            )
+            raise RunNarrativeSummarizationError("Run Narrative model returned no text")
         return value.strip()
 
     def summarize_narrative(
@@ -71,13 +81,13 @@ class ModelRunNarrativeSummarizer:
         mission_id: str,
         mission_run_id: str,
         terminal: bool,
-        observations: list[dict[str, object]],
+        narrative_input: Mapping[str, object],
     ) -> str:
         del mission_run_id
         prompt = self._prompt(
             mission_id=mission_id,
             terminal=terminal,
-            observations=observations,
+            narrative_input=narrative_input,
         )
         invoke = getattr(self.model, "invoke", None)
         if not callable(invoke):
