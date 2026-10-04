@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "succeeded",
+  "section": "overview",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "overview-cursor-3",
+  "before_cursor": null,
+  "has_more": false,
+  "overview": {
+    "authority": "Runtime Host Mission Run Record",
+    "latest_agents": {
+      "hyper_agent": null,
+      "maneuver_control": null
+    },
+    "fsm": {
+      "state": "mission-complete",
+      "status": "updated"
+    },
+    "environment": {
+      "position": {
+        "x": 10,
+        "y": 20,
+        "z": -30
+      },
+      "velocity": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "mission_time_seconds": 120.0
+    },
+    "active_maneuver": {
+      "maneuver_id": "maneuver-12",
+      "lifecycle": "completed"
+    },
+    "recent_events": [
+      {
+        "stable_id": "observation:3:event-3",
+        "observation_sequence": 3,
+        "event_id": "event-3",
+        "occurred_at": "2026-08-27T12:00:03Z",
+        "component": "maneuver-control",
+        "authority": "operational-log",
+        "event_kind": "maneuver-handoff",
+        "status": null,
+        "outcome": "completed",
+        "correlation_id": null,
+        "replay_disposition": "normal",
+        "payload": {},
+        "warnings": []
+      }
+    ],
+    "counts": {
+      "agents": 2,
+      "environment_events": 3,
+      "artifacts": 2,
+      "warnings": 0
+    },
+    "narrative": {
+      "status": "none",
+      "text": null,
+      "generated_at": null,
+      "source_watermark": 0,
+      "terminal": true,
+      "evidence": null
+    },
+    "hitl": {
+      "status": "none",
+      "requires_action": false
+    },
+    "run_root": "/srv/onr/var/runtime-host/runs/run-fixture-001",
+    "phase": {
+      "current": "terminal",
+      "steps": [
+        {
+          "id": "stack",
+          "label": "Stack",
+          "status": "done",
+          "detail": "4 services ready"
+        },
+        {
+          "id": "intent",
+          "label": "Intent",
+          "status": "done",
+          "detail": null
+        },
+        {
+          "id": "planning",
+          "label": "Planning",
+          "status": "done",
+          "detail": null
+        },
+        {
+          "id": "statechart",
+          "label": "Statechart",
+          "status": "done",
+          "detail": null
+        },
+        {
+          "id": "executing",
+          "label": "Executing",
+          "status": "done",
+          "detail": "plan revision 4"
+        },
+        {
+          "id": "terminal",
+          "label": "Done",
+          "status": "done",
+          "detail": null
+        }
+      ]
+    },
+    "counts_by_importance": {
+      "critical": 0,
+      "warning": 2,
+      "notable": 31,
+      "routine": 120,
+      "debug": 646
+    },
+    "receipt": {
+      "status": "succeeded",
+      "classification": null,
+      "wall_seconds": 312.0,
+      "final": {
+        "fsm_state": "mission-complete",
+        "plan_revision": 4,
+        "mission_time_seconds": 120.0,
+        "source": "fsm-status"
+      },
+      "audit": {
+        "status": "fail",
+        "path": "live-acceptance.json",
+        "recorded_at": "2026-08-24T12:06:02Z",
+        "mission_mode": "mission1",
+        "failures": [
+          "evidence_replan_not_observed"
+        ]
+      },
+      "export": {
+        "path": "/srv/onr/var/runtime-host/runs/run-fixture-001/mission-run-receipt.json",
+        "exported_at": null
+      }
+    }
+  }
+}

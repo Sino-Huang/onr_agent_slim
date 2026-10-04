@@ -1,3 +1,4 @@
+ ◆ AI narrative · 0 s old · through record #412
 ┌ Progress · ≥ debug · FOLLOW ──────────────────────────────────────────────────────────────┐┌ Selected evidence · PgUp/PgDn ──────────────────────────────────┐
 │  ▾ ◆ Run Narrative · AI · available                                                       ││Context Coordination heartbeat                                   │
 │    Legs 1-2 complete; ship 2's report was altered and the agent replanned.                ││context-coordination · debug · record                            │
@@ -9,7 +10,6 @@
 │›       ∙ 14:01:41 CC Context Coordination heartbeat                                       ││  "operation": "publish_snapshot",                               │
 │                                                                                           ││  "revision": 317                                                │
 │                                                                                           ││}                                                                │
-│                                                                                           ││                                                                 │
 │                                                                                           ││                                                                 │
 │                                                                                           ││                                                                 │
 │                                                                                           ││                                                                 │

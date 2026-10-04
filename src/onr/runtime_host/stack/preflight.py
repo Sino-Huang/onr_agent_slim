@@ -3,6 +3,10 @@
 Every external probe is injectable through :class:`PreflightProbes` so tests
 never touch the network, GPUs or the real port table. ``launchable`` is false
 when any check fails; ``warn`` checks never block a launch.
+
+A failing or warning check may carry ``remediation`` (API v1.5): a copyable
+read-only diagnostic command the operator can run, such as the lookup of a
+port's listener. Preflight never runs it and never remediates anything itself.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -95,15 +100,23 @@ class PreflightProbes:
 
 
 def _check(
-    check_id: str, label: str, status: str, detail: str | None, hint: str | None = None
+    check_id: str,
+    label: str,
+    status: str,
+    detail: str | None,
+    hint: str | None = None,
+    remediation: str | None = None,
 ) -> dict[str, object]:
-    return {
+    check: dict[str, object] = {
         "check_id": check_id,
         "label": label,
         "status": status,
         "detail": detail,
         "hint": hint,
     }
+    if remediation is not None:
+        check["remediation"] = remediation
+    return check
 
 
 def run_preflight(
@@ -307,6 +320,7 @@ def run_preflight(
                 PASS if free else FAIL,
                 state if check_id == f"port:{number}" else f"{number} {state}",
                 None if free else hint,
+                None if free else f"ss -ltnp 'sport = :{number}'",
             )
         )
 
@@ -343,10 +357,18 @@ def _vllm_check(
         base_url.removeprefix("http://").removeprefix("https://").removesuffix("/v1")
     )
     hint = "start it with scripts/vllm/start_vllm.sh"
+    remediation = f"curl -sS {shlex.quote(base_url + '/models')}"
     try:
         document = json.loads(probes.http_get(f"{base_url}/models", 3.0))
     except (OSError, ValueError) as error:
-        return _check("vllm", "vLLM reachable", FAIL, f"{location}: {error}", hint)
+        return _check(
+            "vllm",
+            "vLLM reachable",
+            FAIL,
+            f"{location}: {error}",
+            hint,
+            remediation,
+        )
     served = [
         str(item.get("id"))
         for item in document.get("data", ())
@@ -359,6 +381,7 @@ def _vllm_check(
             FAIL,
             f"{model} not served at {location} (serving: {', '.join(served) or 'nothing'})",
             hint,
+            remediation,
         )
     return _check("vllm", "vLLM reachable", PASS, f"{model} at {location}")
 
@@ -407,6 +430,7 @@ def _disk_check(repo_root: Path, probes: PreflightProbes) -> dict[str, object]:
             WARN,
             detail,
             "a Mission 1 run writes about 150 MB; prune old runs under var/",
+            f"du -sh {shlex.quote(str(target))}/* | sort -h",
         )
     return _check("disk", "Free disk space in var/", PASS, detail)
 
@@ -447,6 +471,7 @@ def _gpu_check(
                 if index is not None
                 else detail,
                 "YOLO needs about 2 GiB",
+                "nvidia-smi",
             )
     return _check("gpu", "GPU memory", PASS, detail)
 

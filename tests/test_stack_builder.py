@@ -21,7 +21,7 @@ from onr.runtime_host.stack import (
 from tests.support import launcher_goldens
 
 REPOSITORY = Path(__file__).parents[1]
-CONTRACT = REPOSITORY / "docs/design/operator-console/contract/v1.3"
+CONTRACT = REPOSITORY / "docs/design/operator-console/contract/v1.5"
 MISSION_ID = "mission-7c1f9a2e-3b4d-4c5e-8f6a-0b1c2d3e4f5a"
 
 requires_checkouts = pytest.mark.skipif(
@@ -57,6 +57,102 @@ def test_presets_payload_matches_the_contract_example() -> None:
     for preset in payload["presets"]:
         assert preset["defaults"]["airsim"] in preset["supports"]["airsim"]
         assert preset["defaults"]["perception"] in preset["supports"]["perception"]
+    assert payload["toggle_choices"] == example["toggle_choices"]
+
+
+def test_presets_payload_describes_every_preset_and_offered_toggle_choice() -> None:
+    payload: dict[str, Any] = load_stack_catalog().payload(REPOSITORY)
+    choices = payload["toggle_choices"]
+
+    def described(toggle: str, value: object, perception: str | None = None) -> str:
+        matches = [
+            choice["description"]
+            for choice in choices[toggle]
+            if choice["value"] == value
+            and choice.get("perception") in (None, perception)
+        ]
+        assert len(matches) == 1, (toggle, value, perception)
+        return matches[0]
+
+    for preset in payload["presets"]:
+        assert preset["description"].strip()
+        assert "Real LLM calls" in preset["description"]
+        for airsim in preset["supports"]["airsim"]:
+            for perception in preset["supports"]["perception"]:
+                if perception != "off" and not airsim:
+                    continue
+                assert described("airsim", airsim, perception)
+                assert described("perception", perception)
+    for ownership in ("coordinator_driven", "environment_driven"):
+        assert described("update_ownership", ownership)
+
+    # ADR 0016: AirSim with perception off only visualizes the simulated
+    # world; with perception the scene clock and the producer feed the world.
+    assert "visualizes the simulated world (no agent perception)" in described(
+        "airsim", True, "off"
+    )
+    assert described("airsim", False).startswith("Nothing")
+    assert "annotated with the YOLO detections" in described("airsim", True, "yolo")
+    assert described("perception", "off").startswith("Simulated truth")
+    assert described("perception", "yolo").startswith("Perception-fed truth")
+    assert "Mission time pauses while agents reason" in described(
+        "update_ownership", "coordinator_driven"
+    )
+
+
+def test_catalog_without_descriptions_still_loads(tmp_path: Path) -> None:
+    document = yaml.safe_load(
+        (REPOSITORY / "conf/stack_presets.yaml").read_text(encoding="utf-8")
+    )
+    del document["toggle_choices"]
+    for preset in document["presets"]:
+        del preset["description"]
+    source = tmp_path / "conf" / "stack_presets.yaml"
+    source.parent.mkdir()
+    source.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    payload = load_stack_catalog(source).payload(REPOSITORY)
+
+    assert "toggle_choices" not in payload
+    assert all("description" not in preset for preset in payload["presets"])
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda doc: doc["toggle_choices"].pop("perception"), "describe exactly"),
+        (
+            lambda doc: doc["toggle_choices"]["airsim"].append(
+                {"value": "on", "description": "x"}
+            ),
+            "unknown value",
+        ),
+        (
+            lambda doc: doc["toggle_choices"]["update_ownership"].append(
+                {"value": "coordinator_driven", "description": "again"}
+            ),
+            "duplicate choice",
+        ),
+        (
+            lambda doc: doc["toggle_choices"]["perception"][0].update(perception="off"),
+            "entries need value and description",
+        ),
+        (lambda doc: doc["presets"][0].update(description=""), "description"),
+    ],
+)
+def test_catalog_rejects_malformed_descriptions(
+    tmp_path: Path, edit: Any, message: str
+) -> None:
+    document = yaml.safe_load(
+        (REPOSITORY / "conf/stack_presets.yaml").read_text(encoding="utf-8")
+    )
+    edit(document)
+    source = tmp_path / "conf" / "stack_presets.yaml"
+    source.parent.mkdir()
+    source.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_stack_catalog(source)
 
 
 def test_toggles_fill_defaults_and_reject_unsupported_combinations() -> None:

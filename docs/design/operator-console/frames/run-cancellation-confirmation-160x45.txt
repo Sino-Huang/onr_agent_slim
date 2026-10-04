@@ -13,9 +13,9 @@
 └─────────────────────────────────────────────────────────────────────────────────┘│                                                                           │
 ┌ Progress ───────────────────────────────────────────────────────────────────────┐│                                                                           │
 │◆ Run Narrative · AI · non-authoritative                                         ││                                                                           │
+│AI narrative · 0 s old · through record #412                                     ││                                                                           │
 │Legs 1-2 complete; ship 2's report was altered and the agent replanned.          ││                                                                           │
-│▲ AI Replan after report alteration (31 records)                                 ││                                                                           │
-│                                           ┌ Cancel Mission Run ──────────────────────────────────────────────────┐                                           │
+│▲ AI Replan after report alteration (31 rec┌ Cancel Mission Run ──────────────────────────────────────────────────┐                                           │
 │                                           │                                                                      │                                           │
 │                                           │ Request cancellation of Mission Run run-fixture-001?                 │                                           │
 │                                           │                                                                      │                                           │

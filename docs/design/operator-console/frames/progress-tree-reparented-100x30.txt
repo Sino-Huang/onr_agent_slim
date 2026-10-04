@@ -1,3 +1,4 @@
+ ◆ AI narrative · 0 s old · through record #412
 ┌ Progress · ≥ debug · FOLLOW ─────────────────────────────────────────────────────────────────────┐
 │  ▾ ◆ Run Narrative · AI · available                                                              │
 │    Legs 1-2 complete; ship 2's report was altered and the agent replanned.                       │
@@ -20,7 +21,6 @@
 │Time: 2026-08-27T14:01:10Z – 2026-08-27T14:01:40Z                                                 │
 │                                                                                                  │
 │All patrol legs completed; the final report is available.                                         │
-│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

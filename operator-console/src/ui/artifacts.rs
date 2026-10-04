@@ -6,14 +6,16 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use super::layout::{Breakpoint, field, human_bytes, truncate, wrapped, wrapped_field};
+use super::layout::{
+    Breakpoint, field, human_bytes, scrolling_list, truncate, wrap_line, wrapped, wrapped_field,
+};
 use super::theme::Theme;
-use crate::app::App;
+use crate::app::{App, ArtifactInspector};
 
 pub fn draw_artifacts(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
+    app: &mut App,
     theme: Theme,
     breakpoint: Breakpoint,
 ) {
@@ -26,37 +28,47 @@ pub fn draw_artifacts(
     draw_preview(frame, preview, app, theme);
 }
 
-fn draw_list(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let view = &app.view;
+fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
+    let selected = app.view.selected_artifact().map(|(index, _)| index);
+    let view = &mut app.view;
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Artifacts · {} ", view.artifacts.len()));
+    if view.artifacts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " No Artifacts published.",
+                theme.dim(),
+            )))
+            .block(block),
+            area,
+        );
+        return;
+    }
     let width = block.inner(area).width.saturating_sub(1) as usize;
-    let selected = view.selected_artifact().map(|(index, _)| index);
-    let lines = if view.artifacts.is_empty() {
-        vec![Line::from(Span::styled(
-            " No Artifacts published.",
-            theme.dim(),
-        ))]
-    } else {
-        view.artifacts
-            .iter()
-            .enumerate()
-            .map(|(index, artifact)| {
-                let size = artifact
-                    .byte_size
-                    .map_or_else(|| artifact.classification.clone(), human_bytes);
-                let text = format!(" {} {} ({size})", artifact.kind, artifact.display.title);
-                let style = if selected == Some(index) {
-                    theme.selected()
-                } else {
-                    ratatui::style::Style::default()
-                };
-                Line::from(Span::styled(truncate(&text, width), style))
-            })
-            .collect()
-    };
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let artifacts = &view.artifacts;
+    let rows = scrolling_list(
+        block,
+        area,
+        theme,
+        artifacts.len(),
+        selected,
+        &mut view.artifact_list_offset,
+        |index| {
+            let artifact = &artifacts[index];
+            let size = artifact
+                .byte_size
+                .map_or_else(|| artifact.classification.clone(), human_bytes);
+            let text = format!(" {} {} ({size})", artifact.kind, artifact.display.title);
+            let style = if selected == Some(index) {
+                theme.selected()
+            } else {
+                ratatui::style::Style::default()
+            };
+            Line::from(Span::styled(truncate(&text, width), style))
+        },
+    );
+    frame.render_widget(rows, area);
 }
 
 fn draw_preview(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
@@ -156,14 +168,14 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     );
 }
 
-pub fn draw_inspector(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+pub fn draw_inspector(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     let Some(inspector) = app.view.inspector.as_ref() else {
         return;
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Artifact: {} ", inspector.artifact_id));
-    let Some(page) = inspector.page.as_ref() else {
+    if inspector.page.is_none() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 " Loading Artifact preview…",
@@ -173,7 +185,7 @@ pub fn draw_inspector(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             area,
         );
         return;
-    };
+    }
     if inspector.classification == "binary" {
         let mut lines = Vec::new();
         if let Some(artifact) = app
@@ -215,26 +227,58 @@ pub fn draw_inspector(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         frame.render_widget(Paragraph::new(lines).block(block), area);
         return;
     }
+    if let Some(inspector) = app.view.inspector.as_mut() {
+        draw_text_page(frame, area, block, inspector, theme);
+    }
+}
+
+/// A text page wrapped to the inspector width and scrolled by wrapped line;
+/// the status row (line and byte position) stays pinned above the content.
+fn draw_text_page(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'static>,
+    inspector: &mut ArtifactInspector,
+    theme: Theme,
+) {
+    let Some(page) = inspector.page.as_ref() else {
+        return;
+    };
+    let inner = block.inner(area);
+    let rows = usize::from(inner.height.saturating_sub(2));
+    // A page ending in a newline has no further (empty) line on it.
     let content = page.content.as_deref().unwrap_or("");
+    let wrapped = wrap_line(
+        content.strip_suffix('\n').unwrap_or(content),
+        usize::from(inner.width),
+    );
     let total = page
         .byte_size
         .map_or_else(|| "?".to_string(), |size| size.to_string());
-    let mut status = format!(" bytes {}-{} of {total}", page.offset, page.end_offset());
+    let end = page.end_offset();
+    let bytes = if end > page.offset {
+        format!("bytes {}-{} of {total}", page.offset, end - 1)
+    } else {
+        format!("no bytes at {} of {total}", page.offset)
+    };
+    let mut status = String::new();
     if page.eof {
         status.push_str(" · end of content");
     }
     if page.truncated {
         status.push_str(" · page truncated at UTF-8 boundary");
     }
+    inspector.rows = rows;
+    inspector.max_scroll = wrapped.len().saturating_sub(rows);
+    inspector.scroll = inspector.scroll.min(inspector.max_scroll);
+    let scroll = inspector.scroll;
     let mut lines = vec![
-        Line::from(Span::styled(status, theme.dim())),
+        Line::from(Span::styled(
+            format!(" line {}/{} · {bytes}{status}", scroll + 1, wrapped.len()),
+            theme.dim(),
+        )),
         Line::from(""),
     ];
-    lines.extend(content.split('\n').map(|line| Line::from(line.to_string())));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    lines.extend(wrapped.into_iter().skip(scroll).take(rows).map(Line::from));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }

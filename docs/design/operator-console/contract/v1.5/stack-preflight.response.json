@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "preset_id": "mission1-airsim",
+  "toggles": {
+    "airsim": true,
+    "perception": "yolo",
+    "update_ownership": "coordinator_driven"
+  },
+  "launchable": false,
+  "checks": [
+    {
+      "check_id": "vllm",
+      "label": "vLLM reachable",
+      "status": "pass",
+      "detail": "Qwen/Qwen3.8-27B-FP8 at 127.0.0.1:11411",
+      "hint": null
+    },
+    {
+      "check_id": "planners",
+      "label": "Planner executables",
+      "status": "pass",
+      "detail": "minizinc · fast-downward · VAL",
+      "hint": null
+    },
+    {
+      "check_id": "physical-runtime",
+      "label": "Physical runtime checkout",
+      "status": "pass",
+      "detail": "onr_physical_runtime · mission1_airsim_live.yaml",
+      "hint": null
+    },
+    {
+      "check_id": "mission-inputs",
+      "label": "Mission inputs",
+      "status": "pass",
+      "detail": "mission1_airsim_live.json",
+      "hint": null
+    },
+    {
+      "check_id": "engine",
+      "label": "Harbor engine and AirSim settings",
+      "status": "pass",
+      "detail": "Harbor5_6.sh + settings_airsim.json",
+      "hint": null
+    },
+    {
+      "check_id": "perception",
+      "label": "Perception producer (onr_solution)",
+      "status": "pass",
+      "detail": "yolo · calibration_v12.json",
+      "hint": null
+    },
+    {
+      "check_id": "yolo",
+      "label": "YOLO weights and ultralytics",
+      "status": "pass",
+      "detail": "best.pt · ultralytics",
+      "hint": null
+    },
+    {
+      "check_id": "port:41451",
+      "label": "AirSim RPC port free",
+      "status": "fail",
+      "detail": "in use",
+      "hint": "stop the other Harbor engine",
+      "remediation": "ss -ltnp 'sport = :41451'"
+    },
+    {
+      "check_id": "port:8766",
+      "label": "Perception port free",
+      "status": "pass",
+      "detail": "free",
+      "hint": null
+    },
+    {
+      "check_id": "port:viewer",
+      "label": "World-model viewer port free",
+      "status": "pass",
+      "detail": "5140 free",
+      "hint": null
+    },
+    {
+      "check_id": "disk",
+      "label": "Free disk space in var/",
+      "status": "pass",
+      "detail": "500.0 GiB free",
+      "hint": null
+    },
+    {
+      "check_id": "gpu",
+      "label": "GPU memory",
+      "status": "warn",
+      "detail": "GPU1 free 1.5 GiB",
+      "hint": "YOLO needs about 2 GiB",
+      "remediation": "nvidia-smi"
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "progress",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "progress-cursor-212",
+  "before_cursor": null,
+  "has_more": false,
+  "progress": {
+    "mapping_version": 1,
+    "narrative": {
+      "status": "available",
+      "text": "Legs 1-2 complete; ship 2's report was altered and the agent replanned. The drone is now flying leg 3 toward the northern patrol box while Context Coordination re-checks the reports of ships 2 and 14. Ship 14 has not moved since its last report, so its reliability is unchanged. No Human Decision Request has been raised and the stack is healthy.",
+      "generated_at": "2026-08-24T12:00:31Z",
+      "source_watermark": 763,
+      "terminal": false,
+      "latest_operational_sequence": 781
+    },
+    "nodes": [
+      {
+        "node_id": "summary:9",
+        "parent_id": "root",
+        "level": "summary",
+        "importance": "warning",
+        "time_start": "2026-08-24T12:00:10Z",
+        "time_end": "2026-08-24T12:00:29Z",
+        "mission_time_seconds": 143.5,
+        "source": "mission-summary",
+        "event_kind": null,
+        "outcome": null,
+        "title": "Replan after report alteration",
+        "text": "Replan after report alteration on ship 2; FSM moved to patrol.leg_3.",
+        "child_count": 64,
+        "authoritative": false,
+        "details": null
+      },
+      {
+        "node_id": "log:763",
+        "parent_id": "summary:9",
+        "level": "record",
+        "importance": "notable",
+        "time_start": "2026-08-24T12:00:29Z",
+        "time_end": null,
+        "mission_time_seconds": 143.0,
+        "source": "fsm-runner",
+        "event_kind": "fsm",
+        "outcome": "transitioned",
+        "title": "FSM patrol.leg_2 → patrol.leg_3",
+        "text": null,
+        "child_count": 0,
+        "authoritative": true,
+        "details": {
+          "from_state": "patrol.leg_2",
+          "to_state": "patrol.leg_3"
+        }
+      },
+      {
+        "node_id": "live",
+        "parent_id": "root",
+        "level": "live",
+        "importance": "routine",
+        "time_start": null,
+        "time_end": null,
+        "mission_time_seconds": null,
+        "source": "runtime-host",
+        "event_kind": null,
+        "outcome": null,
+        "title": "Live — not yet summarized",
+        "text": null,
+        "child_count": 18,
+        "authoritative": true,
+        "details": null
+      },
+      {
+        "node_id": "log:781",
+        "parent_id": "live",
+        "level": "record",
+        "importance": "debug",
+        "time_start": "2026-08-24T12:00:40Z",
+        "time_end": null,
+        "mission_time_seconds": 152.0,
+        "source": "context-coordination",
+        "event_kind": "heartbeat",
+        "outcome": "completed",
+        "title": "Context Coordination heartbeat",
+        "text": null,
+        "child_count": 0,
+        "authoritative": true,
+        "details": {
+          "operation": "publish_snapshot",
+          "revision": 401
+        }
+      }
+    ]
+  }
+}

@@ -16,7 +16,7 @@ import os
 import re
 import stat
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +28,7 @@ from onr.runtime_host.observations import (
     decode_cursor,
     encode_cursor,
 )
+from onr.runtime_host.run_files import JsonFileCache
 
 ARTIFACT_SCHEMA_VERSION = 1
 MAX_ENVELOPE_BYTES = 65536
@@ -826,6 +827,139 @@ def service_log_content(
             os.close(fd)
 
 
+# The live demo acceptance audit (``scripts/audit_live_demo.py``) writes its
+# verdict here; the Host only reads it and never runs the audit itself.
+AUDIT_ARTIFACT_NAME = "live-acceptance.json"
+# Where the owner's ``x`` writes the terminal receipt (overwritten each time).
+RECEIPT_EXPORT_NAME = "mission-run-receipt.json"
+_AUDIT_MAX_FAILURES = 20
+
+
+def _decode_audit(document: Mapping[str, object]) -> dict[str, object]:
+    status = document.get("status")
+    failures = document.get("failures", [])
+    mode = document.get("mission_mode")
+    if (
+        status not in {"PASS", "FAIL"}
+        or not isinstance(failures, list)
+        or not all(isinstance(item, str) for item in failures)
+        or (mode is not None and not isinstance(mode, str))
+    ):
+        raise ValueError("not a live demo audit")
+    return {
+        "status": cast(str, status).lower(),
+        "mission_mode": mode,
+        "failures": list(failures[:_AUDIT_MAX_FAILURES]),
+    }
+
+
+_AUDITS: JsonFileCache[dict[str, object]] = JsonFileCache(
+    _decode_audit, max_bytes=MAX_ARTIFACT_BYTES, max_entries=16
+)
+
+
+def live_demo_audit(run_root: Path) -> dict[str, object]:
+    """The run's live demo audit verdict, only as its audit artifact records it.
+
+    ``not_recorded`` when no audit artifact exists and ``unreadable`` when one
+    exists but is not a PASS/FAIL audit; never derived from lifecycle status.
+    """
+
+    path = run_root / AUDIT_ARTIFACT_NAME
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return {
+            "status": "not_recorded",
+            "path": None,
+            "recorded_at": None,
+            "mission_mode": None,
+            "failures": [],
+        }
+    decoded = _AUDITS.get(path) if stat.S_ISREG(metadata.st_mode) else None
+    recorded = {
+        "path": AUDIT_ARTIFACT_NAME,
+        "recorded_at": datetime.fromtimestamp(metadata.st_mtime, UTC).isoformat(),
+    }
+    if decoded is None:
+        return {
+            "status": "unreadable",
+            **recorded,
+            "mission_mode": None,
+            "failures": [],
+        }
+    return {
+        "status": decoded["status"],
+        **recorded,
+        "mission_mode": decoded["mission_mode"],
+        "failures": decoded["failures"],
+    }
+
+
+def _decode_export_time(document: Mapping[str, object]) -> str:
+    value = document["exported_at"]
+    if not isinstance(value, str):
+        raise TypeError("exported_at must be text")
+    return value
+
+
+_EXPORTS: JsonFileCache[str] = JsonFileCache(
+    _decode_export_time, max_bytes=MAX_ARTIFACT_BYTES, max_entries=16
+)
+
+
+def receipt_export(run_root: Path) -> dict[str, object]:
+    """Where ``x`` writes the receipt, and when it last did (``null``: never)."""
+
+    path = run_root / RECEIPT_EXPORT_NAME
+    return {"path": str(path), "exported_at": _EXPORTS.get(path)}
+
+
+# Run Root files a receipt export references, by role, when they exist.
+_RECEIPT_REFERENCES = (
+    ("closed_loop_result", "closed-loop-result.json"),
+    ("live_demo_audit", AUDIT_ARTIFACT_NAME),
+    ("stack_plan", "stack.json"),
+    ("stack_status", "stack-status.json"),
+    ("observations", "observations.json"),
+    ("narrative", "narrative.json"),
+    ("world_frame", "world-frames/latest.png"),
+)
+
+
+def receipt_artifact_references(run_root: Path) -> list[dict[str, object]]:
+    """Regular Run Root files behind a receipt: role, relative path, size.
+
+    Logs carry the ``artifact_id`` the console's Artifacts tab serves them as.
+    """
+
+    references: list[dict[str, object]] = []
+    for role, relative in _RECEIPT_REFERENCES:
+        try:
+            metadata = (run_root / relative).lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(metadata.st_mode):
+            references.append(
+                {
+                    "role": role,
+                    "path": relative,
+                    "byte_size": metadata.st_size,
+                    "artifact_id": None,
+                }
+            )
+    references.extend(
+        {
+            "role": "log",
+            "path": log["ref"],
+            "byte_size": log["byte_size"],
+            "artifact_id": log["artifact_id"],
+        }
+        for log in service_log_artifacts(run_root)
+    )
+    return references
+
+
 # Directory timestamps advance in kernel clock ticks, so a change landing in the
 # same tick as a listing leaves them unchanged. Listings of directories changed
 # this recently are not trusted and are taken again on the next snapshot.
@@ -988,6 +1122,7 @@ def _beneath(parts: tuple[str, ...], directories: set[tuple[str, ...]]) -> bool:
 
 __all__ = [
     "ARTIFACT_SCHEMA_VERSION",
+    "AUDIT_ARTIFACT_NAME",
     "DEFAULT_PAGE_SIZE",
     "DEFAULT_PREVIEW_BYTES",
     "MAX_ARTIFACT_BYTES",
@@ -996,9 +1131,13 @@ __all__ = [
     "MAX_ENVELOPE_BYTES",
     "MAX_PAGE_SIZE",
     "MAX_PREVIEW_BYTES",
+    "RECEIPT_EXPORT_NAME",
     "ArtifactNotFoundError",
     "ArtifactUnavailableError",
     "PlannerArtifactInventory",
     "PlannerArtifactSnapshot",
     "PublicArtifactInbox",
+    "live_demo_audit",
+    "receipt_artifact_references",
+    "receipt_export",
 ]

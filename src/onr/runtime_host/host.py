@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import signal
+import tempfile
 import time
 import traceback
 import weakref
@@ -29,8 +30,10 @@ from onr.runtime.composition import RuntimeComposition
 from onr.runtime.config import RuntimeConfig, load_runtime_config
 from onr.runtime_host.airsim_overlay import PerceptionAnnotator
 from onr.runtime_host.artifacts import (
+    RECEIPT_EXPORT_NAME,
     ArtifactNotFoundError,
     PublicArtifactInbox,
+    receipt_artifact_references,
     service_log_content,
 )
 from onr.runtime_host.beliefs import beliefs_section
@@ -47,6 +50,7 @@ from onr.runtime_host.observations import (
     OBSERVATION_SCHEMA_VERSION,
     EvidenceSource,
     EvidenceTailer,
+    InvalidCursorError,
     RunObservations,
     decode_cursor,
     encode_cursor,
@@ -56,6 +60,7 @@ from onr.runtime_host.operator_projection import (
     OPERATOR_DEFAULT_LIMIT,
     OperatorRunProjection,
     OperatorSection,
+    run_wall_seconds,
 )
 from onr.runtime_host.progress import load_mission_log_summaries
 from onr.runtime_host.run_files import JsonFileCache
@@ -66,7 +71,12 @@ from onr.runtime_host.stack import (
     StackSupervisor,
     load_stack_catalog,
     plan_mission_run,
+    ready_durations,
     run_preflight,
+)
+from onr.runtime_host.stack.supervisor import (
+    WORKER_LOG_ARTIFACT_ID,
+    harbor_config_restoration,
 )
 from onr.runtime_host.world import CameraCapture, WorldView
 from onr.viewer.trace import sanitize_payload
@@ -79,6 +89,8 @@ _WORKER_IDENTITY = "runtime_host.closed_loop_demo"
 _WORKER_OWNERSHIP_ENV = "ONR_RUNTIME_HOST_WORKER_TOKEN"
 _WORKER_START_TIMEOUT_SECONDS = 5.0
 _TERMINAL_DETAIL_TEXT_LIMIT = 500
+HISTORY_DEFAULT_LIMIT = 20
+HISTORY_MAX_LIMIT = 100
 
 
 class _EventLike(Protocol):
@@ -176,6 +188,10 @@ class HostNotFoundError(Exception):
     """A public Mission Run lookup did not resolve on this Host."""
 
 
+class RunRootUnavailableError(HostNotFoundError):
+    """The Mission Run is known, but its Run Root is missing on this Host."""
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeWorkerOptions:
     repo_root: Path
@@ -247,9 +263,11 @@ def runtime_worker(context: WorkerContext) -> None:
     supervisor = StackSupervisor(plan)
     stop_monitor = Event()
     failures: list[StackFailure] = []
+    owner_cancelled = Event()
 
     def cancelled(_signal: int, _frame: object) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        owner_cancelled.set()
         raise _WorkerCancelled
 
     def service_failed(_signal: int, _frame: object) -> None:
@@ -339,7 +357,10 @@ def runtime_worker(context: WorkerContext) -> None:
                     WorldView(context.run_root.path, timeout=0.25).capture_final()
             finally:
                 try:
-                    supervisor.end_closed_loop(failed=failed)
+                    # An owner cancellation stops the closed loop; it did not fail.
+                    supervisor.end_closed_loop(
+                        failed=failed, cancelled=owner_cancelled.is_set()
+                    )
                 finally:
                     supervisor.stop()
         finally:
@@ -691,7 +712,11 @@ class RuntimeHost:
                 "run_root": str(run_root.path),
                 "cancellation_requested": False,
                 "worker_launch_state": "launching",
+                "previous_ready_seconds": self._previous_ready_seconds(
+                    state, preset.preset_id
+                ),
             }
+            state["latest_run_by_preset"][preset.preset_id] = mission_run_id
             state["current_run_id"] = mission_run_id
             self._save_state(state)
 
@@ -757,6 +782,45 @@ class RuntimeHost:
             run = self._current_run(self._load_state())
             return None if run is None else _public_run(run)
 
+    def mission_runs(
+        self, *, limit: int = HISTORY_DEFAULT_LIMIT, before: str | None = None
+    ) -> dict[str, object]:
+        """One page of the run history, newest first.
+
+        Runs are ordered by ``created_at`` then ``mission_run_id``, both
+        descending, so ``before`` (the last row's run id) is a stable cursor: a
+        newer activation never shifts an older page. Rows are the public run
+        record plus toggles, wall duration and whether the Run Root is still on
+        disk; they never carry the Mission Intent.
+        """
+
+        with self._state_guard():
+            state = self._load_state()
+        runs = [run for run in state["runs"].values() if isinstance(run, dict)]
+        if before is not None:
+            anchor = state["runs"].get(before)
+            if not isinstance(anchor, dict):
+                raise InvalidCursorError("before names no Mission Run on this Host")
+            runs = [run for run in runs if _history_key(run) < _history_key(anchor)]
+        runs.sort(key=_history_key, reverse=True)
+        page = runs[:limit]
+        current_id = state.get("current_run_id")
+        return {
+            "mission_runs": [
+                {
+                    "mission_run": _public_run(run),
+                    "toggles": _history_toggles(run),
+                    "wall_seconds": run_wall_seconds(run),
+                    "run_root_available": self._run_root(run).path.is_dir(),
+                    "current": run["mission_run_id"] == current_id,
+                }
+                for run in page
+            ],
+            "next_before": (
+                str(page[-1]["mission_run_id"]) if len(runs) > limit else None
+            ),
+        }
+
     def stack_presets(self) -> dict[str, object]:
         return self._stack_catalog.payload(self._worker_options.repo_root)
 
@@ -787,14 +851,26 @@ class RuntimeHost:
             return view
 
     def world_frame(self, mission_run_id: str, source: str):
-        with self._state_guard():
-            run = self._load_state()["runs"].get(mission_run_id)
-        if not isinstance(run, dict):
-            raise HostNotFoundError
+        run = self._evidence_run(mission_run_id)
         return self._world_view(run).frame(
             source,
             live=run["status"] in _NONTERMINAL_STATUSES,
         )
+
+    def _evidence_run(self, mission_run_id: str) -> dict[str, Any]:
+        """The run record whose Run Root evidence a route is about to read.
+
+        A historical run whose Run Root was removed is reported explicitly
+        instead of as an empty run.
+        """
+
+        with self._state_guard():
+            run = self._load_state()["runs"].get(mission_run_id)
+        if not isinstance(run, dict):
+            raise HostNotFoundError
+        if not self._run_root(run).path.is_dir():
+            raise RunRootUnavailableError
+        return run
 
     def _run_root(self, run: Mapping[str, object]) -> RunRoot:
         return RunRoot(Path(str(run["run_root"])))
@@ -822,7 +898,13 @@ class RuntimeHost:
         )
         payload.pop("schema_version", None)
         payload.pop("updated_at", None)
-        for service in payload.get("services", []):
+        # Copies: the decoded status is cached and shared across requests.
+        payload["services"] = [
+            dict(service) if isinstance(service, dict) else service
+            for service in payload.get("services", [])
+        ]
+        history = run.get("previous_ready_seconds")
+        for service in payload["services"]:
             if not isinstance(service, dict):
                 continue
             path = (
@@ -838,7 +920,39 @@ class RuntimeHost:
                 service["last_line"] = lines[-1][:500] if lines else None
             except OSError:
                 service["last_line"] = None
+            # v1.5: history from the previous run of the same preset, never an ETA.
+            if isinstance(history, Mapping) and service.get("name") in history:
+                service["previous_ready_seconds"] = history[service["name"]]
+        teardown = payload.get("teardown")
+        if isinstance(teardown, Mapping):
+            # v1.5 teardown receipt. The Host records a terminal status only
+            # after the Run Worker returned from its teardown or the Host
+            # verified that its process tree exited.
+            payload["teardown"] = {
+                **teardown,
+                "worker": (
+                    "running" if run["status"] in _NONTERMINAL_STATUSES else "stopped"
+                ),
+                "harbor_config": harbor_config_restoration(root, payload["services"]),
+            }
         return payload
+
+    def _previous_ready_seconds(
+        self, state: Mapping[str, Any], preset_id: str
+    ) -> dict[str, float]:
+        """Measured readiness from the previous run of ``preset_id``, if any."""
+
+        previous_id = state["latest_run_by_preset"].get(preset_id)
+        previous = (
+            state["runs"].get(previous_id) if isinstance(previous_id, str) else None
+        )
+        if not isinstance(previous, dict) or not isinstance(
+            previous.get("run_root"), str
+        ):
+            return {}
+        return ready_durations(
+            self._stack_status_cache.get(self._run_root(previous).stack_status)
+        )
 
     def observations(
         self,
@@ -1032,10 +1146,7 @@ class RuntimeHost:
     ) -> dict[str, object]:
         """Return one page from the Mission Run's Public Artifact Inbox."""
 
-        with self._state_guard():
-            run = self._load_state()["runs"].get(mission_run_id)
-        if not isinstance(run, dict):
-            raise HostNotFoundError
+        run = self._evidence_run(mission_run_id)
         return self._artifact_inbox_for(run).artifacts(
             str(run["mission_id"]),
             mission_run_id,
@@ -1053,10 +1164,7 @@ class RuntimeHost:
     ) -> dict[str, object]:
         """Read one public Artifact content preview."""
 
-        with self._state_guard():
-            run = self._load_state()["runs"].get(mission_run_id)
-        if not isinstance(run, dict):
-            raise HostNotFoundError
+        run = self._evidence_run(mission_run_id)
         mission_id = str(run["mission_id"])
         if artifact_id == "worker-log" or artifact_id.startswith("service-log-"):
             return service_log_content(
@@ -1098,10 +1206,7 @@ class RuntimeHost:
     ) -> dict[str, object]:
         """Return one public Conversation Artifact entry page."""
 
-        with self._state_guard():
-            run = self._load_state()["runs"].get(mission_run_id)
-        if not isinstance(run, dict):
-            raise HostNotFoundError
+        run = self._evidence_run(mission_run_id)
         return self._artifact_inbox_for(run).conversation_entries(
             str(run["mission_id"]),
             mission_run_id,
@@ -1179,6 +1284,79 @@ class RuntimeHost:
                 "mission_intent": activation["mission_intent"],
                 "source_authority": activation["source_authority"],
             }
+
+    def export_receipt(self, mission_run_id: str, credential: str) -> dict[str, object]:
+        """Write the terminal receipt to ``<run root>/mission-run-receipt.json``.
+
+        Owner only, terminal runs only. Each export atomically replaces the
+        previous file with the receipt as the Host projects it now (metadata,
+        teardown and Run Root artifact references), so repeating it is safe.
+        """
+
+        with self._state_guard():
+            run = dict(
+                self._authorize_run(self._load_state(), mission_run_id, credential)
+            )
+        if run["status"] in _NONTERMINAL_STATUSES:
+            raise HostConflictError(
+                "mission_run_not_terminal",
+                "a receipt can be exported only after the Mission Run ended",
+            )
+        overview = cast(
+            dict[str, Any],
+            self.operator_view(mission_run_id, section="overview", limit=1)[
+                "overview"
+            ],
+        )
+        receipt = dict(overview["receipt"])
+        del receipt["export"]
+        root = self._run_root(run)
+        stack = self._stack_section(run)
+        exported_at = self._clock()
+        document = {
+            "schema_version": 1,
+            "kind": "mission_run_receipt",
+            "exported_at": exported_at,
+            "mission_id": run["mission_id"],
+            "mission_run_id": mission_run_id,
+            "run_root": str(root.path),
+            "receipt": receipt,
+            "terminal_detail": run.get("terminal_detail"),
+            "stack": {
+                "preset_id": stack.get("preset_id"),
+                "teardown": stack.get("teardown"),
+                "services": [
+                    {
+                        key: service.get(key)
+                        for key in ("name", "state", "stop_mode", "stopped_at")
+                    }
+                    for service in cast(list[object], stack.get("services", []))
+                    if isinstance(service, Mapping)
+                ],
+            },
+            "artifacts": receipt_artifact_references(root.path),
+        }
+        encoded = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+        path = root.path / RECEIPT_EXPORT_NAME
+        replaced = path.exists()
+        # A unique temporary name: concurrent exports each replace atomically.
+        descriptor, temporary = tempfile.mkstemp(
+            dir=root.path, prefix=f".{RECEIPT_EXPORT_NAME}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+            os.replace(temporary, path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+        return {
+            "mission_run_id": mission_run_id,
+            "path": str(path),
+            "exported_at": exported_at,
+            "byte_size": len(encoded),
+            "replaced": replaced,
+        }
 
     def cancel(
         self,
@@ -1278,9 +1456,9 @@ class RuntimeHost:
                 context.mission_run_id,
                 "failed",
                 terminal_classification="stack_failed",
+                # v1.5 ``log_artifact_id``: the failed service's or step's log.
                 terminal_detail={
-                    "kind": "stack_failed",
-                    "service": exc.service,
+                    **exc.terminal_detail(),
                     "message": _terminal_detail_text(exc.message),
                 },
             )
@@ -1319,6 +1497,8 @@ class RuntimeHost:
                     "stage": stage,
                     "error_type": type(exc).__name__,
                     "message": _terminal_detail_text(str(exc)),
+                    # v1.5: the traceback is in the Run Worker log.
+                    "log_artifact_id": WORKER_LOG_ARTIFACT_ID,
                 },
             )
         else:
@@ -1371,10 +1551,7 @@ class RuntimeHost:
     ) -> tuple[dict[str, Any], RunObservations]:
         """Return the run record and its long-lived observations, without refreshing."""
 
-        with self._state_guard():
-            run = self._load_state()["runs"].get(mission_run_id)
-        if not isinstance(run, dict):
-            raise HostNotFoundError
+        run = self._evidence_run(mission_run_id)
         if mission_run_id not in self._run_observations:
             self._prune_run_caches(requested_run_id=mission_run_id)
         with self._evidence_lock:
@@ -1498,23 +1675,68 @@ class RuntimeHost:
             self._save_state(state)
 
     def _mark_stack_stopped(self, root: RunRoot) -> None:
-        """A forcibly reaped stack must not retain stale ready service badges."""
+        """Record a forcibly reaped stack truthfully.
+
+        Services the Run Worker had not finished stopping were killed with its
+        process tree, so they end ``stopped`` with ``stop_mode`` ``forced``;
+        services it had already stopped keep their recorded mode. The
+        teardown's ``finished_at`` becomes the time the Host verified the exit.
+        """
         status = self._stack_status_cache.get(root.stack_status)
         if status is None:
             return
+        now = self._clock()
         services = [
-            {**service, "state": "stopped", "importance": "routine"}
-            if service.get("state") in {"ready", "starting"}
+            {
+                **{
+                    key: value for key, value in service.items() if key != "waiting_for"
+                },
+                "state": "stopped",
+                "importance": "routine",
+                "stop_mode": "forced",
+                "stopped_at": now,
+            }
+            if service.get("state") in {"ready", "starting", "stopping"}
             else dict(service)
             for service in status.get("services", [])
         ]
-        if services == status.get("services"):
+        # A step reaped mid-run ends `stopped`; its end time was not observed.
+        steps = [
+            {**step, "state": "stopped"}
+            if isinstance(step, dict) and step.get("state") == "running"
+            else step
+            for step in status.get("steps", [])
+        ]
+        recorded = status.get("teardown")
+        teardown = (
+            dict(recorded)
+            if isinstance(recorded, Mapping)
+            else {"started_at": None, "finished_at": None, "stop_order": []}
+        )
+        if teardown.get("finished_at") is None:
+            teardown["finished_at"] = now
+        if (
+            services == status.get("services")
+            and steps == status.get("steps", [])
+            and teardown == recorded
+            and "step" not in status
+        ):
             return
         path = root.stack_status.with_name(".stack-status.host.tmp")
         try:
             path.write_text(
                 json.dumps(
-                    {**status, "services": services, "updated_at": self._clock()}
+                    {
+                        **{
+                            key: value
+                            for key, value in status.items()
+                            if key not in {"step", "steps"}
+                        },
+                        "services": services,
+                        **({"steps": steps} if steps else {}),
+                        "teardown": teardown,
+                        "updated_at": now,
+                    }
                 )
                 + "\n",
                 encoding="utf-8",
@@ -1782,6 +2004,7 @@ class RuntimeHost:
                 "session_verifiers": {},
                 "cancellations": {},
                 "runs": {},
+                "latest_run_by_preset": {},
                 "current_run_id": None,
             }
         if (
@@ -1793,7 +2016,11 @@ class RuntimeHost:
         ):
             raise RuntimeError("runtime host state is invalid")
         raw.setdefault("cancellations", {})
-        if not isinstance(raw["cancellations"], dict):
+        # Absent in state written before API v1.5: no readiness history yet.
+        raw.setdefault("latest_run_by_preset", {})
+        if not isinstance(raw["cancellations"], dict) or not isinstance(
+            raw["latest_run_by_preset"], dict
+        ):
             raise RuntimeError("runtime host state is invalid")  # noqa: TRY004
         return raw
 
@@ -1959,6 +2186,28 @@ def _public_run(run: Mapping[str, object]) -> dict[str, object]:
     public["stack"] = run.get("stack")
     public["terminal_detail"] = run.get("terminal_detail")
     return public
+
+
+def _history_key(run: Mapping[str, object]) -> tuple[str, str]:
+    """Run history order: the Host's ISO-8601 UTC ``created_at``, then run id."""
+
+    created_at = run.get("created_at")
+    return (
+        created_at if isinstance(created_at, str) else "",
+        str(run["mission_run_id"]),
+    )
+
+
+def _history_toggles(run: Mapping[str, object]) -> dict[str, object] | None:
+    """The launch toggles ``stack`` omits; ``None`` for runs before v1.2."""
+
+    options = run.get("stack_options")
+    if not isinstance(options, Mapping):
+        return None
+    return {
+        "update_ownership": options.get("update_ownership"),
+        "simulation_limit_seconds": options.get("simulation_limit_seconds"),
+    }
 
 
 def _terminal_detail_text(value: object) -> str:

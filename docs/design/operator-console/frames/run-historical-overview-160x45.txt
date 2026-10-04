@@ -1,0 +1,45 @@
+ HISTORICAL  RUN run-0d14a731… ● succeeded 00:05:12 │ t=120.0 s │ FSM mission-complete │ last maneuver-7 active │ stack ■■■■ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✔ Executing ─ ✔ Done
+┌ Mission Run · receipt ──────────────────────────────────────────────────────────┐┌ world · seq - · final ────────────────────────────────────────────────────┐
+│ Lifecycle: succeeded                                                            ││ Images disabled (--image-protocol off)                                    │
+│ Mission:   mission-9d2e8f41-0b6c-4c1a-a3e5-7f8b9c0d1e2f                         ││                                                                           │
+│ Run:       run-0d14a731-6a9d-4b68-b612-4520619511c4                             ││                                                                           │
+│ Stack:     mission1-harbor · AirSim off · perception off                        ││                                                                           │
+│ Started:   2026-10-03T13:22:11.277606+00:00                                     ││                                                                           │
+│ Finished:  2026-10-03T13:27:23.108743+00:00 · 5:12 wall                         ││                                                                           │
+│ Historical run · read-only · Esc returns                                        ││                                                                           │
+│ Final:     FSM mission-complete · plan r4 · t=120.0 s                           ││                                                                           │
+│ Audit:     FAIL · 1 failure: evidence_replan_not_observed                       ││                                                                           │
+│ Teardown:  worker stopped · took 0:10                                           ││                                                                           │
+│ Services:  3 stopped · 2 graceful, 1 forced                                     ││                                                                           │
+│ Harbor:    config restored (guardian reported)                                  ││                                                                           │
+│ Export:    not exported · read-only in history                                  ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘│                                                                           │
+┌ Progress ───────────────────────────────────────────────────────────────────────┐│                                                                           │
+│◆ Run Narrative · AI · non-authoritative                                         ││                                                                           │
+│AI narrative · 0 s old · through record #412                                     ││                                                                           │
+│Legs 1-2 complete; ship 2's report was altered and the agent replanned.          ││                                                                           │
+│▲ AI Replan after report alteration (31 records)                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+│                                                                                 │┌ Belief ───────────────────────────────────────────────────────────────────┐
+│                                                                                 ││reporting_reliability · r8                                                 │
+│                                                                                 ││ship 2 0.6230 · Δ prior +0.4900 · prev +0.1200                             │
+│                                                                                 ││ship 14 0.0600 · Δ prior -0.0700 · prev +0.0000                            │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
+┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v397 · plan r4                                                    │
+│ No Human Decision Requests require action.                                      ││▲ missing [plan] · stale [plan] · unhealthy [plan]                         │
+│ Status-only view: no decision controls.                                         ││FSM assignment-1-in-progress (last observed)                               │
+│                                                                                 ││search_area · active (last observed)                                       │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ HISTORICAL read-only · Esc back to current run · 1-7/Tab tabs · F3 history
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

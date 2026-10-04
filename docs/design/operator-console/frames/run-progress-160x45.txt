@@ -1,6 +1,7 @@
  RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐ │ host ● live
   1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
  ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+ ◆ AI narrative · 0 s old · through record #412
 ┌ Progress · ≥ routine · FOLLOW ────────────────────────────────────────────────────────────┐┌ Selected evidence · PgUp/PgDn ──────────────────────────────────┐
 │  ▾ ◆ Run Narrative · AI · available                                                       ││FSM patrol.leg_2 → patrol.leg_3                                  │
 │    Legs 1-2 complete; ship 2's report was altered and the agent replanned.                ││fsm-runner · notable · record                                    │
@@ -36,10 +37,9 @@
 │                                                                                           ││                                                                 │
 │                                                                                           ││                                                                 │
 │                                                                                           ││                                                                 │
-│                                                                                           ││                                                                 │
 └───────────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────┘
  / search · n/N next/previous match
  ↑↓ select · ←→ expand/collapse · Enter toggle · f follow newest · i minimum importance
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ↑↓ move · ←→ fold · f follow · i importance · / search · n/N matches · ? help · c cancel · q managed exit
+ 1-7/Tab tabs · ↑↓ move · ←→ fold · f follow · i importance · / search · n/N matches · ? help · c cancel · q managed exit · F3 history
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -1,0 +1,45 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ───────────────────────────────────────────────────┐┌ Preflight · launchable · ▲1 ✔1 ──────────────────────────────────────────────────────────────────┐
+│▸Preset     ‹ [Mission 1 · Harbor (simulated)] ›          ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs about 2 GiB                                        │
+│ AirSim     ‹ [off] │ on ›                                ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.0.0.1:11411)                                       │
+│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›                    ││                                                                                                  │
+│ Updates    ‹ [coordinator_driven] ›                      ││                                                                                                  │
+│ Sim limit  ‹ [600 s] ›                                   ││                                                                                                  │
+│ mission1-harbor · mission1                               ││                                                                                                  │
+│ ⓘ Perception needs the recorded Harbor engine scene:     ││                                                                                                  │
+│ choose Mission 1 · AirSim live.                          ││                                                                                                  │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ What this runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Mission    Confirm every event in th┌ Stack preset ────────────────────────────────────────────────────────────────────┐ted Harbor world. Real LLM calls     │
+│            (vLLM agents).           │                                                                                  │                                     │
+│ Truth      Simulated truth: the worl│   Mission 1 · Harbor (simulated)                        mission1-harbor · current│                                     │
+│ AirSim     Nothing: Harbor is not st│ ▸ Mission 1 · AirSim live                               mission1-airsim          │                                     │
+│ Updates    Mission time pauses while│   Mission 2 · Collision-risk monitoring                 mission2                 │runs ahead of Mission time.          │
+└─────────────────────────────────────│   Mission 3 · Ship inspection (smoke scenario)          mission3                 │─────────────────────────────────────┘
+┌ Mission Intent ─────────────────────│   Mission 4 · Worker-requested search                   mission4                 │─────────────────────────────────────┐
+│ Please patrol the environment and co│   Joint · Missions 1 + 2                                joint                    │                                     │
+│                                     │   Joint · Missions 2 + 4                                joint24                  │                                     │
+│                                     │   Joint · Missions 3 + 4                                joint34                  │                                     │
+│                                     │                                                                                  │                                     │
+│                                     │ Runs       Confirm every reported event and estimate vessel reporting            │                                     │
+│                                     │            reliability on the recorded offshore-dock scene; it ends at 299.5 s.  │                                     │
+│                                     │            Real LLM calls (vLLM agents).                                         │                                     │
+│                                     │ Mode       mission1                                                              │                                     │
+│                                     │ Offers     AirSim on · perception off|ideal|yolo                                 │                                     │
+│                                     │ Defaults   AirSim on · perception yolo · coordinator_driven · 290 s              │                                     │
+│                                     │                                                                                  │                                     │
+│                                     │ ↑↓ choose · Enter select (applies its defaults) · Esc cancel                     │                                     │
+│                                     └──────────────────────────────────────────────────────────────────────────────────┘                                     │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · Enter preset picker · ←/→ cycle · F2 demo prompts · F3 history · Alt+Enter review
+ ✔ Ready: Alt+Enter to review and launch

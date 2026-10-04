@@ -163,6 +163,77 @@ def test_perception_launcher_rejects_a_second_airsim_owner() -> None:
     assert "ONR_DEMO_AIRSIM_RPC_URL" in result.stderr
 
 
+def test_follower_launcher_prints_fixture_engine_and_visualizer_without_running_prep() -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_mission1_follower_demo.sh"
+    result = _dry_run(script)
+    assert result.returncode == 0, result.stderr
+    lines = dict(line.split(": ", 1) for line in result.stdout.splitlines() if ": " in line)
+    run_root = Path(lines["Run configuration"])
+    try:
+        commands = {
+            key: shlex.split(shlex.split(lines[key])[2].rsplit("exec ", 1)[1])
+            for key in ("Physical command", "Engine command", "Visualizer command")
+        }
+        physical, engine, follower = (
+            commands["Physical command"], commands["Engine command"], commands["Visualizer command"]
+        )
+        assert "Perception command" not in lines
+        prepare = shlex.split(shlex.split(lines["Prepare command"])[2])
+        assert "onr.demo.airsim_reconstruction.fixture" in prepare
+        fixture = Path(prepare[prepare.index("--out") + 1])
+        assert fixture == run_root / "airsim-fixture"
+        # Dry run prints the prep step without building the fixture.
+        assert not fixture.exists()
+        # The engine plays the prepared lead-in scene that the follower steps.
+        assert engine[engine.index("--scenario") + 1] == str(fixture / "scenarios/follower")
+        assert engine[engine.index("--settings") + 1] == str(fixture / "engine/settings_airsim.json")
+        engine_root = Path(engine[engine.index("--output") + 1])
+        assert follower[follower.index("--engine-ready") + 1] == str(engine_root / "ready.json")
+        assert follower[follower.index("--fixture") + 1] == str(fixture)
+        assert follower[follower.index("--run-root") + 1] == str(run_root)
+        # Simulated information feeds the world model: no producer, no scene clock.
+        assert not {"--perception-url", "--experimental-scene-clock-state"} & set(physical)
+        assert physical[physical.index("--scenario-config") + 1].endswith("config/harbor_world.yaml")
+        # As under the Host, the closed loop waits for the follower's first frame.
+        agent_prefix = shlex.split(lines["Agent command"])[2].rsplit("exec ", 1)[0]
+        assert str(engine_root / "ready.json") in agent_prefix
+        assert str(run_root / "airsim-follower-ready.json") in agent_prefix
+    finally:
+        shutil.rmtree(run_root)
+
+
+@pytest.mark.parametrize("perception", ["yolo", "ideal"])
+def test_follower_launcher_rejects_perception(perception: str) -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_mission1_follower_demo.sh"
+    result = _dry_run(script, ONR_DEMO_PERCEPTION=perception)
+    assert result.returncode == 2
+    assert "ONR_DEMO_AIRSIM=1" in result.stderr
+    assert f"ONR_DEMO_PERCEPTION={perception}" in result.stderr
+    assert "Run configuration" not in result.stdout
+
+
+def test_follower_launcher_accepts_explicit_perception_off_and_probes_the_engine_port() -> None:
+    from onr.runtime_host.stack import herdr, load_stack_catalog
+
+    repository = Path(__file__).parents[1]
+    request = herdr.demo_env_request(
+        {"ONR_DEMO_PRESET": "mission1-harbor", "ONR_DEMO_AIRSIM": "1", "ONR_DEMO_PERCEPTION": "off"},
+        catalog=load_stack_catalog(),
+        repo_root=repository,
+    )
+    assert (request.toggles.airsim, request.toggles.perception) == (True, "off")
+    assert herdr.probe_ports(request) == [request.viewer_port, request.engine.rpc_port]
+
+
+def test_airsim_toggle_is_rejected_where_the_preset_offers_no_airsim() -> None:
+    repository = Path(__file__).parents[1]
+    script = repository / "scripts/live_demo_with_wm/herdr_start_mission2_live_demo.sh"
+    result = _dry_run(script, ONR_DEMO_AIRSIM="1")
+    assert result.returncode == 2
+    assert "mission2 does not support airsim=true" in result.stderr
+
 
 def test_joint34_launcher_exposes_runtime_camera_ownership() -> None:
     repository = Path(__file__).parents[1]

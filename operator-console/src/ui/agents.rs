@@ -6,11 +6,12 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::layout::{Breakpoint, json_text, truncate, wrapped, wrapped_field};
+use super::layout::{Breakpoint, json_text, scrolling_list, truncate, wrapped, wrapped_field};
 use super::theme::{Badge, Theme};
 use crate::app::App;
+use crate::host::OperatorAgentInvocation;
 
-fn role_badge(role: &str) -> Badge {
+pub(crate) fn role_badge(role: &str) -> Badge {
     if role.contains("maneuver") {
         Badge::Man
     } else {
@@ -18,13 +19,20 @@ fn role_badge(role: &str) -> Badge {
     }
 }
 
-pub fn draw_agents(frame: &mut Frame, area: Rect, app: &App, theme: Theme, breakpoint: Breakpoint) {
+pub fn draw_agents(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    theme: Theme,
+    breakpoint: Breakpoint,
+) {
     let [list, detail] = Layout::horizontal([
         Constraint::Length(breakpoint.pick(40, 56, 64)),
         Constraint::Min(0),
     ])
     .areas(area);
-    let view = &app.view;
+    let selected = app.view.selected_invocation().map(|(index, _)| index);
+    let view = &mut app.view;
     let follow = if view.agent_following {
         "following".to_string()
     } else {
@@ -33,18 +41,27 @@ pub fn draw_agents(frame: &mut Frame, area: Rect, app: &App, theme: Theme, break
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Invocations · {follow} "));
-    let width = block.inner(list).width.saturating_sub(5) as usize;
-    let selected = view.selected_invocation().map(|(index, _)| index);
-    let lines = if view.agents.is_empty() {
-        vec![Line::from(Span::styled(
-            " No Hyper or Maneuver invocations.",
-            theme.dim(),
-        ))]
+    if view.agents.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " No Hyper or Maneuver invocations.",
+                theme.dim(),
+            )))
+            .block(block),
+            list,
+        );
     } else {
-        view.agents
-            .iter()
-            .enumerate()
-            .map(|(index, invocation)| {
+        let width = block.inner(list).width.saturating_sub(5) as usize;
+        let agents = &view.agents;
+        let rows = scrolling_list(
+            block,
+            list,
+            theme,
+            agents.len(),
+            selected,
+            &mut view.agent_list_offset,
+            |index| {
+                let invocation = &agents[index];
                 let text = truncate(
                     &format!(
                         " {} [{}] {}",
@@ -62,10 +79,10 @@ pub fn draw_agents(frame: &mut Frame, area: Rect, app: &App, theme: Theme, break
                     theme.badge(role_badge(&invocation.role)),
                     Span::styled(text, style),
                 ])
-            })
-            .collect()
-    };
-    frame.render_widget(Paragraph::new(lines).block(block), list);
+            },
+        );
+        frame.render_widget(rows, list);
+    }
     draw_invocation_detail(frame, detail, app, theme);
 }
 
@@ -85,6 +102,21 @@ fn draw_invocation_detail(frame: &mut Frame, area: Rect, app: &App, theme: Theme
         return;
     };
     let width = block.inner(area).width as usize;
+    frame.render_widget(
+        Paragraph::new(invocation_lines(invocation, theme, width))
+            .block(block)
+            .scroll((app.view.agent_detail_scroll, 0)),
+        area,
+    );
+}
+
+/// Invocation detail rows: identity, status and timing, the recorded
+/// (non-authoritative) reasoning, the response content and tool calls.
+pub(crate) fn invocation_lines(
+    invocation: &OperatorAgentInvocation,
+    theme: Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
     let reasoning = &invocation.recorded_debug_reasoning;
     let mut lines = Vec::new();
     for (label, value) in [
@@ -161,10 +193,5 @@ fn draw_invocation_detail(frame: &mut Frame, area: Rect, app: &App, theme: Theme
             width,
         ));
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .scroll((app.view.agent_detail_scroll, 0)),
-        area,
-    );
+    lines
 }

@@ -1,0 +1,99 @@
+{
+  "mission_runs": [
+    {
+      "mission_run": {
+        "mission_id": "mission-0c4e9d1a-77b2-4e51-9f0e-2a6d8c1b5e30",
+        "mission_run_id": "run-3a7d3500-3aff-4abf-95c3-bf28b459e191",
+        "status": "cancelled",
+        "created_at": "2026-10-03T13:42:49.081113+00:00",
+        "started_at": "2026-10-03T13:42:49.170180+00:00",
+        "finished_at": "2026-10-03T13:49:55.196066+00:00",
+        "terminal_classification": "cancelled_by_owner",
+        "stack": {
+          "preset_id": "mission1-harbor",
+          "airsim": false,
+          "perception": "off"
+        },
+        "terminal_detail": null
+      },
+      "toggles": {
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600.0
+      },
+      "wall_seconds": 426.025886,
+      "run_root_available": true,
+      "current": true
+    },
+    {
+      "mission_run": {
+        "mission_id": "mission-9d2e8f41-0b6c-4c1a-a3e5-7f8b9c0d1e2f",
+        "mission_run_id": "run-0d14a731-6a9d-4b68-b612-4520619511c4",
+        "status": "succeeded",
+        "created_at": "2026-10-03T13:22:11.201990+00:00",
+        "started_at": "2026-10-03T13:22:11.277606+00:00",
+        "finished_at": "2026-10-03T13:27:23.108743+00:00",
+        "terminal_classification": null,
+        "stack": {
+          "preset_id": "mission1-harbor",
+          "airsim": false,
+          "perception": "off"
+        },
+        "terminal_detail": null
+      },
+      "toggles": {
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600.0
+      },
+      "wall_seconds": 311.831137,
+      "run_root_available": true,
+      "current": false
+    },
+    {
+      "mission_run": {
+        "mission_id": "mission-5b1f2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+        "mission_run_id": "run-dd8e174d-cc1f-4016-8ebf-84ac13e8d495",
+        "status": "failed",
+        "created_at": "2026-10-03T12:46:22.272584+00:00",
+        "started_at": "2026-10-03T12:46:22.343723+00:00",
+        "finished_at": "2026-10-03T12:49:24.906324+00:00",
+        "terminal_classification": "stack_failed",
+        "stack": {
+          "preset_id": "mission1-harbor",
+          "airsim": true,
+          "perception": "off"
+        },
+        "terminal_detail": {
+          "kind": "stack_failed",
+          "service": "airsim-engine",
+          "message": "airsim-engine was not healthy within 300 seconds",
+          "log_artifact_id": "service-log-airsim-engine"
+        }
+      },
+      "toggles": {
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600.0
+      },
+      "wall_seconds": 182.562601,
+      "run_root_available": true,
+      "current": false
+    },
+    {
+      "mission_run": {
+        "mission_id": "mission-1",
+        "mission_run_id": "run-1",
+        "status": "failed",
+        "created_at": "2026-08-27T12:00:00+00:00",
+        "started_at": null,
+        "finished_at": "2026-08-27T12:03:10+00:00",
+        "terminal_classification": "host_interrupted",
+        "stack": null,
+        "terminal_detail": null
+      },
+      "toggles": null,
+      "wall_seconds": 190.0,
+      "run_root_available": false,
+      "current": false
+    }
+  ],
+  "next_before": "run-1"
+}

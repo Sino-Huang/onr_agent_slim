@@ -155,7 +155,7 @@ fn only_the_latest_preflight_answer_for_the_current_selection_counts() {
     clock.advance(Duration::from_millis(300));
     app.check_deadlines();
     let (old_id, old_query) = single_preflight(&mut app);
-    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Left));
     clock.advance(Duration::from_millis(300));
     app.check_deadlines();
     let (new_id, new_query) = single_preflight(&mut app);

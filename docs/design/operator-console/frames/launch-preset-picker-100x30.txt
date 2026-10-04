@@ -1,0 +1,30 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ Preflight · launchable · ▲1 ✔1 ────────────────┐
+│▸Preset     ‹ [Mission 1 · Harbor (simulated)] ›││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs …│
+│ AirSim     ‹ [off] │ on ›                      ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.…│
+│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›          ││                                                │
+│ Update┌ Stack preset ────────────────────────────────────────────────────────────────────┐       │
+│ Sim li│                                                                                  │       │
+│ missio│   Mission 1 · Harbor (simulated)                        mission1-harbor · current│       │
+│ ⓘ Perc│ ▸ Mission 1 · AirSim live                               mission1-airsim          │       │
+│ scene:│   Mission 2 · Collision-risk monitoring                 mission2                 │       │
+└───────│   Mission 3 · Ship inspection (smoke scenario)          mission3                 │───────┘
+┌ What t│   Mission 4 · Worker-requested search                   mission4                 │───────┐
+│ Missio│   Joint · Missions 1 + 2                                joint                    │ting   │
+│       │   Joint · Missions 2 + 4                                joint24                  │       │
+│ Truth │   Joint · Missions 3 + 4                                joint34                  │no     │
+│       │                                                                                  │       │
+│ AirSim│ Runs       Confirm every reported event and estimate vessel reporting            │       │
+│ Update│            reliability on the recorded offshore-dock scene; it ends at 299.5 s.  │agent  │
+│       │            Real LLM calls (vLLM agents).                                         │       │
+└───────│ Mode       mission1                                                              │───────┘
+┌ Missio│ Offers     AirSim on · perception off|ideal|yolo                                 │───────┐
+│ Please│ Defaults   AirSim on · perception yolo · coordinator_driven · 290 s              │       │
+│       │                                                                                  │       │
+│       │ ↑↓ choose · Enter select (applies its defaults) · Esc cancel                     │       │
+│       └──────────────────────────────────────────────────────────────────────────────────┘       │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · Enter preset picker · ←/→ cycle · F2 demo prompts · F3 history · Alt+Enter review
+ ✔ Ready: Alt+Enter to review and launch

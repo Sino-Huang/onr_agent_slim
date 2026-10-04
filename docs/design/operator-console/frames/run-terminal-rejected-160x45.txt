@@ -1,4 +1,4 @@
- RUN run-fixture-… ● failed 00:00:41 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐ │ host ● live
+ RUN run-fixture-… ● failed 00:00:41 │ t=12.5 s │ FSM navigate │ last maneuver-7 active │ stack ●◐ │ host ● live
   1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
  ✔ Stack ─ ✖ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ○ Done
 ┌ Mission Run ────────────────────────────────────────────────────────────────────┐┌ world · seq - · final ────────────────────────────────────────────────────┐
@@ -13,9 +13,9 @@
 └─────────────────────────────────────────────────────────────────────────────────┘│                                                                           │
 ┌ Progress ───────────────────────────────────────────────────────────────────────┐│                                                                           │
 │◆ Run Narrative · AI · non-authoritative                                         ││                                                                           │
+│AI narrative · 0 s old · through record #412                                     ││                                                                           │
 │Legs 1-2 complete; ship 2's report was altered and the agent replanned.          ││                                                                           │
-│▲ AI Replan after report alteration (31 records)                                 ││                                                                           │
-│                                 ┌ ✖ MISSION REJECTED ──────────────────────────────────────────────────────────────────────┐                                 │
+│▲ AI Replan after report alterati┌ ✖ MISSION REJECTED ──────────────────────────────────────────────────────────────────────┐                                 │
 │                                 │ Hyper Agent · stage 1 (intent parsing)                                                   │                                 │
 │                                 │                                                                                          │                                 │
 │                                 │ Intent:    "buy me a coffee"                                                             │                                 │
@@ -36,10 +36,10 @@
 └─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
 ┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v397 · plan r4                                                    │
 │ No Human Decision Requests require action.                                      ││▲ missing [plan] · stale [plan] · unhealthy [plan]                         │
-│ Status-only view: no decision controls.                                         ││FSM assignment-1-in-progress · candidates 2                                │
+│ Status-only view: no decision controls.                                         ││FSM assignment-1-in-progress (last observed)                               │
 │                                                                                 ││                                                                           │
 │                                                                                 ││                                                                           │
 └─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ? help · e new intent · q exit
+ 1-7/Tab tabs · ? help · x export receipt · e new intent · q exit · F3 history
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

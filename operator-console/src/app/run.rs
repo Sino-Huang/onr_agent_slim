@@ -3,15 +3,19 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
+use super::history::PollScope;
+use super::presentation::{self, Presentation};
 use super::progress::ProgressView;
 use super::world::WorldMedia;
-use super::{App, CancellationOrigin, CancellationState, RefreshKey, StackView};
+use super::{
+    App, CancellationOrigin, CancellationState, ReceiptExportState, RefreshKey, StackView,
+};
 use crate::host::{
     ArtifactContentPage, ArtifactDescriptor, CancellationRequest, ContentPurpose,
     ConversationEntry, EvidencePage, Fetched, FrameSource, HostCommand, HostError,
     OperatorAgentInvocation, OperatorBeliefs, OperatorContext, OperatorEnvironment,
-    OperatorOverview, OperatorSection, OperatorTimelineEntry, OperatorViewPage, OperatorWorld,
-    RunRecord, WorldFrame,
+    OperatorOverview, OperatorSection, OperatorStack, OperatorTimelineEntry, OperatorViewPage,
+    OperatorWorld, RunRecord, StackService, StackStep, WorldFrame,
 };
 
 /// Bytes per Artifact inspector page and service-log tail window.
@@ -105,6 +109,67 @@ impl RunTab {
     }
 }
 
+/// What a non-terminal Mission Run visibly waits on: the waiting banner's
+/// subject and the `w` ("inspect current wait") target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CurrentWait<'a> {
+    /// Teardown signalled this service (`stopping`, v1.5): 1-based
+    /// `position` in `teardown.stop_order` of `total`, when listed there.
+    Stopping {
+        service: &'a StackService,
+        position: Option<(usize, usize)>,
+    },
+    /// Teardown started and no service is `stopping` right now.
+    Teardown(&'a OperatorStack),
+    /// Cancellation was requested and the stack has not reported teardown.
+    Cancelling,
+    /// A prep step is running (`stack.step`).
+    Step(&'a StackStep),
+    /// The first `starting` service, at 1-based `position` of `total`.
+    Service {
+        service: &'a StackService,
+        position: usize,
+        total: usize,
+    },
+    /// The Stack phase is active but no prep step or service is starting.
+    Stack(&'a OperatorStack),
+    /// A live Hyper Agent or Maneuver Control call.
+    Invocation(&'a OperatorAgentInvocation),
+}
+
+/// Where `w` navigates, captured at keypress so later Host updates cannot
+/// redirect it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitTarget {
+    /// A Stack tab row (prep step or service), by name.
+    StackRow(String),
+    /// The Stack tab, without a specific row.
+    Stack,
+    /// An Agents tab invocation, by stable ID.
+    Invocation(String),
+}
+
+impl CurrentWait<'_> {
+    pub fn target(self) -> WaitTarget {
+        match self {
+            Self::Step(step) => WaitTarget::StackRow(step.name.clone()),
+            Self::Service { service, .. } | Self::Stopping { service, .. } => {
+                WaitTarget::StackRow(service.name.clone())
+            }
+            Self::Stack(_) | Self::Teardown(_) | Self::Cancelling => WaitTarget::Stack,
+            Self::Invocation(invocation) => WaitTarget::Invocation(invocation.stable_id.clone()),
+        }
+    }
+
+    /// The tab `w` opens.
+    pub fn tab(self) -> RunTab {
+        match self {
+            Self::Invocation(_) => RunTab::Agents,
+            _ => RunTab::Stack,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactInspector {
     pub artifact_id: String,
@@ -112,6 +177,28 @@ pub struct ArtifactInspector {
     pub offset: u64,
     pub previous_offsets: Vec<u64>,
     pub page: Option<ArtifactContentPage>,
+    /// First visible wrapped line of the current byte page.
+    pub scroll: usize,
+    /// Wrapped-line viewport height at the last draw (PgUp/PgDn step).
+    pub rows: usize,
+    /// Largest useful `scroll` at the last draw (End target).
+    pub max_scroll: usize,
+    /// Opened at the log tail (failure card `l`): the first page reply moves
+    /// to the last byte page, which then shows its last line.
+    pub tail: bool,
+}
+
+impl ArtifactInspector {
+    /// Scroll to `line`, within the bounds of the last draw.
+    fn scroll_to(&mut self, line: usize) {
+        self.scroll = line.min(self.max_scroll);
+    }
+
+    /// Scroll by `delta` wrapped lines from the visible position.
+    fn scroll_by(&mut self, delta: isize) {
+        let current = self.scroll.min(self.max_scroll);
+        self.scroll_to(current.saturating_add_signed(delta));
+    }
 }
 
 const SECTION_COUNT: usize = OperatorSection::ALL.len();
@@ -129,14 +216,20 @@ pub struct RunView {
     pub world: Option<OperatorWorld>,
     pub media: WorldMedia,
     pub rejection_dismissed: bool,
+    /// Enter (or a tab switch) closed the infrastructure failure card.
+    pub failure_dismissed: bool,
     pub agents: Vec<OperatorAgentInvocation>,
     pub selected_invocation: Option<String>,
     pub agent_following: bool,
     pub newer_invocations: usize,
+    /// First visible row of the invocation list, kept across draws.
+    pub agent_list_offset: usize,
     pub agent_detail_scroll: u16,
     pub environment: Option<OperatorEnvironment>,
     pub artifacts: Vec<ArtifactDescriptor>,
     pub selected_artifact: Option<String>,
+    /// First visible row of the Artifact list, kept across draws.
+    pub artifact_list_offset: usize,
     pub conversation_entries: Vec<ConversationEntry>,
     pub conversation_entries_truncated: bool,
     pub inspector: Option<ArtifactInspector>,
@@ -144,6 +237,10 @@ pub struct RunView {
     pub frame_source: FrameSource,
     pub frame: Option<WorldFrame>,
     pub frame_error: Option<String>,
+    /// `x`: the owner's receipt export for this run.
+    pub receipt_export: ReceiptExportState,
+    /// F4: the presentation layout over the selected tab.
+    pub presentation: Presentation,
     cursors: [Option<String>; SECTION_COUNT],
     before_cursors: [Option<String>; SECTION_COUNT],
     etags: [Option<String>; SECTION_COUNT],
@@ -164,14 +261,17 @@ impl Default for RunView {
             world: None,
             media: WorldMedia::default(),
             rejection_dismissed: false,
+            failure_dismissed: false,
             agents: Vec::new(),
             selected_invocation: None,
             agent_following: true,
             newer_invocations: 0,
+            agent_list_offset: 0,
             agent_detail_scroll: 0,
             environment: None,
             artifacts: Vec::new(),
             selected_artifact: None,
+            artifact_list_offset: 0,
             conversation_entries: Vec::new(),
             conversation_entries_truncated: false,
             inspector: None,
@@ -179,6 +279,8 @@ impl Default for RunView {
             frame_source: FrameSource::World,
             frame: None,
             frame_error: None,
+            receipt_export: ReceiptExportState::Idle,
+            presentation: Presentation::default(),
             cursors: Default::default(),
             before_cursors: Default::default(),
             etags: Default::default(),
@@ -235,7 +337,7 @@ impl RunView {
     }
 
     fn merge_agent_invocations(&mut self, incoming: Vec<OperatorAgentInvocation>, backfill: bool) {
-        let mut added = 0usize;
+        let mut added: Vec<String> = Vec::new();
         for invocation in incoming {
             if let Some(existing) = self
                 .agents
@@ -244,10 +346,10 @@ impl RunView {
             {
                 *existing = invocation;
             } else {
-                self.agents.push(invocation);
-                if !backfill {
-                    added += 1;
+                if !backfill && !self.agent_following {
+                    added.push(invocation.stable_id.clone());
                 }
+                self.agents.push(invocation);
             }
         }
         self.agents.sort_by(|left, right| {
@@ -260,8 +362,19 @@ impl RunView {
             self.selected_invocation = self.agents.last().map(|item| item.stable_id.clone());
             self.newer_invocations = 0;
         } else {
-            self.newer_invocations = self.newer_invocations.saturating_add(added);
-            if self.selected_invocation().is_none() {
+            // Only arrivals after the selection are newer; `w` can pin a
+            // call before its page arrives together with older ones.
+            let newer = match self.selected_invocation() {
+                Some((selected, _)) => self.agents[selected + 1..]
+                    .iter()
+                    .filter(|item| added.contains(&item.stable_id))
+                    .count(),
+                None => added.len(),
+            };
+            self.newer_invocations = self.newer_invocations.saturating_add(newer);
+            // Only an unset selection falls back: `w` may select an
+            // invocation before its Agents page arrives.
+            if self.selected_invocation.is_none() {
                 self.selected_invocation = self.agents.first().map(|item| item.stable_id.clone());
             }
         }
@@ -371,7 +484,8 @@ impl App {
 
     pub fn request_visible_frame(&mut self) {
         let visible = self.logical_state_name() == "Run"
-            && (self.view.tab == RunTab::World
+            && (self.presenting()
+                || self.view.tab == RunTab::World
                 || (self.view.tab == RunTab::Overview
                     && self.last_size.0 >= 140
                     && self.last_size.1 >= 40));
@@ -386,7 +500,7 @@ impl App {
         let now = self
             .clock
             .now()
-            .saturating_duration_since(self.media_clock_origin);
+            .saturating_duration_since(self.clock_origin);
         if self
             .view
             .media
@@ -398,6 +512,7 @@ impl App {
 
     pub fn rejection_open(&self) -> bool {
         !self.view.rejection_dismissed
+            && !self.failure_classified()
             && self
                 .run
                 .as_ref()
@@ -405,13 +520,146 @@ impl App {
                 .is_some_and(|detail| detail.kind == "mission_rejected")
     }
 
+    /// Cancellation was confirmed: the request is in flight (the Host
+    /// answers it only after the Run Worker's teardown) or was accepted.
+    pub fn cancellation_in_progress(&self) -> bool {
+        matches!(self.cancellation, CancellationState::Requested { .. })
+            || (self.cancellation == CancellationState::Confirming && self.cancellation_submitting)
+    }
+
+    /// What the running Mission Run visibly waits on, if anything: teardown
+    /// (a `stopping` service, a started teardown, or a requested
+    /// cancellation), then a prep step or starting service while the Stack
+    /// phase is active, then a live agent call.
+    pub fn current_wait(&self) -> Option<CurrentWait<'_>> {
+        if self.run.as_ref()?.is_terminal() {
+            return None;
+        }
+        self.teardown_wait()
+            .or_else(|| self.stack_wait())
+            .or_else(|| self.agent_wait())
+    }
+
+    /// Teardown outranks every other wait: once services stop, a starting
+    /// service or live agent call is no longer what the run waits on.
+    fn teardown_wait(&self) -> Option<CurrentWait<'_>> {
+        if let Some(stack) = self.view.stack.stack.as_ref() {
+            if let Some(service) = stack
+                .services
+                .iter()
+                .find(|service| service.state == "stopping")
+            {
+                let position = stack.teardown.as_ref().and_then(|teardown| {
+                    let order = &teardown.stop_order;
+                    order
+                        .iter()
+                        .position(|name| *name == service.name)
+                        .map(|index| (index + 1, order.len()))
+                });
+                return Some(CurrentWait::Stopping { service, position });
+            }
+            if stack.teardown.is_some() {
+                return Some(CurrentWait::Teardown(stack));
+            }
+        }
+        self.cancellation_in_progress()
+            .then_some(CurrentWait::Cancelling)
+    }
+
+    fn stack_wait(&self) -> Option<CurrentWait<'_>> {
+        let stack = self.view.stack.stack.as_ref()?;
+        let stack_active = self
+            .view
+            .overview
+            .as_ref()
+            .and_then(|overview| overview.phase.as_ref())
+            .is_none_or(|phase| {
+                phase
+                    .steps
+                    .iter()
+                    .any(|step| step.id == "stack" && step.status == "active")
+            });
+        if !stack_active {
+            return None;
+        }
+        if let Some(step) = stack.step.as_ref() {
+            return Some(CurrentWait::Step(step));
+        }
+        Some(
+            stack
+                .services
+                .iter()
+                .enumerate()
+                .find(|(_, service)| service.state == "starting")
+                .map_or(CurrentWait::Stack(stack), |(index, service)| {
+                    CurrentWait::Service {
+                        service,
+                        position: index + 1,
+                        total: stack.services.len(),
+                    }
+                }),
+        )
+    }
+
+    /// The latest Hyper Agent or Maneuver Control invocation, while it is live.
+    fn agent_wait(&self) -> Option<CurrentWait<'_>> {
+        let agents = &self.view.overview.as_ref()?.latest_agents;
+        [
+            agents.hyper_agent.as_ref(),
+            agents.maneuver_control.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|invocation| invocation.completion_state == "live")
+        .map(CurrentWait::Invocation)
+    }
+
+    /// `w`: open what the waiting banner names - a prep step or starting
+    /// service on the Stack tab with its log followed, or a live agent call
+    /// on the Agents tab. The target is captured now.
+    fn inspect_current_wait(&mut self) {
+        let Some(target) = self.current_wait().map(CurrentWait::target) else {
+            self.hint = Some("Nothing to inspect: the run is not waiting on a stack service, prep step or agent call".to_string());
+            return;
+        };
+        match target {
+            WaitTarget::StackRow(name) => {
+                self.view.stack.select_following(&name);
+                self.select_tab(RunTab::Stack);
+                self.request_service_log();
+            }
+            WaitTarget::Stack => self.select_tab(RunTab::Stack),
+            WaitTarget::Invocation(stable_id) => {
+                let view = &mut self.view;
+                // Pin the captured call: following would move to newer ones.
+                view.agent_following = false;
+                view.selected_invocation = Some(stable_id);
+                view.agent_detail_scroll = 0;
+                self.select_tab(RunTab::Agents);
+            }
+        }
+    }
+
     /// Ask for one Run poll; called by the run loop on its poll cadence.
     /// Terminal refreshes drain every section, then wait at a slower cadence
     /// for the Host's final narrative attempt before one synchronized final wave.
+    /// While a historical run is displayed it is polled, and the parked
+    /// current run keeps its lifecycle poll.
     pub fn request_poll(&mut self) {
-        let within_cancellation_limit = self
-            .cancellation_deadline
-            .is_none_or(|deadline| self.clock.now() <= deadline);
+        if self.viewing_history() {
+            self.poll_run(PollScope::Historical);
+            self.with_current_run(|app| app.poll_run(PollScope::Lifecycle));
+        } else {
+            self.poll_run(PollScope::Full);
+        }
+    }
+
+    fn poll_run(&mut self, scope: PollScope) {
+        // The cancellation limit bounds the current run's polling only.
+        let within_cancellation_limit = scope == PollScope::Historical
+            || self
+                .cancellation_deadline
+                .is_none_or(|deadline| self.clock.now() <= deadline);
         if self.logical_state_name() != "Run" || !within_cancellation_limit {
             return;
         }
@@ -434,6 +682,12 @@ impl App {
             return;
         }
         let mut sections = vec![OperatorSection::Overview, OperatorSection::Stack];
+        if scope == PollScope::Lifecycle {
+            for section in sections {
+                self.request_section(section);
+            }
+            return;
+        }
         if self.final_refresh.is_some() {
             sections = OperatorSection::ALL.to_vec();
             if !self.final_narrative_ready
@@ -442,7 +696,7 @@ impl App {
                 self.release_refresh(&RefreshKey::Section(OperatorSection::Overview));
             }
         } else {
-            for section in self.view.tab.sections() {
+            for section in self.displayed_sections() {
                 if !sections.contains(section) {
                     sections.push(*section);
                 }
@@ -461,12 +715,18 @@ impl App {
             self.request_section(section);
         }
         match self.view.tab {
+            _ if self.presenting() => self.request_visible_frame(),
             RunTab::Stack => self.request_service_log(),
             RunTab::Artifacts => self.request_selected_conversation(),
             RunTab::World | RunTab::Overview => self.request_visible_frame(),
             _ => {}
         }
-        if let (Some(inspector), Some(run)) = (self.view.inspector.as_ref(), self.run.as_ref()) {
+        // An inspector parked behind the presentation layout is not polled.
+        if let (Some(inspector), Some(run), false) = (
+            self.view.inspector.as_ref(),
+            self.run.as_ref(),
+            self.presenting(),
+        ) {
             self.outbox.push(HostCommand::FetchArtifactContent {
                 purpose: ContentPurpose::Inspector,
                 mission_run_id: run.mission_run_id.clone(),
@@ -553,8 +813,36 @@ impl App {
         });
     }
 
-    fn select_tab(&mut self, tab: RunTab) {
-        if self.view.tab == tab {
+    /// Sections the visible surface reads: the presentation layout's while
+    /// it is shown, else the selected tab's.
+    fn displayed_sections(&self) -> &'static [OperatorSection] {
+        if self.presenting() {
+            &presentation::SECTIONS
+        } else {
+            self.view.tab.sections()
+        }
+    }
+
+    /// `s` (World tab, presentation layout): the next source the Host
+    /// advertises; the old source's frame is cleared.
+    pub(super) fn cycle_frame_source(&mut self) {
+        let source = super::world::cycle_source(self.view.frame_source, self.view.world.as_ref());
+        if source != self.view.frame_source {
+            self.view.frame_source = source;
+            self.view.media.set_source(source);
+            self.view.frame = None;
+            self.view.frame_error = None;
+            self.release_refresh(&RefreshKey::Frame(source));
+            self.request_frame();
+        }
+    }
+
+    /// Show `tab`; a presentation layout ends and its tab shows again.
+    pub(super) fn select_tab(&mut self, tab: RunTab) {
+        let presenting = self.presenting();
+        if presenting {
+            self.end_presentation();
+        } else if self.view.tab == tab {
             return;
         }
         self.view.tab = tab;
@@ -570,16 +858,28 @@ impl App {
     }
 
     pub(crate) fn handle_run_key(&mut self, key: KeyEvent) {
-        if self.cancellation == CancellationState::Idle && self.view.inspector.is_some() {
-            match key.code {
-                KeyCode::Right | KeyCode::Char('n') => self.next_artifact_page(),
-                KeyCode::Left | KeyCode::Char('p') => self.previous_artifact_page(),
-                KeyCode::Esc => self.view.inspector = None,
-                _ => {}
-            }
+        self.hint = None;
+        // F4 and the presentation keys work wherever the confirmation dialog
+        // does not own the keys; the layout covers a parked inspector.
+        let dialog_open =
+            self.cancellation == CancellationState::Confirming && !self.cancellation_submitting;
+        if !dialog_open
+            && (self.presenting() || key.code == KeyCode::F(4))
+            && self.handle_presentation_key(key)
+        {
             return;
         }
+        if self.cancellation == CancellationState::Idle
+            && self.view.inspector.is_some()
+            && !self.presenting()
+        {
+            self.handle_inspector_key(key);
+            return;
+        }
+        // The confirmation dialog owns the keys until the request is sent;
+        // while it is in flight the Run screen stays navigable.
         match (&self.cancellation, key.code) {
+            (CancellationState::Confirming, _) if self.cancellation_submitting => {}
             (CancellationState::Confirming, KeyCode::Esc) => {
                 self.cancellation = CancellationState::Idle;
                 self.cancellation_origin = None;
@@ -597,11 +897,21 @@ impl App {
             self.view.rejection_dismissed = true;
             return;
         }
+        let failure_open = self.failure_open();
+        if failure_open && key.code == KeyCode::Enter {
+            self.view.failure_dismissed = true;
+            return;
+        }
         if self.view.tab == RunTab::Progress
             && !self.rejection_open()
+            && !failure_open
             && self.view.progress.search_editing
             && self.view.progress.handle_key(key)
         {
+            return;
+        }
+        // A historical run is read-only; Esc returns to the current run.
+        if self.handle_historical_key(key) {
             return;
         }
         let tab = match key.code {
@@ -611,6 +921,8 @@ impl App {
             _ => None,
         };
         if let Some(tab) = tab {
+            // `2` on the failure card opens Progress; any tab leaves the card.
+            self.view.failure_dismissed |= failure_open;
             self.select_tab(tab);
             return;
         }
@@ -618,6 +930,10 @@ impl App {
         match key.code {
             KeyCode::Char('?') => {
                 self.help_open = true;
+                return;
+            }
+            KeyCode::Char('w') => {
+                self.inspect_current_wait();
                 return;
             }
             KeyCode::Char('q') => {
@@ -640,10 +956,31 @@ impl App {
                 return;
             }
             KeyCode::Char('e') if terminal => {
-                self.start_new_intent();
+                if let Some(reason) = self.new_intent_blocked() {
+                    self.hint = Some(reason);
+                } else {
+                    self.start_new_intent();
+                }
+                return;
+            }
+            KeyCode::Char('l') if self.failure_classified() => {
+                // The log opens in the inspector, behind the tabs.
+                self.end_presentation();
+                self.open_failure_log();
+                return;
+            }
+            KeyCode::Char('y') if self.failure_classified() => {
+                self.copy_run_identity();
+                return;
+            }
+            KeyCode::Char('x') if terminal => {
+                self.export_receipt();
                 return;
             }
             _ => {}
+        }
+        if self.presenting() {
+            return;
         }
         match self.view.tab {
             RunTab::Progress => {
@@ -652,18 +989,7 @@ impl App {
             RunTab::Agents => self.handle_agents_key(key),
             RunTab::World => {
                 if key.code == KeyCode::Char('s') {
-                    let source = super::world::cycle_source(
-                        self.view.frame_source,
-                        self.view.world.as_ref(),
-                    );
-                    if source != self.view.frame_source {
-                        self.view.frame_source = source;
-                        self.view.media.set_source(source);
-                        self.view.frame = None;
-                        self.view.frame_error = None;
-                        self.release_refresh(&RefreshKey::Frame(source));
-                        self.request_frame();
-                    }
+                    self.cycle_frame_source();
                 }
                 if key.code == KeyCode::Char('p') {
                     self.view.media.paused = !self.view.media.paused;
@@ -673,6 +999,8 @@ impl App {
             RunTab::Artifacts => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => self.move_artifact_selection(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_artifact_selection(1),
+                KeyCode::Home => self.move_artifact_selection(isize::MIN),
+                KeyCode::End => self.move_artifact_selection(isize::MAX),
                 KeyCode::Enter => self.open_artifact_inspector(),
                 _ => {}
             },
@@ -685,11 +1013,34 @@ impl App {
         }
     }
 
+    /// Wrapped lines scroll within the byte page; Left/Right change the page.
+    fn handle_inspector_key(&mut self, key: KeyEvent) {
+        let Some(inspector) = self.view.inspector.as_mut() else {
+            return;
+        };
+        let page = isize::try_from(inspector.rows.max(1)).unwrap_or(isize::MAX);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => inspector.scroll_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => inspector.scroll_by(1),
+            KeyCode::PageUp => inspector.scroll_by(-page),
+            KeyCode::PageDown => inspector.scroll_by(page),
+            KeyCode::Home => inspector.scroll_to(0),
+            KeyCode::End => inspector.scroll_to(usize::MAX),
+            KeyCode::Right | KeyCode::Char('n') => self.next_artifact_page(),
+            KeyCode::Left | KeyCode::Char('p') => self.previous_artifact_page(),
+            KeyCode::Esc => self.view.inspector = None,
+            _ => {}
+        }
+    }
+
     fn handle_agents_key(&mut self, key: KeyEvent) {
         let view = &mut self.view;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => view.move_invocation_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => view.move_invocation_selection(1),
+            // Reaching the newest row by hand does not resume following; `f` does.
+            KeyCode::Home => view.move_invocation_selection(isize::MIN),
+            KeyCode::End => view.move_invocation_selection(isize::MAX),
             KeyCode::PageUp => {
                 view.agent_detail_scroll = view.agent_detail_scroll.saturating_sub(5)
             }
@@ -766,6 +1117,10 @@ impl App {
             offset: 0,
             previous_offsets: Vec::new(),
             page: None,
+            scroll: 0,
+            rows: 0,
+            max_scroll: 0,
+            tail: false,
         });
         self.outbox.push(HostCommand::FetchArtifactContent {
             purpose: ContentPurpose::Inspector,
@@ -804,6 +1159,8 @@ impl App {
         inspector.previous_offsets.push(inspector.offset);
         inspector.offset = next_offset;
         inspector.page = None;
+        inspector.scroll = 0;
+        inspector.max_scroll = 0;
         self.inspector_fetch(next_offset);
     }
 
@@ -811,11 +1168,17 @@ impl App {
         let Some(inspector) = self.view.inspector.as_mut() else {
             return;
         };
-        let Some(previous_offset) = inspector.previous_offsets.pop() else {
+        // A page opened at the tail has no recorded predecessor: step back
+        // one page width.
+        let Some(previous_offset) = inspector.previous_offsets.pop().or_else(|| {
+            (inspector.offset > 0).then(|| inspector.offset.saturating_sub(CONTENT_PAGE_BYTES))
+        }) else {
             return;
         };
         inspector.offset = previous_offset;
         inspector.page = None;
+        inspector.scroll = 0;
+        inspector.max_scroll = 0;
         self.inspector_fetch(previous_offset);
     }
 
@@ -839,6 +1202,7 @@ impl App {
         self.view.pending_requests[index] = false;
         let (page, etag) = match result {
             Ok(Fetched::NotModified) => {
+                self.historical_page_arrived(section);
                 if self.final_refresh.is_some() && self.final_narrative_ready {
                     self.final_complete.insert(section);
                 }
@@ -848,11 +1212,25 @@ impl App {
                 if value.meta().mission_run_id == mission_run_id
                     && value.meta().section == section =>
             {
+                self.historical_page_arrived(section);
                 (value, etag)
             }
             Ok(Fetched::Fresh { .. }) => return,
+            // The Run Root is gone: say so, and do not retry what cannot return.
+            Err(HostError::NotFound { code, message }) if code == "run_root_unavailable" => {
+                self.notice = Some(format!(
+                    "Run Root unavailable for {mission_run_id}: {message}"
+                ));
+                self.mark_historical_unavailable(&message);
+                return;
+            }
             Err(error) => {
                 self.release_refresh(&RefreshKey::Section(section));
+                // A historical run still loading from disk: its loading state
+                // says so and the next poll retries. Other errors are failures.
+                if matches!(error, HostError::Timeout(_)) && self.historical_read_timed_out() {
+                    return;
+                }
                 self.notice = Some(format!(
                     "Host {} poll failed ({error}); showing last known state",
                     section.as_str()
@@ -892,6 +1270,7 @@ impl App {
                 merge_timeline(&mut retained, overview.recent_events);
                 overview.recent_events = retained;
                 self.view.overview = Some(overview);
+                self.observe_attention();
             }
             OperatorViewPage::Agents(mut page) => {
                 if backfill {
@@ -947,7 +1326,9 @@ impl App {
             OperatorViewPage::Beliefs(page) => self.view.beliefs = Some(page.beliefs),
             OperatorViewPage::Context(page) => self.view.context = Some(page.context),
             OperatorViewPage::World(page) => {
-                if !page.world.frames.is_empty()
+                // A frozen presentation keeps its source and held frame.
+                if !self.view.presentation.is_frozen()
+                    && !page.world.frames.is_empty()
                     && !page
                         .world
                         .frames
@@ -1015,7 +1396,24 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok(page) => inspector.page = Some(page),
+                    Ok(page) => {
+                        // Tail: jump once to the last byte page (the log may
+                        // grow, so only ever forward), then show its last line.
+                        let last_page = page
+                            .byte_size
+                            .map(|size| size.saturating_sub(CONTENT_PAGE_BYTES))
+                            .filter(|last| inspector.tail && !page.eof && *last > requested_offset);
+                        if let Some(offset) = last_page {
+                            inspector.offset = offset;
+                            self.inspector_fetch(offset);
+                            return;
+                        }
+                        if inspector.tail {
+                            inspector.tail = false;
+                            inspector.scroll = usize::MAX;
+                        }
+                        inspector.page = Some(page);
+                    }
                     Err(HostError::NotFound { .. }) => {
                         self.view.inspector = None;
                         self.notice = Some("Artifact became unavailable".to_string());
@@ -1063,6 +1461,12 @@ impl App {
         result: Result<Fetched<WorldFrame>, HostError>,
     ) {
         if !self.run_matches(mission_run_id) || self.view.frame_source != source {
+            return;
+        }
+        // A frozen presentation holds its frame: a reply already in flight
+        // is dropped, and its claim released for the fetch after resuming.
+        if self.view.presentation.is_frozen() {
+            self.release_refresh(&RefreshKey::Frame(source));
             return;
         }
         match result {

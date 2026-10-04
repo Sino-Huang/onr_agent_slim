@@ -2,7 +2,8 @@
 
 The goldens were captured from the original shell launcher before it became a
 thin wrapper over ``python -m onr.runtime_host.stack plan``; comparing parsed
-argv (not shell text) keeps them independent of quoting style.
+argv (not shell text) keeps them independent of quoting style. Cases added
+after that cutover (``mission1-follower``) were captured from the builder.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ COMMAND_KEYS = (
     "Worker command",
     "Engine command",
     "Perception command",
+    "Visualizer command",
 )
 
 CASES: dict[str, tuple[str, dict[str, str]]] = {
@@ -35,6 +37,7 @@ CASES: dict[str, tuple[str, dict[str, str]]] = {
         "herdr_start_mission1_airsim_live_demo.sh",
         {"ONR_DEMO_PERCEPTION": "ideal"},
     ),
+    "mission1-follower": ("herdr_start_mission1_follower_demo.sh", {}),
     "mission2": ("herdr_start_mission2_live_demo.sh", {}),
     "mission3": ("herdr_start_mission3_live_demo.sh", {}),
     "mission4": ("herdr_start_mission4_live_demo.sh", {}),
@@ -117,6 +120,10 @@ def normalize(stdout: str) -> dict[str, Any]:
             "prefix": [norm(token) for token in shlex.split(prefix)],
             "argv": [norm(token) for token in shlex.split(executable)],
         }
+    if "Prepare command" in fields:
+        outer = shlex.split(fields["Prepare command"])
+        assert outer[:2] == ["bash", "-lc"] and len(outer) == 3, outer
+        commands["Prepare command"] = [norm(token) for token in shlex.split(outer[2])]
     configs = {
         name: [
             [norm(old), norm(new)]

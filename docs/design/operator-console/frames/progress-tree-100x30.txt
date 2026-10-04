@@ -1,3 +1,4 @@
+ ◆ AI narrative · 0 s old · through record #412
 ┌ Progress · ≥ routine · FOLLOW ───────────────────────────────────────────────────────────────────┐
 │  ▾ ◆ Run Narrative · AI · available                                                              │
 │    Legs 1-2 complete; ship 2's report was altered and the agent replanned.                       │
@@ -24,7 +25,6 @@
 │{                                                                                                 │
 │  "from_state": "patrol.leg_2",                                                                   │
 │  "to_state": "patrol.leg_3"                                                                      │
-│}                                                                                                 │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
  / search · n/N next/previous match
  ↑↓ select · ←→ expand/collapse · Enter toggle · f follow newest · i minimum importance

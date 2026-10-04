@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "stack",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "stack-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "stack": {
+    "preset_id": "mission1-harbor",
+    "toggles": {
+      "airsim": true,
+      "perception": "off",
+      "update_ownership": "coordinator_driven"
+    },
+    "step": {
+      "name": "mission1-surveillance-views",
+      "stage": "post_ready",
+      "started_at": "2026-08-27T14:01:23Z",
+      "timeout_seconds": 600.0
+    },
+    "steps": [
+      {
+        "name": "airsim-fixture",
+        "stage": "prepare",
+        "state": "done",
+        "started_at": "2026-08-27T13:59:58Z",
+        "finished_at": "2026-08-27T14:00:01Z",
+        "log_artifact_id": "service-log-airsim-fixture",
+        "timeout_seconds": 600.0
+      },
+      {
+        "name": "mission1-public-input",
+        "stage": "post_ready",
+        "state": "done",
+        "started_at": "2026-08-27T14:01:21Z",
+        "finished_at": "2026-08-27T14:01:23Z",
+        "log_artifact_id": "service-log-mission1-public-input",
+        "timeout_seconds": 600.0
+      },
+      {
+        "name": "mission1-surveillance-views",
+        "stage": "post_ready",
+        "state": "running",
+        "started_at": "2026-08-27T14:01:23Z",
+        "finished_at": null,
+        "log_artifact_id": "service-log-mission1-surveillance-views",
+        "timeout_seconds": 600.0
+      }
+    ],
+    "services": [
+      {
+        "name": "airsim-engine",
+        "required": true,
+        "state": "ready",
+        "pid": 51207,
+        "port": 41461,
+        "started_at": "2026-08-27T14:00:01Z",
+        "ready_at": "2026-08-27T14:01:12Z",
+        "exit_code": null,
+        "log_artifact_id": "service-log-airsim-engine",
+        "last_line": "engine frozen at scenario start",
+        "importance": "routine",
+        "ready_timeout_seconds": 300.0,
+        "previous_ready_seconds": 74.0
+      },
+      {
+        "name": "physical-runtime",
+        "required": true,
+        "state": "ready",
+        "pid": 51388,
+        "port": 5066,
+        "started_at": "2026-08-27T14:01:12Z",
+        "ready_at": "2026-08-27T14:01:20Z",
+        "exit_code": null,
+        "log_artifact_id": "service-log-physical-runtime",
+        "last_line": "viewer listening on 127.0.0.1:5066",
+        "importance": "routine",
+        "ready_timeout_seconds": 300.0,
+        "previous_ready_seconds": 9.0
+      },
+      {
+        "name": "airsim-visualizer",
+        "required": false,
+        "state": "ready",
+        "pid": 51402,
+        "port": null,
+        "started_at": "2026-08-27T14:01:20Z",
+        "ready_at": "2026-08-27T14:01:21Z",
+        "exit_code": null,
+        "log_artifact_id": "service-log-airsim-visualizer",
+        "last_line": "following the world model",
+        "importance": "routine",
+        "ready_timeout_seconds": 300.0
+      },
+      {
+        "name": "closed-loop",
+        "required": true,
+        "state": "pending",
+        "pid": null,
+        "port": null,
+        "started_at": null,
+        "ready_at": null,
+        "exit_code": null,
+        "log_artifact_id": "worker-log",
+        "last_line": null,
+        "importance": "routine"
+      }
+    ]
+  }
+}

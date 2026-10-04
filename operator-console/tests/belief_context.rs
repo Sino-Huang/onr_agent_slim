@@ -62,7 +62,15 @@ fn render(
     terminal
         .draw(|frame| {
             let area = frame.area();
-            draw_belief_context(frame, area, beliefs, None, context, Theme::new(color));
+            draw_belief_context(
+                frame,
+                area,
+                beliefs,
+                None,
+                context,
+                false,
+                Theme::new(color),
+            );
         })
         .unwrap();
     let buffer = terminal.backend().buffer().clone();
@@ -269,7 +277,7 @@ fn overview_minis_retain_belief_changes_and_source_warnings() {
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .areas(frame.area());
             draw_belief_mini(frame, left, Some(&beliefs), Theme::new(false));
-            draw_context_mini(frame, right, Some(&context), Theme::new(false));
+            draw_context_mini(frame, right, Some(&context), false, Theme::new(false));
         })
         .unwrap();
     let actual = text(terminal.backend().buffer());

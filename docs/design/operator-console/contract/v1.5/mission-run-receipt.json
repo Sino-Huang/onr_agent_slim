@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "kind": "mission_run_receipt",
+  "exported_at": "2026-08-24T12:06:30Z",
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_root": "/srv/onr/var/runtime-host/runs/run-fixture-001",
+  "receipt": {
+    "status": "succeeded",
+    "classification": null,
+    "wall_seconds": 312.0,
+    "final": {
+      "fsm_state": "mission-complete",
+      "plan_revision": 4,
+      "mission_time_seconds": 120.0,
+      "source": "fsm-status"
+    },
+    "audit": {
+      "status": "fail",
+      "path": "live-acceptance.json",
+      "recorded_at": "2026-08-24T12:06:02Z",
+      "mission_mode": "mission1",
+      "failures": [
+        "evidence_replan_not_observed"
+      ]
+    }
+  },
+  "terminal_detail": null,
+  "stack": {
+    "preset_id": "mission1-harbor",
+    "teardown": {
+      "started_at": "2026-08-24T12:05:10Z",
+      "finished_at": "2026-08-24T12:05:15Z",
+      "stop_order": [
+        "physical-runtime",
+        "perception"
+      ],
+      "worker": "stopped",
+      "harbor_config": {
+        "state": "not_applicable",
+        "reported_by": null
+      }
+    },
+    "services": [
+      {
+        "name": "perception",
+        "state": "stopped",
+        "stop_mode": "graceful",
+        "stopped_at": "2026-08-24T12:05:15Z"
+      },
+      {
+        "name": "physical-runtime",
+        "state": "stopped",
+        "stop_mode": "graceful",
+        "stopped_at": "2026-08-24T12:05:12Z"
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "role": "closed_loop_result",
+      "path": "closed-loop-result.json",
+      "byte_size": 48213,
+      "artifact_id": null
+    },
+    {
+      "role": "live_demo_audit",
+      "path": "live-acceptance.json",
+      "byte_size": 51877,
+      "artifact_id": null
+    },
+    {
+      "role": "stack_plan",
+      "path": "stack.json",
+      "byte_size": 3120,
+      "artifact_id": null
+    },
+    {
+      "role": "stack_status",
+      "path": "stack-status.json",
+      "byte_size": 1544,
+      "artifact_id": null
+    },
+    {
+      "role": "observations",
+      "path": "observations.json",
+      "byte_size": 912334,
+      "artifact_id": null
+    },
+    {
+      "role": "narrative",
+      "path": "narrative.json",
+      "byte_size": 2210,
+      "artifact_id": null
+    },
+    {
+      "role": "log",
+      "path": "services/perception.log",
+      "byte_size": 20411,
+      "artifact_id": "service-log-perception"
+    },
+    {
+      "role": "log",
+      "path": "services/physical-runtime.log",
+      "byte_size": 88123,
+      "artifact_id": "service-log-physical-runtime"
+    },
+    {
+      "role": "log",
+      "path": "worker.log",
+      "byte_size": 12001,
+      "artifact_id": "worker-log"
+    }
+  ]
+}

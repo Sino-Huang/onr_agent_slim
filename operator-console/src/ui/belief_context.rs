@@ -23,19 +23,28 @@ const METADATA_ROWS: u16 = 2;
 const DETAIL_ROWS: u16 = 7;
 
 /// `selected_entity` is a stable entity ID; unset or unpublished selects the
-/// first entity.
+/// first entity. `terminal`: the run ended, so the Context is history and is
+/// labelled `last observed`, never as live.
 pub fn draw_belief_context(
     frame: &mut Frame,
     area: Rect,
     beliefs: Option<&OperatorBeliefs>,
     selected_entity: Option<&str>,
     context: Option<&OperatorContext>,
+    terminal: bool,
     theme: Theme,
 ) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(area);
     draw_beliefs(frame, left, beliefs, selected_entity, theme);
-    draw_context(frame, right, context, theme);
+    draw_context(frame, right, context, terminal, theme);
+}
+
+/// Suffix for a terminal run's last persisted Context entry.
+const LAST_OBSERVED: &str = " (last observed)";
+
+fn observed(terminal: bool) -> &'static str {
+    if terminal { LAST_OBSERVED } else { "" }
 }
 
 fn block(title: &'static str, theme: Theme) -> Block<'static> {
@@ -155,7 +164,7 @@ fn draw_beliefs(
     }
 }
 
-fn draw_entity(
+pub(crate) fn draw_entity(
     frame: &mut Frame,
     area: Rect,
     index: usize,
@@ -342,7 +351,13 @@ fn section(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), content);
 }
 
-fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>, theme: Theme) {
+fn draw_context(
+    frame: &mut Frame,
+    area: Rect,
+    context: Option<&OperatorContext>,
+    terminal: bool,
+    theme: Theme,
+) {
     let Some(context) = context else {
         absent(frame, area, " Mission Context ", theme);
         return;
@@ -432,7 +447,8 @@ fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>
     let mut lines = Vec::new();
     if let Some(fsm) = &context.fsm_status {
         lines.push(Line::from(format!(
-            "Active: {} · {}",
+            "{}: {} · {}",
+            if terminal { "Last observed" } else { "Active" },
             fsm.active_state.as_deref().unwrap_or("unavailable"),
             fsm.status.as_deref().unwrap_or("status unavailable")
         )));
@@ -487,7 +503,11 @@ fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>
     section(
         frame,
         fsm_area,
-        "FSM · enabled Transition Candidates",
+        if terminal {
+            "FSM · last observed Transition Candidates"
+        } else {
+            "FSM · enabled Transition Candidates"
+        },
         lines,
         theme,
     );
@@ -495,13 +515,14 @@ fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>
     let mut lines = Vec::new();
     if let Some(maneuver) = &context.active_maneuver {
         lines.push(Line::from(format!(
-            "{} · {}{}",
+            "{} · {}{}{}",
             maneuver.action.as_deref().unwrap_or("action unavailable"),
             maneuver.status.as_deref().unwrap_or("status unavailable"),
             maneuver
                 .phase
                 .as_ref()
-                .map_or_else(String::new, |phase| format!(" · {phase}"))
+                .map_or_else(String::new, |phase| format!(" · {phase}")),
+            observed(terminal)
         )));
         lines.push(Line::from(format!(
             "Deadline {}s · remaining {}s",
@@ -510,7 +531,12 @@ fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>
         )));
         let [summary, progress] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(maneuver_area);
-        section(frame, summary, "Active Maneuver", lines, theme);
+        let title = if terminal {
+            "Last observed Maneuver"
+        } else {
+            "Active Maneuver"
+        };
+        section(frame, summary, title, lines, theme);
         if let Some(fraction) = maneuver.progress {
             frame.render_widget(
                 Gauge::default()
@@ -534,7 +560,11 @@ fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>
         section(
             frame,
             maneuver_area,
-            "Active Maneuver",
+            if terminal {
+                "Last observed Maneuver"
+            } else {
+                "Active Maneuver"
+            },
             vec![Line::from(Span::styled(
                 "No persisted active maneuver",
                 theme.dim(),
@@ -546,9 +576,10 @@ fn draw_context(frame: &mut Frame, area: Rect, context: Option<&OperatorContext>
     let mut lines = Vec::new();
     if let Some(intent) = &context.latest_transition_intent {
         lines.push(Line::from(format!(
-            "{} → {}",
+            "{} → {}{}",
             intent.status.as_deref().unwrap_or("status unavailable"),
-            intent.target
+            intent.target,
+            observed(terminal)
         )));
         lines.push(Line::from(format!(
             "If {}",
@@ -662,6 +693,7 @@ pub fn draw_context_mini(
     frame: &mut Frame,
     area: Rect,
     context: Option<&OperatorContext>,
+    terminal: bool,
     theme: Theme,
 ) {
     let Some(context) = context else {
@@ -710,17 +742,26 @@ pub fn draw_context_mini(
         )));
     }
     if let Some(fsm) = &context.fsm_status {
-        lines.push(Line::from(format!(
-            "FSM {} · candidates {}",
-            fsm.active_state.as_deref().unwrap_or("unavailable"),
-            fsm.transition_candidates.len()
-        )));
+        lines.push(Line::from(if terminal {
+            format!(
+                "FSM {}{}",
+                fsm.active_state.as_deref().unwrap_or("unavailable"),
+                LAST_OBSERVED
+            )
+        } else {
+            format!(
+                "FSM {} · candidates {}",
+                fsm.active_state.as_deref().unwrap_or("unavailable"),
+                fsm.transition_candidates.len()
+            )
+        }));
     }
     if let Some(maneuver) = &context.active_maneuver {
         lines.push(Line::from(format!(
-            "{} · {}",
+            "{} · {}{}",
             maneuver.action.as_deref().unwrap_or("action unavailable"),
-            maneuver.status.as_deref().unwrap_or("status unavailable")
+            maneuver.status.as_deref().unwrap_or("status unavailable"),
+            observed(terminal)
         )));
     }
     frame.render_widget(

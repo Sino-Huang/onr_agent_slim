@@ -1,0 +1,30 @@
+ PRESENTATION  Mission 1 · AirSim live · ● failed · stack_failed │ host ● live
+ FROZEN AT 12:00:43 UTC · t=143.5 s · run 00:00:40 · display held; polling continues
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+ ✖ RUN FAILED · stack_failed · Stack service perception failed: perception producer was not health…
+┌ front · annotated · seq 406 · frozen ──────────────────┐┌ Milestone · v Belief entity ───────────┐
+│                                                        ││ 2 Progress selection · following newest│
+│              ▄▄▄▄▄▄                                    ││ Phase 5/6 · Executing (plan revision 3)│
+│                                                        ││                                        │
+│   ╔ ✖ RUN FAILED · stack_failed ═════════════════════════════════════════════════════════════╗   │
+│   ║ Environment Stack failed: perception                                                     ║   │
+│▄▄▄║                                                                                          ║   │
+│   ║ Stage:     not recorded                                                                  ║   │
+│▀▀▀║ Reason:    perception producer was not healthy within 900 seconds                        ║   │
+│   ║ Service:   perception                                                                    ║   │
+│   ║ Last step: Statechart (last completed phase step)                                        ║   │
+│   ║ Cleanup:   ▲ not confirmed: physical-runtime, closed-loop still recorded as running      ║   │
+│   ║ Run:       run-fixture-001                                                               ║   │
+│   ║ Run root:  not reported by this Host (API < 1.5)                                         ║   │
+└───║                                                                                          ║   │
+┌ Wh║ l log tail (service-log-perception) · 2 Progress · y copy run id + run root              ║   │
+│ Ai║ Enter dismiss · e new Mission Intent after cleanup · q exit                              ║   │
+│   ╚══════════════════════════════════════════════════════════════════════════════════════════╝   │
+│ Overlay:   ideal segmentation · 3 objects              ││                                        │
+│ Boxes:     AirSim follows the world model. Boxes are   ││                                        │
+│            ideal instance segmentation, not agent      ││                                        │
+│            perception.                                 ││                                        │
+└────────────────────────────────────────────────────────┘└────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ F4 back to tabs · v next card · p resume · ? help · Enter dismiss · l log tail · q exit
+ Presentation layout · display only: polling, alerts and controls stay live

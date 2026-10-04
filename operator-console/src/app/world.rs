@@ -289,9 +289,18 @@ impl WorldMedia {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        self.render_with(frame, area, Resize::Fit(None));
+    }
+
+    /// The presentation layout: scaled to fill `area`, also upwards.
+    pub fn render_scaled(&mut self, frame: &mut Frame, area: Rect) {
+        self.render_with(frame, area, Resize::Scale(None));
+    }
+
+    fn render_with(&mut self, frame: &mut Frame, area: Rect, resize: Resize) {
         if let Some(worker) = self.worker.as_mut() {
             frame.render_stateful_widget(
-                StatefulImage::<ThreadProtocol>::default().resize(Resize::Fit(None)),
+                StatefulImage::<ThreadProtocol>::default().resize(resize),
                 area,
                 &mut worker.protocol,
             );

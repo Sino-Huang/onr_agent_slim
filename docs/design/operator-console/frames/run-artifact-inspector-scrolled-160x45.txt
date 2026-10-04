@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Artifact: planner-c3RhdGVjaGFydC1hdHRlbXB0cy8wMDEvYWNjZXB0ZWQtc3RhdGVjaGFydC5qc29u ──────────────────────────────────────────────────────────────────────────┐
+│ line 46/80 · bytes 0-4095 of 51234                                                                                                                           │
+│                                                                                                                                                              │
+│[2026-08-24T12:01:46Z] planner: expanded 736 states                                                                                                           │
+│[2026-08-24T12:01:47Z] planner: expanded 752 states                                                                                                           │
+│[2026-08-24T12:01:48Z] planner: expanded 768 states                                                                                                           │
+│[2026-08-24T12:01:49Z] planner: expanded 784 states                                                                                                           │
+│[2026-08-24T12:01:50Z] planner: expanded 800 states                                                                                                           │
+│[2026-08-24T12:01:51Z] planner: expanded 816 states                                                                                                           │
+│[2026-08-24T12:01:52Z] planner: expanded 832 states                                                                                                           │
+│[2026-08-24T12:01:53Z] planner: expanded 848 states                                                                                                           │
+│[2026-08-24T12:01:54Z] planner: expanded 864 states                                                                                                           │
+│[2026-08-24T12:01:55Z] planner: expanded 880 states                                                                                                           │
+│[2026-08-24T12:01:56Z] planner: expanded 896 states                                                                                                           │
+│[2026-08-24T12:01:57Z] planner: expanded 912 states                                                                                                           │
+│[2026-08-24T12:01:58Z] planner: expanded 928 states                                                                                                           │
+│[2026-08-24T12:01:59Z] planner: expanded 944 states                                                                                                           │
+│[2026-08-24T12:01:00Z] planner: candidate plan cost 60 rejected because the survey window overlaps the exclusion zone around ship 3                           │
+│[2026-08-24T12:01:01Z] planner: expanded 976 states                                                                                                           │
+│[2026-08-24T12:01:02Z] planner: expanded 992 states                                                                                                           │
+│[2026-08-24T12:01:03Z] planner: expanded 1008 states                                                                                                          │
+│[2026-08-24T12:01:04Z] planner: expanded 1024 states                                                                                                          │
+│[2026-08-24T12:01:05Z] planner: expanded 1040 states                                                                                                          │
+│[2026-08-24T12:01:06Z] planner: expanded 1056 states                                                                                                          │
+│[2026-08-24T12:01:07Z] planner: expanded 1072 states                                                                                                          │
+│[2026-08-24T12:01:08Z] planner: expanded 1088 states                                                                                                          │
+│[2026-08-24T12:01:09Z] planner: expanded 1104 states                                                                                                          │
+│[2026-08-24T12:01:10Z] planner: expanded 1120 states                                                                                                          │
+│[2026-08-24T12:01:11Z] planner: expanded 1136 states                                                                                                          │
+│[2026-08-24T12:01:12Z] planner: expanded 1152 states                                                                                                          │
+│[2026-08-24T12:01:13Z] planner: expanded 1168 states                                                                                                          │
+│[2026-08-24T12:01:14Z] planner: expanded 1184 states                                                                                                          │
+│[2026-08-24T12:01:15Z] planner: expanded 1200 states                                                                                                          │
+│[2026-08-24T12:01:16Z] planner: expanded 1216 states                                                                                                          │
+│[2026-08-24T12:01:17Z] planner: expanded 1232 states                                                                                                          │
+│[2026-08-24T12:01:18Z] planner: expanded 1248 states                                                                                                          │
+│[2026-08-24T12:01:19Z] planner: expanded 1264 states                                                                                                          │
+│[2026-08-24T12:01:20Z] planner: candidate plan cost 80 rejected because the survey window overlaps the exclusion zone around ship 4                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ PgUp/PgDn scroll · Home/End top/bottom · ←/p →/n byte page · Esc close
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

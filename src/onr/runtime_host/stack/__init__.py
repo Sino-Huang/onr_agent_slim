@@ -26,6 +26,7 @@ from onr.runtime_host.stack.presets import (
 from onr.runtime_host.stack.supervisor import (
     StackFailure,
     StackSupervisor,
+    ready_durations,
     service_log_artifact_id,
 )
 
@@ -49,6 +50,7 @@ __all__ = [
     "load_stack_catalog",
     "materialize_stack_plan",
     "plan_mission_run",
+    "ready_durations",
     "run_preflight",
     "service_log_artifact_id",
     "stack_request",

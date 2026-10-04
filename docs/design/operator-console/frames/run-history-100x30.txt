@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  ┌ Run history (F3) · newest first ─────────────────────────────────────────────────────────────┐
+ ✔│ Status all (s) · Preset all (p) · 4 of 4 loaded runs shown · ▼ older runs load on scroll     │
+┌ │  Started (UTC)    Preset               Status                  Wall  Run                     │─┐
+│ │──────────────────────────────────────────────────────────────────────────────────────────────│ │
+│ │  2026-08-24 12:00 mission1-harbor      ◐ running               live  run-fixture-… ● current │ │
+│ │▸ 2026-10-03 13:22 mission1-harbor      ✔ succeeded             5:12  run-0d14a731…           │ │
+│ │  2026-10-03 12:46 mission1-harbor +Air…✖ failed · stack_fail…  3:03  run-dd8e174d…           │ │
+│ │  2026-08-27 12:00 stack not recorded   ✖ failed · host_inter…  3:10  run-1         ✖ no root │)│
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+└─│                                                                                              │─┘
+┌ │                                                                                              │─┐
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │                                                                                              │ │
+│ │───────────────────────────────────────────────────────────────────────────────────────── 2/4 │ │
+│ │ run-0d14a731-6a9d-4b68-b612-4520619511c4 · mission1-harbor · AirSim off · perception off · c…│ │
+└─│                                                                                              │─┘
+──│ ↑↓ PgUp/PgDn select · Enter open read-only · s status · p preset · r reload · Esc close      │──
+ 1└──────────────────────────────────────────────────────────────────────────────────────────────┘
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

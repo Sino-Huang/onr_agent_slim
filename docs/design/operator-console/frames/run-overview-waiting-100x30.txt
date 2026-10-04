@@ -3,9 +3,9 @@
  Phase: waiting for overview.phase from the Host
 ┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
 │ Status:    queued                              ││◆ Run Narrative · AI · non-authoritative        │
-│ Mission:   mission-fixture-001                 ││Waiting for the Run Narrative from the Host     │
-│ Run:       run-fixture-001                     ││Progress evidence has not arrived yet.          │
-│ Stack:     mission1-harbor · AirSim off · perc…││                                                │
+│ Mission:   mission-fixture-001                 ││AI narrative · coverage pending                 │
+│ Run:       run-fixture-001                     ││Waiting for the Run Narrative from the Host     │
+│ Stack:     mission1-harbor · AirSim off · perc…││Progress evidence has not arrived yet.          │
 │ Started:   2026-08-24T12:00:00Z                ││                                                │
 │ Finished:  -                                   ││                                                │
 │                                                ││                                                │
@@ -26,5 +26,5 @@
 │                                                              ││                                  │
 └──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ? help · c cancel · q managed exit
+ 1-7/Tab tabs · ? help · c cancel · q managed exit · F3 history
  ✖ critical  ▲ warning  ● notable  · routine  ∙ debug

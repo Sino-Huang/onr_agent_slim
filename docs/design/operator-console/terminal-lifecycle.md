@@ -39,6 +39,19 @@ The two mechanisms overlap deliberately: a panic while the guard is alive
 restores via the hook (message visible), then unwinding drops the guard
 (restore is a cheap no-op). A panic before the guard exists still restores.
 
+## Window title, bell and desktop notifications
+
+The run loop writes attention output between frames, never while drawing
+(`main.rs` `Attention`). At startup it pushes the current window title on the
+xterm title stack (`CSI 22;2t`); it then sets `OSC 2` to the status title
+whenever `App::window_title()` changes, and for events drained from
+`App::take_attention_events()` writes BEL and, with `--notify desktop`, an OSC
+9/777 notification. `Drop` pops the title (`CSI 23;2t`), so a normal exit,
+an error return or panic unwinding restores the previous title on terminals
+with a title stack (xterm, VTE, tmux); other terminals keep the last title.
+Host text is stripped of control characters before it is written, so it can
+never end or inject an escape sequence.
+
 ## Bootstrapped Runtime Host ownership
 
 When the console starts its own Runtime Host, a separate guard owns that child

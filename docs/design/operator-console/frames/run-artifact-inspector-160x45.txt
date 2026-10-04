@@ -2,7 +2,7 @@
   1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
  ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
 ┌ Artifact: planner-c3RhdGVjaGFydC1hdHRlbXB0cy8wMDEvYWNjZXB0ZWQtc3RhdGVjaGFydC5qc29u ──────────────────────────────────────────────────────────────────────────┐
-│ bytes 0-4096 of 8192                                                                                                                                         │
+│ line 1/4 · bytes 0-4095 of 8192                                                                                                                              │
 │                                                                                                                                                              │
 │[2026-08-24T12:00:01Z] planner: deterministic search started                                                                                                  │
 │[2026-08-24T12:00:02Z] planner: expanded 42 states                                                                                                            │
@@ -41,5 +41,5 @@
 │                                                                                                                                                              │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ←/p →/n: page preview · Esc: close
+ ↑↓ PgUp/PgDn scroll · Home/End top/bottom · ←/p →/n byte page · Esc close
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

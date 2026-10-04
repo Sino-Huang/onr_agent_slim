@@ -26,5 +26,5 @@
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- Tab field · ←/→ change · F2 demo prompts · Alt+Enter review & launch · r preflight · F1 help
+ Tab field · ←/→ change · F2 demo prompts · F3 history · Alt+Enter review · r preflight · F1 help
  ✖ Mission Intent is empty

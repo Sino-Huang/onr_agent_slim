@@ -1,4 +1,4 @@
-//! Runtime Host API v1.3 wire contract (v1.2 Hosts remain supported).
+//! Runtime Host API v1.5 wire contract (v1.2 Hosts remain supported).
 //!
 //! Every type here round-trips the committed examples under
 //! `docs/design/operator-console/contract/` exactly (see
@@ -113,6 +113,10 @@ pub struct TerminalDetail {
     pub error_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// v1.5: the log to read first - `service-log-<service>` for
+    /// `stack_failed`, `worker-log` for `worker_failed`. Older Hosts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_artifact_id: Option<String>,
 }
 
 impl TerminalDetail {
@@ -163,7 +167,9 @@ pub struct RunRecord {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub terminal_classification: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Always sent since v1.2 (`null` for runs recorded before it); v1
+    /// Hosts omit it.
+    #[serde(default)]
     pub stack: Option<RunStack>,
     #[serde(default)]
     pub terminal_detail: Option<TerminalDetail>,
@@ -185,6 +191,37 @@ pub fn is_terminal_status(status: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentRun {
     pub mission_run: Option<RunRecord>,
+}
+
+/// The launch toggles a run history row adds to [`RunStack`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunToggles {
+    pub update_ownership: Option<String>,
+    pub simulation_limit_seconds: Option<serde_json::Number>,
+}
+
+/// One row of `GET /api/v1/mission-runs` (v1.5): the public run record plus
+/// what the history list shows. It never carries the Mission Intent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionRunSummary {
+    pub mission_run: RunRecord,
+    /// `null` for runs recorded before v1.2.
+    pub toggles: Option<RunToggles>,
+    /// Start (or creation) to finish; `null` while the run is not terminal.
+    pub wall_seconds: Option<serde_json::Number>,
+    /// Whether the run's Run Root is still on the Host's disk; without it
+    /// the per-run evidence routes answer `run_root_unavailable`.
+    pub run_root_available: bool,
+    /// Whether this is the Host's current Mission Run.
+    pub current: bool,
+}
+
+/// One page of the run history, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionRunsPage {
+    pub mission_runs: Vec<MissionRunSummary>,
+    /// `before` cursor for the next older page; `null` on the last page.
+    pub next_before: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,11 +275,73 @@ pub struct StackDefaults {
 pub struct StackPreset {
     pub preset_id: String,
     pub title: String,
+    /// v1.5: the mission goal and whether real LLM calls happen, authored
+    /// in the Host's preset catalog. Older Hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub mission_mode: String,
     pub default_mission_text: String,
     pub supports: StackSupports,
     pub unsupported_reason: Option<String>,
     pub defaults: StackDefaults,
+}
+
+/// v1.5: what one AirSim value runs. `perception`, when present, limits the
+/// description to that perception mode (AirSim on shows different things
+/// with and without a perception module).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirsimChoice {
+    pub value: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perception: Option<String>,
+    pub description: String,
+}
+
+/// v1.5: what one perception or update-ownership value runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToggleChoice {
+    pub value: String,
+    pub description: String,
+}
+
+/// v1.5: Host-authored descriptions of every toggle value, which the
+/// console composes into "What this runs".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToggleChoices {
+    pub airsim: Vec<AirsimChoice>,
+    pub perception: Vec<ToggleChoice>,
+    pub update_ownership: Vec<ToggleChoice>,
+}
+
+impl ToggleChoices {
+    /// The AirSim description for `airsim` under `perception`.
+    pub fn airsim(&self, airsim: bool, perception: &str) -> Option<&str> {
+        self.airsim
+            .iter()
+            .find(|choice| {
+                choice.value == airsim
+                    && choice
+                        .perception
+                        .as_deref()
+                        .is_none_or(|mode| mode == perception)
+            })
+            .map(|choice| choice.description.as_str())
+    }
+
+    pub fn perception(&self, perception: &str) -> Option<&str> {
+        find_choice(&self.perception, perception)
+    }
+
+    pub fn update_ownership(&self, ownership: &str) -> Option<&str> {
+        find_choice(&self.update_ownership, ownership)
+    }
+}
+
+fn find_choice<'a>(choices: &'a [ToggleChoice], value: &str) -> Option<&'a str> {
+    choices
+        .iter()
+        .find(|choice| choice.value == value)
+        .map(|choice| choice.description.as_str())
 }
 
 /// `GET /api/v1/stack/presets` response body.
@@ -251,6 +350,9 @@ pub struct StackPresets {
     pub schema_version: u32,
     pub default_preset_id: String,
     pub presets: Vec<StackPreset>,
+    /// v1.5: per-toggle-value descriptions; older Hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toggle_choices: Option<ToggleChoices>,
 }
 
 /// Toggle state echoed by preflight and the `stack` section.
@@ -276,6 +378,10 @@ pub struct PreflightCheck {
     pub status: String,
     pub detail: Option<String>,
     pub hint: Option<String>,
+    /// v1.5: a copyable read-only diagnostic command or path for a failing or
+    /// warning check. The console only shows it; it never runs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
 }
 
 /// `GET /api/v1/stack/preflight` response body.
@@ -661,6 +767,82 @@ pub struct OperatorOverview {
     pub phase: Option<RunPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counts_by_importance: Option<ImportanceCounts>,
+    /// v1.5: absolute Run Root path (operator view is loopback-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_root: Option<String>,
+    /// v1.5: the authoritative receipt of a terminal run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<RunReceipt>,
+}
+
+/// `overview.receipt` (v1.5): what a terminal Mission Run ended as, each fact
+/// from its own authority. Cleanup is the stack's `teardown`, not repeated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunReceipt {
+    /// Lifecycle status (`succeeded`, `failed`, `cancelled`): the Run
+    /// Worker's lifecycle, never the mission verdict.
+    pub status: String,
+    pub classification: Option<String>,
+    /// Start (or creation) to finish, in wall seconds.
+    pub wall_seconds: Option<serde_json::Number>,
+    #[serde(rename = "final")]
+    pub last: ReceiptFinal,
+    pub audit: ReceiptAudit,
+    pub export: ReceiptExport,
+}
+
+/// The last FSM state, plan revision and Mission time the evidence recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptFinal {
+    pub fsm_state: Option<String>,
+    pub plan_revision: Option<u64>,
+    pub mission_time_seconds: Option<serde_json::Number>,
+    /// The record kind the FSM facts come from (`fsm-status` or
+    /// `fsm-execution-record`); `null` when none was observed.
+    pub source: Option<String>,
+}
+
+/// The live demo audit, only as its artifact (`live-acceptance.json`)
+/// records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptAudit {
+    /// `pass`, `fail`, `not_recorded` (no audit artifact) or `unreadable`.
+    pub status: String,
+    /// Run Root relative path of the audit artifact, when one exists.
+    pub path: Option<String>,
+    pub recorded_at: Option<String>,
+    pub mission_mode: Option<String>,
+    pub failures: Vec<String>,
+}
+
+/// Where `x` writes the receipt, and when it last did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptExport {
+    pub path: String,
+    pub exported_at: Option<String>,
+}
+
+/// `POST /api/v1/mission-runs/{id}/receipt-exports` request (v1.5): empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptExportRequest {}
+
+/// The Host's answer to a receipt export: the file it wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptExported {
+    pub mission_run_id: String,
+    /// Absolute path under the Run Root.
+    pub path: String,
+    pub exported_at: String,
+    pub byte_size: u64,
+    /// Whether an earlier export was overwritten.
+    pub replaced: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiptExportOutcome {
+    Exported(ReceiptExported),
+    Rejected { code: String, message: String },
 }
 
 /// Narrative root of the progress hierarchy.
@@ -669,7 +851,24 @@ pub struct ProgressNarrative {
     pub status: String,
     pub text: Option<String>,
     pub generated_at: Option<String>,
+    /// Highest operational-log record sequence the narrative reflects.
     pub source_watermark: u64,
+    /// v1.5: the narrative is the run's final attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<bool>,
+    /// v1.5: newest operational-log record sequence when the page was built,
+    /// in the same space as `source_watermark`. Older Hosts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_operational_sequence: Option<u64>,
+}
+
+impl ProgressNarrative {
+    /// Operational records newer than the narrative, or `None` when the Host
+    /// does not report its newest record sequence.
+    pub fn newer_records(&self) -> Option<u64> {
+        self.latest_operational_sequence
+            .map(|latest| latest.saturating_sub(self.source_watermark))
+    }
 }
 
 /// One node of the flat progress stream; the console builds the tree by
@@ -925,7 +1124,8 @@ pub struct OperatorWorld {
 pub struct StackService {
     pub name: String,
     pub required: bool,
-    /// `pending`, `starting`, `ready`, `exited`, `failed`, or `stopped`.
+    /// `pending`, `starting`, `ready`, `stopping` (v1.5), `exited`, `failed`,
+    /// or `stopped`.
     pub state: String,
     pub pid: Option<u32>,
     pub port: Option<u16>,
@@ -935,6 +1135,88 @@ pub struct StackService {
     pub log_artifact_id: Option<String>,
     pub last_line: Option<String>,
     pub importance: String,
+    /// v1.4: the readiness condition a `starting` service still waits for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<String>,
+    /// v1.4: how long the Host waits for readiness before failing the stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_timeout_seconds: Option<serde_json::Number>,
+    /// v1.5: measured start-to-ready seconds of this service in the previous
+    /// run of the same preset. History, never an estimate for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_ready_seconds: Option<serde_json::Number>,
+    /// v1.5: when teardown sent this service SIGTERM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_requested_at: Option<String>,
+    /// v1.5: the Stack Supervisor's grace period before SIGKILL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_grace_seconds: Option<serde_json::Number>,
+    /// v1.5: `graceful` (exited within its grace period) or `forced`
+    /// (SIGKILL after the grace period, or reaped with the Run Worker's
+    /// process tree by the Host).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_mode: Option<String>,
+    /// v1.5: when the service was recorded stopped, with `stop_mode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<String>,
+}
+
+/// `stack.teardown.harbor_config` (v1.5): whether the Harbor engine
+/// configuration (`environment.json`, `object_ids.txt`) was reported restored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarborConfigRestoration {
+    /// `confirmed` (the engine or its guardian reported it), `unknown`, or
+    /// `not_applicable` (no AirSim engine started).
+    pub state: String,
+    /// `engine` or `guardian` when `confirmed`; `null` otherwise.
+    pub reported_by: Option<String>,
+}
+
+/// `stack.teardown` (v1.5): the Environment Stack's reverse-order teardown and
+/// its receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackTeardown {
+    /// `null` when the Host reaped the stack before the supervisor began.
+    pub started_at: Option<String>,
+    /// `null` while stopping; the Host's verified exit time after a reap.
+    pub finished_at: Option<String>,
+    /// Services teardown signals, in order (reverse start order).
+    pub stop_order: Vec<String>,
+    /// `running` or `stopped` (the Run Worker returned from teardown, or the
+    /// Host verified its process tree exited).
+    pub worker: String,
+    pub harbor_config: HarborConfigRestoration,
+}
+
+impl StackTeardown {
+    pub fn finished(&self) -> bool {
+        self.finished_at.is_some()
+    }
+}
+
+/// `stack.step` (v1.4): a one-shot prep step the Run Worker is running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackStep {
+    pub name: String,
+    /// `prepare` (before the services) or `post_ready` (after them).
+    pub stage: String,
+    pub started_at: String,
+    pub timeout_seconds: serde_json::Number,
+}
+
+/// `stack.steps[]` (v1.5): a prep step that started, kept once it finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackStepRecord {
+    pub name: String,
+    /// `prepare` (before the services) or `post_ready` (after them).
+    pub stage: String,
+    /// `running`, `done`, `failed`, or `stopped`.
+    pub state: String,
+    pub started_at: String,
+    /// `null` while running, and for a step reaped before it finished.
+    pub finished_at: Option<String>,
+    pub log_artifact_id: String,
+    pub timeout_seconds: serde_json::Number,
 }
 
 /// `stack` section.
@@ -942,7 +1224,16 @@ pub struct StackService {
 pub struct OperatorStack {
     pub preset_id: String,
     pub toggles: StackToggles,
+    /// Absent before v1.4 and while no prep step runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<StackStep>,
+    /// Prep steps in start order; absent before v1.5 and before any started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<StackStepRecord>,
     pub services: Vec<StackService>,
+    /// Absent before v1.5 and before teardown started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown: Option<StackTeardown>,
 }
 
 macro_rules! operator_page {

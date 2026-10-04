@@ -1,0 +1,45 @@
+ PRESENTATION  Mission 1 · Harbor (simulated) · ● running │ host ● live
+ Wall 12:00:43 UTC · run 00:00:40 │ Mission t=143.5 s
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ front · annotated · seq 406 · live ────────────────────────────────────────────────────────────────┐┌ Milestone · v Belief entity ───────────────────────────┐
+│                                                                                                    ││ 2 Progress selection · following newest                │
+│                                                                                                    ││ Phase 5/6 · Executing (plan revision 3)                │
+│                                                                                                    ││                                                        │
+│                                    ▄▄▄▄▄▄▄▄▄▄▄                                                     ││ ● FSM                                                  │
+│                                    ▄▄▄▄▄▄▄▄▄▄▄                                                     ││ FSM patrol.leg_2 → patrol.leg_3                        │
+│                                                                                                    ││ fsm-runner · notable · t=143.0 s                       │
+│                                                                                                    ││ in Replan after report alteration                      │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                 ││                                                        │
+│▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                 ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                 ││                                                        │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                 ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                    ▀▀▀▀▀▀▀▀▀▀▀                                                     ││                                                        │
+│                                    ▀▀▀▀▀▀▀▀▀▀▀                                                     ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+│                                                                                                    ││                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┘│                                                        │
+┌ What the scene shows ──────────────────────────────────────────────────────────────────────────────┐│                                                        │
+│ AirSim:    world-model follower · capturing · lag 0.5 s · ship phase ±0.03 s                       ││                                                        │
+│ Overlay:   ideal segmentation · 3 objects                                                          ││                                                        │
+│ Boxes:     AirSim follows the world model. Boxes are ideal instance segmentation, not agent        ││                                                        │
+│            perception.                                                                             ││                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ F4 back to tabs · v next card · p freeze · s source · ? help · c cancel · q managed exit
+ Presentation layout · display only: polling, alerts and controls stay live

@@ -4,8 +4,8 @@
 //! [`Workers::dispatch`], which routes each command to one of three std
 //! threads through a bounded queue:
 //!
-//! - **control**: health, presets, preflight, activation, `/current`, owner
-//!   intent, cancellation;
+//! - **control**: health, presets, preflight, activation, `/current`, run
+//!   history, owner intent, cancellation, receipt export;
 //! - **evidence**: operator-view sections, Artifact content, conversation
 //!   entries;
 //! - **media**: world-frame bytes.
@@ -28,8 +28,8 @@ use super::client::{HostClient, HostError};
 use super::dto::{
     ActivationOutcome, ActivationRequest, ArtifactContentPage, CancellationOutcome,
     CancellationRequest, ConversationEntry, CurrentRun, EvidencePage, Fetched, FrameSource, Health,
-    MissionIntent, OperatorSection, OperatorViewPage, PreflightQuery, StackPreflight, StackPresets,
-    WorldFrame,
+    MissionIntent, MissionRunsPage, OperatorSection, OperatorViewPage, PreflightQuery,
+    ReceiptExportOutcome, StackPreflight, StackPresets, WorldFrame,
 };
 
 /// Queue bound per lane: control, evidence, media.
@@ -63,6 +63,8 @@ pub enum HostCommand {
     },
     /// Fetch the current Mission Run snapshot.
     PollCurrent { credential: String },
+    /// Fetch one run history page (F3), older than `before` when given.
+    FetchRunHistory { before: Option<String>, limit: u32 },
     FetchIntent {
         mission_run_id: String,
         credential: String,
@@ -70,6 +72,11 @@ pub enum HostCommand {
     Cancel {
         mission_run_id: String,
         request: CancellationRequest,
+        credential: String,
+    },
+    /// Ask the Host to write the terminal receipt under the Run Root (`x`).
+    ExportReceipt {
+        mission_run_id: String,
         credential: String,
     },
     /// Fetch one incremental operator-view section, conditional on `etag`.
@@ -111,8 +118,13 @@ pub enum HostMessage {
     },
     Activated(Result<ActivationOutcome, HostError>),
     Current(Result<CurrentRun, HostError>),
+    RunHistory {
+        before: Option<String>,
+        result: Result<MissionRunsPage, HostError>,
+    },
     Intent(Result<MissionIntent, HostError>),
     Cancelled(Result<CancellationOutcome, HostError>),
+    ReceiptExported(Result<ReceiptExportOutcome, HostError>),
     OperatorView {
         mission_run_id: String,
         section: OperatorSection,
@@ -152,8 +164,10 @@ impl HostMessage {
             Self::Preflight { result, .. } => proves(result),
             Self::Activated(result) => proves(result),
             Self::Current(result) => proves(result),
+            Self::RunHistory { result, .. } => proves(result),
             Self::Intent(result) => proves(result),
             Self::Cancelled(result) => proves(result),
+            Self::ReceiptExported(result) => proves(result),
             Self::OperatorView { result, .. } => proves(result),
             Self::ArtifactContent { result, .. } => proves(result),
             Self::ConversationEntries { result, .. } => proves(result),
@@ -178,6 +192,7 @@ pub enum PollKey {
     Presets,
     Preflight(PreflightQuery),
     Current,
+    RunHistory(Option<String>),
     Intent(String),
     OperatorView {
         mission_run_id: String,
@@ -210,8 +225,10 @@ impl HostCommand {
             | Self::Preflight { .. }
             | Self::Submit { .. }
             | Self::PollCurrent { .. }
+            | Self::FetchRunHistory { .. }
             | Self::FetchIntent { .. }
-            | Self::Cancel { .. } => WorkerLane::Control,
+            | Self::Cancel { .. }
+            | Self::ExportReceipt { .. } => WorkerLane::Control,
             Self::FetchOperatorView { .. }
             | Self::FetchArtifactContent { .. }
             | Self::FetchConversationEntries { .. } => WorkerLane::Evidence,
@@ -222,11 +239,12 @@ impl HostCommand {
     /// Coalescing key; `None` for mutations, which always run.
     pub fn poll_key(&self) -> Option<PollKey> {
         Some(match self {
-            Self::Submit { .. } | Self::Cancel { .. } => return None,
+            Self::Submit { .. } | Self::Cancel { .. } | Self::ExportReceipt { .. } => return None,
             Self::Connect => PollKey::Connect,
             Self::FetchPresets => PollKey::Presets,
             Self::Preflight { query, .. } => PollKey::Preflight(query.clone()),
             Self::PollCurrent { .. } => PollKey::Current,
+            Self::FetchRunHistory { before, .. } => PollKey::RunHistory(before.clone()),
             Self::FetchIntent { mission_run_id, .. } => PollKey::Intent(mission_run_id.clone()),
             Self::FetchOperatorView {
                 mission_run_id,
@@ -288,6 +306,10 @@ pub fn execute(client: &dyn HostClient, command: HostCommand) -> HostMessage {
         HostCommand::PollCurrent { credential } => {
             HostMessage::Current(client.current_run(&credential))
         }
+        HostCommand::FetchRunHistory { before, limit } => {
+            let result = client.mission_runs(before.as_deref(), limit);
+            HostMessage::RunHistory { before, result }
+        }
         HostCommand::FetchIntent {
             mission_run_id,
             credential,
@@ -297,6 +319,10 @@ pub fn execute(client: &dyn HostClient, command: HostCommand) -> HostMessage {
             request,
             credential,
         } => HostMessage::Cancelled(client.cancel(&mission_run_id, &request, &credential)),
+        HostCommand::ExportReceipt {
+            mission_run_id,
+            credential,
+        } => HostMessage::ReceiptExported(client.export_receipt(&mission_run_id, &credential)),
         HostCommand::FetchOperatorView {
             mission_run_id,
             section,

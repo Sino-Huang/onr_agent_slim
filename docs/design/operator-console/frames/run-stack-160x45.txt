@@ -2,8 +2,8 @@
   1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
  ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
 ┌ Services · mission1-harbor · AirSim off · perception off ┐┌ Log · physical-runtime · 125 B · following ──────────────────────────────────────────────────────┐
-│ ● ENV physical-runtime   ready    :5066 pid 41233        ││ starting physical runtime for mission-fixture-001                                                │
-│ ◐ STK closed-loop        starting                        ││ loading scenario harbor                                                                          │
+│ ● ENV physical-runtime   ready    in 0:08 :5066 pid 412… ││ starting physical runtime for mission-fixture-001                                                │
+│ ◐ STK closed-loop        starting 0:00                   ││ loading scenario harbor                                                                          │
 │                                                          ││ viewer listening on 127.0.0.1:5066                                                               │
 │ Started:   2026-08-27T14:00:01Z                          ││ environment update 1 published                                                                   │
 │ Ready:     2026-08-27T14:00:09Z                          ││                                                                                                  │
@@ -41,5 +41,5 @@
 │                                                          ││                                                                                                  │
 └──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ↑↓ service · f follow · PgUp/PgDn scroll · ? help · c cancel · q managed exit
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn scroll · ? help · c cancel · q managed exit · F3 history
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

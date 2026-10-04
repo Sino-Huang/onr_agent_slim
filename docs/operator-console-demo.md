@@ -16,12 +16,12 @@ curl --fail http://127.0.0.1:11411/v1/models
 
 Use 160×45 (minimum 100×30). `halfblocks` is reliable inside tmux/herdr without terminal-graphics passthrough. Outside multiplexers, `auto` queries the terminal and falls back when needed. Warm the release build before presenting. Preflight must finish without failures; warnings such as low disk/GPU headroom remain visible.
 
-Select **mission1-harbor**, AirSim off, perception off, coordinator-driven updates. This simulated preset still runs the real physical-runtime world model, planners, belief service and vLLM agents. It avoids Harbor startup for the rejection demonstration. Mission 1 surveillance-view preparation is a real startup step, not agent reasoning; its measured boot time is recorded with the issue's verification results.
+Select **mission1-harbor**, AirSim off, perception off, coordinator-driven updates (Enter on Preset opens the named picker; Left/Right also cycles). This simulated preset still runs the real physical-runtime world model, planners, belief service and vLLM agents. It avoids Harbor startup for the rejection demonstration. Mission 1 surveillance-view preparation is a real startup step, not agent reasoning; its measured boot time is recorded with the issue's verification results. Point the audience at **What this runs** under the stack selector: the Host's own description of the mission goal, real LLM calls, simulated versus perception-fed truth, what AirSim shows, and that coordinator-driven Mission time pauses while the agents reason. Switching AirSim on there changes it to the AirSim Follower, which visualizes the simulated world with no agent perception.
 
 ## Demo 1 — reject an out-of-scope input, then run a mission
 
 1. F2 → **buy me a coffee**. Alt+Enter → review; Enter → launch.
-2. Tab **6 Stack** while booting. Explain required services and readiness; select the physical runtime to show the live log tail.
+2. Tab **6 Stack** while booting (or press **w** on any tab to jump to what the waiting banner names). Explain required services, prep steps and readiness; select the physical runtime to show the live log tail.
 3. As soon as Hyper rejects the intent, the prominent **MISSION REJECTED** card shows its actual reason, intent and stage. The run remains owned during final summary flush and teardown, then becomes `failed` / `mission_rejected`; this is not a process crash.
 4. Enter shows run details. Tab **3 Agents** to inspect the recorded `reject_mission_intent` tool call. Recorded Debug Reasoning is not mission authority.
 5. After cleanup finishes, press **e** on the rejection card to return to Launch with the same preset and toggles. F2 → preset mission. Review and launch. If Enter dismissed the card, the run-screen `e` key opens the same new-intent flow.
@@ -42,10 +42,22 @@ Keep both the rejection card and the normal run screenshots/captures. Committed 
 ## Belief, context and world walkthrough
 
 - **4 Belief & Context**: inspect reporting-reliability means, credible intervals, previous/prior deltas and revision sparklines. The table scrolls; Up/Down or **j**/**k** selects an entity, and the selected entity's gauge, deltas and sparkline stay visible below it (selection follows the entity across revisions). The reference Mission 1 replay moves ship 2 from about 0.133 to 0.623; a new live run's path depends on observed evidence. The right pane shows Mission Snapshot source health/freshness, active FSM state and enabled candidates, Active Maneuver, latest Transition Intent and Hyper outcome. Do not claim a percent-complete navigation gauge when the environment only reports remaining distance.
-- **5 World**: see the live world-model overlays. **s** cycles world → annotated front → front camera → third-person camera, skipping sources without a frame; **p** pauses only display fetching, not the mission. Finished runs retain the final world frame and any captured camera frames.
-- **6 Stack**: show process readiness, ports and service-log tails. Logs are run-scoped allowlisted Artifacts, not unrestricted file access.
+- **5 World**: see the live world-model overlays. **s** cycles world → annotated front → front camera → third-person camera, skipping sources without a frame; **p** pauses only display fetching, not the mission. Finished runs retain the final world frame and any captured camera frames. For the audience, **F4** presents the selected source large (below).
+- **6 Stack**: show prep steps with measured durations, process readiness (with the previous same-preset run's readiness as history), ports and service-log tails. **w** from any tab opens the service or prep step the banner is waiting on, log following. Logs are run-scoped allowlisted Artifacts, not unrestricted file access.
 - **7 Artifacts**: inspect planner files and verification logs using the existing byte-paged inspector.
 - Mission 2–4 show an explicit **no Bayesian belief for this mission mode** state, not an empty or fabricated gauge.
+
+## Presenting: keep the audience on the scene (F4)
+
+Instead of switching among Progress, Agents, Belief and World while you talk, press **F4** on the Run screen. The presentation layout shows the selected World source large (scaled up) with its AirSim disclosures under it, one evidence card, the mission title, and both clocks: `Wall 12:00:43 UTC · run 00:00:40 │ Mission t=143.5 s`. Nothing rotates by itself; you choose what is on screen.
+
+1. Before the audience: on **5 World** press **s** until the source you want is selected (for the AirSim Follower, the annotated front camera); select the entity on **4 Belief & Context** and, if you want a specific call, the invocation on **3 Agents** (**f** keeps following the newest). These selections are what the card shows.
+2. **F4**. The card starts on the milestone: the current phase step plus the Progress selection, which follows the newest record. **v** cycles to the belief entity, then the agent invocation, then back. **s** still changes the World source.
+3. To talk over one moment, press **p**. The frame, card, phase stepper and clocks hold and the clock row reads `FROZEN AT 12:01:13 UTC · t=152.0 s`. The console keeps polling the Host; **p** again shows the latest evidence at once. Mission time may sit still while the agents reason in coordinator-driven mode; the frozen label is the console's, not the mission's.
+4. You cannot miss an event while presenting or frozen: a run failure (with its failure card), a Human Decision Request and a stale or offline Host appear as alert rows under the stepper, and the title row shows the live lifecycle status. Read them out; Enter dismisses the failure card, **l** leaves the layout for the failure log.
+5. **F4** returns to the tab you were on (a tab key or **w** also leaves). Cancel (**c**) and managed exit (**q**) work from the layout as usual.
+
+The AirSim Follower and annotation disclosures stay visible in the layout (`AirSim: world-model follower · … lag 0.5 s`, and on the annotated camera *Boxes are ideal instance segmentation, not agent perception*): say so when you show the boxes. A historical run (F3) can be presented the same way, read-only; its alert rows still follow the current run. Golden frames: `run-presentation-*.txt` (layout, frozen, failure breaking through) in [frames](design/operator-console/frames/).
 
 ## Optional AirSim demos
 
@@ -54,6 +66,8 @@ Every AirSim run starts Harbor. Which mechanism runs depends on perception (ADR 
 ### AirSim without perception: the world model drives AirSim
 
 Select **mission1-harbor** (or **mission1-airsim**), AirSim **on**, perception **off**. The world model runs on simulated information. Before the services start, the `airsim-fixture` step builds a 30 s lead-in engine scene from the world model's own ship trajectories; the Stack tab then shows `airsim-engine`, `physical-runtime` and the optional `airsim-visualizer`. For each new Mission time the visualizer steps the frozen scene, puts the drone at the world-model pose and captures the cameras. On **5 World**, the annotated front frame shows ideal instance-segmentation boxes labelled `ship N` with the disclosure *AirSim follows the world model. Boxes are ideal instance segmentation, not agent perception.* The `AirSim:` row reports the lag behind the newest world-model state and the measured ship phase error. A visualizer failure after startup is a warning; it never fails the Mission Run.
+
+For scripted capture without the console, `bash scripts/live_demo_with_wm/herdr_start_mission1_follower_demo.sh <session>` renders the same Stack Builder plan (`mission1-harbor` with `ONR_DEMO_AIRSIM=1`): it runs the `airsim-fixture` prep step, then opens `airsim-engine` and `airsim-visualizer` panes beside `physical-runtime` and `agent-slim`. `ONR_DEMO_AIRSIM=1` works with any Mission 1 preset whose AirSim toggle is offered, and it is rejected together with `ONR_DEMO_PERCEPTION=yolo|ideal`. `ONR_DEMO_DRY_RUN=1` prints the prep, engine, visualizer, physical-runtime and agent commands without running any of them.
 
 ### AirSim with perception: scene clock and perception annotations
 
@@ -67,7 +81,7 @@ python scripts/audit_live_demo.py \
   --mission-mode mission1 --perception yolo
 ```
 
-Require `live-acceptance.json` PASS; a green TUI lifecycle alone is not the AirSim/YOLO acceptance gate. See [the full-stack prerequisites and audit](mission1-airsim-yolo-live-demo.md).
+Require `live-acceptance.json` PASS; a green TUI lifecycle alone is not the AirSim/YOLO acceptance gate. The terminal receipt's **Audit** row on Overview reflects the `live-acceptance.json` that this audit script writes under the run root (PASS, or FAIL with its failures), and reads `not recorded` when no audit has been run; **x** exports the receipt with the current verdict. See [the full-stack prerequisites and audit](mission1-airsim-yolo-live-demo.md).
 
 ## End and recovery
 

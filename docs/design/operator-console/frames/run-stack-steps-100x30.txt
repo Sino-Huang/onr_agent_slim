@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●●●○ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ▶ Stack ─ ○ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ○ Done
+ ⠋ Running mission1-surveillance-views (stack preparation) · 1:33 / 10:00 · w: select
+┌ Services · mission1-harbor · AirSim on · perception off ─────────────────────────────────────────┐
+│ ✔ STK airsim-fixture     done     0:03                                                           │
+│ ● ENV airsim-engine      ready    in 1:11 :41461 pid 51207                                       │
+│ ● ENV physical-runtime   ready    in 0:08 :5066 pid 51388                                        │
+│ ● STK airsim-visualizer  ready    in 0:01 pid 51402 (optional)                                   │
+│ ○ STK closed-loop        pending                                                                 │
+│ ✔ STK mission1-public-input done     0:02                                                        │
+│ ◐ STK mission1-surveillance-views running  1:33 / 10:00                                          │
+│                                                                                                  │
+│ Stage:     post-ready (after the services)                                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Log · mission1-surveillance-views · 68 B · following ────────────────────────────────────────────┐
+│ rendering surveillance view 12/40                                                                │
+│ rendering surveillance view 13/40                                                                │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn scroll · ? help · c cancel · q managed exit · F3 hi
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

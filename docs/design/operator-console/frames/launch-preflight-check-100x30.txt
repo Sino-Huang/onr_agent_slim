@@ -1,0 +1,30 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ ▸Preflight · launch blocked · ✖1 ▲1 ✔10 ───────┐
+│ Preset     ‹ [Mission 1 · AirSim live] ›       ││ ✖ AirSim RPC port free (in use) — stop the oth…│
+│ AirSim     ‹ off✗ │ [on] ›                     ││ ▲ GPU memory (GPU1 free 1.5 GiB) — YOLO needs …│
+│ Perception ‹ off │ ideal │ [yolo] ›            ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.…│
+│ Updates    ‹ [coordinator_driven] ›            ││ ✔ Planner executables (minizinc · fast-downwar…│
+│ Sim limit  ‹ [290 s] ›                         ││ ✔ Physical runtime checkout (onr_physical_runt…│
+│ mission1-airsim · mission1                     ││ ✔ Mission inputs (mission1_airsim_live.json)   │
+│ ⓘ This┌ Preflight check 1/12 ────────────────────────────────────────────────────────────┐bor5_6…│
+│ AirSim│                                                                                  │lo · c…│
+└───────│ ✖ AirSim RPC port free                                                           │1/12 ▼ ┘
+┌ What t│ Status     fail · blocks launch                                                  │───────┐
+│ Missio│ Check      port:41451                                                            │       │
+│       │ Detail     in use                                                                │       │
+│ Truth │ Hint       stop the other Harbor engine                                          │ model.│
+│ AirSim│                                                                                  │tated  │
+│       │ Diagnose (read-only; copy and run it yourself, the console never does):          │       │
+│ Update│   ss -ltnp 'sport = :41451'                                                      │agent  │
+│       │                                                                                  │       │
+└───────│ ↑↓ previous/next check · r re-run preflight · Esc close                          │───────┘
+┌ Missio└──────────────────────────────────────────────────────────────────────────────────┘───────┐
+│ Patrol the window 60-130 s and verify every reported event.                                      │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ↑↓ check · Enter check detail · r re-run preflight · F3 history · Alt+Enter review
+ ✖ Launch disabled: AirSim RPC port free

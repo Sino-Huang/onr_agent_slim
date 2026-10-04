@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ Invocations · paused · 0 newer ─── ▲ ┐┌ Invocation Detail ───────────────────────────────────────┐
+│ HYP plan [complete] attempt_19       ││ ID:        invocation-1                                  │
+│ HYP plan [complete] attempt_20       ││ Role:      hyper-agent                                   │
+│ HYP plan [complete] attempt_21       ││ Phase:     plan                                          │
+│ HYP plan [complete] attempt_22       ││ Status:    ok / complete                                 │
+│ HYP plan [complete] attempt_23       ││ Timing:    2026-08-24T12:00:40Z → 2026-08-27T12:00:02Z · │
+│ HYP plan [complete] attempt_24       ││            2000 ms                                       │
+│ HYP plan [complete] attempt_25       ││                                                          │
+│ HYP plan [complete] attempt_26       ││ AI Recorded Debug Reasoning (non-authoritative) · availa…│
+│ HYP plan [complete] attempt_27       ││ Compare the candidate routes.                            │
+│ HYP plan [complete] attempt_28       ││                                                          │
+│ HYP plan [complete] attempt_29       ││ Response Content                                         │
+│ HYP plan [complete] attempt_30       ││ Planner attempt completed.                               │
+│ HYP plan [complete] attempt_31       ││                                                          │
+│ HYP plan [complete] attempt_32       ││ Tool 1: planner_executor                                 │
+│ HYP plan [complete] attempt_33       ││ Args:      {"attempt":2}                                 │
+│ HYP plan [complete] attempt_34       ││ Result:    {"status":"accepted"}                         │
+│ HYP plan [complete] attempt_35       ││ Error:     -                                             │
+│ HYP plan [complete] attempt_36       ││                                                          │
+│ HYP plan [complete] attempt_37       ││                                                          │
+│ HYP plan [complete] attempt_38       ││                                                          │
+│ HYP plan [complete] attempt_39       ││                                                          │
+│ HYP plan [complete] attempt_40       ││                                                          │
+└───────────────────────────── 40/60 ▼ ┘└──────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ Home/End select · f follow · PgUp/Dn detail · ? help · c cancel · q managed exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

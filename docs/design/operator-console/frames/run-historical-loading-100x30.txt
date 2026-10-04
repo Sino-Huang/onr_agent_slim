@@ -1,0 +1,30 @@
+ HISTORICAL  loading from disk 7 s RUN run-0d14a731… ● succeeded 00:05:12 │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ Phase: waiting for overview.phase from the Host
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    succeeded                           ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-9d2e8f41-0b6c-4c1a-a3e5-7f8…││AI narrative · coverage pending                 │
+│ Run:       run-0d14a731-6a9d-4b68-b612-4520619…││Waiting for the Run Narrative from the Host     │
+│ Stack:     mission1-harbor · AirSim off · perc…││Progress evidence has not arrived yet.          │
+│ Started:   2026-10-03T13:22:11.277606+00:00    ││                                                │
+│ Finished:  2026-10-03T13:27:23.108743+00:00    ││                                                │
+│ Historical run · read-only · Esc returns       ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ No activity received.                                        ││ No Human Decision Requests       │
+│                                                              ││ require action.                  │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ HISTORICAL read-only · Esc back to current run · 1-7/Tab tabs · F3 history
+ Loading from disk · 7 s · first open rebuilds the Host's view · 1 read timed out, retrying

@@ -1,0 +1,30 @@
+ PRESENTATION  Mission 1 · Harbor (simulated) · ● running │ host ● live
+ FROZEN AT 12:00:43 UTC · t=143.5 s · run 00:00:40 · display held; polling continues
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+┌ front · annotated · seq 406 · frozen ──────────────────┐┌ Agent invocation · v Milestone ────────┐
+│                                                        ││ 3 Agents selection · following newest  │
+│                ▄▄▄▄▄▄                                  ││ HYP planner_executor · complete        │
+│                ▄▄▄▄▄▄                                  ││ ID:        invocation-1                │
+│                                                        ││ Role:      hyper-agent                 │
+│                                                        ││ Phase:     planner-execution           │
+│▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                  ││ Status:    ok / complete               │
+│▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                  ││ Timing:    2026-08-27T12:00:00Z →      │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                  ││            2026-08-27T12:00:02Z · 2000 │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                  ││            ms                          │
+│                                                        ││                                        │
+│                                                        ││ AI Recorded Debug Reasoning (non-autho…│
+│                                                        ││ Compare the candidate routes.          │
+│               ▀▀▀▀▀▀▀                                  ││                                        │
+│                                                        ││ Response Content                       │
+└────────────────────────────────────────────────────────┘│ Planner attempt completed.             │
+┌ What the scene shows ──────────────────────────────────┐│                                        │
+│ AirSim:    world-model follower · capturing · lag 0.5  ││ Tool 1: planner_executor               │
+│            s · ship phase ±0.03 s                      ││ Args:      {"attempt":2}               │
+│ Overlay:   ideal segmentation · 3 objects              ││ Result:    {"status":"accepted"}       │
+│ Boxes:     AirSim follows the world model. Boxes are   ││ Error:     -                           │
+│            ideal instance segmentation, not agent      ││                                        │
+│            perception.                                 ││                                        │
+└────────────────────────────────────────────────────────┘└────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ F4 back to tabs · v next card · p resume · ? help · c cancel · q managed exit
+ Presentation layout · display only: polling, alerts and controls stay live

@@ -39,6 +39,8 @@ from onr.runtime_host.artifacts import (
     _same_file_state,
     _snap_end_backward,
     _snap_start_forward,
+    live_demo_audit,
+    receipt_export,
     service_log_artifacts,
 )
 from onr.runtime_host.observations import InvalidCursorError
@@ -46,6 +48,7 @@ from onr.runtime_host.progress import (
     ProgressTree,
     counts_by_importance,
     derive_phase,
+    latest_operational_sequence,
     progress_payload,
 )
 from onr.viewer.debug import DebugArtifactCatalog, DebugArtifactSnapshot
@@ -90,6 +93,7 @@ _FILTERED_ENVIRONMENT_KINDS = {
     "source-fact",
     "statechart",
 }
+_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 def _plain(value: object) -> object:
@@ -533,8 +537,21 @@ def _environment_record(
     }
 
 
+# The fake environment publishes ``environment.json``; the physical runtime's
+# environment update source writes ``live/latest.json`` (physical v2 shape).
+_ENVIRONMENT_FILES = (("environment.json",), ("live", "latest.json"))
+
+
 def _safe_environment(root: Path, mission_id: str) -> dict[str, object] | None:
-    path = root / quote(mission_id, safe="._-") / "environment.json"
+    directory = root / quote(mission_id, safe="._-")
+    for parts in _ENVIRONMENT_FILES:
+        value = _safe_environment_file(directory.joinpath(*parts), root)
+        if value is not None:
+            return value
+    return None
+
+
+def _safe_environment_file(path: Path, root: Path) -> dict[str, object] | None:
     descriptor: int | None = None
     try:
         descriptor = _open_confined(path, root)
@@ -698,6 +715,55 @@ def _public_artifacts(
             return result
 
 
+def run_wall_seconds(run: Mapping[str, object]) -> float | None:
+    """Start (or creation) to finish of a Mission Run record, in wall seconds."""
+
+    start = run.get("started_at") or run.get("created_at")
+    end = run.get("finished_at")
+    if not isinstance(start, str) or not isinstance(end, str):
+        return None
+    try:
+        seconds = (
+            datetime.fromisoformat(end) - datetime.fromisoformat(start)
+        ).total_seconds()
+    except (ValueError, TypeError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def _receipt(
+    run: Mapping[str, object],
+    environment: Mapping[str, object],
+    fsm: Mapping[str, object] | None,
+    run_root: Path,
+) -> dict[str, object]:
+    """The v1.5 terminal receipt (``overview.receipt``).
+
+    Lifecycle facts come from the Mission Run record, the final FSM state and
+    plan revision from the latest FSM status/execution record, Mission time
+    from the environment evidence, and the audit verdict only from the audit
+    artifact. Cleanup is the stack section's ``teardown`` receipt, not
+    repeated here. Nothing states mission success from the lifecycle alone.
+    """
+
+    payload = fsm.get("payload") if isinstance(fsm, Mapping) else None
+    payload = payload if isinstance(payload, Mapping) else {}
+    state = payload.get("active_state", payload.get("state"))
+    return {
+        "status": run.get("status"),
+        "classification": run.get("terminal_classification"),
+        "wall_seconds": run_wall_seconds(run),
+        "final": {
+            "fsm_state": state if isinstance(state, str) else None,
+            "plan_revision": _integer(payload.get("plan_revision")),
+            "mission_time_seconds": environment.get("mission_time_seconds"),
+            "source": _text(fsm.get("event_kind")) if fsm is not None else None,
+        },
+        "audit": live_demo_audit(run_root),
+        "export": receipt_export(run_root),
+    }
+
+
 class OperatorRunProjection:
     """Stateful incremental projection shared by all operator-view sections."""
 
@@ -832,7 +898,13 @@ class OperatorRunProjection:
             "has_more": has_more,
         }
         if section == "progress":
-            response["progress"] = progress_payload(nodes=records, narrative=narrative)
+            response["progress"] = progress_payload(
+                nodes=records,
+                narrative=narrative,
+                latest_operational_sequence=latest_operational_sequence(
+                    operational_records
+                ),
+            )
         elif section in {"beliefs", "context", "world", "stack"}:
             response[section] = dict(extra or {})
         elif section == "agents":
@@ -869,7 +941,7 @@ class OperatorRunProjection:
                     else None
                 )
             artifact_values = list(state.section("artifacts").current.values())
-            response["overview"] = {
+            overview: dict[str, object] = {
                 "authority": "Runtime Host Mission Run Record",
                 "phase": derive_phase(
                     run=run, records=operational_records, stack=stack
@@ -906,6 +978,18 @@ class OperatorRunProjection:
                     "requires_action": run.get("status") == "awaiting_human_decision",
                 },
             }
+            if run_root is not None:
+                # v1.5: the Run Root path, so the console can copy it (loopback
+                # only, like every operator-view section).
+                overview["run_root"] = str(run_root)
+                if run.get("status") in _TERMINAL_STATUSES:
+                    overview["receipt"] = _receipt(
+                        run,
+                        current_environment,
+                        state.environment_evidence.fsm,
+                        run_root,
+                    )
+            response["overview"] = overview
         return response
 
     def planner_artifact_content(

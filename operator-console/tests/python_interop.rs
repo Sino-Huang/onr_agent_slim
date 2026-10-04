@@ -1,4 +1,4 @@
-//! Rust interoperability with production API v1.3 routes and a real Host worker lifecycle.
+//! Rust interoperability with production API v1.5 routes and a real Host worker lifecycle.
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -7,8 +7,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use operator_console::host::{
-    ActivationOutcome, ActivationRequest, Fetched, HostClient, OperatorSection, OperatorViewPage,
-    UreqHostClient,
+    ActivationOutcome, ActivationRequest, Fetched, HostClient, HostError, OperatorSection,
+    OperatorViewPage, ReceiptExportOutcome, UreqHostClient,
 };
 
 struct PythonHost {
@@ -51,7 +51,7 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(health) = client.health() {
-            assert_eq!((health.api_version.major, health.api_version.minor), (1, 3));
+            assert_eq!((health.api_version.major, health.api_version.minor), (1, 5));
             break;
         }
         assert!(
@@ -121,8 +121,14 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
         assert_eq!(page.meta().mission_run_id, accepted.mission_run_id);
         assert_eq!(page.meta().section, section);
         match (section, page) {
-            (OperatorSection::Overview, OperatorViewPage::Overview(_))
-            | (OperatorSection::Agents, OperatorViewPage::Agents(_))
+            (OperatorSection::Overview, OperatorViewPage::Overview(page)) => {
+                // A terminal run carries the v1.5 receipt; with no audit
+                // artifact the verdict is `not_recorded`, never inferred.
+                let receipt = page.overview.receipt.expect("terminal receipt");
+                assert_eq!(receipt.status, "succeeded");
+                assert_eq!(receipt.audit.status, "not_recorded");
+            }
+            (OperatorSection::Agents, OperatorViewPage::Agents(_))
             | (OperatorSection::Progress, OperatorViewPage::Progress(_))
             | (OperatorSection::Beliefs, OperatorViewPage::Beliefs(_))
             | (OperatorSection::Context, OperatorViewPage::Context(_))
@@ -133,4 +139,24 @@ fn real_python_host_and_rust_client_interoperate_for_all_operator_sections() {
             _ => panic!("operator section decoded into the wrong Rust DTO"),
         }
     }
+
+    let ReceiptExportOutcome::Exported(exported) = client
+        .export_receipt(&accepted.mission_run_id, "credential-interop")
+        .unwrap()
+    else {
+        panic!("the owner's receipt export was rejected");
+    };
+    let path = fixture
+        .root
+        .join("runs")
+        .join(&accepted.mission_run_id)
+        .join("mission-run-receipt.json");
+    assert_eq!(PathBuf::from(&exported.path), path);
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document["mission_run_id"], accepted.mission_run_id.as_str());
+    assert!(matches!(
+        client.export_receipt(&accepted.mission_run_id, "someone-else"),
+        Err(HostError::AuthorizationFailed { .. })
+    ));
 }

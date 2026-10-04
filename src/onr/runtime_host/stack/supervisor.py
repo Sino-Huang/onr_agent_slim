@@ -5,9 +5,20 @@ the Host's process-group cancellation reaps them), each logging to
 ``services/<name>.log``. A service must pass its readiness probes before the
 next starts. ``stack-status.json`` is rewritten atomically on every state
 transition with the ``services[]`` entries of the operator-view ``stack``
-section. Teardown runs in reverse order: SIGTERM, then SIGKILL after the
-service's grace period (``live_engine`` uses its grace to stop Harbor and
-restore ``environment.json``).
+section; while a service is ``starting`` its entry names the readiness probe
+still pending (``waiting_for``), and ``step`` names a running prep step.
+``steps[]`` records every prep step that started (state, ``started_at``,
+``finished_at``, log Artifact), so finished steps stay visible after a Host
+restart.
+Teardown runs in reverse start order and is written as it happens: each
+running service turns ``stopping`` (``stop_requested_at``,
+``stop_grace_seconds``) when it gets SIGTERM, then ``stopped`` with
+``stop_mode`` ``graceful`` (it exited within its grace period) or ``forced``
+(SIGKILL after the grace period) and ``stopped_at``. ``teardown`` records
+when the reverse walk started and finished and its ``stop_order``.
+``live_engine`` uses its grace to stop Harbor and restore ``environment.json``
+and ``object_ids.txt``; :func:`harbor_config_restoration` reads whether the
+engine or its guardian reported that restoration.
 """
 
 from __future__ import annotations
@@ -19,13 +30,14 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Self
 
 from onr.runtime_host.importance import service_importance
+from onr.runtime_host.run_root import RunRoot
 from onr.runtime_host.stack.builder import (
     PrepStep,
     ReadinessProbe,
@@ -35,7 +47,15 @@ from onr.runtime_host.stack.builder import (
 
 CLOSED_LOOP_SERVICE = "closed-loop"
 WORKER_LOG_ARTIFACT_ID = "worker-log"
+ENGINE_SERVICE = "airsim-engine"
 _TAIL_BYTES = 4096
+_RESTORATION_TAIL_BYTES = 16384
+# What ``live_engine`` and its guardian print once the Harbor configuration is
+# back. The engine prints its line on every exit path, so a restoration
+# failure (``EngineConfigSwap`` raises after comparing the bytes) voids it.
+_ENGINE_RESTORED = "Engine stopped; configuration restored"
+_ENGINE_RESTORE_FAILED = "Engine configuration restoration failed"
+_GUARDIAN_RESTORED = "Guardian: engine stopped; configuration restored"
 
 
 def service_log_artifact_id(name: str) -> str:
@@ -51,12 +71,17 @@ class StackFailure(RuntimeError):
         self.message = message
 
     def terminal_detail(self) -> dict[str, str]:
-        """The ``terminal_detail`` object for ``/mission-runs/current``."""
+        """The ``terminal_detail`` object for ``/mission-runs/current``.
+
+        ``log_artifact_id`` (v1.5) names the failed service's or prep step's
+        allowlisted log, ``services/<name>.log``.
+        """
 
         return {
             "kind": "stack_failed",
             "service": self.service,
             "message": self.message,
+            "log_artifact_id": service_log_artifact_id(self.service),
         }
 
 
@@ -72,6 +97,71 @@ def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _parse_utc(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def ready_durations(status: object) -> dict[str, float]:
+    """Measured start-to-ready seconds per service in a ``stack-status.json``.
+
+    Only services with both ``started_at`` and a later-or-equal ``ready_at``
+    count; the closed loop has no readiness probe, so it never does.
+    """
+
+    services = status.get("services") if isinstance(status, dict) else None
+    durations: dict[str, float] = {}
+    for service in services if isinstance(services, list) else ():
+        if not isinstance(service, dict):
+            continue
+        name = service.get("name")
+        if not isinstance(name, str) or name == CLOSED_LOOP_SERVICE:
+            continue
+        started = _parse_utc(service.get("started_at"))
+        ready = _parse_utc(service.get("ready_at"))
+        if started is None or ready is None or ready < started:
+            continue
+        durations[name] = (ready - started).total_seconds()
+    return durations
+
+
+def harbor_config_restoration(
+    run_root: RunRoot, services: Sequence[object]
+) -> dict[str, object]:
+    """Whether the Harbor engine configuration was reported restored.
+
+    ``confirmed`` only when ``live_engine`` logged its restoration (it compares
+    the restored bytes with the originals and raises otherwise) or its
+    detached guardian logged one after the engine was killed;
+    ``not_applicable`` when the stack has no ``airsim-engine`` or it never
+    started (the configuration was never staged); ``unknown`` otherwise -
+    including while the guardian has not finished yet.
+    """
+
+    engine = next(
+        (
+            service
+            for service in services
+            if isinstance(service, Mapping) and service.get("name") == ENGINE_SERVICE
+        ),
+        None,
+    )
+    if engine is None or engine.get("started_at") is None:
+        return {"state": "not_applicable", "reported_by": None}
+    engine_log = _tail(run_root.service_log(ENGINE_SERVICE), _RESTORATION_TAIL_BYTES)
+    if _ENGINE_RESTORED in engine_log and _ENGINE_RESTORE_FAILED not in engine_log:
+        return {"state": "confirmed", "reported_by": "engine"}
+    guardian_log = _tail(run_root.engine / "guardian.log", _RESTORATION_TAIL_BYTES)
+    if _GUARDIAN_RESTORED in guardian_log:
+        return {"state": "confirmed", "reported_by": "guardian"}
+    return {"state": "unknown", "reported_by": None}
+
+
 @dataclass(slots=True)
 class _ServiceState:
     name: str
@@ -79,14 +169,20 @@ class _ServiceState:
     port: int | None
     log_artifact_id: str
     log_path: Path | None
+    ready_timeout_seconds: float | None
     state: str = "pending"
     pid: int | None = None
     started_at: str | None = None
     ready_at: str | None = None
     exit_code: int | None = None
+    waiting_for: str | None = None
+    stop_requested_at: str | None = None
+    stop_grace_seconds: float | None = None
+    stopped_at: str | None = None
+    stop_mode: str | None = None
 
     def entry(self) -> dict[str, object]:
-        return {
+        entry: dict[str, object] = {
             "name": self.name,
             "required": self.required,
             "state": self.state,
@@ -101,6 +197,19 @@ class _ServiceState:
                 self.state, required=self.required, exit_code=self.exit_code
             ),
         }
+        # v1.4 optional fields: present only when they carry a value.
+        if self.state == "starting" and self.waiting_for is not None:
+            entry["waiting_for"] = self.waiting_for
+        if self.ready_timeout_seconds is not None:
+            entry["ready_timeout_seconds"] = self.ready_timeout_seconds
+        # v1.5 teardown fields: present once teardown signalled the service.
+        if self.stop_requested_at is not None:
+            entry["stop_requested_at"] = self.stop_requested_at
+            entry["stop_grace_seconds"] = self.stop_grace_seconds
+        if self.stop_mode is not None:
+            entry["stop_mode"] = self.stop_mode
+            entry["stopped_at"] = self.stopped_at
+        return entry
 
 
 class StackSupervisor:
@@ -139,6 +248,7 @@ class StackSupervisor:
                 port=spec.port,
                 log_artifact_id=service_log_artifact_id(spec.name),
                 log_path=layout.service_log(spec.name),
+                ready_timeout_seconds=spec.timeout_seconds,
             )
             for spec in plan.services
         }
@@ -148,9 +258,13 @@ class StackSupervisor:
             port=None,
             log_artifact_id=WORKER_LOG_ARTIFACT_ID,
             log_path=layout.worker_log,
+            ready_timeout_seconds=None,
         )
+        self._step: dict[str, object] | None = None
+        self._steps: list[dict[str, object]] = []
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._logs: dict[str, IO[bytes]] = {}
+        self._teardown: dict[str, object] | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -171,12 +285,12 @@ class StackSupervisor:
         self._write_status()
         try:
             for step in self.plan.prepare:
-                self._run_step(step)
+                self._run_step(step, stage="prepare")
             for spec in self.plan.services:
                 self._start_service(spec)
                 self._await_ready(spec)
             for step in self.plan.post_ready:
-                self._run_step(step)
+                self._run_step(step, stage="post_ready")
         except BaseException:
             self.stop()
             raise
@@ -189,7 +303,12 @@ class StackSupervisor:
         for name, process in self._processes.items():
             state = self._states[name]
             code = process.poll()
-            if code is None or state.state in {"exited", "failed", "stopped"}:
+            if code is None or state.state in {
+                "exited",
+                "failed",
+                "stopping",
+                "stopped",
+            }:
                 continue
             state.exit_code = code
             state.state = "failed" if code != 0 else "exited"
@@ -206,45 +325,86 @@ class StackSupervisor:
         state.started_at = state.ready_at = self._now()
         self._write_status()
 
-    def end_closed_loop(self, *, failed: bool) -> None:
+    def end_closed_loop(self, *, failed: bool, cancelled: bool = False) -> None:
+        """Record the closed loop's end; an owner cancellation is ``stopped``."""
+
         state = self._states[CLOSED_LOOP_SERVICE]
-        state.state = "failed" if failed else "exited"
+        state.state = "stopped" if cancelled else "failed" if failed else "exited"
         self._write_status()
 
     def stop(self) -> None:
-        """Tear down running services in reverse start order (idempotent)."""
+        """Tear down running services in reverse start order (idempotent).
 
-        for spec in reversed(self.plan.services):
+        The status is written as each service turns ``stopping`` and again
+        once it is ``stopped`` with its ``stop_mode``.
+        """
+
+        services = list(reversed(self.plan.services))
+        if self._teardown is None:
+            self._teardown = {
+                "started_at": self._now(),
+                "finished_at": None,
+                "stop_order": [
+                    spec.name
+                    for spec in services
+                    if spec.name in self._processes
+                    and self._processes[spec.name].poll() is None
+                ],
+            }
+            self._write_status()
+        for spec in services:
             process = self._processes.get(spec.name)
             if process is None:
                 continue
             state = self._states[spec.name]
             if process.poll() is None:
-                _terminate(process, spec.stop_grace_seconds)
-                if state.state not in {"failed", "exited"}:
+                # A service that already failed (readiness timeout) keeps
+                # that state; only a running one shows its teardown.
+                visible = state.state not in {"failed", "exited"}
+                if visible:
+                    state.state = "stopping"
+                    state.waiting_for = None
+                    state.stop_requested_at = self._now()
+                    state.stop_grace_seconds = spec.stop_grace_seconds
+                    self._write_status()
+                forced = _terminate(process, spec.stop_grace_seconds)
+                if visible:
                     state.state = "stopped"
+                    state.stop_mode = "forced" if forced else "graceful"
+                    state.stopped_at = self._now()
             elif state.state not in {"failed", "exited", "stopped"}:
                 state.state = "failed" if process.returncode != 0 else "exited"
             state.exit_code = process.returncode
             log = self._logs.pop(spec.name, None)
             if log is not None:
                 log.close()
+            self._write_status()
         loop = self._states[CLOSED_LOOP_SERVICE]
         if loop.state in {"starting", "ready"}:
             loop.state = "stopped"
+        if self._teardown["finished_at"] is None:
+            self._teardown["finished_at"] = self._now()
         self._write_status()
 
     def status_payload(self) -> dict[str, object]:
         """The ``stack-status.json`` document."""
 
         request = self.plan.request
-        return {
+        payload: dict[str, object] = {
             "schema_version": 1,
             "preset_id": request.preset_id,
             "toggles": request.toggles.payload(),
             "updated_at": self._now(),
             "services": [state.entry() for state in self._states.values()],
         }
+        if self._step is not None:
+            payload["step"] = self._step
+        if self._steps:
+            payload["steps"] = [dict(step) for step in self._steps]
+        if self._teardown is not None:
+            # ``stop_order`` is fixed when teardown starts; only times change.
+            payload["teardown"] = dict(self._teardown)
+        return payload
 
     # -- internals -----------------------------------------------------------
 
@@ -269,6 +429,7 @@ class StackSupervisor:
         state.pid = process.pid
         state.state = "starting"
         state.started_at = self._now()
+        state.waiting_for = spec.readiness[0].waiting if spec.readiness else None
         self._write_status()
 
     def _await_ready(self, spec: ServiceSpec) -> None:
@@ -282,8 +443,12 @@ class StackSupervisor:
             if not pending:
                 state.state = "ready"
                 state.ready_at = self._now()
+                state.waiting_for = None
                 self._write_status()
                 return
+            if pending[0].waiting != state.waiting_for:
+                state.waiting_for = pending[0].waiting
+                self._write_status()
             if self._clock() >= deadline:
                 state.state = "failed"
                 self._write_status()
@@ -298,8 +463,41 @@ class StackSupervisor:
             return Path(probe.target).is_file()
         return self._probe_http(probe.target)
 
-    def _run_step(self, step: PrepStep) -> None:
+    def _run_step(self, step: PrepStep, *, stage: str) -> None:
         log_path = self.plan.run_root.service_log(step.name)
+        started_at = self._now()
+        self._step = {
+            "name": step.name,
+            "stage": stage,
+            "started_at": started_at,
+            "timeout_seconds": step.timeout_seconds,
+        }
+        record: dict[str, object] = {
+            "name": step.name,
+            "stage": stage,
+            "state": "running",
+            "started_at": started_at,
+            "finished_at": None,
+            "log_artifact_id": service_log_artifact_id(step.name),
+            "timeout_seconds": step.timeout_seconds,
+        }
+        self._steps.append(record)
+        self._write_status()
+        try:
+            self._execute_step(step, log_path)
+            record["state"] = "done"
+        except StackFailure:
+            record["state"] = "failed"
+            raise
+        except BaseException:
+            record["state"] = "stopped"
+            raise
+        finally:
+            record["finished_at"] = self._now()
+            self._step = None
+            self._write_status()
+
+    def _execute_step(self, step: PrepStep, log_path: Path) -> None:
         with log_path.open("ab") as log:
             try:
                 completed = subprocess.run(
@@ -332,38 +530,49 @@ class StackSupervisor:
         os.replace(temporary, path)
 
 
-def _terminate(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
+def _terminate(process: subprocess.Popen[bytes], grace_seconds: float) -> bool:
+    """SIGTERM, then SIGKILL after ``grace_seconds``; ``True`` when killed."""
+
     try:
         process.send_signal(signal.SIGTERM)
     except ProcessLookupError:
-        return
+        process.wait()
+        return False
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
+        return True
+    return False
+
+
+def _tail(path: Path, size: int) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - size))
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _last_line(path: Path | None) -> str | None:
     if path is None:
         return None
-    try:
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(0, size - _TAIL_BYTES))
-            tail = handle.read().decode("utf-8", errors="replace")
-    except OSError:
-        return None
+    tail = _tail(path, _TAIL_BYTES)
     lines = [line.strip() for line in tail.splitlines() if line.strip()]
     return lines[-1][:500] if lines else None
 
 
 __all__ = [
     "CLOSED_LOOP_SERVICE",
+    "ENGINE_SERVICE",
     "WORKER_LOG_ARTIFACT_ID",
     "StackFailure",
     "StackSupervisor",
+    "harbor_config_restoration",
     "http_ready",
+    "ready_durations",
     "service_log_artifact_id",
 ]

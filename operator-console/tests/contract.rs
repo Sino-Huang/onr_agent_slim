@@ -1,4 +1,4 @@
-//! The production ureq client against the in-process v1.3 fixture Host.
+//! The production ureq client against the in-process v1.5 fixture Host.
 
 mod support;
 
@@ -49,10 +49,10 @@ fn activate(client: &UreqHostClient) -> String {
 }
 
 #[test]
-fn health_reports_api_v1_3() {
+fn health_reports_api_v1_5() {
     let host = FixtureHost::start();
     let health = client(&host).health().unwrap();
-    assert_eq!((health.api_version.major, health.api_version.minor), (1, 3));
+    assert_eq!((health.api_version.major, health.api_version.minor), (1, 5));
 }
 
 #[test]
@@ -65,11 +65,28 @@ fn unreachable_host_is_a_transport_error_that_proves_nothing() {
 }
 
 #[test]
+fn a_host_that_does_not_answer_in_time_is_a_timeout_that_proves_nothing() {
+    // Accepted by the kernel backlog, never answered.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", silent.local_addr().unwrap());
+    let error = UreqHostClient::new(&url, Duration::from_millis(200))
+        .health()
+        .unwrap_err();
+    assert!(matches!(error, HostError::Timeout(_)), "{error:?}");
+    assert!(!error.proves_host_reachable());
+    assert!(
+        error.to_string().starts_with("request timed out"),
+        "{error}"
+    );
+}
+
+#[test]
 fn presets_and_preflight_echo_the_queried_toggles() {
     let host = FixtureHost::start();
     let client = client(&host);
     let presets = client.stack_presets().unwrap();
-    assert_eq!(presets.presets.len(), 2);
+    assert_eq!(presets.presets.len(), 8);
+    assert!(presets.toggle_choices.is_some());
     let query = PreflightQuery {
         preset_id: "mission1-airsim".to_string(),
         toggles: StackToggles {
@@ -151,6 +168,22 @@ fn current_run_reports_stack_and_terminal_detail() {
         run.terminal_detail.unwrap().reason.as_deref(),
         Some("'buy me a coffee' is a personal errand")
     );
+}
+
+#[test]
+fn run_history_pages_follow_the_before_cursor() {
+    let host = FixtureHost::start();
+    let client = client(&host);
+    let page = client.mission_runs(None, 50).unwrap();
+    assert_eq!(page.mission_runs.len(), 4);
+    let before = page.next_before.unwrap();
+    let last = client.mission_runs(Some(&before), 50).unwrap();
+    assert!(last.mission_runs.is_empty());
+    assert_eq!(last.next_before, None);
+    assert!(matches!(
+        client.mission_runs(Some("run-unknown"), 50),
+        Err(HostError::InvalidCursor { .. })
+    ));
 }
 
 #[test]

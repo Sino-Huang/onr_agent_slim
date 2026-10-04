@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ◑■■■ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing ─ ○ Done
+ ⠋ Stopping airsim-engine (3/3) · 0:06 / grace 0:30 · w: select
+┌ Services · mission1-harbor · AirSim on · perception off ─┐┌ Log · airsim-engine · 52 B · following ──────────────────────────────────────────────────────────┐
+│ ✔ STK airsim-fixture     done     0:03                   ││ Engine ready and frozen: ready.json                                                              │
+│ ◑ ENV airsim-engine      stopping 0:06 / grace 0:30 :41… ││ Stopping Harbor                                                                                  │
+│ ■ ENV physical-runtime   stopped  graceful :5066 pid 51… ││                                                                                                  │
+│ ■ STK airsim-visualizer  stopped  graceful pid 51402 (o… ││                                                                                                  │
+│ ■ STK closed-loop        stopped                         ││                                                                                                  │
+│ ✔ STK mission1-public-input done     0:02                ││                                                                                                  │
+│ ✔ STK mission1-surveillance-views done     1:33          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│ Started:   2026-08-27T14:00:01Z                          ││                                                                                                  │
+│ Ready:     2026-08-27T14:01:12Z                          ││                                                                                                  │
+│ Last run:  ready in 1:14 · history, same preset          ││                                                                                                  │
+│ Stop:      SIGTERM sent · grace 0:30 · at 2026-08-24T12:0││                                                                                                  │
+│ Exit:      -                                             ││                                                                                                  │
+│ Last line: · Engine ready and frozen: /srv/onr/var/runtim││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn scroll · ? help · w teardown · Ctrl+Q: detach
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

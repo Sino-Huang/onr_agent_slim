@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● failed 00:00:06 │ last maneuver-7 active │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✖ Executing (external environment has no planning
+┌ Mission Run · receipt ─────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Lifecycle: failed · worker_failed              ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││AI narrative · 0 s old · through record #412    │
+│ Run:       run-fixture-001                     ││Legs 1-2 complete; ship 2's report was altered  │
+│ Stack:     mission1-harbor · AirSim off · perc…││and the agent replanned.                        │
+│ Started:   2026-08-24T12:00:03Z                ││▲ AI Replan after report alteration (31 records)│
+│ Finished:  2026-08-24T12:00:09Z · 0:06 wall    ││                                                │
+│ ✖ Worker failed at closed_loop: RuntimeError:  ││                                                │
+│ external environment has no planning data      ││                                                │
+│ Final:     no FSM state recorded               ││                                                │
+│ Audit:     not recorded (no audit artifact)    ││                                                │
+│ Export:    x writes mission-run-receipt.json   ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ MAN #3 maneuver-handoff · maneuver-control · completed       ││ No Human Decision Requests       │
+│                                                              ││ require action.                  │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · l log tail · y copy run id/root · x receipt · e new intent · q exit · F3 hi
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

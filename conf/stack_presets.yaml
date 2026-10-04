@@ -94,15 +94,50 @@ modes:
 # - perception ideal|yolo: the physical runtime's scene clock owns AirSim
 #   time; the perception producer feeds the world model and the Run Worker
 #   annotates camera frames with that producer's output.
+#
+# `description` texts are what the Operator Console's "What this runs" panel
+# composes (API v1.5): a preset's mission goal and whether real LLM calls
+# happen, then one toggle-choice description per toggle. Keep them true to
+# what the Stack Builder starts. An `airsim` choice with `perception` applies
+# only with that perception mode (AirSim on shows different things with and
+# without a perception module).
+toggle_choices:
+  airsim:
+    - value: false
+      description: "Nothing: Harbor is not started; World shows the world-model map only."
+    - value: true
+      perception: "off"
+      description: "AirSim Follower visualizes the simulated world (no agent perception): ships and drone follow the world model, with ideal segmentation boxes."
+    - value: true
+      perception: ideal
+      description: "Scene clock: Harbor plays the recorded scene; World shows the front camera annotated with the ships ideal perception reported."
+    - value: true
+      perception: yolo
+      description: "Scene clock: Harbor plays the recorded scene; World shows the front camera annotated with the YOLO detections for that frame."
+  perception:
+    - value: "off"
+      description: "Simulated truth: the world model runs on the scenario's simulated information; no perception module feeds it."
+    - value: ideal
+      description: "Perception-fed truth: ideal perception (AirSim segmentation plus exact poses of visible ships, not learned) feeds the world model."
+    - value: yolo
+      description: "Perception-fed truth: YOLO detections on the AirSim front camera feed the world model."
+  update_ownership:
+    - value: coordinator_driven
+      description: "Mission time pauses while agents reason: the environment advances only between agent decisions, so wall time runs ahead of Mission time."
+    - value: environment_driven
+      description: "Mission time keeps advancing while agents reason: the environment ticks on its own cadence, so a decision can act on older evidence."
+
 presets:
   - preset_id: mission1-harbor
     title: "Mission 1 · Harbor (simulated)"
+    description: "Confirm every event in the vessel event report and estimate each vessel's reporting reliability in the simulated Harbor world. Real LLM calls (vLLM agents)."
     mission_mode: mission1
     supports: {airsim: [false, true], perception: ["off"]}
     unsupported_reason: "Perception needs the recorded Harbor engine scene: choose Mission 1 · AirSim live."
     defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
   - preset_id: mission1-airsim
     title: "Mission 1 · AirSim live"
+    description: "Confirm every reported event and estimate vessel reporting reliability on the recorded offshore-dock scene; it ends at 299.5 s. Real LLM calls (vLLM agents)."
     mission_mode: mission1
     supports: {airsim: [true], perception: ["off", ideal, yolo]}
     unsupported_reason: "This preset plays the Harbor engine scene: AirSim cannot be turned off."
@@ -119,6 +154,7 @@ presets:
       engine_scenario: "{scenarios}/offshore_dock_1/non_collision/0"
   - preset_id: mission2
     title: "Mission 2 · Collision-risk monitoring"
+    description: "Monitor ship collision risks until the scenario recording ends, choosing drone views or vessel pursuits for fresher observations. Real LLM calls (vLLM agents)."
     mission_mode: mission2
     supports: {airsim: [false], perception: ["off"]}
     unsupported_reason: null
@@ -127,6 +163,7 @@ presets:
       scenario_config: "{physical}/config/mission2_live_demo.yaml"
   - preset_id: mission3
     title: "Mission 3 · Ship inspection (smoke scenario)"
+    description: "Inspect the selected ships for abnormal attached objects and report each as normal, abnormal or incomplete, on a small smoke scenario. Real LLM calls (vLLM agents)."
     mission_mode: mission3
     supports: {airsim: [false], perception: ["off"]}
     unsupported_reason: null
@@ -136,6 +173,7 @@ presets:
       mission3_fixture: "{physical}/config/mission3_smoke/private_fixture.json"
   - preset_id: mission4
     title: "Mission 4 · Worker-requested search"
+    description: "Search for persons in distress and animals on ground-team tasks sent by a scripted Mission 4 worker, resolving each task before its deadline. Real LLM calls (vLLM agents)."
     mission_mode: mission4
     supports: {airsim: [false], perception: ["off"]}
     unsupported_reason: null
@@ -144,18 +182,21 @@ presets:
       scenario_config: "{physical}/config/mission4_offshore_demo.yaml"
   - preset_id: joint
     title: "Joint · Missions 1 + 2"
+    description: "Report verification and collision-risk monitoring sharing one drone. No Mission 1 report instance is committed for this scenario: supply one first. Real LLM calls (vLLM agents)."
     mission_mode: joint
     supports: {airsim: [false], perception: ["off"]}
     unsupported_reason: null
     defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
   - preset_id: joint24
     title: "Joint · Missions 2 + 4"
+    description: "Collision-risk monitoring and scripted Mission 4 worker search requests sharing one drone; urgent requests and fresh alerts preempt routine work. Real LLM calls (vLLM agents)."
     mission_mode: joint24
     supports: {airsim: [false], perception: ["off"]}
     unsupported_reason: null
     defaults: {airsim: false, perception: "off", update_ownership: coordinator_driven}
   - preset_id: joint34
     title: "Joint · Missions 3 + 4"
+    description: "Ship inspection and scripted Mission 4 worker search requests sharing one drone within the Mission 3 time budget. Real LLM calls (vLLM agents)."
     mission_mode: joint34
     supports: {airsim: [false], perception: ["off"]}
     unsupported_reason: null

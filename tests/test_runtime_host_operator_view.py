@@ -263,7 +263,7 @@ def test_v1_1_overview_contract_unknown_runs_and_strict_query_validation(
 
     assert client.get("/api/v1/health").json() == {
         "status": "ok",
-        "api_version": {"major": 1, "minor": 3},
+        "api_version": {"major": 1, "minor": 5},
     }
     response = _view(client, "overview")
     assert response.status_code == 200

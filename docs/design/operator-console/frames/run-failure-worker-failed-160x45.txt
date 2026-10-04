@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● failed 00:00:06 │ t=12.5 s │ FSM navigate │ last maneuver-7 active │ stack ■✖ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✖ Executing (external environment has no planning data) ─ ✖ Done
+┌ Mission Run ────────────────────────────────────────────────────────────────────┐┌ world · seq - · final ────────────────────────────────────────────────────┐
+│ Status:    failed · worker_failed                                               ││ Images disabled (--image-protocol off)                                    │
+│ Mission:   mission-fixture-001                                                  ││                                                                           │
+│ Run:       run-fixture-001                                                      ││                                                                           │
+│ Stack:     mission1-harbor · AirSim off · perception off                        ││                                                                           │
+│ Started:   2026-08-24T12:00:03Z                                                 ││                                                                           │
+│ Finished:  2026-08-24T12:00:09Z                                                 ││                                                                           │
+│ ✖ Worker failed at closed_loop: RuntimeError: external environment has no       ││                                                                           │
+│ planning data                                                                   ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘│                                                                           │
+┌ Progress ───────────────────────────────────────────────────────────────────────┐│                                                                           │
+│◆ Run Narrative · AI · non-author╔ ✖ RUN FAILED · worker_failed ════════════════════════════════════════════════════════════╗                                 │
+│AI narrative · 0 s old · through ║ Run Worker failed                                                                        ║                                 │
+│Legs 1-2 complete; ship 2's repor║                                                                                          ║                                 │
+│▲ AI Replan after report alterati║ Stage:     Executing (closed_loop)                                                       ║                                 │
+│                                 ║ Reason:    RuntimeError: external environment has no planning data                       ║                                 │
+│                                 ║ Service:   closed-loop (from the stack status)                                           ║                                 │
+│                                 ║ Last step: Statechart (last completed phase step)                                        ║                                 │
+│                                 ║ Cleanup:   ✔ every stack service stopped                                                 ║                                 │
+│                                 ║ Run:       run-fixture-001                                                               ║                                 │
+│                                 ║ Run root:  /srv/onr/var/runtime-host/runs/run-fixture-001                                ║                                 │
+│                                 ║ Log line:  RuntimeError: external environment has no planning data                       ║                                 │
+│                                 ║            last line of worker-log: context only, not the cause                          ║                                 │
+│                                 ║                                                                                          ║                                 │
+│                                 ║ l log tail (worker-log) · 2 Progress · y copy run id + run root                          ║─────────────────────────────────┘
+│                                 ║ Enter dismiss · e new Mission Intent · q exit                                            ║─────────────────────────────────┐
+│                                 ╚══════════════════════════════════════════════════════════════════════════════════════════╝                                 │
+│                                                                                 ││ship 2 0.6230 · Δ prior +0.4900 · prev +0.1200                             │
+│                                                                                 ││ship 14 0.0600 · Δ prior -0.0700 · prev +0.0000                            │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
+┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v397 · plan r4                                                    │
+│ No Human Decision Requests require action.                                      ││▲ missing [plan] · stale [plan] · unhealthy [plan]                         │
+│ Status-only view: no decision controls.                                         ││FSM assignment-1-in-progress (last observed)                               │
+│                                                                                 ││search_area · active (last observed)                                       │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · Enter dismiss · l log tail · y copy run id/root · e new intent · q exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

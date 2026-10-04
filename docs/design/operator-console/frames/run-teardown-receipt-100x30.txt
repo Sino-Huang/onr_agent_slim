@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● cancelled 00:00:38 │ t=12.5 s │ FSM navigate │ stack ■■■■ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✖ Executing (plan revision 3) ─ ✖ Done (cancelled_
+┌ Mission Run · receipt ─────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    cancelled · cancelled_by_owner      ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││AI narrative · 0 s old · through record #412    │
+│ Run:       run-fixture-001                     ││Legs 1-2 complete; ship 2's report was altered  │
+│ Stack:     mission1-harbor · AirSim off · perc…││and the agent replanned.                        │
+│ Started:   2026-08-24T12:00:03Z                ││▲ AI Replan after report alteration (31 records)│
+│ Finished:  2026-08-24T12:00:41Z                ││                                                │
+│ Teardown:  worker stopped · took 0:10          ││                                                │
+│ Services:  3 stopped · 2 graceful, 1 forced    ││                                                │
+│ Harbor:    config restored (guardian reported) ││                                                │
+│                                                ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ MAN #3 maneuver-handoff · maneuver-control · completed       ││ No Human Decision Requests       │
+│                                                              ││ require action.                  │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · x export receipt · e new intent · q exit · F3 history
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

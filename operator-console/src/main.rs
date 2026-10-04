@@ -12,11 +12,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
+use operator_console::app::failure::osc52_sequence;
 use operator_console::app::world::ImageProtocol;
-use operator_console::app::{App, CleanExitAction};
+use operator_console::app::{App, AttentionEvent, CleanExitAction};
 use operator_console::host::{HostClient, UreqHostClient, Workers};
 use operator_console::terminal::{TerminalGuard, install_panic_hook};
 use operator_console::ui;
+use operator_console::ui::layout::{SPINNER, short_id};
 
 /// Default loopback Runtime Host address.
 const DEFAULT_HOST: &str = "http://127.0.0.1:8787";
@@ -30,8 +32,146 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// Host log lines echoed when the bootstrap fails.
 const LOG_TAIL_LINES: usize = 20;
-const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const USAGE: &str = "usage: operator-console [--bootstrap-host] [--host-ready-timeout SECS] [--image-protocol auto|kitty|sixel|iterm2|halfblocks|off] [http://127.0.0.1:PORT]";
+const USAGE: &str = "usage: operator-console [--bootstrap-host] [--host-ready-timeout SECS] [--image-protocol auto|kitty|sixel|iterm2|halfblocks|off] [--notify none|bell|desktop] [http://127.0.0.1:PORT]";
+
+/// What an attention event (terminal run status, stack failure, Human
+/// Decision Request, stack ready → planning) does. The window title tracks
+/// the run status in every mode: it is a status display, not a notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotifyMode {
+    /// Title only: no bell, no desktop notification.
+    None,
+    /// Title plus one terminal bell (BEL) per batch of events.
+    Bell,
+    /// Bell plus an OSC 9 or OSC 777 desktop notification per event.
+    Desktop,
+}
+
+impl std::str::FromStr for NotifyMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "bell" => Ok(Self::Bell),
+            "desktop" => Ok(Self::Desktop),
+            other => Err(format!(
+                "unknown --notify value {other:?} (expected none|bell|desktop)"
+            )),
+        }
+    }
+}
+
+/// Desktop notification escape sent in `desktop` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopProtocol {
+    /// `OSC 9 ; body` (iTerm2, WezTerm, Ghostty and others).
+    Osc9,
+    /// `OSC 777 ; notify ; title ; body` (VTE-based terminals, urxvt).
+    Osc777,
+}
+
+impl DesktopProtocol {
+    /// OSC 777 for VTE (`VTE_VERSION`) and urxvt (`TERM=rxvt*`), else OSC 9.
+    /// One protocol only: terminals that implement both would notify twice.
+    fn detect(vte_version: Option<&str>, term: Option<&str>) -> Self {
+        if vte_version.is_some_and(|value| !value.is_empty())
+            || term.is_some_and(|term| term.starts_with("rxvt"))
+        {
+            Self::Osc777
+        } else {
+            Self::Osc9
+        }
+    }
+}
+
+/// Writes the window title, bell, desktop notifications and OSC 52 clipboard
+/// requests to the terminal between frames. On drop it pops the title it
+/// pushed at startup (xterm title stack, `CSI 22/23 ; 2 t`; tmux implements
+/// it too); terminals without a title stack keep the last title.
+struct Attention<W: Write> {
+    out: W,
+    mode: NotifyMode,
+    desktop: DesktopProtocol,
+    /// Inside tmux, OSC 9/777 are wrapped in DCS passthrough; tmux 3.3+
+    /// drops them unless `allow-passthrough` is on. OSC 52 goes both plain
+    /// (tmux `set-clipboard on`) and wrapped (see `osc52_sequence`).
+    tmux: bool,
+    title: Option<String>,
+}
+
+impl<W: Write> Attention<W> {
+    fn new(mut out: W, mode: NotifyMode, desktop: DesktopProtocol, tmux: bool) -> io::Result<Self> {
+        out.write_all(b"\x1b[22;2t")?;
+        out.flush()?;
+        Ok(Self {
+            out,
+            mode,
+            desktop,
+            tmux,
+            title: None,
+        })
+    }
+
+    /// Set the title when it changed, then signal `events`.
+    fn update(&mut self, title: &str, events: &[AttentionEvent]) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        if self.title.as_deref() != Some(title) {
+            bytes.extend_from_slice(format!("\x1b]2;{}\x07", printable(title)).as_bytes());
+            self.title = Some(title.to_string());
+        }
+        if !events.is_empty() && self.mode != NotifyMode::None {
+            bytes.push(0x07);
+        }
+        if self.mode == NotifyMode::Desktop {
+            for event in events {
+                let body = printable(&format!(
+                    "{}: {}",
+                    short_id(&event.mission_run_id, 12),
+                    event.message
+                ));
+                let sequence = match self.desktop {
+                    DesktopProtocol::Osc9 => format!("\x1b]9;ONR {body}\x07"),
+                    DesktopProtocol::Osc777 => {
+                        format!("\x1b]777;notify;ONR;{}\x07", body.replace(';', ","))
+                    }
+                };
+                if self.tmux {
+                    bytes.extend_from_slice(b"\x1bPtmux;");
+                    bytes.extend_from_slice(sequence.replace('\x1b', "\x1b\x1b").as_bytes());
+                    bytes.extend_from_slice(b"\x1b\\");
+                } else {
+                    bytes.extend_from_slice(sequence.as_bytes());
+                }
+            }
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.out.write_all(&bytes)?;
+        self.out.flush()
+    }
+
+    /// Ask the terminal to put `text` on the clipboard (failure card `y`).
+    fn copy(&mut self, text: &str) -> io::Result<()> {
+        self.out
+            .write_all(osc52_sequence(&printable(text), self.tmux).as_bytes())?;
+        self.out.flush()
+    }
+}
+
+impl<W: Write> Drop for Attention<W> {
+    fn drop(&mut self) {
+        let _ = self.out.write_all(b"\x1b[23;2t");
+        let _ = self.out.flush();
+    }
+}
+
+/// Host-provided text with control characters removed, so it can never end
+/// or inject an escape sequence.
+fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
 
 trait ChildHandle: std::fmt::Debug {
     fn is_live(&mut self) -> io::Result<bool>;
@@ -179,6 +319,7 @@ struct Options {
     bootstrap_host: bool,
     ready_timeout: Duration,
     image_protocol: Option<ImageProtocol>,
+    notify: NotifyMode,
 }
 
 fn parse_options(arguments: impl IntoIterator<Item = String>) -> io::Result<Options> {
@@ -188,6 +329,7 @@ fn parse_options(arguments: impl IntoIterator<Item = String>) -> io::Result<Opti
         bootstrap_host: false,
         ready_timeout: DEFAULT_READY_TIMEOUT,
         image_protocol: None,
+        notify: NotifyMode::Bell,
     };
     let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
@@ -221,6 +363,14 @@ fn parse_options(arguments: impl IntoIterator<Item = String>) -> io::Result<Opti
                     .parse()
                     .map_err(|error: String| io::Error::new(io::ErrorKind::InvalidInput, error))?,
             );
+        } else if let Some(value) = argument
+            .strip_prefix("--notify=")
+            .map(str::to_string)
+            .or_else(|| (argument == "--notify").then(|| arguments.next()).flatten())
+        {
+            options.notify = value
+                .parse()
+                .map_err(|error: String| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         } else if argument.starts_with('-') || options.host_addr.replace(argument).is_some() {
             return Err(usage());
         }
@@ -406,6 +556,15 @@ fn main() -> io::Result<()> {
     install_panic_hook();
     let mut guard = TerminalGuard::new()?;
     let mut workers = Workers::spawn(UreqHostClient::new(&host_addr, REQUEST_TIMEOUT));
+    let mut attention = Attention::new(
+        io::stdout(),
+        options.notify,
+        DesktopProtocol::detect(
+            std::env::var("VTE_VERSION").ok().as_deref(),
+            std::env::var("TERM").ok().as_deref(),
+        ),
+        std::env::var_os("TMUX").is_some_and(|value| !value.is_empty()),
+    )?;
 
     let mut app = App::new(host_addr);
     app.configure_images(image_protocol.picker());
@@ -431,6 +590,10 @@ fn main() -> io::Result<()> {
         workers.flush_backlog();
         for command in app.take_commands() {
             app.handle_dispatch(workers.dispatch(command));
+        }
+        attention.update(&app.window_title(), &app.take_attention_events())?;
+        if let Some(text) = app.take_clipboard() {
+            attention.copy(&text)?;
         }
         let draw_started = Instant::now();
         guard.terminal().draw(|frame| ui::draw(frame, &mut app))?;
@@ -459,11 +622,12 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootstrappedHostGuard, ChildHandle, DEFAULT_READY_TIMEOUT, HostProcessSpawner,
-        HostReadiness, Options, bootstrap_host, consume_clean_exit, parse_options,
-        stop_bootstrapped_host, tail_lines,
+        Attention, BootstrappedHostGuard, ChildHandle, DEFAULT_READY_TIMEOUT, DesktopProtocol,
+        HostProcessSpawner, HostReadiness, NotifyMode, Options, bootstrap_host, consume_clean_exit,
+        parse_options, stop_bootstrapped_host, tail_lines,
     };
     use operator_console::app::CleanExitAction;
+    use operator_console::app::{AttentionEvent, AttentionKind};
     use std::cell::Cell;
     use std::io;
     use std::rc::Rc;
@@ -556,6 +720,7 @@ mod tests {
                 bootstrap_host: true,
                 ready_timeout: Duration::from_secs(90),
                 image_protocol: None,
+                notify: super::NotifyMode::Bell,
             }
         );
         assert_eq!(
@@ -709,5 +874,178 @@ mod tests {
 
         let mut owned = BootstrappedHostGuard::new(None);
         assert!(consume_clean_exit(Some(CleanExitAction::Cancelled), &mut owned).unwrap());
+    }
+
+    fn event(kind: AttentionKind, message: &str) -> AttentionEvent {
+        AttentionEvent {
+            mission_run_id: "run-8038a562-aaaa".to_string(),
+            kind,
+            message: message.to_string(),
+        }
+    }
+
+    fn written(
+        mode: NotifyMode,
+        desktop: DesktopProtocol,
+        tmux: bool,
+        steps: &[(&str, Vec<AttentionEvent>)],
+    ) -> String {
+        let mut out = Vec::new();
+        {
+            let mut attention = Attention::new(&mut out, mode, desktop, tmux).unwrap();
+            for (title, events) in steps {
+                attention.update(title, events).unwrap();
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn notify_option_defaults_to_bell_and_rejects_unknown_modes() {
+        assert_eq!(args(&[]).unwrap().notify, NotifyMode::Bell);
+        for (value, mode) in [
+            ("none", NotifyMode::None),
+            ("bell", NotifyMode::Bell),
+            ("desktop", NotifyMode::Desktop),
+        ] {
+            assert_eq!(args(&["--notify", value]).unwrap().notify, mode);
+            assert_eq!(args(&[&format!("--notify={value}")]).unwrap().notify, mode);
+        }
+        assert!(args(&["--notify", "loud"]).is_err());
+        assert!(args(&["--notify"]).is_err());
+    }
+
+    #[test]
+    fn title_is_written_only_on_change_and_restored_on_drop() {
+        let out = written(
+            NotifyMode::Bell,
+            DesktopProtocol::Osc9,
+            false,
+            &[
+                ("ONR", vec![]),
+                ("ONR", vec![]),
+                ("ONR ● running 00:00:01 · Stack", vec![]),
+            ],
+        );
+        assert_eq!(
+            out,
+            "\x1b[22;2t\x1b]2;ONR\x07\x1b]2;ONR ● running 00:00:01 · Stack\x07\x1b[23;2t"
+        );
+    }
+
+    #[test]
+    fn copy_writes_osc_52_and_a_tmux_passthrough_copy() {
+        for (tmux, expected) in [
+            (
+                false,
+                "\x1b[22;2t\x1b]52;c;cnVuLTEgL3J1bnMvcnVuLTE=\x07\x1b[23;2t",
+            ),
+            (
+                true,
+                "\x1b[22;2t\x1b]52;c;cnVuLTEgL3J1bnMvcnVuLTE=\x07\x1bPtmux;\x1b\x1b]52;c;cnVuLTEgL3J1bnMvcnVuLTE=\x07\x1b\\\x1b[23;2t",
+            ),
+        ] {
+            let mut out = Vec::new();
+            {
+                let mut attention =
+                    Attention::new(&mut out, NotifyMode::None, DesktopProtocol::Osc9, tmux)
+                        .unwrap();
+                // Control characters never reach the clipboard sequence.
+                attention.copy("run-1 /runs/run-1\x07").unwrap();
+            }
+            assert_eq!(String::from_utf8(out).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn none_mode_keeps_the_title_but_never_rings_or_notifies() {
+        let out = written(
+            NotifyMode::None,
+            DesktopProtocol::Osc9,
+            false,
+            &[(
+                "ONR ✔ succeeded",
+                vec![event(AttentionKind::Terminal, "✔ succeeded")],
+            )],
+        );
+        assert_eq!(out, "\x1b[22;2t\x1b]2;ONR ✔ succeeded\x07\x1b[23;2t");
+    }
+
+    #[test]
+    fn bell_mode_rings_once_per_batch_without_desktop_sequences() {
+        let out = written(
+            NotifyMode::Bell,
+            DesktopProtocol::Osc9,
+            false,
+            &[
+                ("ONR", vec![]),
+                (
+                    "ONR",
+                    vec![
+                        event(AttentionKind::StackReady, "Stack ready · planning started"),
+                        event(
+                            AttentionKind::AwaitingHumanDecision,
+                            "Awaiting a Human Decision",
+                        ),
+                    ],
+                ),
+            ],
+        );
+        assert_eq!(out, "\x1b[22;2t\x1b]2;ONR\x07\x07\x1b[23;2t");
+    }
+
+    #[test]
+    fn desktop_mode_sends_one_sanitized_notification_per_event() {
+        let events = vec![event(
+            AttentionKind::StackFailed,
+            "Stack failed · a;b\x1b]2;x\x07",
+        )];
+        let osc9 = written(
+            NotifyMode::Desktop,
+            DesktopProtocol::Osc9,
+            false,
+            &[("ONR", events.clone())],
+        );
+        assert_eq!(
+            osc9,
+            "\x1b[22;2t\x1b]2;ONR\x07\x07\x1b]9;ONR run-8038a562…: Stack failed · a;b]2;x\x07\x1b[23;2t"
+        );
+        let osc777 = written(
+            NotifyMode::Desktop,
+            DesktopProtocol::Osc777,
+            false,
+            &[("ONR", events.clone())],
+        );
+        assert_eq!(
+            osc777,
+            "\x1b[22;2t\x1b]2;ONR\x07\x07\x1b]777;notify;ONR;run-8038a562…: Stack failed · a,b]2,x\x07\x1b[23;2t"
+        );
+        let tmux = written(
+            NotifyMode::Desktop,
+            DesktopProtocol::Osc9,
+            true,
+            &[("ONR", events)],
+        );
+        assert_eq!(
+            tmux,
+            "\x1b[22;2t\x1b]2;ONR\x07\x07\x1bPtmux;\x1b\x1b]9;ONR run-8038a562…: Stack failed · a;b]2;x\x07\x1b\\\x1b[23;2t"
+        );
+    }
+
+    #[test]
+    fn desktop_protocol_prefers_osc_777_only_for_vte_and_urxvt() {
+        assert_eq!(
+            DesktopProtocol::detect(Some("7600"), Some("xterm-256color")),
+            DesktopProtocol::Osc777
+        );
+        assert_eq!(
+            DesktopProtocol::detect(None, Some("rxvt-unicode-256color")),
+            DesktopProtocol::Osc777
+        );
+        assert_eq!(
+            DesktopProtocol::detect(Some(""), Some("xterm-ghostty")),
+            DesktopProtocol::Osc9
+        );
+        assert_eq!(DesktopProtocol::detect(None, None), DesktopProtocol::Osc9);
     }
 }

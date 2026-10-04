@@ -12,7 +12,7 @@ use super::{
     theme::Theme,
 };
 use crate::app::App;
-use crate::host::{AirSimAnnotation, AirSimStatus, FrameSource};
+use crate::host::{AirSimAnnotation, AirSimStatus, FrameSource, OperatorWorld};
 
 pub fn draw_world(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
     let width = usize::from(area.width.saturating_sub(2));
@@ -58,25 +58,7 @@ pub fn draw_world(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
                 theme.dim(),
             )));
         }
-        if let Some(airsim) = world.airsim.as_ref() {
-            lines.extend(wrapped_field(theme, "AirSim:", &airsim_text(airsim), width));
-            if let Some(annotation) = airsim.annotation.as_ref() {
-                lines.extend(wrapped_field(
-                    theme,
-                    "Overlay:",
-                    &overlay_text(annotation),
-                    width,
-                ));
-                if app.view.frame_source == FrameSource::CameraFrontAnnotated {
-                    lines.extend(wrapped_field(
-                        theme,
-                        "Boxes:",
-                        &annotation.disclosure,
-                        width,
-                    ));
-                }
-            }
-        }
+        lines.extend(airsim_lines(world, app.view.frame_source, theme, width));
         let sources = world
             .frames
             .iter()
@@ -118,6 +100,38 @@ pub fn draw_world(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
         ),
         state_area,
     );
+}
+
+/// The AirSim disclosure rows (ADR 0016): what AirSim shows (follower or
+/// scene clock, lag), what the overlay boxes are, and, on the annotated
+/// front camera, the Host's provenance sentence. None when AirSim is off.
+pub(crate) fn airsim_lines(
+    world: &OperatorWorld,
+    source: FrameSource,
+    theme: Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Some(airsim) = world.airsim.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = wrapped_field(theme, "AirSim:", &airsim_text(airsim), width);
+    if let Some(annotation) = airsim.annotation.as_ref() {
+        lines.extend(wrapped_field(
+            theme,
+            "Overlay:",
+            &overlay_text(annotation),
+            width,
+        ));
+        if source == FrameSource::CameraFrontAnnotated {
+            lines.extend(wrapped_field(
+                theme,
+                "Boxes:",
+                &annotation.disclosure,
+                width,
+            ));
+        }
+    }
+    lines
 }
 
 fn seconds(value: Option<&serde_json::Number>) -> Option<f64> {
@@ -187,11 +201,14 @@ fn overlay_text(annotation: &AirSimAnnotation) -> String {
     text
 }
 
-/// Overview and World share one persistent protocol. Only the currently visible
-/// surface requests an encode when its actual cell dimensions change.
+/// Overview, World and the presentation layout share one persistent
+/// protocol. Only the currently visible surface requests an encode when its
+/// actual cell dimensions change.
 pub fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
     let view = &mut app.view;
-    let status = if view.media.paused {
+    let status = if view.presentation.is_frozen() {
+        "frozen"
+    } else if view.media.paused {
         "paused"
     } else if app.run.as_ref().is_some_and(|run| run.is_terminal()) {
         "final"
@@ -247,7 +264,12 @@ pub fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) 
         );
         return;
     }
-    view.media.render(frame, inner);
+    // The presentation layout fills its large surface, also upscaling.
+    if view.presentation.active {
+        view.media.render_scaled(frame, inner);
+    } else {
+        view.media.render(frame, inner);
+    }
     // Keep a failure visible without discarding the last good frame.
     if let Some(error) = view.frame_error.as_deref() {
         let warning = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);

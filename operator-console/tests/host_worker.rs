@@ -1,6 +1,9 @@
 //! Control, evidence, and media workers: lane isolation, per-key coalescing
 //! of identical polls, and ordered, never-dropped mutations.
 
+mod common;
+
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
@@ -9,8 +12,8 @@ use operator_console::host::{
     ActivationAccepted, ActivationOutcome, ActivationRequest, ApiVersion, ArtifactContentPage,
     CancellationAccepted, CancellationOutcome, CancellationRequest, ConversationEntriesPage,
     CurrentRun, Fetched, FrameSource, Health, HostClient, HostCommand, HostError, HostMessage,
-    MissionIntent, OperatorSection, OperatorViewPage, PreflightQuery, StackPreflight, StackPresets,
-    StackToggles, Workers, WorldFrame,
+    MissionIntent, MissionRunsPage, OperatorSection, OperatorViewPage, PreflightQuery,
+    ReceiptExportOutcome, StackPreflight, StackPresets, StackToggles, Workers, WorldFrame,
 };
 use parking_lot::{Condvar, Mutex};
 
@@ -90,6 +93,10 @@ impl HostClient for Shared {
         Ok(CurrentRun { mission_run: None })
     }
 
+    fn mission_runs(&self, _: Option<&str>, _: u32) -> Result<MissionRunsPage, HostError> {
+        unscripted()
+    }
+
     fn mission_intent(&self, _: &str, _: &str) -> Result<MissionIntent, HostError> {
         unscripted()
     }
@@ -107,6 +114,10 @@ impl HostClient for Shared {
             status: "running".to_string(),
             requested_at: "2026-08-24T12:00:05Z".to_string(),
         }))
+    }
+
+    fn export_receipt(&self, _: &str, _: &str) -> Result<ReceiptExportOutcome, HostError> {
+        unscripted()
     }
 
     fn stack_presets(&self) -> Result<StackPresets, HostError> {
@@ -308,5 +319,47 @@ fn a_full_queue_drops_polls_but_defers_mutations_in_order() {
         }
     }
     assert_eq!(order, ["first", "second"]);
+    workers.shutdown();
+}
+
+#[test]
+fn viewing_history_keeps_the_current_run_polled_through_the_workers() {
+    let (client, entered) = GatedClient::shared();
+    client.release();
+    let mut workers = Workers::spawn(client.clone());
+    let (mut app, _clock) = common::hydrated_run_app("worker-history", |_| {});
+    app.health = Some(common::health_v1_5());
+    common::open_history(&mut app);
+    common::select_history_row(&mut app, common::HISTORICAL_RUN_ID);
+    app.handle_key(common::key(crossterm::event::KeyCode::Enter));
+    assert!(app.viewing_history());
+    for command in app.take_commands() {
+        app.handle_dispatch(workers.dispatch(command));
+    }
+    // The control worker serves `/current` for the parked current run ...
+    assert_eq!(
+        entered.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "current"
+    );
+    // ... and the evidence worker reads both runs.
+    let mut runs = HashSet::new();
+    let mut currents = 0;
+    while let Some(message) = workers.recv_timeout(Duration::from_millis(500)) {
+        match message {
+            HostMessage::OperatorView { mission_run_id, .. } => {
+                runs.insert(mission_run_id);
+            }
+            HostMessage::Current(_) => currents += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(currents, 1);
+    assert_eq!(
+        runs,
+        HashSet::from([
+            common::RUN_ID.to_string(),
+            common::HISTORICAL_RUN_ID.to_string()
+        ])
+    );
     workers.shutdown();
 }

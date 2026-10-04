@@ -173,6 +173,7 @@ def _demo_env_plan(args: argparse.Namespace, catalog: StackCatalog) -> int:
                 "worker_command": panes.get("mission4-worker", ""),
                 "engine_command": panes.get("airsim-engine", ""),
                 "perception_command": panes.get("perception", ""),
+                "visualizer_command": panes.get("airsim-visualizer", ""),
                 "audit_command": shlex.join(plan.audit_argv),
                 "prepare_command": herdr.prepare_command(plan),
                 "summary": "\n".join(herdr.summary_lines(plan)),

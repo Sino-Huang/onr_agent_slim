@@ -112,8 +112,28 @@ def counts_by_importance(records: Iterable[Mapping[str, object]]) -> dict[str, i
     return counts
 
 
-def narrative_projection(narrative: Mapping[str, object] | None) -> dict[str, object]:
-    """Project a public Run Narrative onto the ``progress.narrative`` shape."""
+def latest_operational_sequence(records: Iterable[Mapping[str, object]]) -> int:
+    """Newest operational-log record sequence, or 0 before the first record.
+
+    This is a record sequence (the space of ``source_watermark``), never a
+    section cursor or a progress change sequence.
+    """
+
+    return max(
+        (sequence for record in records if (sequence := _sequence(record))),
+        default=0,
+    )
+
+
+def narrative_projection(
+    narrative: Mapping[str, object] | None, *, latest_operational_sequence: int
+) -> dict[str, object]:
+    """Project a public Run Narrative onto the ``progress.narrative`` shape.
+
+    ``latest_operational_sequence`` lets the console count the records newer
+    than the narrative's ``source_watermark`` (API v1.5); ``terminal`` marks
+    the final narrative attempt.
+    """
 
     if not narrative:
         return {
@@ -121,6 +141,8 @@ def narrative_projection(narrative: Mapping[str, object] | None) -> dict[str, ob
             "text": None,
             "generated_at": None,
             "source_watermark": 0,
+            "terminal": False,
+            "latest_operational_sequence": latest_operational_sequence,
         }
     watermark = narrative.get("source_watermark")
     return {
@@ -128,6 +150,8 @@ def narrative_projection(narrative: Mapping[str, object] | None) -> dict[str, ob
         "text": narrative.get("text"),
         "generated_at": narrative.get("generated_at"),
         "source_watermark": watermark if type(watermark) is int else 0,
+        "terminal": narrative.get("terminal") is True,
+        "latest_operational_sequence": latest_operational_sequence,
     }
 
 
@@ -392,13 +416,18 @@ class ProgressTree:
 
 
 def progress_payload(
-    *, nodes: Sequence[Mapping[str, object]], narrative: Mapping[str, object] | None
+    *,
+    nodes: Sequence[Mapping[str, object]],
+    narrative: Mapping[str, object] | None,
+    latest_operational_sequence: int,
 ) -> dict[str, object]:
     """The ``progress`` object of the operator-view ``progress`` section."""
 
     return {
         "mapping_version": IMPORTANCE_MAPPING_VERSION,
-        "narrative": narrative_projection(narrative),
+        "narrative": narrative_projection(
+            narrative, latest_operational_sequence=latest_operational_sequence
+        ),
         "nodes": [dict(node) for node in nodes],
     }
 
@@ -568,6 +597,7 @@ __all__ = [
     "ProgressTree",
     "counts_by_importance",
     "derive_phase",
+    "latest_operational_sequence",
     "load_mission_log_summaries",
     "narrative_projection",
     "progress_payload",

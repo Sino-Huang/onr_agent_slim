@@ -1,11 +1,11 @@
-//! A deterministic in-process fixture of the Runtime Host v1.3 HTTP contract.
+//! A deterministic in-process fixture of the Runtime Host v1.5 HTTP contract.
 //!
 //! Used by contract and worker tests so the console client is proven without
 //! a Python process. Static bodies are the committed contract examples;
 //! dynamic bodies substitute fixture values into those examples so the
 //! fixture cannot drift from the contract.
 //!
-//! - `GET /api/v1/health` -> v1.3 health.
+//! - `GET /api/v1/health` -> v1.5 health.
 //! - `GET /api/v1/stack/presets`, `GET /api/v1/stack/preflight`.
 //! - `POST /api/v1/mission-activations` -> `202` queued acceptance; same
 //!   request id + body (including `stack`) + credential replays the original
@@ -13,6 +13,8 @@
 //!   another non-terminal run -> `409 mission_run_active`.
 //! - `GET /api/v1/mission-runs/current` -> `{"mission_run":null}` or the record
 //!   with `stack` and `terminal_detail`.
+//! - `GET /api/v1/mission-runs?limit&before` -> the v1.5 history example; an
+//!   empty last page `before=run-1`; `invalid_cursor` for any other `before`.
 //! - `GET .../operator-view?section=` for every section, with `ETag` and
 //!   `If-None-Match` -> `304`.
 //! - Artifact content (planner text/binary pages and a growing service log),
@@ -40,9 +42,9 @@ macro_rules! example {
     };
 }
 
-const HEALTH_RESPONSE: &str = example!("v1.3", "health.response.json");
-const PRESETS_RESPONSE: &str = example!("v1.3", "stack-presets.response.json");
-const PREFLIGHT_RESPONSE: &str = example!("v1.2", "stack-preflight.response.json");
+const HEALTH_RESPONSE: &str = example!("v1.5", "health.response.json");
+const PRESETS_RESPONSE: &str = example!("v1.5", "stack-presets.response.json");
+const PREFLIGHT_RESPONSE: &str = example!("v1.5", "stack-preflight.response.json");
 const ACCEPTED_RESPONSE: &str = example!("v1", "mission-activation.accepted.response.json");
 const CONFLICT_RESPONSE: &str = example!("v1", "mission-activation.conflict.response.json");
 const RUN_ACTIVE_RESPONSE: &str = example!("v1", "mission-activation.run-active.response.json");
@@ -61,6 +63,7 @@ const INVALID_CURSOR_RESPONSE: &str = example!(
     "mission-run-observations.invalid-cursor.response.json"
 );
 const RUN_NOT_FOUND_RESPONSE: &str = example!("v1", "mission-run.not-found.response.json");
+const HISTORY_RESPONSE: &str = example!("v1.5", "mission-runs.response.json");
 const ARTIFACT_CONTENT_TEXT_PAGE_RESPONSE: &str =
     example!("v1", "mission-run-artifact-content.text-page.response.json");
 const ARTIFACT_CONTENT_TEXT_FINAL_RESPONSE: &str = example!(
@@ -364,6 +367,14 @@ fn route(
         ("GET", "/api/v1/stack/preflight") => preflight(query, state),
         ("POST", "/api/v1/mission-activations") => activate(authorization, body, state),
         ("GET", "/api/v1/mission-runs/current") => current(state),
+        ("GET", "/api/v1/mission-runs") => match query_value(query, "before") {
+            None => Reply::example("200 OK", HISTORY_RESPONSE),
+            Some("run-1") => Reply::json(
+                "200 OK",
+                json!({"mission_runs": [], "next_before": null}).to_string(),
+            ),
+            Some(_) => Reply::example("422 Unprocessable Entity", INVALID_CURSOR_RESPONSE),
+        },
         ("GET", path) if path.ends_with("/mission-intent") => {
             owner_intent(path, authorization, state)
         }

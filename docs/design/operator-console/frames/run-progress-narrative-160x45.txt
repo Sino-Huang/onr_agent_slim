@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:01:10 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
+ ◆ AI narrative · 42 s old · through record #763 · 18 newer
+┌ Progress · ≥ routine · FOLLOW ────────────────────────────────────────────────────────────┐┌ Selected evidence · PgUp/PgDn ──────────────────────────────────┐
+│  ▾ ◆ Run Narrative · AI · available                                                       ││FSM patrol.leg_2 → patrol.leg_3                                  │
+│    Legs 1-2 complete; ship 2's report was altered and the agent replanned. The drone is no││fsm-runner · notable · record                                    │
+│    ▾ ▲ 12:00:10 AI Replan after report alteration (64 records)                            ││Time: 2026-08-24T12:00:29Z                                       │
+│›       ● 12:00:29 FSM FSM patrol.leg_2 → patrol.leg_3                                     ││                                                                 │
+│      · Live — not yet summarized (18 records)                                             ││                                                                 │
+│                                                                                           ││Details:                                                         │
+│                                                                                           ││{                                                                │
+│                                                                                           ││  "from_state": "patrol.leg_2",                                  │
+│                                                                                           ││  "to_state": "patrol.leg_3"                                     │
+│                                                                                           ││}                                                                │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+│                                                                                           ││                                                                 │
+└───────────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────┘
+ / search · n/N next/previous match
+ ↑↓ select · ←→ expand/collapse · Enter toggle · f follow newest · i minimum importance
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ move · ←→ fold · f follow · i importance · / search · n/N matches · ? help · c cancel · q managed exit · F3 history
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

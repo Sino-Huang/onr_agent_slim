@@ -10,8 +10,9 @@ use std::time::Duration;
 use super::dto::{
     ActivationOutcome, ActivationRequest, ArtifactContentPage, CancellationOutcome,
     CancellationRequest, ConversationEntriesPage, ConversationEntry, CurrentRun, ErrorBody,
-    ErrorDetail, EvidencePage, Fetched, FrameSource, Health, MissionIntent, OperatorSection,
-    OperatorViewPage, PreflightQuery, StackPreflight, StackPresets, WorldFrame,
+    ErrorDetail, EvidencePage, Fetched, FrameSource, Health, MissionIntent, MissionRunsPage,
+    OperatorSection, OperatorViewPage, PreflightQuery, ReceiptExportOutcome, ReceiptExportRequest,
+    StackPreflight, StackPresets, WorldFrame,
 };
 
 /// Largest response body the console reads (world frames are the biggest).
@@ -22,8 +23,10 @@ const PAGE_CAP: usize = 100;
 /// Client-visible host failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostError {
-    /// Transport-level failure (connect, timeout, IO).
+    /// Transport-level failure (connect, IO).
     Transport(String),
+    /// The request outlasted the client's time limit without an answer.
+    Timeout(String),
     /// A status code the console does not model.
     UnexpectedStatus(u16, String),
     /// The response body did not match the contract.
@@ -53,6 +56,7 @@ impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HostError::Transport(detail) => write!(f, "transport error: {detail}"),
+            HostError::Timeout(detail) => write!(f, "request timed out: {detail}"),
             HostError::UnexpectedStatus(status, detail) => {
                 write!(f, "unexpected status {status}: {detail}")
             }
@@ -76,7 +80,10 @@ impl std::error::Error for HostError {}
 impl HostError {
     /// Whether this error proves that the Runtime Host returned an HTTP response.
     pub fn proves_host_reachable(&self) -> bool {
-        !matches!(self, HostError::Transport(_) | HostError::Malformed(_))
+        !matches!(
+            self,
+            HostError::Transport(_) | HostError::Timeout(_) | HostError::Malformed(_)
+        )
     }
 }
 
@@ -119,6 +126,9 @@ pub trait HostClient: Send + Sync {
     ) -> Result<ActivationOutcome, HostError>;
     /// `GET /api/v1/mission-runs/current` with a Bearer credential.
     fn current_run(&self, credential: &str) -> Result<CurrentRun, HostError>;
+    /// `GET /api/v1/mission-runs` (v1.5, loopback): one run history page,
+    /// newest first, older than `before` when given.
+    fn mission_runs(&self, before: Option<&str>, limit: u32) -> Result<MissionRunsPage, HostError>;
     /// `GET /api/v1/mission-runs/{id}/mission-intent` (owner only).
     fn mission_intent(
         &self,
@@ -132,6 +142,13 @@ pub trait HostClient: Send + Sync {
         request: &CancellationRequest,
         credential: &str,
     ) -> Result<CancellationOutcome, HostError>;
+    /// `POST /api/v1/mission-runs/{id}/receipt-exports` (owner only, v1.5):
+    /// the Host writes the terminal receipt under the Run Root.
+    fn export_receipt(
+        &self,
+        mission_run_id: &str,
+        credential: &str,
+    ) -> Result<ReceiptExportOutcome, HostError>;
     /// `GET /api/v1/stack/presets`.
     fn stack_presets(&self) -> Result<StackPresets, HostError>;
     /// `GET /api/v1/stack/preflight`.
@@ -211,7 +228,10 @@ impl UreqHostClient {
     }
 
     fn transport(error: ureq::Error) -> HostError {
-        HostError::Transport(error.to_string())
+        match error {
+            ureq::Error::Timeout(_) => HostError::Timeout(error.to_string()),
+            _ => HostError::Transport(error.to_string()),
+        }
     }
 
     fn read_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, HostError> {
@@ -229,7 +249,7 @@ impl UreqHostClient {
             .with_config()
             .limit(MAX_BODY_BYTES)
             .read_to_vec()
-            .map_err(|e| HostError::Transport(e.to_string()))
+            .map_err(Self::transport)
     }
 
     fn error_detail(response: Response) -> Result<ErrorDetail, HostError> {
@@ -339,6 +359,17 @@ impl HostClient for UreqHostClient {
         )
     }
 
+    fn mission_runs(&self, before: Option<&str>, limit: u32) -> Result<MissionRunsPage, HostError> {
+        let mut request = self
+            .agent
+            .get(&self.url("/api/v1/mission-runs"))
+            .query("limit", limit.to_string());
+        if let Some(before) = before {
+            request = request.query("before", before);
+        }
+        self.get_json(request, "run history")
+    }
+
     fn mission_intent(
         &self,
         mission_run_id: &str,
@@ -382,6 +413,32 @@ impl HostClient for UreqHostClient {
                 })
             }
             _ => Err(Self::common_error(response, "cancellation")),
+        }
+    }
+
+    fn export_receipt(
+        &self,
+        mission_run_id: &str,
+        credential: &str,
+    ) -> Result<ReceiptExportOutcome, HostError> {
+        let response = self
+            .agent
+            .post(&self.url(&format!(
+                "/api/v1/mission-runs/{mission_run_id}/receipt-exports"
+            )))
+            .header("Authorization", &Self::authorization(credential))
+            .send_json(ReceiptExportRequest::default())
+            .map_err(Self::transport)?;
+        match response.status().as_u16() {
+            200 => Ok(ReceiptExportOutcome::Exported(Self::read_json(response)?)),
+            409 => {
+                let detail = Self::error_detail(response)?;
+                Ok(ReceiptExportOutcome::Rejected {
+                    code: detail.code,
+                    message: detail.message,
+                })
+            }
+            _ => Err(Self::common_error(response, "receipt export")),
         }
     }
 

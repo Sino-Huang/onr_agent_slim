@@ -1,14 +1,20 @@
-//! Stack tab: Environment Stack services with state marks and the selected
-//! service's auto-following log tail.
+//! Stack tab: Environment Stack prep steps and services with state marks, and
+//! the selected row's auto-following log tail. Prep steps sit in plan
+//! position (`prepare` before the services, `post_ready` after them) with
+//! their measured durations. During teardown (v1.5) a `stopping` service
+//! shows its elapsed grace and a stopped one its `graceful`/`forced` mode.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::layout::{Breakpoint, field, human_bytes, truncate};
+use super::layout::{Breakpoint, field, human_bytes, seconds_between, short_duration, truncate};
 use super::theme::{Badge, Importance, Theme};
-use crate::app::App;
+use crate::app::run::parse_rfc3339;
+use crate::app::{App, StackRow, stack_rows};
+use crate::host::{StackService, StackStepRecord};
 
 fn service_badge(name: &str) -> Badge {
     if name.contains("perception") {
@@ -20,15 +26,28 @@ fn service_badge(name: &str) -> Badge {
     }
 }
 
+/// Lines under the list for the selected row: a blank line plus its fields.
+fn detail_rows(row: Option<StackRow<'_>>) -> u16 {
+    match row {
+        None => 0,
+        Some(StackRow::Step(_)) => 4,
+        Some(StackRow::Service(service)) => {
+            5 + u16::from(service.previous_ready_seconds.is_some())
+                + u16::from(stop_detail(service).is_some())
+        }
+    }
+}
+
 pub fn draw_stack(frame: &mut Frame, area: Rect, app: &App, theme: Theme, breakpoint: Breakpoint) {
     let view = &app.view.stack;
-    let service_rows = view
+    let list_rows = view
         .stack
         .as_ref()
-        .map_or(1, |stack| stack.services.len().max(1)) as u16;
+        .map_or(1, |stack| stack_rows(stack).count().max(1)) as u16;
+    let detail = detail_rows(view.selected_row().map(|(_, row)| row));
     let (services, log) = if breakpoint == Breakpoint::Compact {
         let [services, log] = Layout::vertical([
-            Constraint::Length((service_rows + 7).min(area.height / 2)),
+            Constraint::Length((list_rows + detail + 2).min(area.height / 2)),
             Constraint::Min(0),
         ])
         .areas(area);
@@ -66,82 +85,229 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         toggles.perception
     ));
     let width = block.inner(area).width.saturating_sub(8) as usize;
-    let selected = view.selected_service().map(|(index, _)| index);
-    let mut lines: Vec<Line> = stack
-        .services
-        .iter()
+    let selected = view.selected_row();
+    let now = app.unix_now();
+    let mut lines: Vec<Line> = stack_rows(stack)
         .enumerate()
-        .map(|(index, service)| {
-            let mut text = format!("{:<18} {:<8}", service.name, service.state);
-            if let Some(port) = service.port {
-                text.push_str(&format!(" :{port}"));
-            }
-            if let Some(pid) = service.pid {
-                text.push_str(&format!(" pid {pid}"));
-            }
-            if !service.required {
-                text.push_str(" (optional)");
-            }
-            let style = if selected == Some(index) {
+        .map(|(index, row)| {
+            let (state, text) = match row {
+                StackRow::Step(step) => (step.state.as_str(), step_text(step, now)),
+                StackRow::Service(service) => (service.state.as_str(), service_text(service, now)),
+            };
+            let style = if selected.is_some_and(|(selected, _)| selected == index) {
                 theme.selected()
             } else {
-                ratatui::style::Style::default()
+                Style::default()
             };
             Line::from(vec![
                 Span::raw(" "),
-                theme.service_mark(&service.state),
+                theme.service_mark(state),
                 Span::raw(" "),
-                theme.badge(service_badge(&service.name)),
+                theme.badge(service_badge(row.name())),
                 Span::styled(format!(" {}", truncate(&text, width)), style),
             ])
         })
         .collect();
-    if stack.services.is_empty() {
+    if stack.services.is_empty() && stack.steps.is_empty() {
         lines.push(Line::from(Span::styled(
             " No services in this stack plan.",
             theme.dim(),
         )));
     }
-    if let Some((_, service)) = view.selected_service() {
-        let importance = Importance::parse(&service.importance).unwrap_or(Importance::Routine);
-        lines.push(Line::from(""));
-        lines.push(field(
+    match selected.map(|(_, row)| row) {
+        Some(StackRow::Step(step)) => {
+            lines.push(Line::from(""));
+            lines.push(field(
+                theme,
+                "Stage:",
+                if step.stage == "prepare" {
+                    "prepare (before the services)"
+                } else {
+                    "post-ready (after the services)"
+                },
+            ));
+            lines.push(field(theme, "Started:", &step.started_at));
+            lines.push(field(
+                theme,
+                "Finished:",
+                step.finished_at.as_deref().unwrap_or("-"),
+            ));
+        }
+        Some(StackRow::Service(service)) => {
+            lines.extend(service_detail(service, theme, width));
+        }
+        None => {}
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn service_text(service: &StackService, now: i64) -> String {
+    let mut text = format!("{:<18} {:<8}", service.name, service.state);
+    if let Some(timing) = service_timing(service, now) {
+        text.push_str(&format!(" {timing}"));
+    }
+    if let Some(port) = service.port {
+        text.push_str(&format!(" :{port}"));
+    }
+    if let Some(pid) = service.pid {
+        text.push_str(&format!(" pid {pid}"));
+    }
+    if !service.required {
+        text.push_str(" (optional)");
+    }
+    text
+}
+
+/// `name state M:SS`: elapsed of the budget while running, the measured
+/// duration once finished.
+fn step_text(step: &StackStepRecord, now: i64) -> String {
+    let mut text = format!("{:<18} {:<8}", step.name, step.state);
+    let timing = match step.finished_at.as_deref().and_then(parse_rfc3339) {
+        Some(finished) => seconds_between(&step.started_at, finished).map(short_duration),
+        None if step.state == "running" => seconds_between(&step.started_at, now).map(|elapsed| {
+            match step.timeout_seconds.as_f64() {
+                Some(budget) => format!(
+                    "{} / {}",
+                    short_duration(elapsed),
+                    short_duration(budget.round() as i64)
+                ),
+                None => short_duration(elapsed),
+            }
+        }),
+        None => None,
+    };
+    if let Some(timing) = timing {
+        text.push_str(&format!(" {timing}"));
+    }
+    text
+}
+
+fn service_detail(service: &StackService, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let importance = Importance::parse(&service.importance).unwrap_or(Importance::Routine);
+    let mut lines = vec![
+        Line::from(""),
+        field(
             theme,
             "Started:",
             service.started_at.as_deref().unwrap_or("-"),
+        ),
+    ];
+    if service.state == "starting" {
+        lines.push(field(
+            theme,
+            "Waiting:",
+            service.waiting_for.as_deref().unwrap_or("readiness"),
         ));
+    } else {
         lines.push(field(
             theme,
             "Ready:",
             service.ready_at.as_deref().unwrap_or("-"),
         ));
+    }
+    if let Some(seconds) = service
+        .previous_ready_seconds
+        .as_ref()
+        .and_then(serde_json::Number::as_f64)
+    {
+        // History from the previous run of the same preset, not an estimate.
         lines.push(field(
             theme,
-            "Exit:",
-            &service
-                .exit_code
-                .map_or_else(|| "-".to_string(), |code| code.to_string()),
-        ));
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {:<11}", "Last line:"), theme.dim()),
-            theme.importance_mark(importance),
-            Span::styled(
-                format!(
-                    " {}",
-                    truncate(service.last_line.as_deref().unwrap_or("-"), width)
-                ),
-                theme.importance(importance),
+            "Last run:",
+            &format!(
+                "ready in {} · history, same preset",
+                short_duration(seconds.round() as i64)
             ),
-        ]));
+        ));
     }
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    if let Some(stop) = stop_detail(service) {
+        lines.push(field(theme, "Stop:", &stop));
+    }
+    lines.push(field(
+        theme,
+        "Exit:",
+        &service
+            .exit_code
+            .map_or_else(|| "-".to_string(), |code| code.to_string()),
+    ));
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {:<11}", "Last line:"), theme.dim()),
+        theme.importance_mark(importance),
+        Span::styled(
+            format!(
+                " {}",
+                truncate(service.last_line.as_deref().unwrap_or("-"), width)
+            ),
+            theme.importance(importance),
+        ),
+    ]));
+    lines
+}
+
+/// `Stop:` detail once teardown signalled the service (or the Host reaped
+/// it): mode, the grace period before SIGKILL, then the time (last, as the
+/// narrow panel may clip it).
+fn stop_detail(service: &StackService) -> Option<String> {
+    let grace = service
+        .stop_grace_seconds
+        .as_ref()
+        .and_then(serde_json::Number::as_f64)
+        .map(|grace| format!(" · grace {}", short_duration(grace.round() as i64)));
+    let grace = grace.as_deref().unwrap_or("");
+    match (service.stop_mode.as_deref(), service.stopped_at.as_deref()) {
+        (Some(mode), stopped) => Some(format!("{mode}{grace} · at {}", stopped.unwrap_or("-"))),
+        (None, _) => service
+            .stop_requested_at
+            .as_deref()
+            .map(|requested| format!("SIGTERM sent{grace} · at {requested}")),
+    }
+}
+
+/// `in M:SS` (start to ready) for a ready service; `M:SS / M:SS` (elapsed
+/// of the readiness budget) for a starting one; `M:SS / grace M:SS` for a
+/// stopping one; the stop mode for a stopped one.
+fn service_timing(service: &StackService, now: i64) -> Option<String> {
+    let budget = |elapsed: i64, budget: Option<&serde_json::Number>, label: &str| {
+        let elapsed = short_duration(elapsed);
+        match budget.and_then(serde_json::Number::as_f64) {
+            Some(budget) => format!(
+                "{elapsed} / {label}{}",
+                short_duration(budget.round() as i64)
+            ),
+            None => elapsed,
+        }
+    };
+    match service.state.as_str() {
+        "stopping" => {
+            let elapsed = seconds_between(service.stop_requested_at.as_deref()?, now)?;
+            Some(budget(
+                elapsed,
+                service.stop_grace_seconds.as_ref(),
+                "grace ",
+            ))
+        }
+        "stopped" => service.stop_mode.clone(),
+        "starting" => {
+            let elapsed = seconds_between(service.started_at.as_deref()?, now)?;
+            Some(budget(elapsed, service.ready_timeout_seconds.as_ref(), ""))
+        }
+        "ready" => {
+            let started = service.started_at.as_deref()?;
+            let ready = parse_rfc3339(service.ready_at.as_deref()?)?;
+            Some(format!(
+                "in {}",
+                short_duration(seconds_between(started, ready)?)
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn draw_log(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let view = &app.view.stack;
     let name = view
-        .selected_service()
-        .map_or("no service", |(_, service)| service.name.as_str());
+        .selected_row()
+        .map_or("no service", |(_, row)| row.name());
     let Some(tail) = view.tail.as_ref() else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(

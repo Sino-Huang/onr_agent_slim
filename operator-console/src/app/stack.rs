@@ -1,5 +1,6 @@
-//! Stack tab: Environment Stack services and an auto-following tail of the
-//! selected service's log, read through the Artifact content endpoint.
+//! Stack tab: Environment Stack prep steps and services, and an
+//! auto-following tail of the selected row's log, read through the Artifact
+//! content endpoint.
 
 use std::collections::VecDeque;
 
@@ -9,6 +10,7 @@ use super::run::CONTENT_PAGE_BYTES;
 use super::{App, RefreshKey};
 use crate::host::{
     ArtifactContentPage, ContentPurpose, HostCommand, HostError, OperatorStack, StackService,
+    StackStepRecord,
 };
 
 /// Lines retained per service-log tail.
@@ -141,11 +143,46 @@ impl LogTail {
     }
 }
 
+/// One Stack tab row. Prep steps share the services' name space (each logs to
+/// `services/<name>.log`), so a row is selected by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackRow<'a> {
+    Step(&'a StackStepRecord),
+    Service(&'a StackService),
+}
+
+impl<'a> StackRow<'a> {
+    pub fn name(self) -> &'a str {
+        match self {
+            Self::Step(step) => &step.name,
+            Self::Service(service) => &service.name,
+        }
+    }
+
+    pub fn log_artifact_id(self) -> Option<&'a str> {
+        match self {
+            Self::Step(step) => Some(&step.log_artifact_id),
+            Self::Service(service) => service.log_artifact_id.as_deref(),
+        }
+    }
+}
+
+/// Rows in plan position: `prepare` steps, the services, then `post_ready`
+/// steps, each group in start order.
+pub fn stack_rows(stack: &OperatorStack) -> impl Iterator<Item = StackRow<'_>> {
+    let prepare = stack.steps.iter().filter(|step| step.stage == "prepare");
+    let post_ready = stack.steps.iter().filter(|step| step.stage != "prepare");
+    prepare
+        .map(StackRow::Step)
+        .chain(stack.services.iter().map(StackRow::Service))
+        .chain(post_ready.map(StackRow::Step))
+}
+
 /// Stack tab state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackView {
     pub stack: Option<OperatorStack>,
-    /// Selected service, by name.
+    /// Selected row (prep step or service), by name.
     pub selected: Option<String>,
     pub tail: Option<LogTail>,
     /// Whether the log view sticks to the newest line.
@@ -167,21 +204,19 @@ impl Default for StackView {
 }
 
 impl StackView {
-    pub fn selected_service(&self) -> Option<(usize, &StackService)> {
+    pub fn selected_row(&self) -> Option<(usize, StackRow<'_>)> {
         let selected = self.selected.as_deref()?;
-        self.stack
-            .as_ref()?
-            .services
-            .iter()
+        stack_rows(self.stack.as_ref()?)
             .enumerate()
-            .find(|(_, service)| service.name == selected)
+            .find(|(_, row)| row.name() == selected)
     }
 
-    /// Keep the tail bound to the selected service's log Artifact.
+    /// Keep the tail bound to the selected row's log Artifact.
     fn sync_tail(&mut self) {
         let wanted = self
-            .selected_service()
-            .and_then(|(_, service)| service.log_artifact_id.clone());
+            .selected_row()
+            .and_then(|(_, row)| row.log_artifact_id())
+            .map(str::to_string);
         let current = self.tail.as_ref().map(|tail| tail.artifact_id.as_str());
         if wanted.as_deref() != current {
             self.tail = wanted.map(LogTail::new);
@@ -190,16 +225,35 @@ impl StackView {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        let Some(services) = self.stack.as_ref().map(|stack| &stack.services) else {
+        let Some(stack) = self.stack.as_ref() else {
             return;
         };
-        if services.is_empty() {
+        let count = stack_rows(stack).count();
+        if count == 0 {
             return;
         }
-        let current = self.selected_service().map_or(0, |(index, _)| index) as isize;
-        let next = (current + delta).clamp(0, services.len() as isize - 1) as usize;
-        self.selected = Some(services[next].name.clone());
+        let current = self.selected_row().map_or(0, |(index, _)| index) as isize;
+        let next = (current + delta).clamp(0, count as isize - 1) as usize;
+        self.selected = stack_rows(stack)
+            .nth(next)
+            .map(|row| row.name().to_string());
         self.sync_tail();
+    }
+
+    /// Select the row named `name` and follow its log; returns whether the
+    /// row exists (a v1.4 Host lists no prep-step rows).
+    pub(crate) fn select_following(&mut self, name: &str) -> bool {
+        let exists = self
+            .stack
+            .as_ref()
+            .is_some_and(|stack| stack_rows(stack).any(|row| row.name() == name));
+        if exists {
+            self.selected = Some(name.to_string());
+            self.follow = true;
+            self.scroll_back = 0;
+            self.sync_tail();
+        }
+        exists
     }
 }
 
@@ -209,9 +263,15 @@ impl App {
         let keep = view
             .selected
             .as_deref()
-            .is_some_and(|name| stack.services.iter().any(|service| service.name == name));
+            .is_some_and(|name| stack_rows(&stack).any(|row| row.name() == name));
         if !keep {
-            view.selected = stack.services.first().map(|service| service.name.clone());
+            // The first service, not a finished prep step, is the default.
+            view.selected = stack
+                .services
+                .first()
+                .map(|service| service.name.as_str())
+                .or_else(|| stack_rows(&stack).next().map(StackRow::name))
+                .map(str::to_string);
         }
         view.stack = Some(stack);
         view.sync_tail();

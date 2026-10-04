@@ -302,6 +302,39 @@ def test_narrative_coalesces_evidence_advances_within_interval(tmp_path: Path) -
     assert [call["terminal"] for call in summarizer.calls] == [False, False]
 
 
+def test_progress_narrative_reports_the_newest_operational_record_sequence(
+    tmp_path: Path,
+) -> None:
+    summarizer = ScriptedSummarizer("first")
+    client, host, _, _, source, _ = _client(tmp_path, summarizer=summarizer)
+    mission_id = str(_activate(client)["mission_id"])
+    url = "/api/v1/mission-runs/run-1/operator-view"
+
+    def progress_narrative() -> dict[str, Any]:
+        response = client.get(url, params={"section": "progress"})
+        assert response.status_code == 200
+        return response.json()["progress"]["narrative"]
+
+    source.by_mission[mission_id] = [_op(mission_id, 1)]
+    pending = progress_narrative()
+    assert pending["status"] == "none"
+    assert pending["latest_operational_sequence"] == 1
+
+    host.narrative_tick()
+    source.by_mission[mission_id].extend([_op(mission_id, 2), _op(mission_id, 3)])
+    host.narrative_tick()  # coalesced within the interval: still covers #1
+    first = progress_narrative()
+
+    assert first["status"] == "available"
+    assert first["terminal"] is False
+    assert first["source_watermark"] == 1
+    assert first["latest_operational_sequence"] == 3
+    # A page through a cursor still reports record sequences, not cursors.
+    cursor = client.get(url, params={"section": "progress"}).json()["next_cursor"]
+    paged = client.get(url, params={"section": "progress", "cursor": cursor}).json()
+    assert paged["progress"]["narrative"]["latest_operational_sequence"] == 3
+
+
 def test_narrative_generation_does_not_overlap(tmp_path: Path) -> None:
     entered = Event()
     release = Event()

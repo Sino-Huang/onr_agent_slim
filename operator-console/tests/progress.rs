@@ -46,7 +46,7 @@ fn render(view: &mut ProgressView, width: u16, height: u16, theme: Theme) -> Str
     terminal
         .draw(|frame| {
             let area = frame.area();
-            draw_progress(frame, area, view, theme);
+            draw_progress(frame, area, view, theme, common::UNIX_ORIGIN);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();

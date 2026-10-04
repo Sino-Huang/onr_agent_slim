@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ◑■■■ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing ─ ○ Done
+ ⠋ Stopping airsim-engine (3/3) · 0:06 / grace 0:30 · w: 6 Stack log
+┌ Mission Run ────────────────────────────────────────────────────────────────────┐┌ world · seq - · live ─────────────────────────────────────────────────────┐
+│ Status:    running · cancellation requested                                     ││ Images disabled (--image-protocol off)                                    │
+│ Mission:   mission-fixture-001                                                  ││                                                                           │
+│ Run:       run-fixture-001                                                      ││                                                                           │
+│ Stack:     mission1-harbor · AirSim off · perception off                        ││                                                                           │
+│ Started:   2026-08-24T12:00:03Z                                                 ││                                                                           │
+│ Finished:  -                                                                    ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘│                                                                           │
+┌ Progress ───────────────────────────────────────────────────────────────────────┐│                                                                           │
+│◆ Run Narrative · AI · non-authoritative                                         ││                                                                           │
+│AI narrative · 0 s old · through record #412                                     ││                                                                           │
+│Legs 1-2 complete; ship 2's report was altered and the agent replanned.          ││                                                                           │
+│▲ AI Replan after report alteration (31 records)                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+│                                                                                 │┌ Belief ───────────────────────────────────────────────────────────────────┐
+│                                                                                 ││reporting_reliability · r8                                                 │
+│                                                                                 ││ship 2 0.6230 · Δ prior +0.4900 · prev +0.1200                             │
+│                                                                                 ││ship 14 0.0600 · Δ prior -0.0700 · prev +0.0000                            │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
+┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v397 · plan r4                                                    │
+│ No Human Decision Requests require action.                                      ││▲ missing [plan] · stale [plan] · unhealthy [plan]                         │
+│ Status-only view: no decision controls.                                         ││FSM assignment-1-in-progress · candidates 2                                │
+│                                                                                 ││search_area · active                                                       │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · w teardown · Ctrl+Q: detach
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -12,7 +12,7 @@ from onr.runtime_host.stack import PreflightProbes, load_stack_catalog, run_pref
 from tests.support import launcher_goldens
 
 REPOSITORY = Path(__file__).parents[1]
-CONTRACT = REPOSITORY / "docs/design/operator-console/contract/v1.2"
+CONTRACT = REPOSITORY / "docs/design/operator-console/contract"
 MODEL = "Qwen/Qwen3.8-27B-FP8"
 
 pytestmark = pytest.mark.skipif(
@@ -48,9 +48,8 @@ def _checks(report: dict[str, object]) -> dict[str, dict[str, object]]:
     return {check["check_id"]: check for check in report["checks"]}  # type: ignore[index, union-attr]
 
 
-def test_busy_airsim_port_blocks_launch_in_the_contract_shape() -> None:
-    example = json.loads((CONTRACT / "stack-preflight.response.json").read_text())
-    report = run_preflight(
+def _busy_airsim_report() -> dict[str, object]:
+    return run_preflight(
         load_stack_catalog(),
         "mission1-airsim",
         {"perception": "yolo"},
@@ -60,16 +59,27 @@ def test_busy_airsim_port_blocks_launch_in_the_contract_shape() -> None:
         ),
     )
 
+
+def test_busy_airsim_port_blocks_launch_in_the_contract_shape() -> None:
+    example = json.loads((CONTRACT / "v1.2/stack-preflight.response.json").read_text())
+    report = _busy_airsim_report()
+
     assert report.keys() == example.keys()
     assert report["toggles"] == example["toggles"]
     assert report["launchable"] is False
     checks = _checks(report)
-    for check in report["checks"]:  # type: ignore[union-attr]
-        assert check.keys() == example["checks"][0].keys()
     expected = {check["check_id"]: check for check in example["checks"]}
+    v12_fields = example["checks"][0].keys()
+    for check in report["checks"]:  # type: ignore[union-attr]
+        assert check.keys() - {"remediation"} == v12_fields
     assert checks["vllm"] == expected["vllm"]
-    assert checks["port:41451"] == expected["port:41451"]
-    assert checks["gpu"] == {**expected["gpu"], "detail": "GPU1 free 1.5 GiB"}
+    assert {key: checks["port:41451"][key] for key in v12_fields} == expected[
+        "port:41451"
+    ]
+    assert {key: checks["gpu"][key] for key in v12_fields} == {
+        **expected["gpu"],
+        "detail": "GPU1 free 1.5 GiB",
+    }
     assert {
         "engine",
         "perception",
@@ -81,6 +91,38 @@ def test_busy_airsim_port_blocks_launch_in_the_contract_shape() -> None:
     assert all(
         checks[name]["status"] == "pass" for name in ("engine", "perception", "yolo")
     )
+
+
+def test_v1_5_example_is_the_host_report_with_copyable_diagnostics() -> None:
+    example = json.loads((CONTRACT / "v1.5/stack-preflight.response.json").read_text())
+    report = _busy_airsim_report()
+
+    assert report == example
+    diagnosed = {
+        check["check_id"]: check["remediation"]
+        for check in report["checks"]  # type: ignore[union-attr]
+        if "remediation" in check
+    }
+    # Only failing or warning checks carry a diagnostic, never a fix.
+    assert diagnosed == {
+        "port:41451": "ss -ltnp 'sport = :41451'",
+        "gpu": "nvidia-smi",
+    }
+
+
+def test_unreachable_vllm_and_low_disk_name_their_diagnostic_command() -> None:
+    probes = replace(
+        _probes(reachable=False), disk_free_bytes=lambda _path: 2 * 1024**3
+    )
+    report = run_preflight(
+        load_stack_catalog(), "mission2", None, repo_root=REPOSITORY, probes=probes
+    )
+
+    checks = _checks(report)
+    assert checks["vllm"]["remediation"] == "curl -sS http://127.0.0.1:11411/v1/models"
+    assert checks["disk"]["status"] == "warn"
+    assert checks["disk"]["remediation"] == f"du -sh {REPOSITORY / 'var'}/* | sort -h"
+    assert "remediation" not in checks["planners"]
 
 
 def test_simulated_harbor_preset_is_launchable_with_healthy_probes() -> None:

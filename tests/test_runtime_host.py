@@ -156,7 +156,7 @@ def test_health_and_empty_current_run_contract(tmp_path: Path) -> None:
 
     assert client.get("/api/v1/health").json() == {
         "status": "ok",
-        "api_version": {"major": 1, "minor": 3},
+        "api_version": {"major": 1, "minor": 5},
     }
     response = client.get("/api/v1/mission-runs/current")
     assert response.status_code == 200
@@ -1139,7 +1139,14 @@ def test_worker_lifecycle_records_success_and_failure(tmp_path: Path) -> None:
     assert failed["terminal_classification"] == "worker_failed"
     assert failed["finished_at"] == "2026-08-24T12:00:00+00:00"
     detail = failed["terminal_detail"]
-    assert set(detail) == {"kind", "stage", "error_type", "message"}
+    contract = json.loads(
+        Path(
+            "docs/design/operator-console/contract/v1.5/"
+            "mission-runs.current.worker-failed.response.json"
+        ).read_text(encoding="utf-8")
+    )["mission_run"]["terminal_detail"]
+    assert set(detail) == set(contract)
+    assert detail["log_artifact_id"] == "worker-log"
     assert detail["kind"] == "worker_failed"
     assert detail["stage"] == "worker"
     assert detail["error_type"] == "RuntimeError"
@@ -1170,6 +1177,7 @@ def test_closed_loop_failure_reports_its_stage(tmp_path: Path) -> None:
         "stage": "closed_loop",
         "error_type": "ValueError",
         "message": "environment planning view has no static_info evidence",
+        "log_artifact_id": "worker-log",
     }
 
 
@@ -1279,7 +1287,7 @@ def test_ephemeral_loopback_server_exercises_real_http_and_durable_lifecycle(
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2) as client:
             assert client.get("/api/v1/health").json() == {
                 "status": "ok",
-                "api_version": {"major": 1, "minor": 3},
+                "api_version": {"major": 1, "minor": 5},
             }
             accepted = client.post(
                 "/api/v1/mission-activations",

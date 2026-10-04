@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "default_preset_id": "mission1-harbor",
+  "presets": [
+    {
+      "preset_id": "mission1-harbor",
+      "title": "Mission 1 · Harbor (simulated)",
+      "description": "Confirm every event in the vessel event report and estimate each vessel's reporting reliability in the simulated Harbor world. Real LLM calls (vLLM agents).",
+      "mission_mode": "mission1",
+      "default_mission_text": "Please patrol the environment and confirm every reported event.",
+      "supports": {
+        "airsim": [
+          false,
+          true
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": "Perception needs the recorded Harbor engine scene: choose Mission 1 · AirSim live.",
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "mission1-airsim",
+      "title": "Mission 1 · AirSim live",
+      "description": "Confirm every reported event and estimate vessel reporting reliability on the recorded offshore-dock scene; it ends at 299.5 s. Real LLM calls (vLLM agents).",
+      "mission_mode": "mission1",
+      "default_mission_text": "Patrol the window 60-130 s and verify every reported event.",
+      "supports": {
+        "airsim": [
+          true
+        ],
+        "perception": [
+          "off",
+          "ideal",
+          "yolo"
+        ]
+      },
+      "unsupported_reason": "This preset plays the Harbor engine scene: AirSim cannot be turned off.",
+      "defaults": {
+        "airsim": true,
+        "perception": "yolo",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 290
+      }
+    },
+    {
+      "preset_id": "mission2",
+      "title": "Mission 2 · Collision-risk monitoring",
+      "description": "Monitor ship collision risks until the scenario recording ends, choosing drone views or vessel pursuits for fresher observations. Real LLM calls (vLLM agents).",
+      "mission_mode": "mission2",
+      "default_mission_text": "Monitor ship collision risks until the scenario recording ends.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "mission3",
+      "title": "Mission 3 · Ship inspection (smoke scenario)",
+      "description": "Inspect the selected ships for abnormal attached objects and report each as normal, abnormal or incomplete, on a small smoke scenario. Real LLM calls (vLLM agents).",
+      "mission_mode": "mission3",
+      "default_mission_text": "Inspect the runtime-selected fleet for abnormal objects attached to ships.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "mission4",
+      "title": "Mission 4 · Worker-requested search",
+      "description": "Search for persons in distress and animals on ground-team tasks sent by a scripted Mission 4 worker, resolving each task before its deadline. Real LLM calls (vLLM agents).",
+      "mission_mode": "mission4",
+      "default_mission_text": "Accept worker-reported ground-team tasks, search the indicated area, and locate persons in distress and locate or identify animals from observation evidence.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "joint",
+      "title": "Joint · Missions 1 + 2",
+      "description": "Report verification and collision-risk monitoring sharing one drone. No Mission 1 report instance is committed for this scenario: supply one first. Real LLM calls (vLLM agents).",
+      "mission_mode": "joint",
+      "default_mission_text": "Perform vessel event-report reliability monitoring and ship collision-risk monitoring together until the scenario recording ends.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "joint24",
+      "title": "Joint · Missions 2 + 4",
+      "description": "Collision-risk monitoring and scripted Mission 4 worker search requests sharing one drone; urgent requests and fresh alerts preempt routine work. Real LLM calls (vLLM agents).",
+      "mission_mode": "joint24",
+      "default_mission_text": "Perform ship collision-risk monitoring and worker-requested object search together until the scenario recording ends.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    },
+    {
+      "preset_id": "joint34",
+      "title": "Joint · Missions 3 + 4",
+      "description": "Ship inspection and scripted Mission 4 worker search requests sharing one drone within the Mission 3 time budget. Real LLM calls (vLLM agents).",
+      "mission_mode": "joint34",
+      "default_mission_text": "Perform gate/vessel inspection of the selected ships and worker-requested object search together within the Mission 3 time budget that bounds the run.",
+      "supports": {
+        "airsim": [
+          false
+        ],
+        "perception": [
+          "off"
+        ]
+      },
+      "unsupported_reason": null,
+      "defaults": {
+        "airsim": false,
+        "perception": "off",
+        "update_ownership": "coordinator_driven",
+        "simulation_limit_seconds": 600
+      }
+    }
+  ],
+  "toggle_choices": {
+    "airsim": [
+      {
+        "value": false,
+        "description": "Nothing: Harbor is not started; World shows the world-model map only."
+      },
+      {
+        "value": true,
+        "perception": "off",
+        "description": "AirSim Follower visualizes the simulated world (no agent perception): ships and drone follow the world model, with ideal segmentation boxes."
+      },
+      {
+        "value": true,
+        "perception": "ideal",
+        "description": "Scene clock: Harbor plays the recorded scene; World shows the front camera annotated with the ships ideal perception reported."
+      },
+      {
+        "value": true,
+        "perception": "yolo",
+        "description": "Scene clock: Harbor plays the recorded scene; World shows the front camera annotated with the YOLO detections for that frame."
+      }
+    ],
+    "perception": [
+      {
+        "value": "off",
+        "description": "Simulated truth: the world model runs on the scenario's simulated information; no perception module feeds it."
+      },
+      {
+        "value": "ideal",
+        "description": "Perception-fed truth: ideal perception (AirSim segmentation plus exact poses of visible ships, not learned) feeds the world model."
+      },
+      {
+        "value": "yolo",
+        "description": "Perception-fed truth: YOLO detections on the AirSim front camera feed the world model."
+      }
+    ],
+    "update_ownership": [
+      {
+        "value": "coordinator_driven",
+        "description": "Mission time pauses while agents reason: the environment advances only between agent decisions, so wall time runs ahead of Mission time."
+      },
+      {
+        "value": "environment_driven",
+        "description": "Mission time keeps advancing while agents reason: the environment ticks on its own cadence, so a decision can act on older evidence."
+      }
+    ]
+  }
+}

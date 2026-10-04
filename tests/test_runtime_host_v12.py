@@ -296,6 +296,83 @@ def test_operator_new_sections_and_cursor_boundaries(tmp_path):
     assert "steps" in overview["phase"]
 
 
+def test_previous_ready_seconds_are_measured_history_of_the_same_preset(tmp_path):
+    host, client, _ = setup_host(tmp_path)
+    requests = iter(range(1, 10))
+
+    def launch(preset_id):
+        response = client.post(
+            "/api/v1/mission-activations",
+            json={
+                **BODY,
+                "activation_request_id": f"request-{next(requests)}",
+                "stack": {"preset_id": preset_id},
+            },
+            headers=HEADERS,
+        )
+        assert response.status_code == 202
+        return response.json()["mission_run_id"]
+
+    def write_status(run_id, services):
+        RunRoot.for_run(host._runs_root, run_id).stack_status.write_text(
+            json.dumps({"preset_id": "x", "toggles": {}, "services": services})
+        )
+
+    def service(name, started_at, ready_at):
+        return {
+            "name": name,
+            "required": True,
+            "state": "ready" if ready_at else "failed",
+            "started_at": started_at,
+            "ready_at": ready_at,
+        }
+
+    def history(run_id):
+        stack = client.get(
+            f"/api/v1/mission-runs/{run_id}/operator-view?section=stack"
+        ).json()["stack"]
+        return {
+            item["name"]: item.get("previous_ready_seconds")
+            for item in stack["services"]
+        }
+
+    first = launch("mission2")
+    write_status(
+        first,
+        [
+            service("perception", "2026-08-24T12:00:00Z", "2026-08-24T12:00:27Z"),
+            # Started but never ready: nothing was measured.
+            service("physical-runtime", "2026-08-24T12:00:27Z", None),
+            # The closed loop has no readiness probe.
+            service("closed-loop", "2026-08-24T12:00:30Z", "2026-08-24T12:00:30Z"),
+        ],
+    )
+    host._transition(first, "succeeded")
+    other = launch("mission1-harbor")
+    write_status(
+        other,
+        [service("perception", "2026-08-24T12:10:00Z", "2026-08-24T12:10:05Z")],
+    )
+    assert history(other) == {"perception": None}, "no earlier mission1-harbor run"
+    host._transition(other, "succeeded")
+
+    third = launch("mission2")
+    write_status(
+        third,
+        [
+            service("perception", "2026-08-24T12:20:00Z", None),
+            service("physical-runtime", None, None),
+            service("closed-loop", None, None),
+        ],
+    )
+    # From the previous mission2 run, not the newer mission1-harbor one.
+    assert history(third) == {
+        "perception": 27.0,
+        "physical-runtime": None,
+        "closed-loop": None,
+    }
+
+
 def test_world_route_proxy_etag_and_final_cache(tmp_path):
     host, client, _ = setup_host(tmp_path)
     activate(client)
@@ -364,9 +441,65 @@ def _detached_worker(context):
                 "schema_version": 1,
                 "preset_id": "mission1-harbor",
                 "toggles": {},
-                "services": [
-                    {"name": "detached", "state": "ready", "importance": "routine"}
+                "step": {
+                    "name": "mission1-surveillance-views",
+                    "stage": "post_ready",
+                    "started_at": "2026-08-27T14:00:01Z",
+                    "timeout_seconds": 600.0,
+                },
+                "steps": [
+                    {
+                        "name": "airsim-fixture",
+                        "stage": "prepare",
+                        "state": "done",
+                        "started_at": "2026-08-27T13:59:58Z",
+                        "finished_at": "2026-08-27T14:00:01Z",
+                        "log_artifact_id": "service-log-airsim-fixture",
+                        "timeout_seconds": 600.0,
+                    },
+                    {
+                        "name": "mission1-surveillance-views",
+                        "stage": "post_ready",
+                        "state": "running",
+                        "started_at": "2026-08-27T14:00:01Z",
+                        "finished_at": None,
+                        "log_artifact_id": "service-log-mission1-surveillance-views",
+                        "timeout_seconds": 600.0,
+                    },
                 ],
+                "services": [
+                    {
+                        "name": "detached",
+                        "state": "starting",
+                        "importance": "routine",
+                        "waiting_for": "the frozen engine",
+                        "ready_timeout_seconds": 300.0,
+                    },
+                    # The supervisor was mid-teardown when the tree was reaped:
+                    # the visualizer had stopped, the engine had its SIGTERM.
+                    {
+                        "name": "airsim-engine",
+                        "state": "stopping",
+                        "importance": "routine",
+                        "started_at": "2026-08-27T13:59:01Z",
+                        "stop_requested_at": "2026-08-27T14:00:03Z",
+                        "stop_grace_seconds": 30.0,
+                    },
+                    {
+                        "name": "airsim-visualizer",
+                        "state": "stopped",
+                        "importance": "routine",
+                        "stop_requested_at": "2026-08-27T14:00:02Z",
+                        "stop_grace_seconds": 10.0,
+                        "stop_mode": "graceful",
+                        "stopped_at": "2026-08-27T14:00:03Z",
+                    },
+                ],
+                "teardown": {
+                    "started_at": "2026-08-27T14:00:02Z",
+                    "finished_at": None,
+                    "stop_order": ["airsim-visualizer", "airsim-engine"],
+                },
             }
         )
     )
@@ -398,6 +531,7 @@ def test_owned_detached_child_reaped_but_unrelated_process_survives(
         _wait_for(marker.exists)
         child_pid = int(marker.read_text())
         guardian_pid = int((run_root(host).path / "guardian.pid").read_text())
+        reader = host
         if recover:
             if legacy_record:
                 state = json.loads(host._state_path.read_text())
@@ -416,6 +550,7 @@ def test_owned_detached_child_reaped_but_unrelated_process_survives(
             )
             record = current_run(reconstructed)
             assert record["terminal_classification"] == "host_interrupted"
+            reader = reconstructed
         else:
             response = client.post(
                 "/api/v1/mission-runs/run-1/cancellations",
@@ -434,9 +569,63 @@ def test_owned_detached_child_reaped_but_unrelated_process_survives(
             )
         )
         assert outsider.poll() is None
-        assert (
-            json.loads(run_root(host).stack_status.read_text())["services"][0]["state"]
-            == "stopped"
+        # A stack reaped mid-startup must not keep showing what it waited for.
+        status = json.loads(run_root(host).stack_status.read_text())
+        assert "step" not in status
+        # Finished prep steps keep their history; a reaped one ends stopped.
+        assert [(step["name"], step["state"]) for step in status["steps"]] == [
+            ("airsim-fixture", "done"),
+            ("mission1-surveillance-views", "stopped"),
+        ]
+        assert status["steps"][1]["finished_at"] is None
+        # A forced reap never claims a graceful stop: what was still running
+        # or stopping ends `forced` at the time the Host verified the exit; a
+        # service the supervisor had already stopped keeps its recorded mode.
+        reaped_at = status["updated_at"]
+        assert status["services"] == [
+            {
+                "name": "detached",
+                "state": "stopped",
+                "importance": "routine",
+                "ready_timeout_seconds": 300.0,
+                "stop_mode": "forced",
+                "stopped_at": reaped_at,
+            },
+            {
+                "name": "airsim-engine",
+                "state": "stopped",
+                "importance": "routine",
+                "started_at": "2026-08-27T13:59:01Z",
+                "stop_requested_at": "2026-08-27T14:00:03Z",
+                "stop_grace_seconds": 30.0,
+                "stop_mode": "forced",
+                "stopped_at": reaped_at,
+            },
+            {
+                "name": "airsim-visualizer",
+                "state": "stopped",
+                "importance": "routine",
+                "stop_requested_at": "2026-08-27T14:00:02Z",
+                "stop_grace_seconds": 10.0,
+                "stop_mode": "graceful",
+                "stopped_at": "2026-08-27T14:00:03Z",
+            },
+        ]
+        assert status["teardown"] == {
+            "started_at": "2026-08-27T14:00:02Z",
+            "finished_at": reaped_at,
+            "stop_order": ["airsim-visualizer", "airsim-engine"],
+        }
+        # The receipt: the worker is stopped; the engine log reported no
+        # restoration (the guardian is a stand-in here), so it stays unknown.
+        receipt = (
+            TestClient(create_app(host=reader), client=("127.0.0.1", 50000))
+            .get("/api/v1/mission-runs/run-1/operator-view?section=stack")
+            .json()["stack"]["teardown"]
+        )
+        assert (receipt["worker"], receipt["harbor_config"]) == (
+            "stopped",
+            {"state": "unknown", "reported_by": None},
         )
         assert (
             not Path(f"/proc/{guardian_pid}/stat")
@@ -495,7 +684,7 @@ def stub_stack(monkeypatch, context):
         def begin_closed_loop(self):
             pass
 
-        def end_closed_loop(self, *, failed):
+        def end_closed_loop(self, *, failed, cancelled=False):
             pass
 
         def poll(self):

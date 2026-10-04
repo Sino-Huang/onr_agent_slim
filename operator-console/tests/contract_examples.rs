@@ -5,19 +5,29 @@
 //! fixture HTTP server (tests/support) serves these same bytes/shapes.
 //!
 //! v1.2 is the console's required surface; v1.3 adds AirSim-on/perception-off
-//! stack presets and the World section's AirSim status. v1/v1.1 examples that
-//! the v1.2 Host still serves unchanged (activation, errors, owner intent,
-//! cancellation, Artifacts, agents/environment/artifacts sections) keep their
-//! exact round trips; `/current` examples from v1 predate `stack` and
-//! `terminal_detail` and only need to decode.
+//! stack presets and the World section's AirSim status; v1.4 adds the stack's
+//! readiness waits (`waiting_for`, `ready_timeout_seconds`, `step`); v1.5 adds
+//! prep-step history (`steps[]`), per-service `previous_ready_seconds`, the
+//! progress narrative's `terminal` and `latest_operational_sequence`, the
+//! preflight checks' optional `remediation` diagnostic, the presets'
+//! optional `description` plus `toggle_choices` descriptions, and the
+//! failure card's `terminal_detail.log_artifact_id` and `overview.run_root`,
+//! the stack's teardown (`stopping` services, `stop_mode`, `teardown`
+//! receipt), the terminal `overview.receipt` with its owner export
+//! (`POST .../receipt-exports`), and the paginated run history
+//! (`GET /api/v1/mission-runs`). v1/v1.1
+//! examples that the v1.2 Host still serves unchanged (activation, errors,
+//! owner intent, cancellation, Artifacts, agents/environment/artifacts
+//! sections) keep their exact round trips; `/current` examples from v1
+//! predate `stack` and `terminal_detail` and only need to decode.
 
 use operator_console::host::{
     ActivationAccepted, ActivationRequest, ArtifactContentPage, ArtifactsPage,
     CancellationAccepted, CancellationRequest, ConversationEntriesPage, CurrentRun, ErrorBody,
-    FrameSource, Health, MissionIntent, OperatorAgentsPage, OperatorArtifactsPage,
+    FrameSource, Health, MissionIntent, MissionRunsPage, OperatorAgentsPage, OperatorArtifactsPage,
     OperatorBeliefsPage, OperatorContextPage, OperatorEnvironmentPage, OperatorOverviewPage,
     OperatorProgressPage, OperatorSection, OperatorStackPage, OperatorViewPage, OperatorWorldPage,
-    StackPreflight, StackPresets,
+    ReceiptExportRequest, ReceiptExported, StackPreflight, StackPresets,
 };
 use serde_json::Value;
 
@@ -54,13 +64,15 @@ where
 }
 
 #[test]
-fn v1_2_and_v1_3_health_are_supported_and_v1_0_is_too_old() {
-    let health: Health = exact("v1.2", "health.response.json");
-    assert_eq!((health.api_version.major, health.api_version.minor), (1, 2));
-    assert!(health.api_version.is_supported());
-    let health: Health = exact("v1.3", "health.response.json");
-    assert_eq!((health.api_version.major, health.api_version.minor), (1, 3));
-    assert!(health.api_version.is_supported());
+fn v1_2_through_v1_5_health_are_supported_and_v1_0_is_too_old() {
+    for (version, minor) in [("v1.2", 2), ("v1.3", 3), ("v1.4", 4), ("v1.5", 5)] {
+        let health: Health = exact(version, "health.response.json");
+        assert_eq!(
+            (health.api_version.major, health.api_version.minor),
+            (1, minor)
+        );
+        assert!(health.api_version.is_supported());
+    }
     let old: Health = exact("v1", "health.response.json");
     assert!(!old.api_version.is_supported());
 }
@@ -82,6 +94,54 @@ fn stack_presets_carry_supports_defaults_and_unsupported_reason() {
 }
 
 #[test]
+fn v1_5_presets_describe_presets_and_toggle_choices() {
+    let older: StackPresets = exact("v1.3", "stack-presets.response.json");
+    assert!(older.toggle_choices.is_none());
+    assert!(
+        older
+            .presets
+            .iter()
+            .all(|preset| preset.description.is_none())
+    );
+
+    let presets: StackPresets = exact("v1.5", "stack-presets.response.json");
+    assert_eq!(presets.presets.len(), 8);
+    assert!(presets.presets.iter().all(|preset| {
+        preset
+            .description
+            .as_deref()
+            .is_some_and(|text| text.contains("Real LLM calls"))
+    }));
+    let choices = presets.toggle_choices.as_ref().unwrap();
+    assert!(
+        choices
+            .airsim(true, "off")
+            .unwrap()
+            .contains("visualizes the simulated world (no agent perception)")
+    );
+    assert!(
+        choices
+            .airsim(true, "yolo")
+            .unwrap()
+            .contains("YOLO detections")
+    );
+    assert!(choices.airsim(false, "off").unwrap().starts_with("Nothing"));
+    assert!(
+        choices
+            .perception("ideal")
+            .unwrap()
+            .starts_with("Perception-fed truth")
+    );
+    assert!(
+        choices
+            .update_ownership("coordinator_driven")
+            .unwrap()
+            .contains("Mission time pauses while agents reason")
+    );
+    assert!(choices.update_ownership("environment_driven").is_some());
+}
+
+#[test]
 fn preflight_with_a_failing_check_does_not_allow_launch() {
     let preflight: StackPreflight = exact("v1.2", "stack-preflight.response.json");
     assert!(!preflight.launchable);
@@ -93,6 +153,28 @@ fn preflight_with_a_failing_check_does_not_allow_launch() {
         .collect();
     assert_eq!(statuses, ["pass", "warn", "fail"]);
     assert!(preflight.toggles.airsim);
+}
+
+#[test]
+fn v1_5_preflight_checks_carry_an_optional_diagnostic_command() {
+    let preflight: StackPreflight = exact("v1.5", "stack-preflight.response.json");
+    assert_eq!(preflight.checks.len(), 12);
+    assert!(!preflight.allows_launch());
+    let diagnosed: Vec<(&str, &str)> = preflight
+        .checks
+        .iter()
+        .filter_map(|check| Some((check.check_id.as_str(), check.remediation.as_deref()?)))
+        .collect();
+    assert_eq!(
+        diagnosed,
+        [
+            ("port:41451", "ss -ltnp 'sport = :41451'"),
+            ("gpu", "nvidia-smi")
+        ]
+    );
+    // Older Hosts omit the field.
+    let older: StackPreflight = exact("v1.2", "stack-preflight.response.json");
+    assert!(older.checks.iter().all(|check| check.remediation.is_none()));
 }
 
 #[test]
@@ -141,6 +223,112 @@ fn current_run_examples_carry_stack_and_terminal_detail() {
         detail.summary(),
         "Stack service perception failed: health not ready in 900 s"
     );
+}
+
+#[test]
+fn v1_5_failures_name_their_log_and_the_overview_its_run_root() {
+    let stack: CurrentRun = exact("v1.5", "mission-runs.current.stack-failed.response.json");
+    let detail = stack.mission_run.unwrap().terminal_detail.unwrap();
+    assert_eq!(
+        (detail.service.as_deref(), detail.log_artifact_id.as_deref()),
+        (Some("perception"), Some("service-log-perception"))
+    );
+    let worker: CurrentRun = exact("v1.5", "mission-runs.current.worker-failed.response.json");
+    let detail = worker.mission_run.unwrap().terminal_detail.unwrap();
+    assert_eq!(detail.log_artifact_id.as_deref(), Some("worker-log"));
+
+    let page: OperatorOverviewPage = exact("v1.5", "mission-run-operator-overview.response.json");
+    assert_eq!(
+        page.overview.run_root.as_deref(),
+        Some("/srv/onr/var/runtime-host/runs/run-fixture-001")
+    );
+    // Older Hosts omit both: they decode as absent and stay absent.
+    let legacy: CurrentRun = exact("v1.2", "mission-runs.current.stack-failed.response.json");
+    assert_eq!(
+        legacy
+            .mission_run
+            .unwrap()
+            .terminal_detail
+            .unwrap()
+            .log_artifact_id,
+        None
+    );
+    let legacy: OperatorOverviewPage = exact("v1.2", "mission-run-operator-overview.response.json");
+    assert_eq!(legacy.overview.run_root, None);
+}
+
+#[test]
+fn v1_5_terminal_overview_carries_the_receipt_and_its_export_round_trips() {
+    let page: OperatorOverviewPage = exact(
+        "v1.5",
+        "mission-run-operator-overview.succeeded.response.json",
+    );
+    let receipt = page.overview.receipt.unwrap();
+    assert_eq!(
+        (receipt.status.as_str(), receipt.classification.as_deref()),
+        ("succeeded", None)
+    );
+    assert_eq!(
+        (
+            receipt.last.fsm_state.as_deref(),
+            receipt.last.plan_revision,
+            receipt.last.source.as_deref()
+        ),
+        (Some("mission-complete"), Some(4), Some("fsm-status"))
+    );
+    // A succeeded lifecycle with a failed audit: the verdict is the audit's.
+    assert_eq!(receipt.audit.status, "fail");
+    assert_eq!(receipt.audit.failures, ["evidence_replan_not_observed"]);
+    assert_eq!(receipt.export.exported_at, None);
+    // Running (and older) overviews carry no receipt.
+    let running: OperatorOverviewPage =
+        exact("v1.5", "mission-run-operator-overview.response.json");
+    assert_eq!(running.overview.receipt, None);
+
+    let request: ReceiptExportRequest = exact("v1.5", "mission-run-receipt-export.request.json");
+    assert_eq!(request, ReceiptExportRequest::default());
+    let exported: ReceiptExported = exact("v1.5", "mission-run-receipt-export.response.json");
+    assert_eq!(
+        exported.path,
+        "/srv/onr/var/runtime-host/runs/run-fixture-001/mission-run-receipt.json"
+    );
+    assert!(!exported.replaced);
+}
+
+#[test]
+fn v1_5_run_history_pages_round_trip_without_the_mission_intent() {
+    let page: MissionRunsPage = exact("v1.5", "mission-runs.response.json");
+    assert_eq!(page.mission_runs.len(), 4);
+    assert_eq!(page.next_before.as_deref(), Some("run-1"));
+    let current = &page.mission_runs[0];
+    assert!(current.current && current.run_root_available);
+    assert_eq!(
+        current
+            .toggles
+            .as_ref()
+            .unwrap()
+            .update_ownership
+            .as_deref(),
+        Some("coordinator_driven")
+    );
+    let failed = &page.mission_runs[2].mission_run;
+    assert_eq!(
+        failed
+            .terminal_detail
+            .as_ref()
+            .unwrap()
+            .log_artifact_id
+            .as_deref(),
+        Some("service-log-airsim-engine")
+    );
+    // A run recorded before v1.2: no stack, no toggles, and its Run Root gone.
+    let legacy = &page.mission_runs[3];
+    assert_eq!(
+        (legacy.mission_run.stack.as_ref(), legacy.toggles.as_ref()),
+        (None, None)
+    );
+    assert!(!legacy.run_root_available);
+    assert!(!raw("v1.5", "mission-runs.response.json").contains("mission_intent"));
 }
 
 #[test]
@@ -278,6 +466,22 @@ fn progress_section_is_a_flat_node_stream() {
 }
 
 #[test]
+fn v1_5_progress_narrative_reports_the_newest_record_sequence() {
+    let page: OperatorProgressPage = exact("v1.5", "mission-run-operator-progress.response.json");
+    let narrative = page.progress.narrative;
+    assert_eq!(narrative.source_watermark, 763);
+    assert_eq!(narrative.latest_operational_sequence, Some(781));
+    assert_eq!(narrative.terminal, Some(false));
+    assert_eq!(narrative.newer_records(), Some(18));
+
+    // A v1.2 Host omits both fields: no newer count rather than a wrong one.
+    let older: OperatorProgressPage = exact("v1.2", "mission-run-operator-progress.response.json");
+    assert_eq!(older.progress.narrative.latest_operational_sequence, None);
+    assert_eq!(older.progress.narrative.terminal, None);
+    assert_eq!(older.progress.narrative.newer_records(), None);
+}
+
+#[test]
 fn beliefs_section_has_entities_history_and_an_explicit_none_state() {
     let page: OperatorBeliefsPage = exact("v1.2", "mission-run-operator-beliefs.response.json");
     let beliefs = page.beliefs;
@@ -311,6 +515,179 @@ fn context_world_and_stack_sections_round_trip_exactly() {
         stack.stack.services[0].log_artifact_id.as_deref(),
         Some("service-log-physical-runtime")
     );
+}
+
+#[test]
+fn v1_4_stack_reports_what_a_starting_service_or_prep_step_waits_for() {
+    let starting: OperatorStackPage =
+        exact("v1.4", "mission-run-operator-stack.starting.response.json");
+    let services = &starting.stack.services;
+    assert_eq!(starting.stack.step, None);
+    assert_eq!(services[1].state, "starting");
+    assert_eq!(
+        services[1].waiting_for.as_deref(),
+        Some("the perception producer")
+    );
+    assert_eq!(
+        services[0].waiting_for, None,
+        "ready services wait for nothing"
+    );
+    assert_eq!(
+        services[1]
+            .ready_timeout_seconds
+            .as_ref()
+            .and_then(|n| n.as_f64()),
+        Some(300.0)
+    );
+    assert_eq!(
+        services[3].ready_timeout_seconds, None,
+        "the closed loop has no probe"
+    );
+
+    let preparing: OperatorStackPage =
+        exact("v1.4", "mission-run-operator-stack.preparing.response.json");
+    let step = preparing.stack.step.unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.stage.as_str()),
+        ("airsim-fixture", "prepare")
+    );
+    assert!(
+        preparing
+            .stack
+            .services
+            .iter()
+            .all(|service| service.state == "pending")
+    );
+}
+
+#[test]
+fn v1_5_stack_keeps_prep_step_history_and_previous_readiness() {
+    let post_ready: OperatorStackPage = exact(
+        "v1.5",
+        "mission-run-operator-stack.post-ready.response.json",
+    );
+    let stack = &post_ready.stack;
+    let steps: Vec<(&str, &str, &str)> = stack
+        .steps
+        .iter()
+        .map(|step| (step.name.as_str(), step.stage.as_str(), step.state.as_str()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("airsim-fixture", "prepare", "done"),
+            ("mission1-public-input", "post_ready", "done"),
+            ("mission1-surveillance-views", "post_ready", "running"),
+        ]
+    );
+    assert_eq!(
+        stack.steps[2].finished_at, None,
+        "a running step has no end"
+    );
+    assert_eq!(
+        stack.steps[0].log_artifact_id, "service-log-airsim-fixture",
+        "prep-step logs are service-log Artifacts"
+    );
+    assert_eq!(
+        stack.step.as_ref().map(|step| step.name.as_str()),
+        Some("mission1-surveillance-views")
+    );
+    let history: Vec<Option<f64>> = stack
+        .services
+        .iter()
+        .map(|service| {
+            service
+                .previous_ready_seconds
+                .as_ref()
+                .and_then(|n| n.as_f64())
+        })
+        .collect();
+    // Only measured readiness from the previous run of the same preset.
+    assert_eq!(history, [Some(74.0), Some(9.0), None, None]);
+
+    let starting: OperatorStackPage =
+        exact("v1.5", "mission-run-operator-stack.starting.response.json");
+    assert!(starting.stack.steps.is_empty(), "no prep step started yet");
+    assert_eq!(
+        starting.stack.services[1]
+            .previous_ready_seconds
+            .as_ref()
+            .and_then(|n| n.as_f64()),
+        Some(27.0)
+    );
+    // A v1.4 page decodes with neither field.
+    let v14: OperatorStackPage = exact("v1.4", "mission-run-operator-stack.starting.response.json");
+    assert!(v14.stack.steps.is_empty());
+    assert!(
+        v14.stack
+            .services
+            .iter()
+            .all(|service| service.previous_ready_seconds.is_none())
+    );
+}
+
+#[test]
+fn v1_5_stack_reports_teardown_per_service_and_its_receipt() {
+    let stopping: OperatorStackPage =
+        exact("v1.5", "mission-run-operator-stack.stopping.response.json");
+    let stack = &stopping.stack;
+    let states: Vec<(&str, &str, Option<&str>)> = stack
+        .services
+        .iter()
+        .map(|service| {
+            (
+                service.name.as_str(),
+                service.state.as_str(),
+                service.stop_mode.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("airsim-engine", "stopping", None),
+            ("physical-runtime", "stopped", Some("graceful")),
+            ("airsim-visualizer", "stopped", Some("graceful")),
+            ("closed-loop", "stopped", None),
+        ]
+    );
+    let engine = &stack.services[0];
+    assert_eq!(
+        engine.stop_grace_seconds.as_ref().and_then(|n| n.as_f64()),
+        Some(30.0)
+    );
+    assert!(engine.stopped_at.is_none(), "still stopping");
+    let teardown = stack.teardown.as_ref().unwrap();
+    assert_eq!(
+        teardown.stop_order,
+        ["airsim-visualizer", "physical-runtime", "airsim-engine"],
+        "reverse start order"
+    );
+    assert!(!teardown.finished());
+    assert_eq!(teardown.worker, "running");
+    assert_eq!(teardown.harbor_config.state, "unknown");
+
+    let cancelled: OperatorStackPage =
+        exact("v1.5", "mission-run-operator-stack.cancelled.response.json");
+    let teardown = cancelled.stack.teardown.as_ref().unwrap();
+    assert_eq!(teardown.worker, "stopped");
+    assert_eq!(
+        (
+            teardown.harbor_config.state.as_str(),
+            teardown.harbor_config.reported_by.as_deref()
+        ),
+        ("confirmed", Some("guardian"))
+    );
+    assert_eq!(
+        cancelled.stack.services[0].stop_mode.as_deref(),
+        Some("forced")
+    );
+    // Older pages decode with no teardown.
+    let post_ready: OperatorStackPage = exact(
+        "v1.5",
+        "mission-run-operator-stack.post-ready.response.json",
+    );
+    assert!(post_ready.stack.teardown.is_none());
 }
 
 #[test]

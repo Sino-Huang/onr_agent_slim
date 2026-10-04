@@ -179,6 +179,18 @@ impl Theme {
         }
     }
 
+    /// The `HISTORICAL` badge of a run opened read-only from the history.
+    pub fn historical(self) -> Style {
+        if self.color {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        }
+    }
+
     /// Non-authoritative LLM text: italic.
     pub fn ai(self) -> Style {
         Style::default().add_modifier(Modifier::ITALIC)
@@ -232,11 +244,13 @@ impl Theme {
         }
     }
 
-    /// Stack service state mark.
+    /// Stack service or prep-step state mark.
     pub fn service_mark(self, state: &str) -> Span<'static> {
         match state {
             "ready" => Span::styled("●", self.good()),
-            "starting" => Span::styled("◐", self.hint()),
+            "done" => Span::styled("✔", self.good()),
+            "starting" | "running" => Span::styled("◐", self.hint()),
+            "stopping" => Span::styled("◑", self.hint()),
             "pending" => Span::styled("○", self.dim()),
             "failed" => Span::styled("✖", self.error()),
             "exited" => Span::styled("■", Style::default()),

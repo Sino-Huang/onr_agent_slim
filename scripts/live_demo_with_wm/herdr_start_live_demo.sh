@@ -19,6 +19,11 @@
 # ONR_DEMO_PERCEPTION=yolo|ideal replaces simulated ship evidence with the real
 # Harbor engine (ONR_DEMO_ENGINE_SCENARIO, run under the freeze shim) and the
 # onr_solution Sukai producer; two extra panes own the engine and producer.
+# ONR_DEMO_AIRSIM=1 (perception unset or off) runs the AirSim Follower
+# (ADR 0016) instead: the airsim-fixture prep step builds a lead-in engine scene
+# from the world model's own ship trajectories, and two extra panes own the
+# engine and the airsim-visualizer, which only visualizes the world model.
+# ONR_DEMO_DRY_RUN=1 prints every command, including prep steps, and runs none.
 
 set -euo pipefail
 
@@ -115,16 +120,19 @@ fi
 plan_output="$(stack_plan)"
 eval "$plan_output"
 
-if [ -n "$prepare_command" ]; then
-    eval "$prepare_command"
-fi
-
 if [ "$DRY_RUN" = "1" ]; then
     printf 'DRY RUN: mode=%s; no services started\nRun configuration: %s\nPhysical command: %s\nAgent command: %s\nTerminal audit: %s\n' \
         "$mission_mode" "$run_root" "$physical_command" "$agent_command" "$audit_command"
     if [ -n "$worker_command" ]; then printf 'Worker command: %s\n' "$worker_command"; fi
-    if [ -n "$engine_command" ]; then printf 'Engine command: %s\nPerception command: %s\n' "$engine_command" "$perception_command"; fi
+    if [ -n "$engine_command" ]; then printf 'Engine command: %s\n' "$engine_command"; fi
+    if [ -n "$perception_command" ]; then printf 'Perception command: %s\n' "$perception_command"; fi
+    if [ -n "$visualizer_command" ]; then printf 'Visualizer command: %s\n' "$visualizer_command"; fi
+    if [ -n "$prepare_command" ]; then printf 'Prepare command: %s\n' "$prepare_command"; fi
     exit 0
+fi
+
+if [ -n "$prepare_command" ]; then
+    eval "$prepare_command"
 fi
 
 create_out="$(HERDR_SESSION="$sessname" herdr workspace create --cwd "$AGENT_ROOT" --label "$workspace_label" --no-focus)"
@@ -148,9 +156,18 @@ if [ -n "$engine_command" ]; then
     engine_pane="$(HERDR_SESSION="$sessname" herdr pane split "$physical_pane" --direction down --no-focus | jq -r '.result.pane.pane_id')"
     HERDR_SESSION="$sessname" herdr pane rename "$engine_pane" "airsim-engine"
     HERDR_SESSION="$sessname" herdr pane run "$engine_pane" "$engine_command"
+fi
+
+if [ -n "$perception_command" ]; then
     perception_pane="$(HERDR_SESSION="$sessname" herdr pane split "$agent_pane" --direction down --no-focus | jq -r '.result.pane.pane_id')"
     HERDR_SESSION="$sessname" herdr pane rename "$perception_pane" "perception"
     HERDR_SESSION="$sessname" herdr pane run "$perception_pane" "$perception_command"
+fi
+
+if [ -n "$visualizer_command" ]; then
+    visualizer_pane="$(HERDR_SESSION="$sessname" herdr pane split "$agent_pane" --direction down --no-focus | jq -r '.result.pane.pane_id')"
+    HERDR_SESSION="$sessname" herdr pane rename "$visualizer_pane" "airsim-visualizer"
+    HERDR_SESSION="$sessname" herdr pane run "$visualizer_pane" "$visualizer_command"
 fi
 
 echo "Created workspace '$workspace_label' ($workspace_id) in herdr session '$sessname'."

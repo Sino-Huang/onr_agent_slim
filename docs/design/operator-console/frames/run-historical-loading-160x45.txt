@@ -1,0 +1,45 @@
+ HISTORICAL  loading from disk 7 s RUN run-0d14a731… ● succeeded 00:05:12 │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ Phase: waiting for overview.phase from the Host
+┌ Mission Run ────────────────────────────────────────────────────────────────────┐┌ world · seq - · final ────────────────────────────────────────────────────┐
+│ Status:    succeeded                                                            ││ Images disabled (--image-protocol off)                                    │
+│ Mission:   mission-9d2e8f41-0b6c-4c1a-a3e5-7f8b9c0d1e2f                         ││                                                                           │
+│ Run:       run-0d14a731-6a9d-4b68-b612-4520619511c4                             ││                                                                           │
+│ Stack:     mission1-harbor · AirSim off · perception off                        ││                                                                           │
+│ Started:   2026-10-03T13:22:11.277606+00:00                                     ││                                                                           │
+│ Finished:  2026-10-03T13:27:23.108743+00:00                                     ││                                                                           │
+│ Historical run · read-only · Esc returns                                        ││                                                                           │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘│                                                                           │
+┌ Progress ───────────────────────────────────────────────────────────────────────┐│                                                                           │
+│◆ Run Narrative · AI · non-authoritative                                         ││                                                                           │
+│AI narrative · coverage pending                                                  ││                                                                           │
+│Waiting for the Run Narrative from the Host                                      ││                                                                           │
+│Progress evidence has not arrived yet.                                           ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+│                                                                                 │┌ Belief ───────────────────────────────────────────────────────────────────┐
+│                                                                                 ││Waiting for the Host; data not yet available.                              │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 │└───────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘┌ Context ──────────────────────────────────────────────────────────────────┐
+┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Waiting for the Host; data not yet available.                              │
+│ No Human Decision Requests require action.                                      ││                                                                           │
+│ Status-only view: no decision controls.                                         ││                                                                           │
+│                                                                                 ││                                                                           │
+│                                                                                 ││                                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ HISTORICAL read-only · Esc back to current run · 1-7/Tab tabs · F3 history
+ Loading from disk · 7 s · first open rebuilds the Host's view · 1 read timed out, retrying

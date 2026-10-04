@@ -542,9 +542,18 @@ impl ProgressView {
             Some(ROOT) => {
                 self.detail_ai = true;
                 if let Some(narrative) = &self.narrative {
+                    let newest = narrative
+                        .latest_operational_sequence
+                        .map(|latest| format!(" · newest record #{latest}"))
+                        .unwrap_or_default();
                     self.detail = format!(
-                        "Run Narrative · AI · non-authoritative\nStatus: {} · source watermark {}\nGenerated: {}\n\n{}",
+                        "Run Narrative · AI · non-authoritative\nStatus: {}{} · through record #{}{newest}\nGenerated: {}\n\n{}",
                         narrative.status,
+                        if narrative.terminal == Some(true) {
+                            " · final"
+                        } else {
+                            ""
+                        },
                         narrative.source_watermark,
                         narrative.generated_at.as_deref().unwrap_or("—"),
                         narrative

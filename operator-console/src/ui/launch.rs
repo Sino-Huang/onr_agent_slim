@@ -2,33 +2,60 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use super::layout::{Breakpoint, truncate, wrap_line, wrapped, wrapped_field};
+use super::layout::{Breakpoint, scrolling_list, truncate, wrapped, wrapped_field};
 use super::theme::Theme;
 use super::{draw_footer, status_line, title_line};
 use crate::app::launch::{PERCEPTION_MODES, UPDATE_OWNERSHIP_MODES};
 use crate::app::{App, LaunchField, LaunchState, SOURCE_AUTHORITY};
 
-const KEYS: &str =
-    "Tab field · ←/→ change · F2 demo prompts · Alt+Enter review & launch · r preflight · F1 help";
+const KEYS: &str = "Tab field · ←/→ change · F2 demo prompts · F3 history · Alt+Enter review · r preflight · F1 help";
+const PRESET_KEYS: &str =
+    "Tab field · Enter preset picker · ←/→ cycle · F2 demo prompts · F3 history · Alt+Enter review";
+const PREFLIGHT_KEYS: &str = "Tab field · ↑↓ check · Enter check detail · r re-run preflight · F3 history · Alt+Enter review";
 /// Rows the Mission Intent editor keeps at minimum.
 const MIN_INTENT_ROWS: u16 = 5;
+/// Editor rows the scrollable Preflight list stops growing at.
+const COMFORT_INTENT_ROWS: u16 = 7;
+/// Rows the Stack/Preflight row keeps at minimum.
+const MIN_TOP_ROWS: u16 = 8;
 
-pub fn draw_launch(frame: &mut Frame, area: Rect, app: &App, theme: Theme, breakpoint: Breakpoint) {
-    let launch = &app.launch;
+pub fn draw_launch(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    theme: Theme,
+    breakpoint: Breakpoint,
+) {
     let stack_width = breakpoint.pick(50, 60, 72).min(area.width / 2);
     let preflight_width = area.width.saturating_sub(stack_width);
-    let stack = stack_lines(launch, theme, stack_width.saturating_sub(2) as usize);
-    let (preflight_title, preflight) =
-        preflight_lines(launch, theme, preflight_width.saturating_sub(2) as usize);
-    let wanted = stack.len().max(preflight.len()) as u16 + 2;
-    let available = area.height.saturating_sub(1 + 3 + MIN_INTENT_ROWS);
-    let top_height = wanted.clamp(8, available.max(8));
-    let [header, top, intent, footer] = Layout::vertical([
+    let stack = stack_lines(&app.launch, theme, stack_width.saturating_sub(2) as usize);
+    let preflight = preflight_panel(
+        &app.launch,
+        theme,
+        preflight_width.saturating_sub(2) as usize,
+    );
+    let about = about_lines(&app.launch, theme, area.width.saturating_sub(2) as usize);
+    // Rows, in priority order: the Stack panel in full, then "What this
+    // runs" (keeping the editor's minimum), then the scrollable Preflight
+    // list may grow while the editor keeps a comfortable height.
+    let body = area.height.saturating_sub(1 + 3);
+    let stack_rows = (stack.len() as u16 + 2).max(MIN_TOP_ROWS);
+    let about_height = if about.is_empty() {
+        0
+    } else {
+        (about.len() as u16 + 2).min(body.saturating_sub(MIN_INTENT_ROWS + stack_rows))
+    };
+    let wanted = stack.len().max(preflight.rows.len()) as u16 + 2;
+    let room = body.saturating_sub(COMFORT_INTENT_ROWS + about_height);
+    let top_height = wanted.min(room.max(stack_rows)).max(MIN_TOP_ROWS);
+    let [header, top, about_area, intent, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(top_height),
+        Constraint::Length(about_height),
         Constraint::Min(3),
         Constraint::Length(3),
     ])
@@ -40,15 +67,36 @@ pub fn draw_launch(frame: &mut Frame, area: Rect, app: &App, theme: Theme, break
         Paragraph::new(stack).block(Block::default().borders(Borders::ALL).title(" Stack ")),
         stack_area,
     );
-    frame.render_widget(
-        Paragraph::new(preflight).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(preflight_title),
-        ),
-        preflight_area,
-    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(preflight.title);
+    let widget = if preflight.list {
+        let rows = preflight.rows;
+        scrolling_list(
+            block,
+            preflight_area,
+            theme,
+            rows.len(),
+            preflight.selected,
+            &mut app.launch.preflight_offset,
+            |index| rows[index].clone(),
+        )
+    } else {
+        Paragraph::new(preflight.rows).block(block)
+    };
+    frame.render_widget(widget, preflight_area);
+    if about_height > 0 {
+        frame.render_widget(
+            Paragraph::new(about).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" What this runs "),
+            ),
+            about_area,
+        );
+    }
     draw_intent(frame, intent, app, theme);
+    let launch = &app.launch;
     let status = match launch.launch_blocker() {
         Some(blocker) => Line::from(Span::styled(format!(" ✖ {blocker}"), theme.hint())),
         None => Line::from(Span::styled(
@@ -56,10 +104,31 @@ pub fn draw_launch(frame: &mut Frame, area: Rect, app: &App, theme: Theme, break
             theme.good(),
         )),
     };
-    draw_footer(frame, footer, theme, KEYS, status_line(app, theme, status));
+    let keys = match launch.focus {
+        LaunchField::Preflight => PREFLIGHT_KEYS,
+        LaunchField::Preset => PRESET_KEYS,
+        _ => KEYS,
+    };
+    draw_footer(frame, footer, theme, keys, status_line(app, theme, status));
     if launch.demo_picker.is_some() {
         super::overlays::draw_demo_picker(frame, area, launch, theme);
     }
+    if launch.preset_picker.is_some() {
+        super::overlays::draw_preset_picker(frame, area, launch, theme);
+    }
+    if launch.preflight_detail {
+        super::overlays::draw_preflight_check(frame, area, launch, theme);
+    }
+}
+
+/// "What this runs": the Host's descriptions for the selected preset and
+/// toggles, one labelled wrapped row group each. Empty for an older Host.
+fn about_lines(launch: &LaunchState, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    launch
+        .what_this_runs()
+        .into_iter()
+        .flat_map(|(label, text)| wrapped_field(theme, label, &text, width))
+        .collect()
 }
 
 /// `‹ a │ [b] │ c✗ ›`: the current value in brackets, unsupported values
@@ -202,25 +271,60 @@ fn stack_lines(launch: &LaunchState, theme: Theme, width: usize) -> Vec<Line<'st
     lines
 }
 
-/// Title and wrapped check rows (hanging indent under the mark).
-fn preflight_lines(
-    launch: &LaunchState,
-    theme: Theme,
-    width: usize,
-) -> (String, Vec<Line<'static>>) {
+/// The Preflight panel's title and rows. `list` rows are one per check,
+/// drawn as a scrolling list; otherwise they are a status message.
+struct PreflightPanel {
+    title: Line<'static>,
+    rows: Vec<Line<'static>>,
+    list: bool,
+    /// Highlighted row while the panel has focus.
+    selected: Option<usize>,
+}
+
+/// One row per check, failures first, then warnings, then passes; a row
+/// that does not fit is cut with `…` and Enter shows it in full.
+fn preflight_panel(launch: &LaunchState, theme: Theme, width: usize) -> PreflightPanel {
+    let focused = launch.focus == LaunchField::Preflight;
     let current = launch.current_preflight();
     let pending = launch.preflight_pending();
-    let title = match (current, pending) {
-        (_, true) => " Preflight · running… ",
-        (Some(preflight), false) if preflight.allows_launch() => " Preflight · launchable ",
-        (Some(_), false) => " Preflight · launch blocked ",
-        (None, false) => " Preflight ",
+    let state = match (current, pending) {
+        (_, true) => " · running…",
+        (Some(preflight), false) if preflight.allows_launch() => " · launchable",
+        (Some(_), false) => " · launch blocked",
+        (None, false) => "",
+    };
+    let name = if focused {
+        " ▸Preflight"
+    } else {
+        " Preflight"
+    };
+    let mut title = vec![
+        Span::styled(
+            name,
+            if focused {
+                theme.title()
+            } else {
+                Style::default()
+            },
+        ),
+        Span::raw(state),
+    ];
+    let checks = launch.preflight_checks();
+    if !checks.is_empty() {
+        title.push(Span::raw(" ·"));
+        for status in ["fail", "warn", "pass"] {
+            let count = checks.iter().filter(|check| check.status == status).count();
+            if count > 0 {
+                title.push(Span::raw(" "));
+                title.push(theme.check_mark(status));
+                title.push(Span::raw(count.to_string()));
+            }
+        }
     }
-    .to_string();
-    let shown = current.or(launch.preflight.as_ref());
-    let stale = current.is_none() || pending;
-    let Some(preflight) = shown else {
-        let lines = match launch.preflight_error.as_deref() {
+    title.push(Span::raw(" "));
+    let title = Line::from(title);
+    if checks.is_empty() {
+        let rows = match launch.preflight_error.as_deref() {
             Some(error) => wrapped(
                 &format!("✖ Preflight unavailable: {error}"),
                 width,
@@ -236,41 +340,51 @@ fn preflight_lines(
                 theme.dim(),
             ))],
         };
-        return (title, lines);
-    };
-    let style = if stale {
-        theme.dim()
-    } else {
-        ratatui::style::Style::default()
-    };
-    let mut lines = Vec::new();
-    for check in &preflight.checks {
-        let mut text = check.label.clone();
-        if let Some(detail) = check.detail.as_deref() {
-            text.push_str(&format!(" ({detail})"));
-        }
-        if let Some(hint) = check.hint.as_deref()
-            && check.status != "pass"
-        {
-            text.push_str(&format!(" — {hint}"));
-        }
-        for (index, row) in wrap_line(&text, width.saturating_sub(3))
-            .into_iter()
-            .enumerate()
-        {
-            let mark = if index == 0 {
-                theme.check_mark(&check.status)
-            } else {
-                Span::raw(" ")
-            };
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                mark,
-                Span::styled(format!(" {row}"), style),
-            ]));
-        }
+        return PreflightPanel {
+            title,
+            rows,
+            list: false,
+            selected: None,
+        };
     }
-    (title, lines)
+    let stale = current.is_none() || pending;
+    let selected = launch.selected_check_index().filter(|_| focused);
+    let rows = checks
+        .iter()
+        .enumerate()
+        .map(|(index, check)| {
+            let mut text = check.label.clone();
+            if let Some(detail) = check.detail.as_deref() {
+                text.push_str(&format!(" ({detail})"));
+            }
+            if let Some(hint) = check.hint.as_deref()
+                && check.status != "pass"
+            {
+                text.push_str(&format!(" — {hint}"));
+            }
+            let style = if selected == Some(index) {
+                theme.selected()
+            } else if stale {
+                theme.dim()
+            } else {
+                Style::default()
+            };
+            Line::from(vec![
+                Span::raw(" "),
+                theme.check_mark(&check.status),
+                Span::styled(
+                    format!(" {}", truncate(&text, width.saturating_sub(3))),
+                    style,
+                ),
+            ])
+        })
+        .collect();
+    PreflightPanel {
+        title,
+        rows,
+        list: true,
+        selected,
+    }
 }
 
 fn draw_intent(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
@@ -300,7 +414,7 @@ fn draw_intent(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         .map(Line::from)
         .collect();
     frame.render_widget(Paragraph::new(lines), content);
-    if focused && app.launch.demo_picker.is_none() && !app.help_open {
+    if focused && app.launch.demo_picker.is_none() && !app.help_open && !app.history.open {
         frame.set_cursor_position((content.x + col as u16, content.y + (row - scroll) as u16));
     }
 }

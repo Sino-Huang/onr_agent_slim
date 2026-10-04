@@ -23,6 +23,7 @@ from onr.runtime_host.stack.builder import (
 )
 from onr.runtime_host.stack.presets import (
     MISSION_MODES,
+    PERCEPTION_MODES,
     StackCatalog,
     StackRequestError,
     StackToggles,
@@ -105,11 +106,32 @@ def demo_env_request(
             maneuver_seconds=_positive_int("ONR_DEMO_MANEUVER_SECONDS", maneuver),
         )
 
+    airsim_flag = value("ONR_DEMO_AIRSIM")
+    if airsim_flag not in {None, "1"}:
+        raise StackPlanError("ONR_DEMO_AIRSIM must be 1 or unset.", exit_code=2)
     perception = value("ONR_DEMO_PERCEPTION")
+    if perception is not None and perception not in PERCEPTION_MODES:
+        raise StackPlanError(
+            "ONR_DEMO_PERCEPTION must be off, yolo or ideal.", exit_code=2
+        )
+    if airsim_flag is not None and perception not in {None, "off"}:
+        raise StackPlanError(
+            f"ONR_DEMO_AIRSIM=1 runs the AirSim Follower, which needs perception off; "
+            f"ONR_DEMO_PERCEPTION={perception} already starts AirSim with the scene "
+            "clock. Unset one of them.",
+            exit_code=2,
+        )
     if perception is None:
-        perception = preset.defaults.perception if preset is not None else "off"
-    elif perception not in {"yolo", "ideal"}:
-        raise StackPlanError("ONR_DEMO_PERCEPTION must be yolo or ideal.", exit_code=2)
+        perception = (
+            "off"
+            if airsim_flag is not None or preset is None
+            else preset.defaults.perception
+        )
+    airsim = (
+        airsim_flag is not None
+        or perception != "off"
+        or (preset is not None and preset.defaults.airsim)
+    )
     limit = value("ONR_DEMO_SIMULATION_LIMIT_SECONDS")
     explicit_limit = (
         _positive_float("ONR_DEMO_SIMULATION_LIMIT_SECONDS", limit)
@@ -120,7 +142,7 @@ def demo_env_request(
     )
     try:
         toggles = StackToggles(
-            airsim=perception != "off",
+            airsim=airsim,
             perception=perception,
             update_ownership=(
                 preset.defaults.update_ownership
@@ -135,6 +157,13 @@ def demo_env_request(
         )
     except StackRequestError as error:
         raise StackPlanError(str(error), exit_code=2) from error
+    if preset is not None and not preset.supports(toggles):
+        raise StackPlanError(
+            f"{preset.preset_id} does not support airsim={str(airsim).lower()} "
+            f"perception={perception}: "
+            f"{preset.unsupported_reason or 'the preset does not offer these toggles'}",
+            exit_code=2,
+        )
 
     engine = catalog.engine_settings(roots)
     engine = replace(
@@ -198,8 +227,10 @@ def probe_ports(request: StackRequest) -> list[int]:
     """Ports that must be free before the launcher creates its workspace."""
 
     ports = [request.viewer_port]
+    if request.toggles.airsim:
+        ports.append(request.engine.rpc_port)
     if request.toggles.perception != "off":
-        ports += [request.engine.rpc_port, request.perception.port]
+        ports.append(request.perception.port)
     return ports
 
 
@@ -218,8 +249,19 @@ def pane_commands(plan: StackPlan) -> dict[str, str]:
         if service.name in {"airsim-engine", "perception"}:
             previous, previous_timeout = service.readiness[0], service.timeout_seconds
     loop = plan.closed_loop
+    closed_loop_wait = _wait(loop.wait_for, loop.wait_timeout_seconds)
+    engine = plan.service("airsim-engine")
+    follower = plan.service("airsim-visualizer")
+    if engine is not None and follower is not None:
+        # As under the Host supervisor, the closed loop starts only once the
+        # engine has booted and the AirSim Follower rendered its first frame.
+        closed_loop_wait = (
+            _wait(engine.readiness[0], engine.timeout_seconds)
+            + closed_loop_wait
+            + _wait(follower.readiness[0], follower.timeout_seconds)
+        )
     agent_wait = (
-        _wait(loop.wait_for, loop.wait_timeout_seconds)
+        closed_loop_wait
         + _wait(
             ReadinessProbe(
                 "http",
@@ -284,6 +326,9 @@ def summary_lines(plan: StackPlan) -> list[str]:
             f"Perception: {request.toggles.perception}; engine scenario: "
             f"{inputs.engine_scenario}; producer run: perception-{root.name}"
         )
+    elif (engine := plan.service("airsim-engine")) is not None:
+        scene = engine.argv[engine.argv.index("--scenario") + 1]
+        lines.append(f"AirSim Follower: perception off; engine scenario: {scene}")
     lines += [
         f"Terminal audit: {shlex.join(plan.audit_argv)}",
         f"World-model frame stream: http://127.0.0.1:{request.viewer_port}",

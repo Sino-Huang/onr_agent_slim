@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "mission_id": "mission-fixture-001",
+  "mission_run_id": "run-fixture-001",
+  "run_status": "running",
+  "section": "stack",
+  "debug": {
+    "enabled": true,
+    "reasoning_label": "Recorded Debug Reasoning",
+    "reasoning_authority": "non-authoritative",
+    "disposition": "available"
+  },
+  "next_cursor": "stack-cursor-1",
+  "before_cursor": null,
+  "has_more": false,
+  "stack": {
+    "preset_id": "mission1-airsim",
+    "toggles": {
+      "airsim": true,
+      "perception": "yolo",
+      "update_ownership": "coordinator_driven"
+    },
+    "services": [
+      {
+        "name": "airsim-engine",
+        "required": true,
+        "state": "ready",
+        "pid": 51207,
+        "port": 41451,
+        "started_at": "2026-08-27T14:00:01Z",
+        "ready_at": "2026-08-27T14:01:12Z",
+        "exit_code": null,
+        "log_artifact_id": "service-log-airsim-engine",
+        "last_line": "engine frozen at scenario start",
+        "importance": "routine",
+        "ready_timeout_seconds": 300.0,
+        "previous_ready_seconds": 74.0
+      },
+      {
+        "name": "perception",
+        "required": true,
+        "state": "starting",
+        "pid": 51388,
+        "port": 8766,
+        "started_at": "2026-08-27T14:01:12Z",
+        "ready_at": null,
+        "exit_code": null,
+        "log_artifact_id": "service-log-perception",
+        "last_line": "loading YOLO weights",
+        "importance": "routine",
+        "waiting_for": "the perception producer",
+        "ready_timeout_seconds": 300.0,
+        "previous_ready_seconds": 27.0
+      },
+      {
+        "name": "physical-runtime",
+        "required": true,
+        "state": "pending",
+        "pid": null,
+        "port": 5066,
+        "started_at": null,
+        "ready_at": null,
+        "exit_code": null,
+        "log_artifact_id": "service-log-physical-runtime",
+        "last_line": null,
+        "importance": "routine",
+        "ready_timeout_seconds": 300.0
+      },
+      {
+        "name": "closed-loop",
+        "required": true,
+        "state": "pending",
+        "pid": null,
+        "port": null,
+        "started_at": null,
+        "ready_at": null,
+        "exit_code": null,
+        "log_artifact_id": "worker-log",
+        "last_line": null,
+        "importance": "routine"
+      }
+    ]
+  }
+}

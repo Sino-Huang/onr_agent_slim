@@ -6,40 +6,40 @@
 │ Mission:   mission-fixture-001                                                  ││                                                                           │
 │ Run:       run-fixture-001                                                      ││                                                                           │
 │ Stack:     mission1-harbor · AirSim off · perception off                        ││                                                                           │
-│ Started:   2026-08-24T12:00:03Z     ┌ Help · Esc or ? to close ────────────────────────────────────────────────────────┐                                     │
+│ Started:   2026-08-24T12:00:03Z     ┌ Help · Esc, ? or F1 to close ────────────────────────────────────────────────────┐                                     │
 │ Finished:  -                        │ Global                                                                           │                                     │
 │                                     │  1-7 · Tab/Shift+Tab  switch Run tabs                                            │                                     │
-│                                     │  ? · F1               toggle this help                                           │                                     │
-└─────────────────────────────────────│  c                    request cancellation of the owned run                      │                                     │
-┌ Progress ───────────────────────────│  q · Ctrl+C           managed exit (cancels an owned active run first)           │                                     │
+│                                     │  w                    inspect the wait (service/prep log, agent call, teardown)  │                                     │
+└─────────────────────────────────────│  c · q · Ctrl+C       cancel the owned run · managed exit (cancels first)        │                                     │
+┌ Progress ───────────────────────────│  F3 · F4              F3 history (Esc back) · F4 presentation (v card, p freeze) │                                     │
 │◆ Run Narrative · AI · non-authoritat│  Ctrl+Q               detach: quit, run keeps going, session recoverable         │                                     │
-│Legs 1-2 complete; ship 2's report wa│  e                    after a terminal run: new Mission Intent, same stack       │                                     │
-│▲ AI Replan after report alteration (│                                                                                  │                                     │
-│                                     │ Launch screen                                                                    │                                     │
+│AI narrative · 0 s old · through reco│  e · x · l · y        e new intent · x export receipt · failure: l log, y copy id│                                     │
+│Legs 1-2 complete; ship 2's report wa│                                                                                  │                                     │
+│▲ AI Replan after report alteration (│ Launch screen                                                                    │                                     │
 │                                     │  Tab · Shift+Tab      next / previous field                                      │                                     │
-│                                     │  ←/→                  change the focused toggle                                  │                                     │
+│                                     │  ←/→ · Enter          change the toggle · Enter on Preset: named picker          │                                     │
 │                                     │  F2                   demo prompts (preset mission, rejection battery)           │                                     │
-│                                     │  r                    re-run preflight                                           │                                     │
+│                                     │  r · ↑↓ Enter         re-run preflight · on Preflight: select, open a check      │                                     │
 │                                     │  Alt+Enter            review and launch (disabled while a check fails)           │                                     │
 │                                     │                                                                                  │                                     │
 │                                     │ Tabs                                                                             │                                     │
-│                                     │  Agents               ↑↓ select · f follow newest · PgUp/PgDn detail             │                                     │
+│                                     │  Agents               ↑↓ Home/End select · f follow newest · PgUp/PgDn detail    │                                     │
 │                                     │  Progress             ↑↓ move · ←→ fold · f follow · i importance                │                                     │
 │                                     │  / · n/N              search Progress · next/previous match                      │─────────────────────────────────────┘
 │                                     │  Enter · Esc          accept/close search (typing captures tab/q/c)              │─────────────────────────────────────┐
 │                                     │  World                s cycle world/annotated front/front/3rd · p pause/resume   │                                     │
-│                                     │  Stack                ↑↓ service · f follow log · PgUp/PgDn scroll               │ +0.1200                             │
-│                                     │  Artifacts            ↑↓ select · Enter inspect · ←/→ page · Esc close           │v +0.0000                            │
+│                                     │  Stack                ↑↓ service or prep step · f follow log · PgUp/PgDn scroll  │ +0.1200                             │
+│                                     │  Artifacts            ↑↓ Home/End select · Enter open the inspector              │v +0.0000                            │
+│                                     │  Inspector            ↑↓ PgUp/PgDn Home/End scroll · ←/→ byte page · Esc close   │                                     │
 │                                     │  Belief/Context       ↑↓ · j/k select belief entity (detail below table)         │                                     │
-│                                     │ ✖ critical  ▲ warning  ● notable  · routine  ∙ debug                             │                                     │
-│                                     │ HYP MAN CC FSM BEL ENV PER STK AI = LLM text, non-authoritative                  │─────────────────────────────────────┘
-└─────────────────────────────────────└──────────────────────────────────────────────────────────────────────────────────┘─────────────────────────────────────┐
-┌ Human Decisions ────────────────────────────────────────────────────────────────┐│Snapshot v397 · plan r4                                                    │
+│                                     │ ✖ critical  ▲ warning  ● notable  · routine  ∙ debug                             │─────────────────────────────────────┘
+└─────────────────────────────────────│ HYP MAN CC FSM BEL ENV PER STK AI = LLM text, non-authoritative                  │─────────────────────────────────────┐
+┌ Human Decisions ────────────────────└──────────────────────────────────────────────────────────────────────────────────┘                                     │
 │ No Human Decision Requests require action.                                      ││▲ missing [plan] · stale [plan] · unhealthy [plan]                         │
 │ Status-only view: no decision controls.                                         ││FSM assignment-1-in-progress · candidates 2                                │
 │                                                                                 ││search_area · active                                                       │
 │                                                                                 ││                                                                           │
 └─────────────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ? help · c cancel · q managed exit
+ 1-7/Tab tabs · ? help · c cancel · q managed exit · F3 history
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

@@ -11,9 +11,11 @@ pub mod launch;
 pub mod layout;
 pub mod overlays;
 pub mod overview;
+pub mod presentation;
 pub mod progress;
 pub mod stack;
 pub mod theme;
+pub mod waiting;
 pub mod world;
 
 use std::sync::LazyLock;
@@ -109,6 +111,9 @@ pub fn draw_with_theme(frame: &mut Frame, app: &mut App, theme: Theme) {
             },
         ),
         AppState::ResizeRequired { .. } => unreachable!("handled above"),
+    }
+    if app.history.open {
+        overlays::draw_history(frame, area, app, theme);
     }
     if app.help_open {
         overlays::draw_help(frame, area, theme);
@@ -239,12 +244,54 @@ fn draw_notice_screen(
 }
 
 fn draw_run(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, breakpoint: Breakpoint) {
-    let [header, tabs, stepper, body, footer] = Layout::vertical([
+    let [main, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(area);
+    let body = if app.presenting() {
+        presentation::draw_presentation(frame, main, app, theme, breakpoint)
+    } else {
+        draw_run_tab(frame, main, app, theme, breakpoint)
+    };
+    overlays::draw_cancellation(frame, body, app, theme);
+    if app.rejection_open() {
+        overlays::draw_rejection(frame, body, app, theme);
+    }
+    // The inspector opened by the card's `l` covers it until Esc.
+    if app.failure_open() && (app.view.inspector.is_none() || app.presenting()) {
+        overlays::draw_failure(frame, body, app, theme);
+    }
+    // A historical run loading from disk says so where a notice would be.
+    let status = if app.presenting() {
+        Line::from(Span::styled(
+            " Presentation layout · display only: polling, alerts and controls stay live",
+            theme.dim(),
+        ))
+    } else {
+        overview::historical_loading_line(app, theme).unwrap_or_else(|| legend_line(app, theme))
+    };
+    draw_footer(
+        frame,
+        footer,
+        theme,
+        &overview::run_keys(app),
+        status_line(app, theme, status),
+    );
+}
+
+/// The Run screen chrome and the selected tab (or the inspector) over
+/// `area`; returns the body the overlays cover.
+fn draw_run_tab(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    theme: Theme,
+    breakpoint: Breakpoint,
+) -> Rect {
+    let banner = waiting::waiting_banner(app, theme, area.width);
+    let [header, tabs, stepper, waiting, body] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(u16::from(banner.is_some())),
         Constraint::Min(0),
-        Constraint::Length(3),
     ])
     .areas(area);
     frame.render_widget(
@@ -253,12 +300,18 @@ fn draw_run(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, breakpoi
     );
     frame.render_widget(Paragraph::new(overview::tab_bar(app, theme)), tabs);
     frame.render_widget(Paragraph::new(overview::phase_stepper(app, theme)), stepper);
+    if let Some(banner) = banner {
+        frame.render_widget(Paragraph::new(banner), waiting);
+    }
     if app.view.inspector.is_some() {
         artifacts::draw_inspector(frame, body, app, theme);
     } else {
         match app.view.tab {
             RunTab::Overview => overview::draw_overview(frame, body, app, theme, breakpoint),
-            RunTab::Progress => progress::draw_progress(frame, body, &mut app.view.progress, theme),
+            RunTab::Progress => {
+                let now = app.unix_now();
+                progress::draw_progress(frame, body, &mut app.view.progress, theme, now);
+            }
             RunTab::Agents => agents::draw_agents(frame, body, app, theme, breakpoint),
             RunTab::BeliefContext => belief_context::draw_belief_context(
                 frame,
@@ -266,6 +319,7 @@ fn draw_run(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, breakpoi
                 app.view.beliefs.as_ref(),
                 app.view.selected_belief_entity.as_deref(),
                 app.view.context.as_ref(),
+                app.run.as_ref().is_some_and(|run| run.is_terminal()),
                 theme,
             ),
             RunTab::World => world::draw_world(frame, app, body, theme),
@@ -273,17 +327,7 @@ fn draw_run(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, breakpoi
             RunTab::Artifacts => artifacts::draw_artifacts(frame, body, app, theme, breakpoint),
         }
     }
-    overlays::draw_cancellation(frame, body, app, theme);
-    if app.rejection_open() {
-        overlays::draw_rejection(frame, body, app, theme);
-    }
-    draw_footer(
-        frame,
-        footer,
-        theme,
-        &overview::run_keys(app),
-        status_line(app, theme, legend_line(app, theme)),
-    );
+    body
 }
 
 fn draw_resize_required(frame: &mut Frame, area: Rect, last_size: (u16, u16), theme: Theme) {

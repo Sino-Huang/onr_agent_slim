@@ -1,0 +1,45 @@
+ RUN run-fixture-… ● running 00:00:40 │ t=12.5 s │ FSM navigate │ ▶ maneuver-7 active │ stack ●◐○○ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ▶ Stack ─ ○ Intent ─ ○ Planning ─ ○ Statechart ─ ○ Executing ─ ○ Done
+ ⠋ Starting perception (2/4) · waiting for the perception producer · 0:47 / 5:00 · last run 0:27 · w: select
+┌ Services · mission1-airsim · AirSim on · perception yolo ┐┌ Log · perception · 68 B · following ─────────────────────────────────────────────────────────────┐
+│ ● ENV airsim-engine      ready    in 1:18 :41451 pid 51… ││ perception producer starting on 127.0.0.1:8766                                                   │
+│ ◐ PER perception         starting 0:47 / 5:00 :8766 pid… ││ loading YOLO weights                                                                             │
+│ ○ ENV physical-runtime   pending  :5066                  ││                                                                                                  │
+│ ○ STK closed-loop        pending                         ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│ Started:   2026-08-24T11:59:56Z                          ││                                                                                                  │
+│ Waiting:   the perception producer                       ││                                                                                                  │
+│ Last run:  ready in 0:27 · history, same preset          ││                                                                                                  │
+│ Exit:      -                                             ││                                                                                                  │
+│ Last line: · loading YOLO weights                        ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+│                                                          ││                                                                                                  │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ↑↓ select · f follow · PgUp/PgDn scroll · ? help · c cancel · q managed exit · F3 history
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

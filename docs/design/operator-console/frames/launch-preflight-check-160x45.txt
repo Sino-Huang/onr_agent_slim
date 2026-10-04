@@ -1,0 +1,45 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ───────────────────────────────────────────────────┐┌ ▸Preflight · launch blocked · ✖1 ▲1 ✔10 ─────────────────────────────────────────────────────────┐
+│ Preset     ‹ [Mission 1 · AirSim live] ›                 ││ ✖ AirSim RPC port free (in use) — stop the other Harbor engine                                   │
+│ AirSim     ‹ off✗ │ [on] ›                               ││ ▲ GPU memory (GPU1 free 1.5 GiB) — YOLO needs about 2 GiB                                        │
+│ Perception ‹ off │ ideal │ [yolo] ›                      ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.0.0.1:11411)                                       │
+│ Updates    ‹ [coordinator_driven] ›                      ││ ✔ Planner executables (minizinc · fast-downward · VAL)                                           │
+│ Sim limit  ‹ [290 s] ›                                   ││ ✔ Physical runtime checkout (onr_physical_runtime · mission1_airsim_live.yaml)                   │
+│ mission1-airsim · mission1                               ││ ✔ Mission inputs (mission1_airsim_live.json)                                                     │
+│ ⓘ This preset plays the Harbor engine scene: AirSim      ││ ✔ Harbor engine and AirSim settings (Harbor5_6.sh + settings_airsim.json)                        │
+│ cannot be turned off.                                    ││ ✔ Perception producer (onr_solution) (yolo · calibration_v12.json)                               │
+│                                                          ││ ✔ YOLO weights and ultralytics (best.pt · ultralytics)                                           │
+│                                                          ││ ✔ Perception port free (free)                                                                    │
+│                                                          ││ ✔ World-model viewer port free (5140 free)                                                       │
+│                                                          ││ ✔ Free disk space in var/ (500.0 GiB free)                                                       │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────── 1/12 ┘
+┌ What this runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Mission    Confirm every reported ev┌ Preflight check 1/12 ────────────────────────────────────────────────────────────┐t ends at 299.5 s. Real LLM calls    │
+│            (vLLM agents).           │                                                                                  │                                     │
+│ Truth      Perception-fed truth: YOL│ ✖ AirSim RPC port free                                                           │                                     │
+│ AirSim     Scene clock: Harbor plays│ Status     fail · blocks launch                                                  │ for that frame.                     │
+│ Updates    Mission time pauses while│ Check      port:41451                                                            │runs ahead of Mission time.          │
+└─────────────────────────────────────│ Detail     in use                                                                │─────────────────────────────────────┘
+┌ Mission Intent ─────────────────────│ Hint       stop the other Harbor engine                                          │─────────────────────────────────────┐
+│ Patrol the window 60-130 s and verif│                                                                                  │                                     │
+│                                     │ Diagnose (read-only; copy and run it yourself, the console never does):          │                                     │
+│                                     │   ss -ltnp 'sport = :41451'                                                      │                                     │
+│                                     │                                                                                  │                                     │
+│                                     │ ↑↓ previous/next check · r re-run preflight · Esc close                          │                                     │
+│                                     └──────────────────────────────────────────────────────────────────────────────────┘                                     │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ↑↓ check · Enter check detail · r re-run preflight · F3 history · Alt+Enter review
+ ✖ Launch disabled: AirSim RPC port free

@@ -3,10 +3,10 @@
  ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ▶ Executing (plan revision 3) ─ ○ Done
 ┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
 │ Status:    awaiting_human_decision             ││◆ Run Narrative · AI · non-authoritative        │
-│ Mission:   mission-fixture-001                 ││Legs 1-2 complete; ship 2's report was altered  │
-│ Run:       run-fixture-001                     ││and the agent replanned.                        │
-│ Stack:     mission1-harbor · AirSim off · perc…││▲ AI Replan after report alteration (31 records)│
-│ Started:   2026-08-24T12:00:03Z                ││                                                │
+│ Mission:   mission-fixture-001                 ││AI narrative · 0 s old · through record #412    │
+│ Run:       run-fixture-001                     ││Legs 1-2 complete; ship 2's report was altered  │
+│ Stack:     mission1-harbor · AirSim off · perc…││and the agent replanned.                        │
+│ Started:   2026-08-24T12:00:03Z                ││▲ AI Replan after report alteration (31 records)│
 │ Finished:  -                                   ││                                                │
 │                                                ││                                                │
 │                                                ││                                                │
@@ -26,5 +26,5 @@
 │                                                              ││                                  │
 └──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ? help · c cancel · q managed exit
+ 1-7/Tab tabs · ? help · c cancel · q managed exit · F3 history
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

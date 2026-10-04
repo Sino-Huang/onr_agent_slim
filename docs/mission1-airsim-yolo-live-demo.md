@@ -71,6 +71,14 @@ cannot be combined with `ONR_DEMO_AIRSIM_RPC_URL`, because the scene clock owns
 the aircraft. Use `ONR_DEMO_DRY_RUN=1` to print all four commands without
 starting anything.
 
+Perception off instead runs the AirSim Follower (ADR
+[0016](adr/0016-airsim-follower-and-perception-annotations.md)):
+`herdr_start_mission1_follower_demo.sh` (`mission1-harbor` with
+`ONR_DEMO_AIRSIM=1`), or `ONR_DEMO_PERCEPTION=off` on this wrapper. The
+`airsim-fixture` prep step builds the lead-in engine scene, and an
+`airsim-visualizer` pane replaces the `perception` pane. `ONR_DEMO_AIRSIM=1`
+together with `ONR_DEMO_PERCEPTION=yolo|ideal` is rejected.
+
 ## Verify
 
 After the Agent pane reports a terminal result, run the audit command that the

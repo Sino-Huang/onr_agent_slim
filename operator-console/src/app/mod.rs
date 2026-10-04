@@ -11,9 +11,19 @@
 //! - [`stack`]: Stack tab service list and service-log tail.
 //! - [`progress`]: Incremental progress hierarchy, selection, follow and search.
 //! - [`world`]: Bounded off-thread image decoding and protocol encoding.
+//! - [`attention`]: Edge detection for bell/title/desktop attention signals.
+//! - [`failure`]: Failure landing card for infrastructure failures.
+//! - [`receipt`]: Owner export of the terminal receipt through the Host.
+//! - [`history`]: F3 run history overlay and read-only historical runs.
+//! - [`presentation`]: F4 presentation layout, its freeze and its alerts.
 
+pub mod attention;
+pub mod failure;
+pub mod history;
 pub mod launch;
+pub mod presentation;
 pub mod progress;
+pub mod receipt;
 pub mod run;
 pub mod stack;
 pub mod world;
@@ -27,9 +37,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+pub use attention::{AttentionEvent, AttentionKind};
+pub use failure::{Cleanup, FailureCard, FailureLog};
+pub use history::{HistoricalView, HistoryOverlay, StatusFilter};
 pub use launch::{IntentEditor, LaunchField, LaunchState, WrappedIntent};
-pub use run::{ArtifactInspector, RunTab, RunView};
-pub use stack::{LogTail, StackView};
+pub use presentation::{Alert, EvidenceCard, Presentation};
+pub use receipt::ReceiptExportState;
+pub use run::{ArtifactInspector, CurrentWait, RunTab, RunView, WaitTarget};
+pub use stack::{LogTail, StackRow, StackView, stack_rows};
 
 use crate::host::{
     ActivationAccepted, ActivationOutcome, CancellationOutcome, FrameSource, Health, HostCommand,
@@ -330,8 +345,19 @@ pub struct App {
     final_narrative_ready: bool,
     next_terminal_refresh: Option<Instant>,
     pub image_picker: Option<ratatui_image::picker::Picker>,
-    media_clock_origin: Instant,
+    /// Origin of the app's monotonic clock: media cadence and spinner frames.
+    clock_origin: Instant,
     clock: Arc<dyn Clock>,
+    attention: attention::AttentionTracker,
+    /// Attention events not yet taken by the run loop.
+    attention_events: Vec<AttentionEvent>,
+    /// Text `y` asked to copy, not yet written by the run loop (OSC 52).
+    clipboard: Option<String>,
+    /// The F3 run history overlay.
+    pub history: HistoryOverlay,
+    /// A run opened read-only from the history, with the current run's
+    /// context parked behind it.
+    historical: Option<HistoricalView>,
 }
 
 impl App {
@@ -393,8 +419,13 @@ impl App {
             final_narrative_ready: false,
             next_terminal_refresh: None,
             image_picker: None,
-            media_clock_origin: clock.now(),
+            clock_origin: clock.now(),
             clock,
+            attention: attention::AttentionTracker::default(),
+            attention_events: Vec::new(),
+            clipboard: None,
+            history: HistoryOverlay::default(),
+            historical: None,
         }
     }
 
@@ -411,6 +442,16 @@ impl App {
     /// Wall-clock seconds since the Unix epoch from the app clock.
     pub fn unix_now(&self) -> i64 {
         self.clock.unix_now()
+    }
+
+    /// Monotonic animation frame, advancing every 100 ms of app-clock time.
+    pub fn spinner_frame(&self) -> usize {
+        (self
+            .clock
+            .now()
+            .saturating_duration_since(self.clock_origin)
+            .as_millis()
+            / 100) as usize
     }
 
     /// Classify the Runtime Host connection using successful response receipt.
@@ -494,6 +535,51 @@ impl App {
         std::mem::take(&mut self.outbox)
     }
 
+    /// Drain attention events (bell, desktop notification) fired since the
+    /// last call. The run loop writes them to the terminal outside drawing.
+    pub fn take_attention_events(&mut self) -> Vec<AttentionEvent> {
+        std::mem::take(&mut self.attention_events)
+    }
+
+    /// Take the text queued for the terminal clipboard by `y`; the run loop
+    /// writes it as OSC 52 ([`failure::osc52_sequence`]) outside drawing.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
+    }
+
+    /// Terminal/tmux window title for the current state; see
+    /// [`attention::window_title`].
+    pub fn window_title(&self) -> String {
+        // The title follows the current run, also behind a historical one.
+        attention::window_title(
+            self.current_run(),
+            self.current_view()
+                .overview
+                .as_ref()
+                .and_then(|overview| overview.phase.as_ref()),
+            self.unix_now(),
+        )
+    }
+
+    /// Feed the latest run record and overview phase to edge detection.
+    pub(crate) fn observe_attention(&mut self) {
+        // A historical run on display never reaches attention; the current
+        // run is observed through `with_current_run`.
+        if self.historical.is_some() {
+            return;
+        }
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        let phase = self
+            .view
+            .overview
+            .as_ref()
+            .and_then(|overview| overview.phase.as_ref());
+        let events = self.attention.observe(run, phase);
+        self.attention_events.extend(events);
+    }
+
     /// The state that logically receives host messages, unwrapping a
     /// resize overlay so polling continues while the terminal is too small.
     fn logical_state_mut(&mut self) -> &mut AppState {
@@ -536,6 +622,7 @@ impl App {
             return;
         }
         if control && key.code == KeyCode::Char('c') {
+            self.leave_history_for_interrupt();
             self.handle_interrupt();
             return;
         }
@@ -545,9 +632,22 @@ impl App {
             }
             return;
         }
+        if self.history.open {
+            if key.code == KeyCode::F(1) {
+                self.help_open = true;
+            } else {
+                self.handle_history_key(key);
+            }
+            return;
+        }
+        if key.code == KeyCode::F(3) && matches!(self.state, AppState::Launch | AppState::Run) {
+            self.open_history();
+            return;
+        }
         if self.logical_state_name() == "Run"
             && self.cancellation == CancellationState::Idle
             && !self.rejection_open()
+            && !self.failure_open()
             && self.view.tab == RunTab::Progress
             && self.view.progress.search_editing
             && self.view.progress.handle_key(key)
@@ -630,6 +730,10 @@ impl App {
         self.cancellation_deadline = None;
         self.notice = None;
         self.submitted = false;
+        // A new intent after a finished run is a new activation, never a
+        // replay of the old one, even with the same text and stack.
+        self.review_request_id = None;
+        self.review_snapshot = None;
         self.enter_launch();
     }
 
@@ -674,7 +778,17 @@ impl App {
 
     /// Dispatch backpressure is local: release claims without changing Host
     /// liveness, and retain the request ID owned by an already queued poll.
+    /// Backpressure on the current run's polls reaches its parked context
+    /// while a historical run is displayed.
     pub fn handle_dispatch(&mut self, dispatch: crate::host::workers::Dispatch) {
+        if self.dispatch_for_parked_run(&dispatch) {
+            self.with_current_run(|app| app.apply_dispatch(dispatch));
+        } else {
+            self.apply_dispatch(dispatch);
+        }
+    }
+
+    fn apply_dispatch(&mut self, dispatch: crate::host::workers::Dispatch) {
         use crate::host::workers::Dispatch;
         match dispatch {
             Dispatch::Dropped(command) => match command {
@@ -748,12 +862,26 @@ impl App {
         }
     }
 
-    /// Handle a response from the workers.
+    /// Handle a response from the workers. While a historical run is
+    /// displayed, responses about the current run are reduced into its
+    /// parked context.
     pub fn handle_host_message(&mut self, message: HostMessage) {
         if message.proves_host_response() {
             self.last_host_response = Some(self.clock.now());
         }
+        if self.sync_displayed_current(&message) {
+            return;
+        }
+        if self.message_for_parked_run(&message) {
+            self.with_current_run(|app| app.apply_host_message(message));
+        } else {
+            self.apply_host_message(message);
+        }
+    }
+
+    fn apply_host_message(&mut self, message: HostMessage) {
         match message {
+            HostMessage::RunHistory { before, result } => self.on_run_history(before, result),
             HostMessage::Connected(Ok(health)) => self.on_connected(health),
             HostMessage::Connected(Err(error)) => {
                 *self.logical_state_mut() = AppState::Error {
@@ -805,6 +933,7 @@ impl App {
                 }
             }
             HostMessage::Cancelled(result) => self.on_cancelled(result),
+            HostMessage::ReceiptExported(result) => self.on_receipt_exported(result),
             HostMessage::OperatorView {
                 mission_run_id,
                 section,
@@ -889,6 +1018,7 @@ impl App {
             stack,
             terminal_detail: None,
         });
+        self.attention.activated(&accepted.mission_run_id);
         self.activation = Some(accepted);
         self.notice = None;
         self.view = RunView::default();
@@ -911,6 +1041,7 @@ impl App {
         }
         *self.logical_state_mut() = AppState::Run;
         self.request_poll();
+        self.observe_attention();
     }
 
     fn on_current(&mut self, mission_run: Option<RunRecord>) {
@@ -969,6 +1100,7 @@ impl App {
         {
             self.reset_cancellation();
         }
+        self.observe_attention();
     }
 
     fn reset_cancellation(&mut self) {

@@ -6,10 +6,14 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::layout::{Breakpoint, clock_duration, short_field, short_id, truncate, wrapped};
+use super::layout::{
+    Breakpoint, LABEL_WIDTH, clock_duration, field, seconds_between, short_duration, short_field,
+    short_id, truncate, wrap_line, wrapped, wrapped_field,
+};
 use super::theme::{Badge, Theme};
-use crate::app::run::run_elapsed_seconds;
-use crate::app::{App, CancellationState, Liveness, RunTab};
+use crate::app::run::{parse_rfc3339, run_elapsed_seconds};
+use crate::app::{App, CancellationState, Liveness, ReceiptExportState, RunTab};
+use crate::host::{OperatorStack, ReceiptExport, RunPhase, RunReceipt, RunRecord, StackTeardown};
 
 /// One-line run header: id, status, elapsed, mission time, FSM, maneuver,
 /// stack services, Host liveness. Optional segments are dropped, least
@@ -21,13 +25,25 @@ pub fn header_strip(app: &App, theme: Theme, width: u16) -> Line<'static> {
             Span::styled("waiting for the current Mission Run…", theme.dim()),
         ]);
     };
-    let mut head = vec![
+    let mut head = Vec::new();
+    if let Some(historical) = app.historical() {
+        head.push(Span::styled(" HISTORICAL ", theme.historical()));
+        if historical.unavailable.is_some() {
+            head.push(Span::styled(" Run Root missing", theme.error()));
+        } else if let Some((elapsed, _)) = app.historical_loading() {
+            head.push(Span::styled(
+                format!(" loading from disk {} s", elapsed.as_secs()),
+                theme.hint(),
+            ));
+        }
+    }
+    head.extend([
         Span::styled(" RUN ", theme.title()),
         Span::raw(short_id(&run.mission_run_id, 12)),
         Span::raw(" "),
         theme.status_dot(&run.status),
         Span::styled(format!(" {}", run.status), theme.run_status(&run.status)),
-    ];
+    ]);
     if let Some(elapsed) = run_elapsed_seconds(run, app.unix_now()) {
         head.push(Span::raw(format!(" {}", clock_duration(elapsed))));
     }
@@ -41,7 +57,13 @@ pub fn header_strip(app: &App, theme: Theme, width: u16) -> Line<'static> {
             segments.push((4, vec![Span::raw(format!("FSM {state}"))]));
         }
         if let Some(maneuver) = maneuver_label(&overview.active_maneuver) {
-            segments.push((1, vec![Span::raw(format!("▶ {maneuver}"))]));
+            // A terminal run's maneuver is history, not a live action.
+            let label = if run.is_terminal() {
+                format!("last {maneuver}")
+            } else {
+                format!("▶ {maneuver}")
+            };
+            segments.push((1, vec![Span::raw(label)]));
         }
     }
     if let Some(stack) = app.view.stack.stack.as_ref() {
@@ -84,6 +106,23 @@ pub fn header_strip(app: &App, theme: Theme, width: u16) -> Line<'static> {
         spans.extend(segment);
     }
     Line::from(spans)
+}
+
+/// Footer line while a historical run loads from disk: how long, and how
+/// many reads timed out and are retried meanwhile.
+pub(crate) fn historical_loading_line(app: &App, theme: Theme) -> Option<Line<'static>> {
+    let (elapsed, timed_out) = app.historical_loading()?;
+    let mut text = format!(
+        " Loading from disk · {} s · first open rebuilds the Host's view",
+        elapsed.as_secs()
+    );
+    if timed_out > 0 {
+        text.push_str(&format!(
+            " · {timed_out} read{} timed out, retrying",
+            if timed_out == 1 { "" } else { "s" }
+        ));
+    }
+    Some(Line::from(Span::styled(text, theme.hint())))
 }
 
 fn liveness_spans(liveness: Liveness, theme: Theme) -> [Span<'static>; 2] {
@@ -132,17 +171,27 @@ pub fn tab_bar(app: &App, theme: Theme) -> Line<'static> {
 
 /// Phase stepper from `overview.phase`.
 pub fn phase_stepper(app: &App, theme: Theme) -> Line<'static> {
-    let rejected = app
-        .run
+    phase_line(
+        app.view
+            .overview
+            .as_ref()
+            .and_then(|overview| overview.phase.as_ref()),
+        mission_rejected(app),
+        theme,
+    )
+}
+
+/// Whether the displayed run ended with its Mission Intent rejected.
+pub(crate) fn mission_rejected(app: &App) -> bool {
+    app.run
         .as_ref()
         .and_then(|run| run.terminal_detail.as_ref())
-        .is_some_and(|detail| detail.kind == "mission_rejected");
-    let Some(phase) = app
-        .view
-        .overview
-        .as_ref()
-        .and_then(|overview| overview.phase.as_ref())
-    else {
+        .is_some_and(|detail| detail.kind == "mission_rejected")
+}
+
+/// The phase stepper for `phase` (the live overview's or a frozen copy).
+pub(crate) fn phase_line(phase: Option<&RunPhase>, rejected: bool, theme: Theme) -> Line<'static> {
+    let Some(phase) = phase else {
         if rejected {
             return Line::from(Span::styled(" ✖ Intent rejected", theme.error()));
         }
@@ -184,37 +233,78 @@ pub fn phase_stepper(app: &App, theme: Theme) -> Line<'static> {
 
 /// Key line for the Run screen.
 pub fn run_keys(app: &App) -> String {
-    if app.view.inspector.is_some() {
-        return "←/p →/n: page preview · Esc: close".to_string();
-    }
-    match app.cancellation {
-        CancellationState::Confirming => {
-            return "Enter: confirm cancellation · Esc: keep running · Ctrl+Q: detach".to_string();
-        }
-        CancellationState::Requested { .. } => {
-            return "cancellation requested · polling the current Mission Run · Ctrl+Q: detach"
-                .to_string();
-        }
-        CancellationState::Idle => {}
+    // Once confirmed, the waiting banner shows teardown; the keys stay live.
+    if app.cancellation == CancellationState::Confirming && !app.cancellation_in_progress() {
+        return "Enter: confirm cancellation · Esc: keep running · Ctrl+Q: detach".to_string();
     }
     let terminal = app.run.as_ref().is_some_and(|run| run.is_terminal());
+    if app.presenting() {
+        return presentation_keys(app, terminal);
+    }
+    if app.view.inspector.is_some() {
+        return "↑↓ PgUp/PgDn scroll · Home/End top/bottom · ←/p →/n byte page · Esc close"
+            .to_string();
+    }
     let tab_keys = match app.view.tab {
-        RunTab::Agents => "↑↓ select · f follow · PgUp/PgDn detail · ",
-        RunTab::World => "s source · p pause · ",
-        RunTab::Stack => "↑↓ service · f follow · PgUp/PgDn scroll · ",
-        RunTab::Artifacts => "↑↓ select · Enter inspect · ",
+        RunTab::Agents => "↑↓ Home/End select · f follow · PgUp/Dn detail · ",
+        RunTab::World => "s source · p pause · F4 present · ",
+        RunTab::Stack => "↑↓ select · f follow · PgUp/PgDn scroll · ",
+        RunTab::Artifacts => "↑↓ Home/End select · Enter inspect · ",
         RunTab::Progress => {
             "↑↓ move · ←→ fold · f follow · i importance · / search · n/N matches · "
         }
         RunTab::BeliefContext => "↑↓ entity · ",
         RunTab::Overview => "",
     };
-    let run_keys = if terminal {
-        "e new intent · q exit"
+    if app.viewing_history() {
+        let back = app.history_return_label();
+        let failure = if app.failure_open() {
+            "Enter dismiss · l log tail · y copy run id/root · "
+        } else if app.failure_classified() {
+            "l log tail · y copy run id/root · "
+        } else {
+            ""
+        };
+        return format!(
+            "HISTORICAL read-only · Esc back to {back} · 1-7/Tab tabs · {tab_keys}{failure}F3 history"
+        );
+    }
+    let run_keys = if app.failure_open() {
+        "Enter dismiss · l log tail · y copy run id/root · e new intent · q exit"
+    } else if app.failure_classified() {
+        "l log tail · y copy run id/root · x receipt · e new intent · q exit · F3 history"
+    } else if terminal {
+        "x export receipt · e new intent · q exit · F3 history"
+    } else if app.cancellation_in_progress() {
+        "w teardown · Ctrl+Q: detach"
     } else {
-        "c cancel · q managed exit"
+        "c cancel · q managed exit · F3 history"
     };
     format!("1-7/Tab tabs · {tab_keys}? help · {run_keys}")
+}
+
+/// Key line of the F4 presentation layout.
+fn presentation_keys(app: &App, terminal: bool) -> String {
+    let freeze = if app.view.presentation.is_frozen() {
+        "p resume"
+    } else {
+        "p freeze · s source"
+    };
+    let run_keys = if app.viewing_history() {
+        format!(
+            "HISTORICAL read-only · Esc back to {}",
+            app.history_return_label()
+        )
+    } else if app.failure_open() {
+        "Enter dismiss · l log tail · q exit".to_string()
+    } else if terminal {
+        "e new intent · q exit".to_string()
+    } else if app.cancellation_in_progress() {
+        "Ctrl+Q: detach".to_string()
+    } else {
+        "c cancel · q managed exit".to_string()
+    };
+    format!("F4 back to tabs · v next card · {freeze} · ? help · {run_keys}")
 }
 
 pub fn draw_overview(
@@ -225,12 +315,25 @@ pub fn draw_overview(
     breakpoint: Breakpoint,
 ) {
     if breakpoint == Breakpoint::Compact {
-        let [top, bottom] =
-            Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).areas(area);
+        let [column, _] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(area);
+        let (lines, receipt) = run_panel_lines(app, theme, column.width.saturating_sub(2) as usize);
+        let [top, bottom] = Layout::vertical([
+            Constraint::Length(panel_height(&lines, 12, receipt)),
+            Constraint::Min(0),
+        ])
+        .areas(area);
         let [run, progress] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(top);
-        draw_run_panel(frame, run, app, theme);
-        super::progress::draw_progress_preview(frame, progress, &app.view.progress, theme);
+        draw_run_panel(frame, run, lines, receipt);
+        super::progress::draw_progress_preview(
+            frame,
+            progress,
+            &app.view.progress,
+            theme,
+            app.unix_now(),
+        );
         let [activity, hitl] =
             Layout::horizontal([Constraint::Percentage(64), Constraint::Percentage(36)])
                 .areas(bottom);
@@ -240,14 +343,21 @@ pub fn draw_overview(
     }
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(area);
+    let (lines, receipt) = run_panel_lines(app, theme, left.width.saturating_sub(2) as usize);
     let [run, progress, hitl] = Layout::vertical([
-        Constraint::Length(10),
+        Constraint::Length(panel_height(&lines, 10, receipt)),
         Constraint::Min(8),
         Constraint::Length(6),
     ])
     .areas(left);
-    draw_run_panel(frame, run, app, theme);
-    super::progress::draw_progress_preview(frame, progress, &app.view.progress, theme);
+    draw_run_panel(frame, run, lines, receipt);
+    super::progress::draw_progress_preview(
+        frame,
+        progress,
+        &app.view.progress,
+        theme,
+        app.unix_now(),
+    );
     draw_human_decisions(frame, hitl, app, theme);
     let [world, belief, context] = Layout::vertical([
         Constraint::Min(10),
@@ -257,93 +367,356 @@ pub fn draw_overview(
     .areas(right);
     super::world::draw_preview(frame, app, world, theme);
     super::belief_context::draw_belief_mini(frame, belief, app.view.beliefs.as_ref(), theme);
-    super::belief_context::draw_context_mini(frame, context, app.view.context.as_ref(), theme);
+    super::belief_context::draw_context_mini(
+        frame,
+        context,
+        app.view.context.as_ref(),
+        app.run.as_ref().is_some_and(RunRecord::is_terminal),
+        theme,
+    );
 }
 
-fn draw_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Mission Run ");
-    let width = block.inner(area).width as usize;
-    let lines = match app.run.as_ref() {
-        Some(run) => {
-            let mut status = vec![
-                Span::styled(format!(" {:<11}", "Status:"), theme.dim()),
-                Span::styled(run.status.clone(), theme.run_status(&run.status)),
-            ];
-            if let Some(classification) = run.terminal_classification.as_deref() {
-                status.push(Span::styled(
-                    format!(" · {classification}"),
-                    theme.run_status(&run.status),
-                ));
-            }
-            if matches!(app.cancellation, CancellationState::Requested { .. }) {
-                status.push(Span::styled(" · cancellation requested", theme.hint()));
-            }
-            let mut lines = vec![Line::from(status)];
-            match app.liveness() {
-                Liveness::Live | Liveness::Idle => {}
-                Liveness::Stale => lines.push(Line::from(Span::styled(
-                    " ▲ stale - showing last received evidence",
-                    theme.hint(),
-                ))),
-                Liveness::Offline => lines.push(Line::from(Span::styled(
-                    " ✖ offline - showing last received evidence",
-                    theme.error(),
-                ))),
-            }
-            lines.push(short_field(theme, "Mission:", &run.mission_id, width));
-            lines.push(short_field(theme, "Run:", &run.mission_run_id, width));
-            if let Some(stack) = run.stack.as_ref() {
-                lines.push(short_field(
-                    theme,
-                    "Stack:",
-                    &format!(
-                        "{} · AirSim {} · perception {}",
-                        stack.preset_id,
-                        if stack.airsim { "on" } else { "off" },
-                        stack.perception
-                    ),
-                    width,
-                ));
-            }
-            lines.push(short_field(
-                theme,
-                "Started:",
-                run.started_at
-                    .as_deref()
-                    .or(run.created_at.as_deref())
-                    .unwrap_or("-"),
-                width,
-            ));
-            lines.push(short_field(
-                theme,
-                "Finished:",
-                run.finished_at.as_deref().unwrap_or("-"),
-                width,
-            ));
-            if app.recovered_owner() {
-                lines.push(Line::from(Span::styled(
-                    " Recovered owner session",
-                    theme.hint(),
-                )));
-            }
-            if let Some(detail) = run.terminal_detail.as_ref() {
-                lines.extend(wrapped(
-                    &format!("✖ {}", detail.summary()),
-                    width,
-                    1,
-                    theme.error(),
-                ));
-            }
-            lines
-        }
-        None => vec![Line::from(Span::styled(
-            " No current Mission Run.",
-            theme.dim(),
-        ))],
-    };
+/// The Mission Run panel's height: `minimum`, grown to fit a receipt (other
+/// content keeps the fixed height).
+fn panel_height(lines: &[Line], minimum: u16, receipt: bool) -> u16 {
+    if receipt {
+        (lines.len() as u16 + 2).max(minimum)
+    } else {
+        minimum
+    }
+}
+
+fn draw_run_panel(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>, receipt: bool) {
+    let block = Block::default().borders(Borders::ALL).title(if receipt {
+        " Mission Run · receipt "
+    } else {
+        " Mission Run "
+    });
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The panel's rows, and whether they include a terminal receipt (the v1.5
+/// `overview.receipt`, the stack's teardown receipt, or both).
+fn run_panel_lines(app: &App, theme: Theme, width: usize) -> (Vec<Line<'static>>, bool) {
+    let Some(run) = app.run.as_ref() else {
+        return (
+            vec![Line::from(Span::styled(
+                " No current Mission Run.",
+                theme.dim(),
+            ))],
+            false,
+        );
+    };
+    let receipt = app
+        .view
+        .overview
+        .as_ref()
+        .and_then(|overview| overview.receipt.as_ref())
+        .filter(|_| run.is_terminal());
+    // With a receipt the status row is labelled for what it is: the Run
+    // Worker's lifecycle, never the mission verdict (that is the audit row).
+    let label = if receipt.is_some() {
+        "Lifecycle:"
+    } else {
+        "Status:"
+    };
+    let mut status = vec![
+        Span::styled(format!(" {label:<11}"), theme.dim()),
+        Span::styled(run.status.clone(), theme.run_status(&run.status)),
+    ];
+    if let Some(classification) = run.terminal_classification.as_deref() {
+        status.push(Span::styled(
+            format!(" · {classification}"),
+            theme.run_status(&run.status),
+        ));
+    }
+    if app.cancellation_in_progress() {
+        status.push(Span::styled(" · cancellation requested", theme.hint()));
+    }
+    let mut lines = vec![Line::from(status)];
+    match app.liveness() {
+        Liveness::Live | Liveness::Idle => {}
+        Liveness::Stale => lines.push(Line::from(Span::styled(
+            " ▲ stale - showing last received evidence",
+            theme.hint(),
+        ))),
+        Liveness::Offline => lines.push(Line::from(Span::styled(
+            " ✖ offline - showing last received evidence",
+            theme.error(),
+        ))),
+    }
+    lines.push(short_field(theme, "Mission:", &run.mission_id, width));
+    lines.push(short_field(theme, "Run:", &run.mission_run_id, width));
+    if let Some(stack) = run.stack.as_ref() {
+        lines.push(short_field(
+            theme,
+            "Stack:",
+            &format!(
+                "{} · AirSim {} · perception {}",
+                stack.preset_id,
+                if stack.airsim { "on" } else { "off" },
+                stack.perception
+            ),
+            width,
+        ));
+    }
+    lines.push(short_field(
+        theme,
+        "Started:",
+        run.started_at
+            .as_deref()
+            .or(run.created_at.as_deref())
+            .unwrap_or("-"),
+        width,
+    ));
+    let mut finished = run.finished_at.as_deref().unwrap_or("-").to_string();
+    if let Some(seconds) = receipt
+        .and_then(|receipt| receipt.wall_seconds.as_ref())
+        .and_then(serde_json::Number::as_f64)
+    {
+        finished.push_str(&format!(
+            " · {} wall",
+            short_duration(seconds.round() as i64)
+        ));
+    }
+    lines.push(short_field(theme, "Finished:", &finished, width));
+    if let Some(historical) = app.historical() {
+        lines.push(Line::from(Span::styled(
+            " Historical run · read-only · Esc returns",
+            theme.hint(),
+        )));
+        if let Some(message) = historical.unavailable.as_deref() {
+            lines.extend(wrapped(
+                &format!("✖ Run Root unavailable: {message}"),
+                width,
+                1,
+                theme.error(),
+            ));
+        }
+    } else if app.recovered_owner() {
+        lines.push(Line::from(Span::styled(
+            " Recovered owner session",
+            theme.hint(),
+        )));
+    }
+    if let Some(detail) = run.terminal_detail.as_ref() {
+        lines.extend(wrapped(
+            &format!("✖ {}", detail.summary()),
+            width,
+            1,
+            theme.error(),
+        ));
+    }
+    if let Some(receipt) = receipt {
+        lines.extend(final_rows(receipt, theme, width));
+    }
+    let teardown = app
+        .view
+        .stack
+        .stack
+        .as_ref()
+        .filter(|_| run.is_terminal())
+        .and_then(|stack| Some((stack, stack.teardown.as_ref()?)));
+    if let Some((stack, teardown)) = teardown {
+        lines.extend(teardown_receipt(stack, teardown, theme, width));
+    }
+    if let Some(receipt) = receipt {
+        if app.viewing_history() {
+            // Export is a mutation: history shows only what was exported.
+            let text = match receipt.export.exported_at.as_deref() {
+                Some(at) => format!("exported {at} · read-only in history"),
+                None => "not exported · read-only in history".to_string(),
+            };
+            lines.extend(wrapped_field(theme, "Export:", &text, width));
+        } else {
+            lines.extend(export_rows(
+                &receipt.export,
+                &app.view.receipt_export,
+                theme,
+                width,
+            ));
+        }
+    }
+    (lines, receipt.is_some() || teardown.is_some())
+}
+
+/// The receipt's final FSM state, plan revision and Mission time, then the
+/// audit verdict exactly as the audit artifact records it.
+fn final_rows(receipt: &RunReceipt, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let last = &receipt.last;
+    let mut parts = vec![match last.fsm_state.as_deref() {
+        Some(state) => format!("FSM {state}"),
+        None => "no FSM state recorded".to_string(),
+    }];
+    if let Some(revision) = last.plan_revision {
+        parts.push(format!("plan r{revision}"));
+    }
+    if let Some(time) = last.mission_time_seconds.as_ref() {
+        parts.push(format!("t={time} s"));
+    }
+    let mut lines = wrapped_field(theme, "Final:", &parts.join(" · "), width);
+    let audit = &receipt.audit;
+    let (text, style) = match audit.status.as_str() {
+        "pass" => (
+            format!("PASS · {}", audit.path.as_deref().unwrap_or("audit")),
+            theme.good(),
+        ),
+        "fail" => (
+            format!(
+                "FAIL · {} failure{}: {}",
+                audit.failures.len(),
+                if audit.failures.len() == 1 { "" } else { "s" },
+                audit.failures.join(", ")
+            ),
+            theme.error(),
+        ),
+        "not_recorded" => ("not recorded (no audit artifact)".to_string(), theme.hint()),
+        "unreadable" => (
+            format!(
+                "unreadable ({} is not a PASS/FAIL audit)",
+                audit.path.as_deref().unwrap_or("audit")
+            ),
+            theme.error(),
+        ),
+        other => (other.to_string(), theme.hint()),
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {:<11}", "Audit:"), theme.dim()),
+        Span::styled(truncate(&text, width.saturating_sub(LABEL_WIDTH)), style),
+    ]));
+    lines
+}
+
+/// Where `x` writes the receipt, or what the Host answered.
+fn export_rows(
+    export: &ReceiptExport,
+    state: &ReceiptExportState,
+    theme: Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let file = export
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(export.path.as_str());
+    let text = match state {
+        ReceiptExportState::Idle => match export.exported_at.as_deref() {
+            Some(at) => format!("exported {at} · x rewrites {file}"),
+            None => format!("x writes {file}"),
+        },
+        ReceiptExportState::Exporting => "writing through the Host…".to_string(),
+        ReceiptExportState::Exported(exported) => {
+            // The Host's path, broken only after `/`, in the value column.
+            let status = if exported.replaced {
+                format!("✔ overwrote {file} (earlier export)")
+            } else {
+                format!("✔ wrote {file}")
+            };
+            let mut lines = vec![field(theme, "Export:", &status)];
+            lines.extend(
+                path_rows(&exported.path, width.saturating_sub(LABEL_WIDTH))
+                    .iter()
+                    .map(|row| field(theme, "", row)),
+            );
+            return lines;
+        }
+        ReceiptExportState::Failed(message) => {
+            return wrap_line(message, width.saturating_sub(LABEL_WIDTH))
+                .into_iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {:<11}", if index == 0 { "Export:" } else { "" }),
+                            theme.dim(),
+                        ),
+                        Span::styled(row, theme.error()),
+                    ])
+                })
+                .collect();
+        }
+    };
+    wrapped_field(theme, "Export:", &text, width)
+}
+
+/// `path` in rows of at most `width` characters, broken after a `/` where
+/// possible (a component longer than a row is split).
+fn path_rows(path: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = vec![String::new()];
+    for component in path.split_inclusive('/') {
+        let mut rest = component;
+        while !rest.is_empty() {
+            let row = rows.last_mut().expect("rows is never empty");
+            let room = width - row.chars().count();
+            if rest.chars().count() <= room {
+                row.push_str(rest);
+                break;
+            }
+            if !row.is_empty() {
+                rows.push(String::new());
+                continue;
+            }
+            let cut = rest
+                .char_indices()
+                .nth(width)
+                .map_or(rest.len(), |(at, _)| at);
+            row.push_str(&rest[..cut]);
+            rest = &rest[cut..];
+            rows.push(String::new());
+        }
+    }
+    rows.retain(|row| !row.is_empty());
+    rows
+}
+
+/// The v1.5 teardown receipt: the Run Worker, the services by stop mode, and
+/// the Harbor configuration restoration exactly as the Host reported it.
+fn teardown_receipt(
+    stack: &OperatorStack,
+    teardown: &StackTeardown,
+    theme: Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut worker = format!("worker {}", teardown.worker);
+    if let (Some(started), Some(finished)) = (
+        teardown.started_at.as_deref(),
+        teardown.finished_at.as_deref().and_then(parse_rfc3339),
+    ) && let Some(seconds) = seconds_between(started, finished)
+    {
+        worker.push_str(&format!(" · took {}", short_duration(seconds)));
+    }
+    let count = |mode: &str| {
+        stack
+            .services
+            .iter()
+            .filter(|service| service.stop_mode.as_deref() == Some(mode))
+            .count()
+    };
+    let (graceful, forced) = (count("graceful"), count("forced"));
+    let services = match (graceful, forced) {
+        (0, 0) => "none were running".to_string(),
+        (graceful, 0) => format!("{graceful} stopped · all graceful"),
+        (0, forced) => format!("{forced} stopped · all forced"),
+        (graceful, forced) => {
+            format!(
+                "{} stopped · {graceful} graceful, {forced} forced",
+                graceful + forced
+            )
+        }
+    };
+    let harbor = &teardown.harbor_config;
+    let harbor = match (harbor.state.as_str(), harbor.reported_by.as_deref()) {
+        ("confirmed", Some(source)) => format!("config restored ({source} reported)"),
+        ("confirmed", None) => "config restored".to_string(),
+        ("not_applicable", _) => "not applicable (no AirSim engine)".to_string(),
+        ("unknown", _) => "restoration unknown (no report)".to_string(),
+        (other, _) => other.to_string(),
+    };
+    let mut lines = wrapped_field(theme, "Teardown:", &worker, width);
+    lines.extend(wrapped_field(theme, "Services:", &services, width));
+    lines.extend(wrapped_field(theme, "Harbor:", &harbor, width));
+    lines
 }
 
 fn draw_significant_activity(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {

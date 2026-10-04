@@ -2,7 +2,9 @@
 
 A preset names one Mission mode plus the toggles the Operator Console may
 offer. Its composition inputs are the mode's defaults (the historical herdr
-launcher defaults) overlaid with the preset's own ``inputs``.
+launcher defaults) overlaid with the preset's own ``inputs``. Optional
+``description`` texts on presets and ``toggle_choices`` (API v1.5) tell the
+console what a selection runs, so the console keeps no matrix of its own.
 """
 
 from __future__ import annotations
@@ -144,6 +146,8 @@ class StackPreset:
     defaults: StackToggles
     explicit_simulation_limit_seconds: float | None
     inputs: Mapping[str, str | None] = field(default_factory=dict)
+    description: str | None = None
+    """Mission goal and whether real LLM calls happen (API v1.5)."""
 
     def supports(self, toggles: StackToggles) -> bool:
         return (
@@ -164,6 +168,8 @@ class StackCatalog:
     engine: Mapping[str, Any]
     perception: Mapping[str, Any]
     modes: Mapping[str, Mapping[str, Any]]
+    toggle_choices: Mapping[str, tuple[Mapping[str, object], ...]] | None = None
+    """Per-toggle-value descriptions the console composes (API v1.5)."""
 
     def preset(self, preset_id: str | None = None) -> StackPreset:
         wanted = self.default_preset_id if preset_id is None else preset_id
@@ -276,13 +282,18 @@ class StackCatalog:
         """``GET /api/v1/stack/presets`` response body."""
 
         roots = self.resolve_roots(repo_root)
-        return {
+        payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "default_preset_id": self.default_preset_id,
             "presets": [
                 {
                     "preset_id": preset.preset_id,
                     "title": preset.title,
+                    **(
+                        {}
+                        if preset.description is None
+                        else {"description": preset.description}
+                    ),
                     "mission_mode": preset.mission_mode,
                     "default_mission_text": _mission_text(
                         self.preset_inputs(preset, roots).mission_file
@@ -302,6 +313,12 @@ class StackCatalog:
                 for preset in self.presets
             ],
         }
+        if self.toggle_choices is not None:
+            payload["toggle_choices"] = {
+                toggle: [dict(choice) for choice in choices]
+                for toggle, choices in self.toggle_choices.items()
+            }
+        return payload
 
 
 def load_stack_catalog(path: Path | None = None) -> StackCatalog:
@@ -327,6 +344,7 @@ def load_stack_catalog(path: Path | None = None) -> StackCatalog:
         engine=dict(document["engine"]),
         perception=dict(document["perception"]),
         modes={name: dict(value) for name, value in modes.items()},
+        toggle_choices=_toggle_choices(source, document.get("toggle_choices")),
     )
     catalog.preset(catalog.default_preset_id)
     return catalog
@@ -355,6 +373,11 @@ def _preset(entry: Mapping[str, Any], modes: Mapping[str, Any]) -> StackPreset:
         ),
     )
     supports = entry["supports"]
+    description = entry.get("description")
+    if description is not None and (
+        not isinstance(description, str) or not description.strip()
+    ):
+        raise ValueError(f"preset {entry['preset_id']}: description must be text")
     preset = StackPreset(
         preset_id=str(entry["preset_id"]),
         title=str(entry["title"]),
@@ -367,10 +390,69 @@ def _preset(entry: Mapping[str, Any], modes: Mapping[str, Any]) -> StackPreset:
             None if explicit_limit is None else float(explicit_limit)
         ),
         inputs=inputs,
+        description=description,
     )
     if not preset.supports(toggles):
         raise ValueError(f"preset {preset.preset_id}: defaults are not in supports")
     return preset
+
+
+_TOGGLE_VALUES: Mapping[str, tuple[bool | str, ...]] = {
+    "airsim": (False, True),
+    "perception": PERCEPTION_MODES,
+    "update_ownership": UPDATE_OWNERSHIPS,
+}
+
+
+def _toggle_choices(
+    source: Path, value: object
+) -> dict[str, tuple[Mapping[str, object], ...]] | None:
+    """Validate the optional per-toggle-value descriptions.
+
+    An ``airsim`` choice may name the ``perception`` mode it applies to,
+    because AirSim on shows different things with and without perception.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != set(_TOGGLE_VALUES):
+        raise ValueError(
+            f"{source}: toggle_choices must describe exactly "
+            f"{', '.join(_TOGGLE_VALUES)}"
+        )
+    choices: dict[str, tuple[Mapping[str, object], ...]] = {}
+    for toggle, allowed in _TOGGLE_VALUES.items():
+        entries: list[Mapping[str, object]] = []
+        seen: set[tuple[object, object]] = set()
+        for entry in value[toggle]:
+            where = f"{source}: toggle_choices.{toggle}"
+            keys = {"value", "description"}
+            optional = {"perception"} if toggle == "airsim" else set()
+            if not isinstance(entry, Mapping) or not (
+                keys <= set(entry) <= keys | optional
+            ):
+                raise ValueError(f"{where}: entries need value and description")
+            choice = entry["value"]
+            if type(choice) is not type(allowed[0]) or choice not in allowed:
+                raise ValueError(f"{where}: unknown value {choice!r}")
+            description = entry["description"]
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(f"{where}: description must be text")
+            item: dict[str, object] = {"value": choice}
+            if "perception" in entry:
+                if entry["perception"] not in PERCEPTION_MODES:
+                    raise ValueError(
+                        f"{where}: unknown perception {entry['perception']!r}"
+                    )
+                item["perception"] = entry["perception"]
+            item["description"] = description
+            key = (choice, item.get("perception"))
+            if key in seen:
+                raise ValueError(f"{where}: duplicate choice {key!r}")
+            seen.add(key)
+            entries.append(item)
+        choices[toggle] = tuple(entries)
+    return choices
 
 
 def _inputs(values: Mapping[str, Any], roots: StackRoots) -> MissionInputs:

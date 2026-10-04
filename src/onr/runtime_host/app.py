@@ -27,9 +27,12 @@ from onr.runtime_host.artifacts import (
     ArtifactUnavailableError,
 )
 from onr.runtime_host.host import (
+    HISTORY_DEFAULT_LIMIT,
+    HISTORY_MAX_LIMIT,
     HostAuthorizationError,
     HostConflictError,
     HostNotFoundError,
+    RunRootUnavailableError,
     RuntimeHost,
     RuntimeWorkerOptions,
 )
@@ -119,6 +122,12 @@ class CancellationRequest(BaseModel):
         return value
 
 
+class ReceiptExportRequest(BaseModel):
+    """Empty: an export always writes the run's one receipt file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 def create_app(
     *,
     host: RuntimeHost | None = None,
@@ -165,6 +174,8 @@ def create_app(
             }
         elif path.endswith("/operator-view"):
             allowed = {"section", "limit", "cursor", "before", "raw"}
+        elif path == "/api/v1/mission-runs":
+            allowed = {"limit", "before"}
         elif path.endswith("/world-frame"):
             allowed = {"source"}
         elif path.endswith(("/observations", "/activities", "/artifacts", "/entries")):
@@ -200,7 +211,7 @@ def create_app(
 
     @app.get("/api/v1/health")
     def health() -> dict[str, object]:
-        return {"status": "ok", "api_version": {"major": 1, "minor": 3}}
+        return {"status": "ok", "api_version": {"major": 1, "minor": 5}}
 
     @app.get("/api/v1/stack/presets")
     def stack_presets() -> Any:
@@ -251,6 +262,19 @@ def create_app(
     @app.get("/api/v1/mission-runs/current")
     def current_run() -> dict[str, object]:
         return {"mission_run": selected.current_run()}
+
+    @app.get("/api/v1/mission-runs")
+    def mission_runs(request: Request) -> Any:
+        # Rows name every run on this Host: loopback only, like operator-view.
+        if not _loopback(request):
+            return _authorization_failed()
+        try:
+            limit, before = _history_query(request)
+            return selected.mission_runs(limit=limit, before=before)
+        except InvalidCursorError as exc:
+            return _evidence_error(exc)
+        except ValueError:
+            return _error(422, "invalid_request", "run history query is invalid")
 
     @app.get("/api/v1/mission-runs/{mission_run_id}/observations")
     def observations(
@@ -408,6 +432,25 @@ def create_app(
         except HostConflictError as exc:
             return _error(409, exc.code, exc.message)
 
+    @app.post("/api/v1/mission-runs/{mission_run_id}/receipt-exports")
+    def export_receipt(
+        mission_run_id: str,
+        request: Request,
+        export: ReceiptExportRequest,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Any:
+        del export  # empty: the Host chooses the one receipt path
+        # The response names a Run Root path: loopback owners only.
+        credential = _bearer_credential(authorization)
+        if credential is None or not _loopback(request):
+            return _authorization_failed()
+        try:
+            return selected.export_receipt(mission_run_id, credential)
+        except HostAuthorizationError:
+            return _authorization_failed()
+        except HostConflictError as exc:
+            return _error(409, exc.code, exc.message)
+
     return app
 
 
@@ -470,6 +513,26 @@ def _operator_view_query(
     return cast(OperatorSection, section), limit, cursor, before, raw
 
 
+def _history_query(request: Request) -> tuple[int, str | None]:
+    values = dict(request.query_params)
+    limit_text = values.get("limit")
+    if limit_text is None:
+        limit = HISTORY_DEFAULT_LIMIT
+    elif (
+        not limit_text.isascii()
+        or not limit_text.isdecimal()
+        or limit_text.startswith("0")
+        or not 1 <= int(limit_text) <= HISTORY_MAX_LIMIT
+    ):
+        raise ValueError("invalid run history limit")
+    else:
+        limit = int(limit_text)
+    before = values.get("before")
+    if before == "":
+        raise ValueError("invalid run history cursor")
+    return limit, before
+
+
 def _error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status, content={"error": {"code": code, "message": message}}
@@ -485,6 +548,13 @@ def _operator_invalid_request() -> JSONResponse:
 
 
 def _evidence_error(exc: HostNotFoundError | InvalidCursorError) -> JSONResponse:
+    if isinstance(exc, RunRootUnavailableError):
+        return _error(
+            404,
+            "run_root_unavailable",
+            "Run Root of this Mission Run is missing on this Host; its evidence "
+            "cannot be read",
+        )
     if isinstance(exc, HostNotFoundError):
         return _error(
             404,

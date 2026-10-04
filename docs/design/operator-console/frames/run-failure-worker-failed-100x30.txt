@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● failed 00:00:06 │ t=12.5 s │ FSM navigate │ stack ■✖ │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✖ Executing (external environment has no planning
+┌ Mission Run ───────────────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Status:    failed · worker_failed              ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││AI narrative · 0 s old · through record #412    │
+│ Run:       run-fixture-001                     ││Legs 1-2 complete; ship 2's report was altered  │
+│ St╔ ✖ RUN FAILED · worker_failed ════════════════════════════════════════════════════════════╗   │
+│ St║ Run Worker failed                                                                        ║ds)│
+│ Fi║                                                                                          ║   │
+│ ✖ ║ Stage:     Executing (closed_loop)                                                       ║   │
+│ ex║ Reason:    RuntimeError: external environment has no planning data                       ║   │
+│   ║ Service:   closed-loop (from the stack status)                                           ║   │
+│   ║ Last step: Statechart (last completed phase step)                                        ║   │
+└───║ Cleanup:   ✔ every stack service stopped                                                 ║───┘
+┌ Si║ Run:       run-fixture-001                                                               ║───┐
+│ MA║ Run root:  /srv/onr/var/runtime-host/runs/run-fixture-001                                ║   │
+│   ║ Log line:  RuntimeError: external environment has no planning data                       ║   │
+│   ║            last line of worker-log: context only, not the cause                          ║   │
+│   ║                                                                                          ║   │
+│   ║ l log tail (worker-log) · 2 Progress · y copy run id + run root                          ║   │
+│   ║ Enter dismiss · e new Mission Intent · q exit                                            ║   │
+│   ╚══════════════════════════════════════════════════════════════════════════════════════════╝   │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · Enter dismiss · l log tail · y copy run id/root · e new intent · q exit
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

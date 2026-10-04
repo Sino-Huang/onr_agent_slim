@@ -26,6 +26,7 @@ from onr.runtime_host.progress import (
     ProgressTree,
     counts_by_importance,
     derive_phase,
+    latest_operational_sequence,
     load_mission_log_summaries,
     progress_payload,
 )
@@ -34,7 +35,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _FIXTURE = (
     Path(__file__).parent / "support" / "run_a6cqxx_progress" / "operational_log.jsonl"
 )
-_CONTRACT = _ROOT / "docs" / "design" / "operator-console" / "contract" / "v1.2"
+_CONTRACT = _ROOT / "docs" / "design" / "operator-console" / "contract"
 _MISSION = "mission:demo"
 
 
@@ -54,8 +55,8 @@ def _record(
     ).to_dict()
 
 
-def _contract(name: str) -> dict[str, Any]:
-    return json.loads((_CONTRACT / name).read_text(encoding="utf-8"))
+def _contract(name: str, version: str = "v1.2") -> dict[str, Any]:
+    return json.loads((_CONTRACT / version / name).read_text(encoding="utf-8"))
 
 
 # -- importance -----------------------------------------------------------
@@ -374,38 +375,71 @@ def test_incremental_pages_return_only_changes_without_duplicates() -> None:
         tree.page(after=tree.watermark + 1, limit=1)
 
 
-def test_progress_payload_matches_the_v1_2_contract_shape() -> None:
-    example = _contract("mission-run-operator-progress.response.json")["progress"]
+def test_progress_payload_matches_the_v1_5_contract_shape() -> None:
+    example = _contract("mission-run-operator-progress.response.json", "v1.5")[
+        "progress"
+    ]
     tree = ProgressTree()
+    records = _records()[:20]
     tree.ingest(
-        _records()[:20],
+        records,
         [SummaryArtifact.create(_MISSION, 1, 1, 10, (), "Startup done.")],
     )
     narrative = {
         "status": "available",
         "text": "Legs 1-2 complete.",
         "generated_at": "2026-08-27T14:02:00Z",
-        "source_watermark": 20,
+        "source_watermark": 12,
         "terminal": False,
         "evidence": None,
     }
 
-    payload: dict[str, Any] = progress_payload(nodes=tree.nodes(), narrative=narrative)
+    payload: dict[str, Any] = progress_payload(
+        nodes=tree.nodes(),
+        narrative=narrative,
+        latest_operational_sequence=latest_operational_sequence(records),
+    )
 
     assert set(payload) == set(example)
     assert payload["mapping_version"] == example["mapping_version"]
     assert set(payload["narrative"]) == set(example["narrative"])
+    assert payload["narrative"]["source_watermark"] == 12
+    assert payload["narrative"]["latest_operational_sequence"] == 20
+    assert payload["narrative"]["terminal"] is False
     example_keys = {node["level"]: set(node) for node in example["nodes"]}
     for node in payload["nodes"]:
         assert set(node) == example_keys[node["level"]]
     levels = {node["level"] for node in payload["nodes"]}
     assert levels == {"summary", "record", "live"}
-    assert progress_payload(nodes=[], narrative=None)["narrative"] == {
+    assert progress_payload(nodes=[], narrative=None, latest_operational_sequence=0)[
+        "narrative"
+    ] == {
         "status": "none",
         "text": None,
         "generated_at": None,
         "source_watermark": 0,
+        "terminal": False,
+        "latest_operational_sequence": 0,
     }
+    final = progress_payload(
+        nodes=[],
+        narrative={**narrative, "terminal": True, "source_watermark": 20},
+        latest_operational_sequence=20,
+    )["narrative"]
+    assert (final["terminal"], final["source_watermark"]) == (True, 20)
+    assert final["latest_operational_sequence"] == 20
+
+
+def test_latest_operational_sequence_is_the_newest_record_sequence() -> None:
+    records = _records()
+    shuffled = [records[5], records[30], records[2]]
+
+    assert latest_operational_sequence(records) == records[-1]["sequence"]
+    # The maximum, not the last-read record.
+    assert latest_operational_sequence(shuffled) == records[30]["sequence"]
+    assert latest_operational_sequence([]) == 0
+    # Records without a valid sequence never count.
+    assert latest_operational_sequence([{"sequence": "9"}, {"sequence": True}]) == 0
 
 
 def test_summary_loader_skips_invalid_files(tmp_path: Path) -> None:

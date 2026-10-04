@@ -1,0 +1,30 @@
+ RUN run-fixture-… ● succeeded 00:05:12 │ t=120.0 s │ FSM mission-complete │ host ● live
+  1 Overview  2 Progress  3 Agents  4 Belief/Context  5 World  6 Stack  7 Artifacts
+ ✔ Stack ─ ✔ Intent ─ ✔ Planning ─ ✔ Statechart ─ ✔ Executing ─ ✔ Done
+┌ Mission Run · receipt ─────────────────────────┐┌ Progress ──────────────────────────────────────┐
+│ Lifecycle: succeeded                           ││◆ Run Narrative · AI · non-authoritative        │
+│ Mission:   mission-fixture-001                 ││AI narrative · 0 s old · through record #412    │
+│ Run:       run-fixture-001                     ││Legs 1-2 complete; ship 2's report was altered  │
+│ Stack:     mission1-harbor · AirSim off · perc…││and the agent replanned.                        │
+│ Started:   2026-08-24T12:00:03Z                ││▲ AI Replan after report alteration (31 records)│
+│ Finished:  2026-08-24T12:05:15Z · 5:12 wall    ││                                                │
+│ Final:     FSM mission-complete · plan r4 ·    ││                                                │
+│            t=120.0 s                           ││                                                │
+│ Audit:     FAIL · 1 failure: evidence_replan_n…││                                                │
+│ Teardown:  worker stopped · took 0:04          ││                                                │
+│ Services:  4 stopped · all graceful            ││                                                │
+│ Harbor:    config restored (engine reported)   ││                                                │
+│ Export:    x writes mission-run-receipt.json   ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Significant Activity ────────────────────────────────────────┐┌ Human Decisions ─────────────────┐
+│ MAN #3 maneuver-handoff · maneuver-control · completed       ││ No Human Decision Requests       │
+│                                                              ││ require action.                  │
+│                                                              ││ Status-only view: no decision    │
+│                                                              ││ controls.                        │
+│                                                              ││                                  │
+│                                                              ││                                  │
+│                                                              ││                                  │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-7/Tab tabs · ? help · x export receipt · e new intent · q exit · F3 history
+ ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

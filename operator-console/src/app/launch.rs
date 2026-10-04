@@ -8,8 +8,8 @@ use unicode_width::UnicodeWidthChar;
 
 use super::{App, AppState, SOURCE_AUTHORITY};
 use crate::host::{
-    ActivationRequest, HostCommand, HostError, PreflightQuery, StackPreflight, StackPreset,
-    StackPresets, StackSelection, StackToggles,
+    ActivationRequest, HostCommand, HostError, PreflightCheck, PreflightQuery, StackPreflight,
+    StackPreset, StackPresets, StackSelection, StackToggles,
 };
 
 /// Preflight re-runs this long after the last toggle change.
@@ -40,17 +40,20 @@ pub enum LaunchField {
     Perception,
     Updates,
     SimLimit,
+    /// The Preflight check list: ↑↓ select, Enter opens the check's detail.
+    Preflight,
     #[default]
     Intent,
 }
 
 impl LaunchField {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Preset,
         Self::Airsim,
         Self::Perception,
         Self::Updates,
         Self::SimLimit,
+        Self::Preflight,
         Self::Intent,
     ];
 
@@ -302,8 +305,17 @@ pub struct LaunchState {
     /// Latest preflight answer (possibly for an older toggle combination).
     pub preflight: Option<StackPreflight>,
     pub preflight_error: Option<String>,
+    /// `check_id` the operator selected in the Preflight list; `None` selects
+    /// the first (most severe) check. Kept across preflight refreshes.
+    pub preflight_selected: Option<String>,
+    /// First visible row of the Preflight list, kept across draws.
+    pub preflight_offset: usize,
+    /// Whether the selected check's detail overlay is open.
+    pub preflight_detail: bool,
     /// F2 demo prompt picker selection, when open.
     pub demo_picker: Option<usize>,
+    /// Enter-on-Preset picker: the highlighted preset index, when open.
+    pub preset_picker: Option<usize>,
     preflight_due: Option<Instant>,
     preflight_request_id: u64,
     preflight_response_id: u64,
@@ -351,6 +363,56 @@ impl LaunchState {
             .filter(|preflight| preflight.toggles == query.toggles)
     }
 
+    /// The answer the Preflight panel shows: the current selection's, else
+    /// the latest (stale) one until the current answer arrives.
+    pub fn shown_preflight(&self) -> Option<&StackPreflight> {
+        self.current_preflight().or(self.preflight.as_ref())
+    }
+
+    /// Shown checks sorted failures, then warnings, then passes; the Host's
+    /// order is kept within each group.
+    pub fn preflight_checks(&self) -> Vec<&PreflightCheck> {
+        let mut checks: Vec<&PreflightCheck> = self
+            .shown_preflight()
+            .map(|preflight| preflight.checks.iter().collect())
+            .unwrap_or_default();
+        checks.sort_by_key(|check| match check.status.as_str() {
+            "fail" => 0,
+            "pass" => 2,
+            _ => 1,
+        });
+        checks
+    }
+
+    /// Index of the selected check in [`Self::preflight_checks`].
+    pub fn selected_check_index(&self) -> Option<usize> {
+        let checks = self.preflight_checks();
+        if checks.is_empty() {
+            return None;
+        }
+        Some(
+            self.preflight_selected
+                .as_deref()
+                .and_then(|id| checks.iter().position(|check| check.check_id == id))
+                .unwrap_or(0),
+        )
+    }
+
+    pub fn selected_check(&self) -> Option<&PreflightCheck> {
+        let index = self.selected_check_index()?;
+        self.preflight_checks().get(index).copied()
+    }
+
+    /// Select the check `delta` rows away, clamped to the list.
+    fn move_check(&mut self, delta: isize) {
+        let checks = self.preflight_checks();
+        let Some(index) = self.selected_check_index() else {
+            return;
+        };
+        let next = (index as isize + delta).clamp(0, checks.len() as isize - 1) as usize;
+        self.preflight_selected = Some(checks[next].check_id.clone());
+    }
+
     /// Whether a preflight for the current selection is scheduled or running.
     pub fn preflight_pending(&self) -> bool {
         self.preflight_due.is_some() || self.preflight_in_flight.is_some()
@@ -394,6 +456,52 @@ impl LaunchState {
             .filter(|mode| airsim || **mode == "off")
             .map(|mode| (*mode).to_string())
             .collect()
+    }
+
+    /// "What this runs" rows (`label`, text), composed only from the Host's
+    /// preset and toggle-choice descriptions (API v1.5): the mission goal,
+    /// the authoritative source, what AirSim shows, and what Mission time
+    /// does. An older Host sends no descriptions, so there are no rows.
+    /// With the Updates field focused every update mode is explained, the
+    /// current one marked `▸`.
+    pub fn what_this_runs(&self) -> Vec<(&'static str, String)> {
+        let Some(preset) = self.preset() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        if let Some(description) = preset.description.as_deref() {
+            rows.push(("Mission", description.to_string()));
+        }
+        let Some(choices) = self
+            .presets
+            .as_ref()
+            .and_then(|presets| presets.toggle_choices.as_ref())
+        else {
+            return rows;
+        };
+        if let Some(description) = choices.perception(&self.perception) {
+            rows.push(("Truth", description.to_string()));
+        }
+        if let Some(description) = choices.airsim(self.airsim, &self.perception) {
+            rows.push(("AirSim", description.to_string()));
+        }
+        if self.focus == LaunchField::Updates {
+            let mut label = "Updates";
+            for mode in UPDATE_OWNERSHIP_MODES {
+                if let Some(description) = choices.update_ownership(mode) {
+                    let marker = if mode == self.update_ownership {
+                        "▸"
+                    } else {
+                        " "
+                    };
+                    rows.push((label, format!("{marker} {mode}: {description}")));
+                    label = "";
+                }
+            }
+        } else if let Some(description) = choices.update_ownership(&self.update_ownership) {
+            rows.push(("Updates", description.to_string()));
+        }
+        rows
     }
 
     /// Select preset `index` and apply its defaults. The intent follows the
@@ -477,6 +585,17 @@ impl LaunchState {
                 self.preflight = None;
                 self.preflight_error = Some(error.to_string());
             }
+        }
+        // A check that is gone loses its selection and closes its detail
+        // rather than showing another check under it.
+        let kept = self.preflight_selected.as_deref().is_some_and(|id| {
+            self.preflight_checks()
+                .iter()
+                .any(|check| check.check_id == id)
+        });
+        if !kept {
+            self.preflight_selected = None;
+            self.preflight_detail = false;
         }
     }
 
@@ -590,7 +709,7 @@ impl LaunchState {
                     as u64;
                 false
             }
-            LaunchField::Intent => false,
+            LaunchField::Preflight | LaunchField::Intent => false,
         }
     }
 }
@@ -651,6 +770,46 @@ impl App {
             }
             return;
         }
+        if let Some(selected) = self.launch.preset_picker {
+            let last = self
+                .launch
+                .presets
+                .as_ref()
+                .map_or(0, |presets| presets.presets.len().saturating_sub(1));
+            match key.code {
+                KeyCode::Esc => self.launch.preset_picker = None,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.launch.preset_picker = Some(selected.saturating_sub(1));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.launch.preset_picker = Some((selected + 1).min(last));
+                }
+                KeyCode::Home => self.launch.preset_picker = Some(0),
+                KeyCode::End => self.launch.preset_picker = Some(last),
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    // Re-picking the current preset keeps the operator's
+                    // toggles; another preset applies its defaults, exactly
+                    // as ←/→ does.
+                    if selected != self.launch.preset_index {
+                        self.launch.select_preset(selected, now);
+                    }
+                    self.launch.preset_picker = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+        if self.launch.preflight_detail {
+            match key.code {
+                KeyCode::Esc => self.launch.preflight_detail = false,
+                KeyCode::Enter if key.modifiers.is_empty() => self.launch.preflight_detail = false,
+                KeyCode::Up | KeyCode::Char('k') => self.launch.move_check(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.launch.move_check(1),
+                KeyCode::Char('r') => self.launch.schedule_preflight(now, Duration::ZERO),
+                _ => {}
+            }
+            return;
+        }
         let review = key.code == KeyCode::Enter
             && (key.modifiers.contains(KeyModifiers::ALT)
                 || key.modifiers.contains(KeyModifiers::CONTROL));
@@ -675,6 +834,31 @@ impl App {
         }
         if self.launch.focus == LaunchField::Intent {
             self.launch.editor.handle_key(key);
+            return;
+        }
+        if self.launch.focus == LaunchField::Preflight {
+            let len = self.launch.preflight_checks().len() as isize;
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => return self.launch.move_check(-1),
+                KeyCode::Down | KeyCode::Char('j') => return self.launch.move_check(1),
+                KeyCode::Home => return self.launch.move_check(-len),
+                KeyCode::End => return self.launch.move_check(len),
+                KeyCode::Enter => {
+                    // Pin the shown check so a refresh cannot swap it.
+                    if let Some(check) = self.launch.selected_check() {
+                        self.launch.preflight_selected = Some(check.check_id.clone());
+                        self.launch.preflight_detail = true;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.launch.focus == LaunchField::Preset
+            && key.code == KeyCode::Enter
+            && self.launch.preset().is_some()
+        {
+            self.launch.preset_picker = Some(self.launch.preset_index);
             return;
         }
         match key.code {

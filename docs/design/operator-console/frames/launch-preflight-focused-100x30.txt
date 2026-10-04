@@ -1,0 +1,30 @@
+ ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
+┌ Stack ─────────────────────────────────────────┐┌ ▸Preflight · launch blocked · ✖1 ▲1 ✔10 ───────┐
+│ Preset     ‹ [Mission 1 · AirSim live] ›       ││ ✖ AirSim RPC port free (in use) — stop the oth…│
+│ AirSim     ‹ off✗ │ [on] ›                     ││ ▲ GPU memory (GPU1 free 1.5 GiB) — YOLO needs …│
+│ Perception ‹ off │ ideal │ [yolo] ›            ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.…│
+│ Updates    ‹ [coordinator_driven] ›            ││ ✔ Planner executables (minizinc · fast-downwar…│
+│ Sim limit  ‹ [290 s] ›                         ││ ✔ Physical runtime checkout (onr_physical_runt…│
+│ mission1-airsim · mission1                     ││ ✔ Mission inputs (mission1_airsim_live.json)   │
+│ ⓘ This preset plays the Harbor engine scene:   ││ ✔ Harbor engine and AirSim settings (Harbor5_6…│
+│ AirSim cannot be turned off.                   ││ ✔ Perception producer (onr_solution) (yolo · c…│
+└────────────────────────────────────────────────┘└──────────────────────────────────────── 2/12 ▼ ┘
+┌ What this runs ──────────────────────────────────────────────────────────────────────────────────┐
+│ Mission    Confirm every reported event and estimate vessel reporting reliability on the         │
+│            recorded offshore-dock scene; it ends at 299.5 s. Real LLM calls (vLLM agents).       │
+│ Truth      Perception-fed truth: YOLO detections on the AirSim front camera feed the world model.│
+│ AirSim     Scene clock: Harbor plays the recorded scene; World shows the front camera annotated  │
+│            with the YOLO detections for that frame.                                              │
+│ Updates    Mission time pauses while agents reason: the environment advances only between agent  │
+│            decisions, so wall time runs ahead of Mission time.                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Mission Intent ──────────────────────────────────────────────────────────────────────────────────┐
+│ Patrol the window 60-130 s and verify every reported event.                                      │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tab field · ↑↓ check · Enter check detail · r re-run preflight · F3 history · Alt+Enter review
+ ✖ Launch disabled: AirSim RPC port free

@@ -26,5 +26,5 @@
 │                                          ││replan · plan r3                                      │
 └──────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-7/Tab tabs · ↑↓ entity · ? help · c cancel · q managed exit
+ 1-7/Tab tabs · ↑↓ entity · ? help · c cancel · q managed exit · F3 history
  ✖ critical 0  ▲ warning 2  ● notable 31  · routine 120  ∙ debug 646

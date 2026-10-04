@@ -1,30 +1,30 @@
  ONR Operator Console ─ host 127.0.0.1:8787 v1.3 ─ vLLM ✔ Qwen3.8-27B-FP8 ─ session c0ns01e0
-┌ Stack ─────────────────────────────────────────┐┌ Preflight · launchable ────────────────────────┐
-│ Preset     ‹ [Mission 1 · Harbor (simulated)] ›││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at      │
-│ AirSim     ‹ [off] │ on ›                      ││   127.0.0.1:11411)                             │
-│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›          ││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs  │
-│ Updates    ‹ [coordinator_driven] ›            ││   about 2 GiB                                  │
+┌ Stack ─────────────────────────────────────────┐┌ Preflight · launchable · ▲1 ✔1 ────────────────┐
+│ Preset     ‹ [Mission 1 · Harbor (simulated)] ›││ ▲ GPU memory (GPU1 free 3.2 GiB) — YOLO needs …│
+│ AirSim     ‹ [off] │ on ›                      ││ ✔ vLLM reachable (Qwen/Qwen3.8-27B-FP8 at 127.…│
+│ Perception ‹ [off] │ ideal✗ │ yolo✗ ›          ││                                                │
+│ Updates    ‹ [coordinator_driven] ›            ││                                                │
 │ Sim limit  ‹ [600 s] ›                         ││                                                │
 │ mission1-harbor · mission1                     ││                                                │
 │ ⓘ Percepti┌ Demo prompts (F2) ───────────────────────────────────────────────────────┐           │
 │ scene: cho│                                                                          │           │
 └───────────│   Preset mission · Mission 1 · Harbor (simulated)                        │───────────┘
-┌ ▸Mission I│     "Please patrol the environment and confirm every reported event."    │───────────┐
-│ Please pat│ ▸ Rejection · personal errand                                            │           │
+┌ What this │     "Please patrol the environment and confirm every reported event."    │───────────┐
+│ Mission   │ ▸ Rejection · personal errand                                            │eporting   │
 │           │     "buy me a coffee"                                                    │           │
-│           │   Rejection · trivia                                                     │           │
+│ Truth     │   Rejection · trivia                                                     │on; no     │
 │           │     "What is the capital of France?"                                     │           │
-│           │   Rejection · gibberish                                                  │           │
-│           │     "qzx vlorp blenk 7#k frabble wug snee"                               │           │
+│ AirSim    │   Rejection · gibberish                                                  │           │
+│ Updates   │     "qzx vlorp blenk 7#k frabble wug snee"                               │een agent  │
 │           │                                                                          │           │
-│           │ ↑↓ choose · Enter use as Mission Intent · Esc close                      │           │
-│           └──────────────────────────────────────────────────────────────────────────┘           │
-│                                                                                                  │
+└───────────│ ↑↓ choose · Enter use as Mission Intent · Esc close                      │───────────┘
+┌ ▸Mission I└──────────────────────────────────────────────────────────────────────────┘───────────┐
+│ Please patrol the environment and confirm every reported event.                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- Tab field · ←/→ change · F2 demo prompts · Alt+Enter review & launch · r preflight · F1 help
+ Tab field · ←/→ change · F2 demo prompts · F3 history · Alt+Enter review · r preflight · F1 help
  ✔ Ready: Alt+Enter to review and launch
