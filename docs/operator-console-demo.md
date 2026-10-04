@@ -11,10 +11,10 @@ conda activate onr
 curl --fail http://127.0.0.1:11411/v1/models
 # Start vLLM only if absent (defaults to GPUs 2,3):
 # bash scripts/vllm/start_vllm.sh
-./scripts/tui/start_operator_console.sh --image-protocol halfblocks
+./scripts/tui/start_operator_console.sh --image-protocol auto
 ```
 
-Use 160×45 (minimum 100×30). `halfblocks` is reliable inside tmux/herdr without terminal-graphics passthrough. Outside multiplexers, `auto` queries the terminal and falls back when needed. Warm the release build before presenting. Preflight must finish without failures; warnings such as low disk/GPU headroom remain visible.
+Use tmux 3.3+ at 160×45 (minimum 100×30), started from a plain SSH shell with `./scripts/tui/start_tmux.sh`; node05's system tmux 2.7 cannot pass pixel graphics through and yields halfblocks. For readable maps and cameras, use a Kitty-graphics-capable outer terminal. `auto` queries the terminal; check its startup renderer notice reports Kitty pixel graphics with a measured cell size, not `cell 10x20`. `halfblocks` is a low-resolution compatibility fallback, not a presentation-quality renderer. See [the terminal and graphics setup](../scripts/tui/README.md#launch-and-choose-a-mission). Warm the release build before presenting. Preflight must finish without failures; warnings such as low disk/GPU headroom remain visible.
 
 Select **mission1-harbor**, AirSim off, perception off, coordinator-driven updates (Enter on Preset opens the named picker; Left/Right also cycles). This simulated preset still runs the real physical-runtime world model, planners, belief service and vLLM agents. It avoids Harbor startup for the rejection demonstration. Mission 1 surveillance-view preparation is a real startup step, not agent reasoning; its measured boot time is recorded with the issue's verification results. Point the audience at **What this runs** under the stack selector: the Host's own description of the mission goal, real LLM calls, simulated versus perception-fed truth, what AirSim shows, and that coordinator-driven Mission time pauses while the agents reason. Switching AirSim on there changes it to the AirSim Follower, which visualizes the simulated world with no agent perception.
 

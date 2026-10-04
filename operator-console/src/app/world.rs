@@ -7,13 +7,16 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use image::DynamicImage;
 use parking_lot::Mutex;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{
+    Frame,
+    layout::{Rect, Size},
+};
 use ratatui_image::{
-    Resize, StatefulImage,
+    Image, Resize,
     picker::{Picker, ProtocolType},
-    protocol::StatefulProtocol,
-    thread::{ResizeRequest, ResizeResponse, ThreadProtocol},
+    protocol::Protocol,
 };
 
 use crate::host::{FrameSource, OperatorWorld, WorldFrame};
@@ -51,21 +54,21 @@ impl std::str::FromStr for ImageProtocol {
 
 impl ImageProtocol {
     /// Call only after entering the alternate screen, before reading events.
-    /// Explicit protocols never consume terminal input for capability queries.
+    /// Query cell geometry even for a forced protocol: character cells are not
+    /// necessarily twice as tall as they are wide.
     pub fn picker(self) -> Option<Picker> {
         if self == Self::Off {
             return None;
         }
-        if self == Self::Auto {
-            return Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()));
+        let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+        if self != Self::Auto {
+            picker.set_protocol_type(match self {
+                Self::Kitty => ProtocolType::Kitty,
+                Self::Sixel => ProtocolType::Sixel,
+                Self::Iterm2 => ProtocolType::Iterm2,
+                _ => ProtocolType::Halfblocks,
+            });
         }
-        let mut picker = Picker::halfblocks();
-        picker.set_protocol_type(match self {
-            Self::Kitty => ProtocolType::Kitty,
-            Self::Sixel => ProtocolType::Sixel,
-            Self::Iterm2 => ProtocolType::Iterm2,
-            _ => ProtocolType::Halfblocks,
-        });
         Some(picker)
     }
 }
@@ -97,35 +100,54 @@ struct DecodeJob {
     frame: WorldFrame,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct EncodeKey {
+    generation: u64,
+    size: Size,
+    scaled: bool,
+}
+
+struct EncodeJob {
+    key: EncodeKey,
+    image: Arc<DynamicImage>,
+}
+
 #[derive(Default)]
 struct Mailbox {
     // Bounded latest-wins slots. A slow codec cannot grow a frame backlog.
     decode: Option<DecodeJob>,
-    decoded: Option<(u64, Result<StatefulProtocol, String>)>,
-    resized: Option<Result<ResizeResponse, String>>,
+    decoded: Option<(u64, Result<Arc<DynamicImage>, String>)>,
+    encode: Option<EncodeJob>,
+    encoded: Option<(EncodeKey, Result<Protocol, String>)>,
 }
 
 struct ImageWorker {
     mailbox: Arc<Mutex<Mailbox>>,
     stopped: Arc<AtomicBool>,
-    protocol: ThreadProtocol,
+    wake: mpsc::SyncSender<()>,
+    source: Option<(u64, Arc<DynamicImage>)>,
+    requested: Option<EncodeKey>,
+    displayed: Option<Protocol>,
 }
 
 impl ImageWorker {
     fn spawn(picker: Picker) -> Self {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let stopped = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel::<ResizeRequest>();
+        let (wake, rx) = mpsc::sync_channel(1);
         let worker_mailbox = Arc::clone(&mailbox);
         let worker_stopped = Arc::clone(&stopped);
         std::thread::Builder::new()
             .name("console-image".into())
             .spawn(move || {
                 while !worker_stopped.load(Ordering::Relaxed) {
+                    if rx.recv().is_err() || worker_stopped.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let job = worker_mailbox.lock().decode.take();
                     if let Some(job) = job {
                         let result = image::load_from_memory(&job.frame.bytes)
-                            .map(|image| picker.new_resize_protocol(image))
+                            .map(Arc::new)
                             .map_err(|error| {
                                 format!(
                                     "Cannot decode {} frame: {error}",
@@ -134,20 +156,21 @@ impl ImageWorker {
                             });
                         worker_mailbox.lock().decoded = Some((job.generation, result));
                     }
-                    match rx.recv_timeout(Duration::from_millis(10)) {
-                        Ok(mut request) => {
-                            // ThreadProtocol has at most one outstanding resize per
-                            // image. Drop superseded requests before expensive work.
-                            while let Ok(newer) = rx.try_recv() {
-                                request = newer;
-                            }
-                            let result = request
-                                .resize_encode()
-                                .map_err(|error| format!("Cannot encode frame: {error}"));
-                            worker_mailbox.lock().resized = Some(result);
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    let job = worker_mailbox.lock().encode.take();
+                    if let Some(job) = job {
+                        let resize = if job.key.scaled {
+                            Resize::Scale(None)
+                        } else {
+                            Resize::Fit(None)
+                        };
+                        let size = resize.size_for(&job.image, picker.font_size(), job.key.size);
+                        let image = resize.resize(&job.image, picker.font_size(), size, None);
+                        // Already cell-aligned: new_protocol consumes these pixels
+                        // without another resize or a copy of the original image.
+                        let result = picker
+                            .new_protocol(image, size, Resize::Fit(None))
+                            .map_err(|error| format!("Cannot encode frame: {error}"));
+                        worker_mailbox.lock().encoded = Some((job.key, result));
                     }
                 }
             })
@@ -155,7 +178,10 @@ impl ImageWorker {
         Self {
             mailbox,
             stopped,
-            protocol: ThreadProtocol::new(tx, None),
+            wake,
+            source: None,
+            requested: None,
+            displayed: None,
         }
     }
 }
@@ -214,11 +240,14 @@ impl WorldMedia {
         self.last_request = None;
         self.ready = false;
         if let Some(worker) = self.worker.as_mut() {
-            worker.protocol.empty_protocol();
+            worker.source = None;
+            worker.requested = None;
+            worker.displayed = None;
             let mut mailbox = worker.mailbox.lock();
             mailbox.decode = None;
             mailbox.decoded = None;
-            mailbox.resized = None;
+            mailbox.encode = None;
+            mailbox.encoded = None;
         }
     }
 
@@ -250,6 +279,7 @@ impl WorldMedia {
                 generation: self.generation,
                 frame,
             });
+            let _ = worker.wake.try_send(());
         }
     }
 
@@ -257,18 +287,19 @@ impl WorldMedia {
     /// last good image; source changes explicitly clear it.
     pub fn poll(&mut self) -> Option<Result<(), String>> {
         let worker = self.worker.as_mut()?;
-        let (decoded, resized) = {
+        let (decoded, encoded) = {
             let mut mailbox = worker.mailbox.lock();
-            (mailbox.decoded.take(), mailbox.resized.take())
+            (mailbox.decoded.take(), mailbox.encoded.take())
         };
         let mut completion = None;
-        if let Some(result) = resized {
+        if let Some((key, result)) = encoded
+            && worker.requested == Some(key)
+        {
             match result {
-                Ok(response) => {
-                    if worker.protocol.update_resized_protocol(response) {
-                        self.ready = true;
-                        completion = Some(Ok(()));
-                    }
+                Ok(protocol) => {
+                    worker.displayed = Some(protocol);
+                    self.ready = true;
+                    completion = Some(Ok(()));
                 }
                 Err(error) => completion = Some(Err(error)),
             }
@@ -277,9 +308,9 @@ impl WorldMedia {
             && generation == self.generation
         {
             match result {
-                Ok(protocol) => {
-                    worker.protocol.replace_protocol(protocol);
-                    self.ready = false;
+                Ok(image) => {
+                    worker.source = Some((generation, image));
+                    worker.requested = None;
                     completion = Some(Ok(()));
                 }
                 Err(error) => completion = Some(Err(error)),
@@ -289,21 +320,39 @@ impl WorldMedia {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        self.render_with(frame, area, Resize::Fit(None));
+        self.render_with(frame, area, false);
     }
 
     /// The presentation layout: scaled to fill `area`, also upwards.
     pub fn render_scaled(&mut self, frame: &mut Frame, area: Rect) {
-        self.render_with(frame, area, Resize::Scale(None));
+        self.render_with(frame, area, true);
     }
 
-    fn render_with(&mut self, frame: &mut Frame, area: Rect, resize: Resize) {
+    fn render_with(&mut self, frame: &mut Frame, area: Rect, scaled: bool) {
+        if area.is_empty() {
+            return;
+        }
         if let Some(worker) = self.worker.as_mut() {
-            frame.render_stateful_widget(
-                StatefulImage::<ThreadProtocol>::default().resize(resize),
-                area,
-                &mut worker.protocol,
-            );
+            if let Some((generation, image)) = worker.source.as_ref() {
+                let key = EncodeKey {
+                    generation: *generation,
+                    size: area.into(),
+                    scaled,
+                };
+                if worker.requested != Some(key) {
+                    worker.mailbox.lock().encode = Some(EncodeJob {
+                        key,
+                        image: Arc::clone(image),
+                    });
+                    worker.requested = Some(key);
+                    let _ = worker.wake.try_send(());
+                }
+            }
+            // Never render the pending encoder state. Retain the last completed
+            // image until poll swaps in its replacement, including on resize.
+            if let Some(protocol) = worker.displayed.as_ref() {
+                frame.render_widget(Image::new(protocol).allow_clipping(true), area);
+            }
         }
     }
 }

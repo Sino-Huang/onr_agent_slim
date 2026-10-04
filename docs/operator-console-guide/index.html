@@ -194,7 +194,7 @@ names exactly what is missing.</p>
 <!-- ============================================================ -->
 <h2 id="launch">3. Start the console</h2>
 <pre class="shell">./scripts/tui/start_operator_console.sh
-<span class="c"># Inside tmux or herdr, use portable half-block graphics:</span>
+<span class="c"># Low-resolution compatibility fallback, not for readable image labels:</span>
 ./scripts/tui/start_operator_console.sh --image-protocol halfblocks
 <span class="c"># Give a slow, cold Host start more time (default 60 s):</span>
 ./scripts/tui/start_operator_console.sh --host-ready-timeout 120</pre>
@@ -202,7 +202,7 @@ names exactly what is missing.</p>
   <tr><th>Option</th><th>Meaning</th></tr>
   <tr><td><code>--image-protocol auto|kitty|sixel|iterm2|halfblocks|off</code></td>
       <td>How world and camera images are drawn. <code>auto</code> queries the terminal.
-      <code>halfblocks</code> is the reliable choice inside multiplexers. <code>off</code> disables images.
+      <code>halfblocks</code> is a low-resolution fallback. Readable maps and cameras require pixel graphics enabled throughout the terminal/multiplexer chain. <code>off</code> disables images.
       The <code>ONR_CONSOLE_IMAGE_PROTOCOL</code> environment variable sets the same option.</td></tr>
   <tr><td><code>--host-ready-timeout SECS</code></td><td>How long to wait for a bootstrapped Host to become healthy.</td></tr>
   <tr><td><code>--notify none|bell|desktop</code></td>
@@ -848,7 +848,7 @@ think. The simulation is not hung; it is waiting for the agents.</p></div>
       showing older boxes.</p>
       <p>Camera sources appear once a first image exists. After the run ends, the final world frame and any
       captured camera frames remain viewable.</p>
-      <p class="hint">Images look blocky or are missing in tmux/herdr? Relaunch with <code>--image-protocol halfblocks</code>.</p></div>
+      <p class="hint">Blocky images mean the low-resolution halfblocks path may be active. Use pixel graphics, not more halfblocks. Herdr 0.8 requires <code>experimental.kitty_graphics = true</code> on both the server and desktop client, a compatible outer terminal, then a client reattach and console restart with <code>auto</code>. See <a href="../../scripts/tui/README.md#readable-world-maps-and-airsim-cameras">graphics setup and safe restart</a>.</p></div>
   </div>
 
   <div class="panel" role="tabpanel" data-panel="6" hidden>
@@ -1642,7 +1642,7 @@ the records it covers.</p>
   <tr><td>Stack stuck on <code>◐ starting</code></td><td><strong>6 Stack</strong>: select the service and read its log tail. Full logs: <code>&lt;run_root&gt;/services/</code>.</td></tr>
   <tr><td>Run failed (<code>stack_failed</code>, <code>worker_failed</code>, <code>host_interrupted</code>)</td><td>The failure card shows the stage, sanitized reason and failed service. Press <kbd>l</kbd> for the log tail (service log or worker traceback) and <kbd>y</kbd> to copy the run id and Run Root. On disk, for reference: <code>&lt;run_root&gt;/worker.log</code> and <code>&lt;run_root&gt;/services/&lt;service&gt;.log</code>.</td></tr>
   <tr><td>No camera source on AirSim</td><td><code>&lt;run_root&gt;/world-frames/camera-capture.json</code>: <code>state</code> (<code>capturing</code>, <code>unavailable</code>, <code>stopped</code>) and <code>reason</code>.</td></tr>
-  <tr><td>Images broken inside tmux/herdr</td><td>Relaunch with <code>--image-protocol halfblocks</code>, or use <code>off</code>.</td></tr>
+  <tr><td>Images blocky or missing inside tmux/herdr</td><td>Check the startup renderer notice. <code>halfblocks</code> is low resolution. Enable pixel graphics in the outer terminal and multiplexer; for herdr 0.8 enable <code>experimental.kitty_graphics</code> on both client and server. See <a href="../../scripts/tui/README.md#readable-world-maps-and-airsim-cameras">graphics setup</a>. Forcing <code>kitty</code> does not enable multiplexer graphics.</td></tr>
   <tr><td>Is an AirSim + YOLO run actually correct?</td><td>A green TUI is not the acceptance gate. Run
     <code>python scripts/audit_live_demo.py --run-root var/runtime-host/runs/&lt;id&gt; --mission-mode mission1 --perception yolo</code>
     and require a PASS in <code>live-acceptance.json</code>. The receipt's <strong>Audit</strong> row then reads

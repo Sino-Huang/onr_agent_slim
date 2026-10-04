@@ -17,11 +17,37 @@ vLLM must list the configured model at `http://127.0.0.1:11411/v1/models`. The l
 
 ## Launch and choose a mission
 
+Use **tmux 3.3 or newer** for interactive TUI sessions and video diagnostics.
+Older tmux cannot pass pixel graphics through, so `auto` falls back to
+low-resolution halfblocks (node05's system `/usr/bin/tmux` is 2.7). Install a
+modern tmux once, in its own conda environment so it does not shadow the
+system tmux used by already-running sessions:
+
+```bash
+conda create -n tmux -c conda-forge --override-channels tmux
+```
+
+From a plain SSH shell (**not** inside another tmux or herdr session), create or
+attach the console session:
+
+```bash
+./scripts/tui/start_tmux.sh            # session name defaults to onr-tui
+```
+
+The launcher uses `scripts/tui/tmux.conf` (passthrough and 24-bit color for
+Kitty image placeholders), keeps its socket under `var/tmp`, and puts the modern
+tmux first on the panes' PATH. Activate `onr` in the pane and run the console
+launcher below. Use a Kitty-graphics-capable outer terminal such as Kitty or
+Ghostty, and check that the startup footer reports Kitty pixel graphics.
+To move an already running console, first use its **Ctrl+Q** detach (not `q` or
+Ctrl+C), then relaunch in tmux under the same user and console state directory.
+The Host-owned mission continues, and the console recovers its owned run.
+
 ```bash
 ./scripts/tui/start_operator_console.sh
 # A slow cold Host import can be given a longer deadline:
 ./scripts/tui/start_operator_console.sh --host-ready-timeout 120
-# Portable graphics inside tmux/herdr:
+# Low-resolution compatibility fallback (not suitable for reading image labels):
 ./scripts/tui/start_operator_console.sh --image-protocol halfblocks
 # Desktop notifications in addition to the bell (default: --notify bell):
 ./scripts/tui/start_operator_console.sh --notify desktop
@@ -36,6 +62,112 @@ Use a terminal at least 100×30; 140×40 or larger displays the overview image a
 5. Alt+Enter (Ctrl+Enter where reported) reviews. Enter confirms once. Bare Enter in the intent editor inserts a newline.
 
 Simulated Mission 1 prepares surveillance planning views during stack startup; this can take considerably longer than physical-runtime readiness. Real missions perform actual vLLM inference and can take tens of minutes. While the run waits, a banner under the phase stepper shows on every tab what it waits for: the running prep step, or the starting service with the readiness it still needs (for example `the frozen engine`), time waited against the readiness budget (`▲` after 80%), and later any live agent call (`Waiting for the LLM · hyper-agent · …`). When the previous run of the same preset measured that service's readiness, the banner adds it as history (`last run 0:27`); it is never an estimate for this run. The spinner moves while the console is alive; Host liveness stays in the header. Press `w` on any tab to inspect what the banner names: a starting service or running prep step opens the Stack tab with that row selected and its log following; a live LLM/tool call opens the Agents tab with that invocation selected (and following paused, so newer calls do not move the selection).
+
+### Readable world maps and AirSim cameras
+
+Use `--image-protocol auto` with a pixel-graphics-capable terminal. The startup
+footer reports the selected renderer: `Kitty pixel graphics` (or Sixel/Iterm2),
+or `halfblocks (LOW RESOLUTION)`. Halfblocks uses only two colors per character
+cell; increasing the source PNG resolution cannot recover labels in that mode.
+F4 gives the image more space, but does not change the graphics protocol.
+Explicit protocols also query terminal cell dimensions to preserve aspect ratio.
+A `cell 10x20` report means the terminal did not answer that query and the
+library used its fallback geometry, typically in old tmux or a nested
+multiplexer; fix the terminal chain rather than forcing a protocol.
+
+For **herdr 0.8**, enable graphics in `~/.config/herdr/config.toml` on **both the
+remote server and the desktop client** (merge into an existing section):
+
+```toml
+[experimental]
+kitty_graphics = true
+```
+
+On the server, run `herdr --session 05_tui server reload-config` (substitute your
+session name). On the desktop, use a Kitty-graphics-capable outer terminal such
+as Kitty or Ghostty, detach herdr with its `Ctrl+B`, then `q` shortcut, and
+reattach with `herdr --remote node05 --session 05_tui`. Detaching herdr does not
+stop the console or mission. A client started with graphics disabled sends zero
+cell pixel dimensions, so the console's `auto` mode falls back to halfblocks
+even though herdr's inner terminal answers the Kitty capability query.
+
+After reattaching, detach **the console** with `Ctrl+Q` and relaunch:
+
+```bash
+./scripts/tui/start_operator_console.sh --image-protocol auto
+```
+
+The console recovers the owned run; do not use `q` or Ctrl+C to restart a
+console that owns an active mission, since those request cancellation.
+If forcing `--image-protocol kitty`, graphics must still be enabled throughout
+the terminal/multiplexer chain; forcing the protocol cannot enable herdr.
+See [herdr 0.8 configuration](https://github.com/herdrdev/herdr/blob/v0.8.0/docs/next/website/src/content/docs/configuration.mdx#kitty-graphics).
+Newer herdr versions have different defaults; consult their versioned settings.
+
+On **5 World**, `s` cycles world → annotated front → raw front → third-person.
+AirSim cameras appear only after the Host has captured them. World maps retain
+their square aspect ratio; camera views retain their source aspect ratio (not
+necessarily square).
+
+
+### Isolate video FPS and flicker
+
+Use a separate tmux pane; these commands do not connect to the Runtime Host,
+start AirSim, or change an owned mission. Activate the `onr` environment first.
+The launcher uses `ffmpeg` from PATH or the installed `imageio_ffmpeg` binary.
+
+```bash
+# Moving test pattern: direct ratatui-image, no console worker.
+python scripts/tui/test_video.py --mode direct --fps 15 --seconds 10
+
+# Same input through the console's asynchronous WorldMedia pipeline.
+python scripts/tui/test_video.py --mode console --fps 15 --seconds 10
+
+# Reproduce the console's normal 2-Hz image-update cadence.
+python scripts/tui/test_video.py --mode console --fps 2 --seconds 10
+
+# Play the first ten seconds of a real video, without audio.
+python scripts/tui/test_video.py /path/to/video.mp4 --mode direct --fps 15 --width 640
+```
+
+`q`, Escape or Ctrl+C exits this standalone player, not the mission. The default
+clip is ten seconds at 640 pixels wide. `--width` preserves source aspect ratio;
+images fit the pane without upscaling. Try `--width 960` or `--fps 30` separately
+to identify output-bandwidth/encoding limits. `--image-protocol` accepts the same
+renderers as the console except `off`; confirm the header reports Kitty or
+another pixel protocol rather than Halfblocks.
+
+The launcher decodes the bounded clip into temporary JPEGs under `var/tmp`
+before playback, then removes them on exit. The Rust example
+`operator-console/examples/video.rs` reads one frame at a time and skips late
+source frames instead of accumulating playback lag. Direct mode decodes,
+resizes, and encodes synchronously in the widget. Console mode submits JPEGs
+to the existing worker, bypassing only Host fetching and its 500-ms throttle.
+Both drive drawing at up to 60 Hz and retain the same source schedule.
+
+Each run writes a JSON report under `var/tui_test/` (override with `--report`):
+submitted FPS, skipped source frames, draw/preparation p95, and empty image
+draws/transitions after the first rendered image. Submitted FPS is **not**
+displayed FPS, especially for the asynchronous pipeline. Empty draws count
+missing image-widget content in Ratatui's buffer, not black pixels in the video
+or flashes introduced later by the desktop compositor.
+
+The old threaded handoff removed the drawable image while encoding its
+replacement. A six-second 640-pixel Kitty/herdr run recorded 89 empty-image
+transitions at 15 FPS and 11 transitions across 12 source frames at 2 FPS.
+The renderer now retains the completed image independently of pending work and
+replaces it only after encoding succeeds. Decode and encode requests remain
+bounded/latest-wins; source changes intentionally clear the previous image
+rather than showing a world map under a camera label. The production fetch
+limit remains 2 Hz.
+
+Post-fix six-second runs in a detached 160×45 tmux 2.7 pane recorded **zero
+empty draws/transitions** at 2, 15 and 30 FPS with the Kitty encoder, at 15 FPS
+with Halfblocks, and on a recorded video at 15 FPS with Kitty. Reports are under
+`var/tui_test/flicker-fixed-*.json`. The detached Kitty runs used forced protocol
+selection and fallback 10×20 cell dimensions; they verify application output,
+not desktop passthrough or compositor behavior. Inspect playback in your
+attached tmux session to check that final display path.
 
 ### Attention signals while you look away
 

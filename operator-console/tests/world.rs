@@ -84,12 +84,14 @@ fn png_and_jpeg_preserve_frame_colors_across_terminal_resize() {
         terminal
             .draw(|frame| media.render(frame, frame.area()))
             .unwrap();
+        assert_frame_color(&terminal, 2, 1);
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             let completed = media.poll();
             terminal
                 .draw(|frame| media.render(frame, frame.area()))
                 .unwrap();
+            assert_frame_color(&terminal, 2, 1);
             if matches!(completed, Some(Ok(()))) {
                 break;
             }
@@ -97,6 +99,86 @@ fn png_and_jpeg_preserve_frame_colors_across_terminal_resize() {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_frame_color(&terminal, 2, 1);
+    }
+}
+
+#[test]
+fn replacement_keeps_previous_pixels_until_new_pixels_are_ready() {
+    let mut media = WorldMedia::default();
+    media.configure(Some(Picker::halfblocks()));
+    media.submit(encoded(
+        FrameSource::World,
+        [220, 30, 50, 255],
+        ImageFormat::Png,
+    ));
+    let mut terminal = terminal();
+    complete(&mut media, &mut terminal);
+    media.submit(encoded(
+        FrameSource::World,
+        [20, 170, 70, 255],
+        ImageFormat::Png,
+    ));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(result) = media.poll() {
+            result.unwrap();
+        }
+        terminal
+            .draw(|frame| media.render(frame, frame.area()))
+            .unwrap();
+        let pixel = &terminal.backend().buffer()[(2, 1)];
+        assert!(
+            pixel.bg == Color::Rgb(220, 30, 50) || pixel.bg == Color::Rgb(20, 170, 70),
+            "replacement exposed an empty or corrupt image: {pixel:?}"
+        );
+        if pixel.bg == Color::Rgb(20, 170, 70) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "replacement never appeared");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn fit_and_presentation_scale_keep_pixels_during_handoff() {
+    let mut media = WorldMedia::default();
+    media.configure(Some(Picker::halfblocks()));
+    media.submit(encoded(
+        FrameSource::World,
+        [220, 30, 50, 255],
+        ImageFormat::Png,
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
+    complete(&mut media, &mut terminal);
+    assert_eq!(terminal.backend().buffer()[(45, 15)].bg, Color::Reset);
+    for scaled in [true, false] {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(result) = media.poll() {
+                result.unwrap();
+            }
+            terminal
+                .draw(|frame| {
+                    if scaled {
+                        media.render_scaled(frame, frame.area());
+                    } else {
+                        media.render(frame, frame.area());
+                    }
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(2, 1)].bg, Color::Rgb(220, 30, 50));
+            let expected = if scaled {
+                Color::Rgb(220, 30, 50)
+            } else {
+                Color::Reset
+            };
+            if buffer[(45, 15)].bg == expected {
+                break;
+            }
+            assert!(Instant::now() < deadline, "layout change never appeared");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 

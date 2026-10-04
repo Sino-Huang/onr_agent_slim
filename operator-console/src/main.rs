@@ -567,7 +567,20 @@ fn main() -> io::Result<()> {
     )?;
 
     let mut app = App::new(host_addr);
-    app.configure_images(image_protocol.picker());
+    let picker = image_protocol.picker();
+    app.hint = picker.as_ref().map(|picker| {
+        let font = picker.font_size();
+        match picker.protocol_type() {
+            ratatui_image::picker::ProtocolType::Halfblocks => {
+                "Images: halfblocks (LOW RESOLUTION). Enable terminal/multiplexer pixel graphics; see scripts/tui/README.md.".into()
+            }
+            protocol => format!(
+                "Images: {protocol:?} pixel graphics · cell {}x{} px",
+                font.width, font.height
+            ),
+        }
+    });
+    app.configure_images(picker);
     let size = guard.terminal().size()?;
     app.handle_resize(size.width, size.height);
 

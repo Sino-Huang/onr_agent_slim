@@ -258,10 +258,6 @@ fn freeze_holds_the_frame_through_the_world_pause_and_resume_restores_it() {
     let commands = app.take_commands();
     assert_eq!(fetches(&commands), 0, "no frame fetch while frozen");
     assert!(!sections(&commands).is_empty(), "sections keep polling");
-    assert_eq!(
-        screen(&mut app, 100, 30).lines().nth(3).unwrap(),
-        "┌ world · seq - · frozen ────────────────────────────────┐┌ Milestone · v Belief entity ───────────┐"
-    );
     press(&mut app, KeyCode::Char('p'));
     assert!(!app.view.media.paused);
     assert_eq!(

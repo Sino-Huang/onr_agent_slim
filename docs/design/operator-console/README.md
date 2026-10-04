@@ -164,6 +164,17 @@ Projection caches are per Mission Run. The debug-artifact catalog reparses only 
 
 `ratatui-image` protocol selection: `--image-protocol auto|kitty|sixel|iterm2|halfblocks|off` or `ONR_CONSOLE_IMAGE_PROTOCOL`. Auto queries the terminal after initialization; halfblocks is the portable fallback inside tmux/herdr. Finished runs retain their cached final world frame under `world-frames/latest.png`; the Run Worker captures it after stopping camera capture and before stopping the stack.
 
+`WorldMedia` keeps the displayed fixed-size `Protocol` separate from pending
+decode/encode jobs. The worker resizes and encodes shared immutable source
+pixels; the UI only renders the completed protocol and swaps it when the
+matching encode result arrives. It does not use `ThreadProtocol`, which takes
+away the drawable state during encoding. Latest-wins mailbox slots bound the
+work queue, and frame-generation/size/scale keys reject superseded results.
+The last good image remains available during replacement, resizing and
+decode/encode errors; switching sources clears it and invalidates pending work.
+Kitty/Halfblocks may clip the retained image while a smaller size is prepared.
+The World/F4 surfaces share this pipeline; the 500-ms fetch interval is unchanged.
+
 For draw-latency measurements, set `ONR_CONSOLE_DRAW_LOG` to a file under repository `var/tmp`; each frame records elapsed drawing time in microseconds. This is opt-in diagnostic output, not mission evidence.
 
 ### AirSim cameras
