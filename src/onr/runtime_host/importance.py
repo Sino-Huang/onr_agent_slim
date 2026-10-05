@@ -191,14 +191,21 @@ def replay_disposition_importance(disposition: object) -> str | None:
 
 
 def service_importance(
-    state: str, *, required: bool = True, exit_code: int | None = None
+    state: str,
+    *,
+    required: bool = True,
+    exit_code: int | None = None,
+    completes: bool = False,
 ) -> str:
-    """Importance of one Environment Stack service state."""
+    """Importance of one Environment Stack service state.
+
+    A service that ``completes`` and exited 0 finished its job: routine.
+    """
 
     if state == "failed" or (state == "exited" and exit_code not in (None, 0)):
         return CRITICAL if required else WARNING
     if state == "exited":
-        return WARNING if required else ROUTINE
+        return WARNING if required and not completes else ROUTINE
     return ROUTINE
 
 

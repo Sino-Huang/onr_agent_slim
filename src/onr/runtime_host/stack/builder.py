@@ -80,6 +80,9 @@ class ServiceSpec:
     readiness: tuple[ReadinessProbe, ...]
     timeout_seconds: float
     required: bool = True
+    completes: bool = False
+    """Exit status 0 means the service finished its job (not a stack failure);
+    any other exit still fails a required service."""
     port: int | None = None
     stop_grace_seconds: float = DEFAULT_STOP_GRACE_SECONDS
 
@@ -92,6 +95,7 @@ class ServiceSpec:
             "readiness": [probe.payload() for probe in self.readiness],
             "timeout_seconds": self.timeout_seconds,
             "required": self.required,
+            "completes": self.completes,
             "port": self.port,
             "stop_grace_seconds": self.stop_grace_seconds,
         }
@@ -783,6 +787,9 @@ def build_stack_plan(request: StackRequest, run_root: RunRoot | Path) -> StackPl
                 cwd=agent_root,
                 readiness=(closed_loop_wait,),
                 timeout_seconds=ready_wait_seconds,
+                # The worker exits 0 once its script is played and the search
+                # has closed; Joint 3+4 keeps running Mission 3 after that.
+                completes=True,
             )
         )
 

@@ -37,7 +37,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 # A long-running service: records SIGTERM in the order file, then becomes
-# ready by creating its ready file. ``mode`` = ready | crash | hang | stubborn.
+# ready by creating its ready file. ``mode`` = ready | crash | hang | stubborn
+# | finish (ready, then exits 0) | finish-crash (ready, then exits 3).
 _SERVICE = r"""
 import pathlib, signal, sys, time
 name, mode, ready, order = sys.argv[1:5]
@@ -53,6 +54,10 @@ if mode == "crash":
 if mode != "hang":
     pathlib.Path(ready).touch()
     print(f"{name} ready", flush=True)
+if mode.startswith("finish"):
+    time.sleep(0.2)
+    print(f"{name} done", flush=True)
+    sys.exit(3 if mode == "finish-crash" else 0)
 while True:
     time.sleep(0.05)
 """
@@ -651,6 +656,78 @@ def test_poll_reports_a_required_service_that_died_after_ready(tmp_path: Path) -
         "exited with status -9",
     )
     assert _status(plan)["physical-runtime"]["state"] == "failed"
+
+
+def _poll_until_exit(supervisor: StackSupervisor, plan: StackPlan, name: str) -> object:
+    deadline = time.monotonic() + 30
+    failure = supervisor.poll()
+    while _status(plan)[name]["exit_code"] is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+        failure = supervisor.poll()
+    return failure
+
+
+def _joint34_worker(tmp_path: Path, mode: str) -> ServiceSpec:
+    """Joint 3+4's real mission4-worker spec, running the fake service."""
+    plan = plan_mission_run(
+        preset_id="joint34",
+        stack=None,
+        mission_id="mission-supervisor-test",
+        run_root=RunRoot(tmp_path / "joint34"),
+        repo_root=REPOSITORY,
+        viewer_port=5130,
+    )
+    worker = next(spec for spec in plan.services if spec.name == "mission4-worker")
+    fake = _service(tmp_path, "mission4-worker", mode)
+    return replace(worker, argv=fake.argv, cwd=fake.cwd, readiness=fake.readiness)
+
+
+def test_mission4_worker_finishing_its_script_does_not_fail_the_stack(
+    tmp_path: Path,
+) -> None:
+    # Joint 3+4 keeps running Mission 3 after the worker has played its script
+    # and the Mission 4 search closed (run-eefdfe20: failed 40 min in).
+    plan = _plan(
+        tmp_path,
+        _service(tmp_path, "physical-runtime", "ready"),
+        _joint34_worker(tmp_path, "finish"),
+    )
+    with _supervisor(plan) as supervisor:
+        supervisor.start()
+        supervisor.begin_closed_loop()
+        failure = _poll_until_exit(supervisor, plan, "mission4-worker")
+        assert failure is None
+        worker = _status(plan)["mission4-worker"]
+        assert (worker["state"], worker["exit_code"], worker["importance"]) == (
+            "exited",
+            0,
+            "routine",
+        )
+        assert supervisor.poll() is None
+
+
+@pytest.mark.parametrize(
+    ("service", "mode", "message"),
+    [
+        ("mission4-worker", "finish-crash", "exited with status 3"),
+        ("physical-runtime", "finish", "exited with status 0"),
+    ],
+)
+def test_a_crashing_worker_or_any_exit_of_another_required_service_fails_the_stack(
+    tmp_path: Path, service: str, mode: str, message: str
+) -> None:
+    spec = (
+        _joint34_worker(tmp_path, mode)
+        if service == "mission4-worker"
+        else _service(tmp_path, service, mode)
+    )
+    plan = _plan(tmp_path, spec)
+    with _supervisor(plan) as supervisor:
+        supervisor.start()
+        failure = _poll_until_exit(supervisor, plan, service)
+
+    assert failure is not None
+    assert (failure.service, failure.message) == (service, message)
 
 
 def test_failed_post_ready_step_is_a_stack_failure(tmp_path: Path) -> None:

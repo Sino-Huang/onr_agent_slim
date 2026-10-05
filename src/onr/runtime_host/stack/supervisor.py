@@ -166,6 +166,7 @@ def harbor_config_restoration(
 class _ServiceState:
     name: str
     required: bool
+    completes: bool
     port: int | None
     log_artifact_id: str
     log_path: Path | None
@@ -194,7 +195,10 @@ class _ServiceState:
             "log_artifact_id": self.log_artifact_id,
             "last_line": _last_line(self.log_path),
             "importance": service_importance(
-                self.state, required=self.required, exit_code=self.exit_code
+                self.state,
+                required=self.required,
+                exit_code=self.exit_code,
+                completes=self.completes,
             ),
         }
         # v1.4 optional fields: present only when they carry a value.
@@ -245,6 +249,7 @@ class StackSupervisor:
             spec.name: _ServiceState(
                 name=spec.name,
                 required=spec.required,
+                completes=spec.completes,
                 port=spec.port,
                 log_artifact_id=service_log_artifact_id(spec.name),
                 log_path=layout.service_log(spec.name),
@@ -255,6 +260,7 @@ class StackSupervisor:
         self._states[CLOSED_LOOP_SERVICE] = _ServiceState(
             name=CLOSED_LOOP_SERVICE,
             required=True,
+            completes=False,
             port=None,
             log_artifact_id=WORKER_LOG_ARTIFACT_ID,
             log_path=layout.worker_log,
@@ -313,7 +319,7 @@ class StackSupervisor:
             state.exit_code = code
             state.state = "failed" if code != 0 else "exited"
             changed = True
-            if state.required and failure is None:
+            if state.required and failure is None and not (state.completes and code == 0):
                 failure = StackFailure(name, f"exited with status {code}")
         if changed:
             self._write_status()

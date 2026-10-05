@@ -20,7 +20,7 @@ The Host retains cached evidence, projections and world frames for the current r
 
 - The Host owns only the lifecycle of processes it launched. Authority over environment state, Maneuver Feedback and world-model truth stays with the environment; cancellation still never retracts a submitted Maneuver Command.
 - Mission Run Cancellation now stops the run's Environment Stack. An environment started outside the Host is not touched.
-- Preflight Checks report missing executables, busy fixed ports, an active Mission Run and unreachable vLLM before activation; a stack readiness failure ends the run as `failed` with terminal classification `stack_failed`.
+- Preflight Checks report missing executables, busy fixed ports, an active Mission Run and unreachable vLLM before activation; a stack readiness failure ends the run as `failed` with terminal classification `stack_failed`. So does a required service exiting while the run continues, except that a service declared as completing (the scripted Mission 4 worker, whose job ends once its script is played and the search has closed) may exit with status 0: that is recorded as `exited` (routine), and any other status still fails the run.
 - Service logs under the run root are run-scoped Artifacts with classification `service_log`, visible through the loopback Operator Debug View only.
 - On AirSim runs the Run Worker also owns a read-only camera capture. It is not a stack service and has no control authority: it only reads images, and it stops before the final world frame and stack teardown.
 - The Operator Console remains a pure HTTP client of the Runtime Host; it never starts environment processes itself.
