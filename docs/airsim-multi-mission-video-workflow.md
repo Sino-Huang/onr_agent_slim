@@ -76,13 +76,13 @@ bundle's `reconstruction-receipt.json` for the derivation boundary.
 
 ## 4. Choose the world-pane scale intentionally
 
-The current Joint34 scenario uses a 2 m runtime grid, 64-cell partition (128 m per side), and a 15 m visibility cap. The derive script offers three projections of it:
+The Joint34 runs behind the existing videos used a 2 m runtime grid, 64-cell partition (128 m per side), and a 15 m visibility cap. The Joint34 scenario now uses 256-cell (512 m) partitions, a 300 m camera range for ships and a 100 m small-object range (`onr_physical_runtime` README, "Camera range and partitions"); re-derive bundles from runs recorded with those settings. The derive script offers three projections:
 
 | `--pane` | Coverage | Cell / tile | Use |
 | --- | --- | --- | --- |
 | `windowed` (**default**) | 256 m, follows the drone | 2 m / 4 px | Every new video: targets, AOI, and search coverage stay readable with surrounding harbor context |
 | `overview` | 2 km, fixed north-up | 7.8125 m / 2 px | Whole-harbor context only; a 15 m footprint is about 3 px in radius, which is a rendering limit, not a runtime visibility change |
-| `local` | 128 m runtime partition | 2 m / 8 px | Comparing the visibility footprint against the runtime's 128 m partition; too tight for general viewing. The live World source now shows a display-only 512 m drone-following window at 2 m cells instead (`onr_physical_runtime` `world_model/display_window.py`) |
+| `local` | 128 m runtime partition | 2 m / 8 px | Comparing the visibility footprint against the runtime's 128 m partition of those runs; too tight for general viewing. The live World source now shows the runtime's 512 m partition |
 
 Distinguish sensor visibility/fog from Mission 4 dock-search coverage: they are different quantities.
 

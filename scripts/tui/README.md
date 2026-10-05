@@ -107,13 +107,13 @@ Newer herdr versions have different defaults; consult their versioned settings.
 On **5 World**, `s` cycles world → annotated front → raw front → third-person.
 AirSim cameras appear only after the Host has captured them. World maps retain
 their square aspect ratio; camera views retain their source aspect ratio (not
-necessarily square). The world map shows a square of at least 512 m: presets
-with 2 km world-model partitions (Mission 1 · Harbor, Mission 2) show the whole
-partition; fine-grid presets (Mission 1 · AirSim live, Missions 3 and 4, Joint
-2+4 and 3+4: 2 m cells, 128 m partitions) show a 512 m window that follows the
-drone, at the same 2 m cells. That window is display-only; agents and planners
-still work in their 128 m partitions. It jumps to re-centre once the drone is
-128 m from its centre.
+necessarily square). The world map shows the world model's active partition:
+2 km for Mission 1 · Harbor and Mission 2, and 512 m (256 cells of 2 m) for
+Mission 1 · AirSim live, Missions 3 and 4, and Joint 2+4 and 3+4. Scenarios
+with smaller partitions are shown through a display-only 512 m window that
+follows the drone. The drawn fan is the camera range for ships (300 m); Mission
+3 attachments and Mission 4 persons, animals and containers are resolved only
+within 100 m.
 
 
 ### Isolate video FPS and flicker
