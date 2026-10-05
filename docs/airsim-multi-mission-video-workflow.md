@@ -82,7 +82,7 @@ The current Joint34 scenario uses a 2 m runtime grid, 64-cell partition (128 m p
 | --- | --- | --- | --- |
 | `windowed` (**default**) | 256 m, follows the drone | 2 m / 4 px | Every new video: targets, AOI, and search coverage stay readable with surrounding harbor context |
 | `overview` | 2 km, fixed north-up | 7.8125 m / 2 px | Whole-harbor context only; a 15 m footprint is about 3 px in radius, which is a rendering limit, not a runtime visibility change |
-| `local` | 128 m runtime partition | 2 m / 8 px | Comparing the visibility footprint against the runtime's partition-local display; too tight for general viewing |
+| `local` | 128 m runtime partition | 2 m / 8 px | Comparing the visibility footprint against the runtime's 128 m partition; too tight for general viewing. The live World source now shows a display-only 512 m drone-following window at 2 m cells instead (`onr_physical_runtime` `world_model/display_window.py`) |
 
 Distinguish sensor visibility/fog from Mission 4 dock-search coverage: they are different quantities.
 
